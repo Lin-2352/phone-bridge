@@ -1,0 +1,13 @@
+[package]
+name = "pb-identity"
+description = "Device identity, trust store and revocation for Phone Bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

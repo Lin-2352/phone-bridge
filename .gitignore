@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+*.apk
+*.aab
+.idea/
+.vscode/
+local.properties
+build/
+.gradle/
+
+# local-only research
+/pre_build_research/
