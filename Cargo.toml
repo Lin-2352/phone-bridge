@@ -4,6 +4,7 @@ members = [
     "crates/pb-identity",
     "crates/pb-protocol",
     "crates/pb-transport",
+    "spikes/iroh-spike",
 ]
 
 [workspace.package]
@@ -11,7 +12,7 @@ version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Lin-2352/phone-bridge"
-rust-version = "1.80"
+rust-version = "1.91"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -24,3 +25,10 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Fast-compiling optimised profile for spikes and measurements.
+[profile.spike]
+inherits = "release"
+lto = false
+codegen-units = 16
+panic = "unwind"
