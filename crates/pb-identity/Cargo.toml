@@ -1,6 +1,6 @@
 [package]
 name = "pb-identity"
-description = "Device identity, trust store and revocation for Phone Bridge"
+description = "Phone Bridge device identity: Ed25519 keys, pinned peers, short authentication strings"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +11,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+ed25519-dalek = "2"
+sha2 = "0.10"
+getrandom = "0.3"
