@@ -43,7 +43,11 @@ fn parse_args(rest: &[String]) -> Result<Args> {
     };
     let mut it = rest.iter();
     while let Some(flag) = it.next() {
-        let mut val = || it.next().cloned().ok_or_else(|| AnyError::from_display(format!("{flag} needs a value")));
+        let mut val = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| AnyError::from_display(format!("{flag} needs a value")))
+        };
         match flag.as_str() {
             "--port" => a.port = Some(val()?.parse().anyerr()?),
             "--relay" => a.relay = Some(val()?.parse().anyerr()?),
@@ -77,7 +81,9 @@ fn relay_mode(relay: &Option<RelayUrl>) -> RelayMode {
 /// Deterministic, cheap-to-generate payload so both ends can hash it.
 fn fill_pattern(buf: &mut [u8], counter: &mut u64) {
     for b in buf.iter_mut() {
-        *counter = counter.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *counter = counter
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *b = (*counter >> 56) as u8;
     }
 }
@@ -109,7 +115,9 @@ async fn serve(args: Args) -> Result<()> {
         .transport_config(transport(args.no_gso))
         .relay_mode(relay_mode(&args.relay));
     if let Some(port) = args.port {
-        builder = builder.bind_addr(SocketAddr::from(([0, 0, 0, 0], port))).anyerr()?;
+        builder = builder
+            .bind_addr(SocketAddr::from(([0, 0, 0, 0], port)))
+            .anyerr()?;
     }
     let endpoint = builder.bind().await?;
     if args.relay.is_some() {
@@ -197,7 +205,9 @@ async fn handle_stream(mut send: iroh::endpoint::SendStream, mut recv: iroh::end
 }
 
 async fn connect(args: Args) -> Result<()> {
-    let id = args.id.ok_or_else(|| AnyError::from_display("--id required"))?;
+    let id = args
+        .id
+        .ok_or_else(|| AnyError::from_display("--id required"))?;
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::from_bytes(&rand::random()))
         .transport_config(transport(args.no_gso))
@@ -215,7 +225,11 @@ async fn connect(args: Args) -> Result<()> {
     println!("CONNECT_MS={:.1}", t.elapsed().as_secs_f64() * 1000.0);
     println!("MAX_DATAGRAM={:?}", conn.max_datagram_size());
 
-    let run = |name: &str| args.only.as_deref().is_none_or(|o| o.split(',').any(|x| x == name));
+    let run = |name: &str| {
+        args.only
+            .as_deref()
+            .is_none_or(|o| o.split(',').any(|x| x == name))
+    };
     if run("echo") {
         echo_test(&conn).await?;
     }
@@ -249,7 +263,8 @@ async fn datagram_test(conn: &Connection, pings: u32) -> Result<()> {
     let mut rtts: Vec<f64> = Vec::new();
     for seq in 0..pings {
         sent.insert(seq, Instant::now());
-        conn.send_datagram(seq.to_le_bytes().to_vec().into()).anyerr()?;
+        conn.send_datagram(seq.to_le_bytes().to_vec().into())
+            .anyerr()?;
         // drain anything that came back while we wait the inter-ping gap
         let deadline = tokio::time::sleep(Duration::from_millis(5));
         tokio::pin!(deadline);
@@ -279,7 +294,11 @@ async fn datagram_test(conn: &Connection, pings: u32) -> Result<()> {
     })
     .await;
     rtts.sort_by(|a, b| a.total_cmp(b));
-    let pct = |p: f64| rtts.get(((rtts.len() as f64 - 1.0) * p) as usize).copied().unwrap_or(f64::NAN);
+    let pct = |p: f64| {
+        rtts.get(((rtts.len() as f64 - 1.0) * p) as usize)
+            .copied()
+            .unwrap_or(f64::NAN)
+    };
     println!(
         "DATAGRAM sent={pings} recv={} loss={} rtt_ms p50={:.2} p95={:.2} max={:.2}",
         rtts.len(),
@@ -312,7 +331,10 @@ async fn upload_test(conn: &Connection, mib: u64) -> Result<()> {
     let ok = reply.len() == 40
         && u64::from_le_bytes(reply[..8].try_into().unwrap()) == total
         && reply[8..] == hasher.finalize()[..];
-    println!("UPLOAD mib={mib} secs={secs:.2} MB/s={:.1} hash_ok={ok}", total as f64 / 1e6 / secs);
+    println!(
+        "UPLOAD mib={mib} secs={secs:.2} MB/s={:.1} hash_ok={ok}",
+        total as f64 / 1e6 / secs
+    );
     Ok(())
 }
 
@@ -334,6 +356,9 @@ async fn download_test(conn: &Connection, mib: u64) -> Result<()> {
     }
     let secs = t.elapsed().as_secs_f64();
     send.finish().anyerr()?;
-    println!("DOWNLOAD mib={mib} secs={secs:.2} MB/s={:.1} data_ok={ok}", total as f64 / 1e6 / secs);
+    println!(
+        "DOWNLOAD mib={mib} secs={secs:.2} MB/s={:.1} data_ok={ok}",
+        total as f64 / 1e6 / secs
+    );
     Ok(())
 }
