@@ -17,3 +17,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-ut
 n0-error = "1"
 sha2 = "0.10"
 rand = "0.9"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }

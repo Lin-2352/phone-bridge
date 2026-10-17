@@ -14,7 +14,7 @@ use std::{
 };
 
 use iroh::{
-    endpoint::{presets, Connection},
+    endpoint::{presets, Connection, QuicTransportConfig},
     Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
 };
 use n0_error::{AnyError, Result, StdResultExt};
@@ -31,6 +31,8 @@ struct Args {
     addrs: Vec<SocketAddr>,
     bulk_mib: u64,
     pings: u32,
+    only: Option<String>,
+    no_gso: bool,
 }
 
 fn parse_args(rest: &[String]) -> Result<Args> {
@@ -49,10 +51,20 @@ fn parse_args(rest: &[String]) -> Result<Args> {
             "--addr" => a.addrs.push(val()?.parse().anyerr()?),
             "--bulk-mib" => a.bulk_mib = val()?.parse().anyerr()?,
             "--pings" => a.pings = val()?.parse().anyerr()?,
+            "--only" => a.only = Some(val()?),
+            "--no-gso" => a.no_gso = true,
             other => return Err(AnyError::from_display(format!("unknown flag {other}"))),
         }
     }
     Ok(a)
+}
+
+/// UDP segmentation offload (GSO) fails with EIO on some interfaces, notably the
+/// phone's USB-tether `rndis0`; see docs/DECISIONS.md. `--no-gso` turns it off up front.
+fn transport(no_gso: bool) -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .enable_segmentation_offload(!no_gso)
+        .build()
 }
 
 fn relay_mode(relay: &Option<RelayUrl>) -> RelayMode {
@@ -72,6 +84,11 @@ fn fill_pattern(buf: &mut [u8], counter: &mut u64) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set RUST_LOG (e.g. `noq_udp=debug,iroh=debug`) to see transport internals.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_ansi(false)
+        .init();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let Some((mode, rest)) = argv.split_first() else {
         println!("usage: iroh-spike serve|connect [flags]");
@@ -89,6 +106,7 @@ async fn serve(args: Args) -> Result<()> {
     let mut builder = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::from_bytes(&rand::random()))
         .alpns(vec![ALPN.to_vec()])
+        .transport_config(transport(args.no_gso))
         .relay_mode(relay_mode(&args.relay));
     if let Some(port) = args.port {
         builder = builder.bind_addr(SocketAddr::from(([0, 0, 0, 0], port))).anyerr()?;
@@ -182,6 +200,7 @@ async fn connect(args: Args) -> Result<()> {
     let id = args.id.ok_or_else(|| AnyError::from_display("--id required"))?;
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::from_bytes(&rand::random()))
+        .transport_config(transport(args.no_gso))
         .relay_mode(relay_mode(&args.relay))
         .bind()
         .await?;
@@ -196,10 +215,19 @@ async fn connect(args: Args) -> Result<()> {
     println!("CONNECT_MS={:.1}", t.elapsed().as_secs_f64() * 1000.0);
     println!("MAX_DATAGRAM={:?}", conn.max_datagram_size());
 
-    echo_test(&conn).await?;
-    datagram_test(&conn, args.pings).await?;
-    upload_test(&conn, args.bulk_mib).await?;
-    download_test(&conn, args.bulk_mib).await?;
+    let run = |name: &str| args.only.as_deref().is_none_or(|o| o.split(',').any(|x| x == name));
+    if run("echo") {
+        echo_test(&conn).await?;
+    }
+    if run("datagram") {
+        datagram_test(&conn, args.pings).await?;
+    }
+    if run("upload") {
+        upload_test(&conn, args.bulk_mib).await?;
+    }
+    if run("download") {
+        download_test(&conn, args.bulk_mib).await?;
+    }
 
     conn.close(0u32.into(), b"done");
     endpoint.close().await;

@@ -24,12 +24,34 @@ Status: Phase 0. Derived from `pre_build_research/RESEARCH.txt`, `pre_build_rese
 | Windows camera | `MFCreateVirtualCamera` (Windows 11, CurrentUser, off the UI thread); DirectShow fallback for Windows 10 only. |
 | Android service | `connectedDevice` FGS type; add `camera`/`microphone` only while streaming. 16 KB page alignment. |
 
+## Spike 1 and 2 results (2026-10-18)
+Setup: Windows 11 PC <-> realme RMX3561 (Android 13, arm64) over the phone's USB-tether link (`rndis0`, 10.107.168.0/24). iroh 1.3.0 (`presets::Minimal`, `tls-ring`, relay disabled unless passed), `spikes/iroh-spike`, spike profile (no LTO). Numbers are from this one link and are lower bounds: USB tethering, not our code, likely caps throughput.
+
+| Measurement | Result |
+|---|---|
+| iroh builds and runs on Android arm64 and x86_64 | Yes (cargo-ndk, NDK r29, ELF LOAD alignment 0x4000) |
+| Handshake PC -> phone (direct) | 2-5 ms |
+| Datagram RTT (200 pings, 0 loss) | p50 0.55-0.75 ms, p95 0.8-1.1 ms |
+| Bulk stream 64 MiB, hash verified | PC -> phone ~36-40 MB/s, phone -> PC ~30-37 MB/s |
+| Idle phone endpoint (30 s, no peers) | ~0.03% of one core (1 tick), 18 MB RSS, 9 threads |
+| Idle Windows endpoint (30 s) | 0.00 CPU-seconds, 14.8 MB working set, 36 threads |
+| Relay-only dial (self-hosted `iroh-relay --dev`, loopback via `adb reverse`) | connected in 16 ms, then moved to a direct path; data verified |
+| Loopback on the PC (reference) | 260 MB/s up, 1.7 ms handshake |
+
+Idle thread count on Windows (36) is high for a resident daemon; cap tokio workers in the real daemon.
+
+### Findings that change the design
+1. **UDP GSO breaks the first large send on `rndis0`.** The first GSO `sendmsg` (12780 B, 1420 B segments) fails with `EIO` on the phone's USB-tether interface. noq-udp then halts GSO, but the connection never recovers and dies at the 30 s idle timeout. Reproduced 8 of 8 on a fresh phone process (first download always fails, later transfers work); with `enable_segmentation_offload(false)` 3 of 3 fresh runs passed. Decision: **disable GSO on Android** (`QuicTransportConfig::builder().enable_segmentation_offload(false)`) until the upstream recovery is fixed; measure the cost on Wi-Fi. TODO: file an upstream issue with the trace.
+2. **iroh needs an Android JNI context.** A bare native binary aborted with `android context was not initialized` (from `ndk-context`, used by iroh-dns and netdev). iroh only survives this by catching a panic, so it needs `panic = "unwind"`; our release profile uses `panic = "abort"`. Decision: the Android library installs the JNI context (`iroh::dns::install_android_jni_context`, an `unsafe` FFI call in a dedicated crate) and the Android build must not rely on unwind to recover. Not yet verified inside a real APK.
+3. **Rust MSRV is 1.91** (iroh 1.3.0). Workspace `rust-version` raised.
+4. **Same-uplink limitation.** PC and phone share one uplink here, so real cross-network hole-punching is untested; the hole-punch success rate remains an unverified claim.
+
 ## Performance budgets (provisional)
-The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). Set real budgets after Spike 2 measurements.
+The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
 ## Unverified claims to re-check
 - Android 17 "Advanced Protection" auto-revoking non-accessibility accessibility services.
-- iroh/noq version numbers and Android behaviour; hole-punch success rates.
+- Hole-punch success rates (iroh 1.3.0 builds and runs on Android; see results above).
 - Details of the cited CISPA/USENIX paper and quinn advisories.
 
 ## Rules for code
