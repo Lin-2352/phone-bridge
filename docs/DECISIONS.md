@@ -40,9 +40,20 @@ Setup: Windows 11 PC <-> realme RMX3561 (Android 13, arm64) over the phone's USB
 
 Idle thread count on Windows (36) is high for a resident daemon; cap tokio workers in the real daemon.
 
+### Android app smoke test (real APK on the phone, 2026-10-18)
+`spikes/ffi-smoke` (UniFFI 0.32 + iroh 1.3.0, `spike-abort` profile = `panic = "abort"`) packaged by `scripts/android-smoke.ps1` (AGP 9.4.1, Gradle 9.6.0, JNA 5.17.0).
+
+| Check | Result |
+|---|---|
+| `.so` loads; UniFFI async + tokio works; `panic = "abort"` with JNI context installed | Yes (finding 2 below is confirmed) |
+| 16 KB alignment inside the APK | `libpb_smoke.so` and JNA's `libjnidispatch.so` both 0x4000 |
+| PC -> in-app server (GSO off), 64 MiB, hash verified | ~38-39 MB/s both ways, RTT p50 0.74-0.88 ms, 0 datagram loss |
+| App memory (PSS, debug build, activity open) | 76 MB total; native heap 23 MB (includes Rust), Java heap 9 MB. RSS (210 MB) overstates because of shared mappings |
+| App idle CPU (30 s, Kotlin polls once per second) | ~0.5% of one core; an upper bound, the real app must not poll |
+
 ### Findings that change the design
 1. **UDP GSO breaks the first large send on `rndis0`.** The first GSO `sendmsg` (12780 B, 1420 B segments) fails with `EIO` on the phone's USB-tether interface. noq-udp then halts GSO, but the connection never recovers and dies at the 30 s idle timeout. Reproduced 11 of 11 times on a fresh phone process (first download always fails, later transfers work); with `enable_segmentation_offload(false)` 3 of 3 fresh runs passed. Decision: **disable GSO on Android** (`QuicTransportConfig::builder().enable_segmentation_offload(false)`) until the upstream recovery is fixed; measure the cost on Wi-Fi. TODO: file an upstream issue with the trace.
-2. **iroh needs an Android JNI context.** A bare native binary aborted with `android context was not initialized` (from `ndk-context`, used by iroh-dns and netdev). iroh only survives this by catching a panic, so it needs `panic = "unwind"`; our release profile uses `panic = "abort"`. Decision: the Android library installs the JNI context (`iroh::dns::install_android_jni_context`, an `unsafe` FFI call in a dedicated crate) and the Android build must not rely on unwind to recover. Not yet verified inside a real APK.
+2. **iroh needs an Android JNI context.** A bare native binary aborted with `android context was not initialized` (from `ndk-context`, used by iroh-dns and netdev). iroh only survives this by catching a panic, so it needs `panic = "unwind"`; our release profile uses `panic = "abort"`. Decision: the Android library installs the JNI context (`iroh::dns::install_android_jni_context`, an `unsafe` FFI call in a dedicated crate) and the Android build must not rely on unwind to recover. Verified inside a real APK (above).
 3. **Rust MSRV is 1.91** (iroh 1.3.0). Workspace `rust-version` raised.
 4. **Same-uplink limitation.** PC and phone share one uplink here, so real cross-network hole-punching is untested; the hole-punch success rate remains an unverified claim.
 
