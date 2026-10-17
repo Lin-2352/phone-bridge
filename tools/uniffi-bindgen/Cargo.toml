@@ -1,0 +1,15 @@
+[package]
+name = "uniffi-bindgen"
+description = "Runs the UniFFI binding generator for this workspace (cargo run -p uniffi-bindgen)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }

@@ -1,5 +1,18 @@
+# Only the platforms we ship; keeps wasm-only crates (iroh's browser support) out of the audit.
+[graph]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-linux-android",
+    "x86_64-linux-android",
+]
+
 [advisories]
 version = 2
+ignore = [
+    # `paste` is unmaintained (not vulnerable); a compile-time macro pulled in by
+    # iroh -> netwatch. Re-check whenever iroh is updated.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro via iroh/netwatch, no runtime code" },
+]
 
 [licenses]
 version = 2
@@ -12,6 +25,8 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "MPL-2.0",
+    "Zlib",
+    "CDLA-Permissive-2.0", # webpki-roots CA data
 ]
 
 [bans]

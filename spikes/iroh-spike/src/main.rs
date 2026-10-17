@@ -14,14 +14,12 @@ use std::{
 };
 
 use iroh::{
-    endpoint::{presets, Connection, QuicTransportConfig},
-    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
+    endpoint::{presets, Connection},
+    Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr,
 };
+use iroh_spike::{fill_pattern, relay_mode, transport, ALPN, CHUNK};
 use n0_error::{AnyError, Result, StdResultExt};
 use sha2::{Digest, Sha256};
-
-const ALPN: &[u8] = b"pb-spike/0";
-const CHUNK: usize = 64 * 1024;
 
 #[derive(Default)]
 struct Args {
@@ -63,31 +61,6 @@ fn parse_args(rest: &[String]) -> Result<Args> {
     Ok(a)
 }
 
-/// UDP segmentation offload (GSO) fails with EIO on some interfaces, notably the
-/// phone's USB-tether `rndis0`; see docs/DECISIONS.md. `--no-gso` turns it off up front.
-fn transport(no_gso: bool) -> QuicTransportConfig {
-    QuicTransportConfig::builder()
-        .enable_segmentation_offload(!no_gso)
-        .build()
-}
-
-fn relay_mode(relay: &Option<RelayUrl>) -> RelayMode {
-    match relay {
-        Some(url) => RelayMode::custom([url.clone()]),
-        None => RelayMode::Disabled,
-    }
-}
-
-/// Deterministic, cheap-to-generate payload so both ends can hash it.
-fn fill_pattern(buf: &mut [u8], counter: &mut u64) {
-    for b in buf.iter_mut() {
-        *counter = counter
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *b = (*counter >> 56) as u8;
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Set RUST_LOG (e.g. `noq_udp=debug,iroh=debug`) to see transport internals.
@@ -109,99 +82,12 @@ async fn main() -> Result<()> {
 }
 
 async fn serve(args: Args) -> Result<()> {
-    let mut builder = Endpoint::builder(presets::Minimal)
-        .secret_key(SecretKey::from_bytes(&rand::random()))
-        .alpns(vec![ALPN.to_vec()])
-        .transport_config(transport(args.no_gso))
-        .relay_mode(relay_mode(&args.relay));
-    if let Some(port) = args.port {
-        builder = builder
-            .bind_addr(SocketAddr::from(([0, 0, 0, 0], port)))
-            .anyerr()?;
-    }
-    let endpoint = builder.bind().await?;
-    if args.relay.is_some() {
-        endpoint.online().await;
-    }
+    let endpoint = iroh_spike::start_server(args.port, args.relay, args.no_gso).await?;
     println!("ENDPOINT_ID={}", endpoint.id());
     println!("BOUND={:?}", endpoint.bound_sockets());
     println!("ADDR={:?}", endpoint.addr());
-
-    while let Some(incoming) = endpoint.accept().await {
-        tokio::spawn(async move {
-            let conn = match incoming.await {
-                Ok(c) => c,
-                Err(e) => {
-                    println!("handshake failed: {e}");
-                    return;
-                }
-            };
-            println!("accepted {}", conn.remote_id());
-            let dg = conn.clone();
-            tokio::spawn(async move {
-                while let Ok(d) = dg.read_datagram().await {
-                    if dg.send_datagram(d).is_err() {
-                        break;
-                    }
-                }
-            });
-            while let Ok((send, recv)) = conn.accept_bi().await {
-                tokio::spawn(handle_stream(send, recv));
-            }
-            println!("connection closed");
-        });
-    }
+    std::future::pending::<()>().await;
     Ok(())
-}
-
-async fn handle_stream(mut send: iroh::endpoint::SendStream, mut recv: iroh::endpoint::RecvStream) {
-    let r: Result<()> = async {
-        let mut op = [0u8; 1];
-        recv.read_exact(&mut op).await.anyerr()?;
-        match op[0] {
-            b'E' => {
-                tokio::io::copy(&mut recv, &mut send).await.anyerr()?;
-                send.finish().anyerr()?;
-            }
-            b'U' => {
-                let mut hasher = Sha256::new();
-                let mut buf = vec![0u8; CHUNK];
-                let mut total = 0u64;
-                loop {
-                    let n = recv.read(&mut buf).await.anyerr()?.unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    hasher.update(&buf[..n]);
-                    total += n as u64;
-                }
-                send.write_all(&total.to_le_bytes()).await.anyerr()?;
-                send.write_all(&hasher.finalize()).await.anyerr()?;
-                send.finish().anyerr()?;
-            }
-            b'D' => {
-                let mut n = [0u8; 8];
-                recv.read_exact(&mut n).await.anyerr()?;
-                let mut remaining = u64::from_le_bytes(n);
-                let (mut buf, mut ctr) = (vec![0u8; CHUNK], 1u64);
-                while remaining > 0 {
-                    let take = remaining.min(CHUNK as u64) as usize;
-                    fill_pattern(&mut buf[..take], &mut ctr);
-                    send.write_all(&buf[..take]).await.anyerr()?;
-                    remaining -= take as u64;
-                }
-                send.finish().anyerr()?;
-                // keep the stream alive until the peer has read everything
-                let _ = recv.read_to_end(8).await;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    .await;
-    if let Err(e) = r {
-        println!("stream error: {e}");
-    }
 }
 
 async fn connect(args: Args) -> Result<()> {
