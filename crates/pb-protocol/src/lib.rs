@@ -296,7 +296,7 @@ mod tests {
         ];
         for (i, event) in events.into_iter().enumerate() {
             let d = InputDatagram {
-                seq: 65530 + i as u16,
+                seq: 65530u16.wrapping_add(i as u16),
                 event,
             };
             assert_eq!(InputDatagram::decode(&d.encode()), Ok(d));
