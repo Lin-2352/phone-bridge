@@ -221,7 +221,7 @@ async fn run(o: Opts) -> Res<()> {
         ["clip-update", text] => {
             let peer = find_peer(&store, o.to.as_deref())?;
             let s = node.connect(&peer.id).await?;
-            s.send(ControlMsg::ClipboardUpdate(pb_protocol::control::ClipboardUpdate { text: (*text).to_owned(), hash: vec![] })).await?;
+            s.send(ControlMsg::ClipboardUpdate(pb_protocol::control::ClipboardUpdate { text: (*text).to_owned(), hash: vec![], sensitive: false })).await?;
             s.finish().await;
             println!("SENT CLIPSYNC");
         }

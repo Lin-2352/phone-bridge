@@ -50,7 +50,10 @@ pub enum Cmd {
     /// Files chosen in the dialog, dropped on the flyout, or sent via Explorer.
     SendFiles(Vec<PathBuf>),
     /// The local clipboard changed (from the clipboard listener).
-    ClipboardChanged(String),
+    ClipboardChanged {
+        text: String,
+        sensitive: bool,
+    },
     Decide {
         id: u64,
         accept: bool,
@@ -80,10 +83,16 @@ pub enum UiEvent {
         text: String,
         sensitive: bool,
     },
+    /// A link shared from the other device: offered to open, clipboard untouched.
+    Link {
+        from: String,
+        url: String,
+    },
     /// Universal Clipboard: text copied on the other device.
     RemoteClipboard {
         from: String,
         text: String,
+        sensitive: bool,
     },
     FileReceived {
         from: String,
@@ -236,7 +245,7 @@ pub async fn run(
                         }
                     });
                 }
-                Some(Cmd::ClipboardChanged(text)) => {
+                Some(Cmd::ClipboardChanged { text, sensitive }) => {
                     let on = settings.lock().map(|s| s.universal_clipboard).unwrap_or(false);
                     if !on || text.is_empty() || text.len() > MAX_CLIPBOARD_TEXT {
                         continue;
@@ -256,7 +265,7 @@ pub async fn run(
                         for (id, name) in targets {
                             let r = async {
                                 let s = node.connect(&id).await?;
-                                s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: text.clone(), hash: h.to_vec() })).await?;
+                                s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: text.clone(), hash: h.to_vec(), sensitive })).await?;
                                 s.finish().await;
                                 Ok::<_, pb_transport::Error>(())
                             }
@@ -432,6 +441,7 @@ async fn pump(
                 ui(UiEvent::RemoteClipboard {
                     from: s.peer_name.clone(),
                     text: u.text,
+                    sensitive: u.sensitive,
                 });
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
@@ -469,11 +479,7 @@ async fn pump(
                     }),
                     Ok(Received::Link(l)) => {
                         log.line(&format!("LINK from \"{from}\""));
-                        ui(UiEvent::Clipboard {
-                            from,
-                            text: l,
-                            sensitive: false,
-                        });
+                        ui(UiEvent::Link { from, url: l });
                     }
                     Err(e) => log.line(&format!("OFFER from \"{from}\" not received: {e}")),
                 }

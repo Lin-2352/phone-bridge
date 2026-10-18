@@ -49,9 +49,20 @@
             </intent-filter>
         </activity>
 
-        <!-- Reads the clipboard while focused (Android 10+ rule), sends, closes. -->
+        <!-- Long-press on the Quick Settings tile: the compact panel. -->
         <activity
-            android:name=".ClipSyncActivity"
+            android:name=".QuickPanelActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+        </activity>
+        <!-- Starts the service from the foreground when a tile start is refused. -->
+        <activity
+            android:name=".StarterActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"
@@ -63,14 +74,15 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
         <service
-            android:name=".ClipTileService"
+            android:name=".BridgeTileService"
             android:exported="true"
             android:icon="@drawable/ic_stat_bridge"
-            android:label="Send clipboard"
+            android:label="Phone Bridge"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
         </service>
         <receiver android:name=".CopyReceiver" android:exported="false" />
         <receiver android:name=".OfferReceiver" android:exported="false" />

@@ -1,16 +1,10 @@
 package dev.phonebridge.app
 
 import android.app.Activity
-import android.app.PendingIntent
-import android.content.ClipDescription
-import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.service.quicksettings.Tile
-import android.service.quicksettings.TileService
 import android.util.Log
 import android.widget.Toast
 import kotlinx.coroutines.launch
@@ -81,64 +75,5 @@ class ShareActivity : Activity() {
         }
         Toast.makeText(this, "Sending to ${peer.name}", Toast.LENGTH_SHORT).show()
         finish()
-    }
-}
-
-/**
- * Phone -> PC clipboard. Android only lets the focused app read the
- * clipboard, so this invisible activity reads it once it has focus, sends it,
- * and closes. Launched from the Quick Settings tile and the notification.
- * Text an app marked sensitive (passwords, codes) is never sent.
- */
-class ClipSyncActivity : Activity() {
-    private var done = false
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus || done) return
-        done = true
-        val cm = getSystemService(ClipboardManager::class.java)
-        val clip = cm.primaryClip
-        val sensitive = clip?.description?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
-        val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
-        val node = Bridge.node
-        val peer = Bridge.firstPeer()
-        when {
-            node == null || peer == null -> Toast.makeText(this, "Pair Phone Bridge with your PC first", Toast.LENGTH_SHORT).show()
-            text.isNullOrEmpty() -> Toast.makeText(this, "Clipboard is empty", Toast.LENGTH_SHORT).show()
-            sensitive -> Toast.makeText(this, "Not sent: marked sensitive by the app that copied it", Toast.LENGTH_SHORT).show()
-            else -> {
-                Bridge.scope.launch {
-                    try {
-                        node.sendText(peer.id, text, false)
-                        Log.i(TAG, "CLIPSEND ${text.length} chars to ${peer.name}")
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "CLIPSEND failed: $t")
-                    }
-                }
-                Toast.makeText(this, "Clipboard sent to ${peer.name}", Toast.LENGTH_SHORT).show()
-            }
-        }
-        finish()
-    }
-}
-
-/** Quick Settings tile: "Send clipboard" to the PC in one tap. */
-class ClipTileService : TileService() {
-    override fun onStartListening() {
-        qsTile?.apply {
-            state = if (Bridge.firstPeer() != null) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            updateTile()
-        }
-    }
-
-    override fun onClick() {
-        val intent = Intent(this, ClipSyncActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startActivityAndCollapse(PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE))
-        } else {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(intent)
-        }
     }
 }

@@ -114,14 +114,32 @@ pub fn set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<
 
 /// Read clipboard text, refusing content other apps marked as private.
 pub fn get_text(owner: Option<HWND>) -> io::Result<ClipText> {
+    Ok(match get_text_marked(owner)? {
+        (ClipText::Text(_), true) => ClipText::Excluded,
+        (t, _) => t,
+    })
+}
+
+/// Read clipboard text and whether the copying app marked it private
+/// (password managers). Only for callers whose user opted in to syncing it.
+pub fn get_text_marked(owner: Option<HWND>) -> io::Result<(ClipText, bool)> {
     let _open = Open::new(owner)?;
     // SAFETY: clipboard is open; the handle is only read while locked.
     unsafe {
-        if IsClipboardFormatAvailable(format(w!("ExcludeClipboardContentFromMonitorProcessing")))
-            .is_ok()
-        {
-            return Ok(ClipText::Excluded);
-        }
+        let private =
+            IsClipboardFormatAvailable(format(w!("ExcludeClipboardContentFromMonitorProcessing")))
+                .is_ok();
+        let text = read_unicode()?;
+        Ok((text, private))
+    }
+}
+
+/// CF_UNICODETEXT of the open clipboard.
+///
+/// # Safety
+/// The clipboard must be open on this thread.
+unsafe fn read_unicode() -> io::Result<ClipText> {
+    unsafe {
         let Ok(h) = GetClipboardData(u32::from(CF_UNICODETEXT.0)) else {
             return Ok(ClipText::Empty);
         };
@@ -160,6 +178,10 @@ mod tests {
         );
         set_text("hunter2", true, None).unwrap();
         assert_eq!(get_text(None).unwrap(), ClipText::Excluded);
+        assert_eq!(
+            get_text_marked(None).unwrap(),
+            (ClipText::Text("hunter2".into()), true)
+        );
         set_text("", false, None).unwrap();
         assert_eq!(get_text(None).unwrap(), ClipText::Empty);
     }

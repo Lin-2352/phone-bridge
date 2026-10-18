@@ -96,6 +96,10 @@ pub struct ClipboardUpdate {
     pub text: String,
     #[prost(bytes = "vec", tag = "2")]
     pub hash: Vec<u8>,
+    /// Marked private where it was copied (password, one-time code): the
+    /// receiver keeps it out of clipboard history and hides it in notifications.
+    #[prost(bool, tag = "3")]
+    pub sensitive: bool,
 }
 
 /// First frame on a file data stream: which accepted offer these bytes belong to.
@@ -299,6 +303,7 @@ mod tests {
             ControlMsg::ClipboardUpdate(ClipboardUpdate {
                 text: "x".into(),
                 hash: vec![1; 32],
+                sensitive: true,
             }),
         ];
         for m in msgs {

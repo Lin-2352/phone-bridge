@@ -68,6 +68,7 @@ struct State {
     on_action: Box<dyn Fn(Action) + Send>,
 }
 
+static CLOSED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 static CURRENT: Mutex<Option<State>> = Mutex::new(None);
 
 fn dark_mode() -> bool {
@@ -414,6 +415,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_DESTROY => {
+            if let Ok(mut t) = CLOSED_AT.lock() {
+                *t = Some(std::time::Instant::now());
+            }
             if let Ok(mut g) = CURRENT.lock() {
                 if g.as_ref().is_some_and(|s| s.hwnd == hwnd.0 as isize) {
                     *g = None;
@@ -430,6 +434,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
     if CURRENT.lock().map(|g| g.is_some()).unwrap_or(false) {
         close();
+        return;
+    }
+    // Clicking the tray icon while open first deactivates (closes) the flyout;
+    // that same click must not reopen it.
+    if CLOSED_AT
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300))
+    {
         return;
     }
     // SAFETY: window creation and positioning on the UI thread.

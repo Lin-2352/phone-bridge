@@ -1,26 +1,28 @@
 package dev.phonebridge.app
 
 import android.Manifest
-import android.content.ClipDescription
-import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color as AColor
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,7 +33,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -43,14 +45,16 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,37 +65,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import uniffi.pb_ffi.PbEvent
 import uniffi.pb_ffi.PbNode
 
 private const val TAG = "PhoneBridge"
-
-/** Design v2 palette: Material 3 roles seeded from our cobalt, amber for codes. */
-private val Amber = Color(0xFFC9820F)
-private val AmberDark = Color(0xFFE8A93A)
-private val Light = lightColorScheme(
-    primary = Color(0xFF3651C5), onPrimary = Color.White,
-    primaryContainer = Color(0xFFDDE1FF), onPrimaryContainer = Color(0xFF001257),
-    secondaryContainer = Color(0xFFE0E2F2), onSecondaryContainer = Color(0xFF191B28),
-    surface = Color(0xFFFBF8FF), surfaceContainer = Color(0xFFEFEDF6),
-    onSurface = Color(0xFF1B1B21), onSurfaceVariant = Color(0xFF46464F), outline = Color(0xFF777680),
-)
-private val Dark = darkColorScheme(
-    primary = Color(0xFFB9C3FF), onPrimary = Color(0xFF082587),
-    primaryContainer = Color(0xFF233CA9), onPrimaryContainer = Color(0xFFDDE1FF),
-    secondaryContainer = Color(0xFF42455A), onSecondaryContainer = Color(0xFFE0E2F2),
-    surface = Color(0xFF121318), surfaceContainer = Color(0xFF1F1F25),
-    onSurface = Color(0xFFE4E1E9), onSurfaceVariant = Color(0xFFC7C5D0), outline = Color(0xFF91909A),
-)
 
 /**
  * UI over the [PbService]-owned node. Screens follow design v2: Home (link
@@ -107,16 +93,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
         prefs = Prefs(this)
+        ThemeChoice.mode.intValue = prefs.theme
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
-        startForegroundService(Intent(this, PbService::class.java))
+        if (prefs.enabled) startForegroundService(Intent(this, PbService::class.java))
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) Dark else Light) {
+            PbTheme {
+                val dark = isDark()
+                LaunchedEffect(dark) {
+                    val bars = if (dark) SystemBarStyle.dark(AColor.TRANSPARENT) else SystemBarStyle.light(AColor.TRANSPARENT, AColor.TRANSPARENT)
+                    enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+                }
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) { App() }
             }
         }
@@ -131,16 +122,15 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // Universal Clipboard, phone -> PC: the clipboard is readable while we
-        // have focus. Text an app marked sensitive never leaves the phone.
+        // have focus. Sensitive text only when the user allowed it.
         if (hasFocus && prefs.clipboardSync) {
-            val clip = getSystemService(ClipboardManager::class.java).primaryClip ?: return
-            if (clip.description?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true) return
-            val text = clip.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
+            val (text, sensitive) = readClipboard(this) ?: return
+            if (sensitive && !prefs.sendSensitive) return
             // Only when it changed since the last sync in either direction.
             if (text.hashCode() == prefs.lastClip) return
             val node = Bridge.node ?: return
             prefs.lastClip = text.hashCode()
-            Bridge.scope.launch { runCatching { node.syncClipboard(text) } }
+            Bridge.scope.launch { runCatching { node.syncClipboard(text, sensitive) } }
         }
     }
 
@@ -182,6 +172,7 @@ class MainActivity : ComponentActivity() {
             val name = node.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
             Bridge.linked.value = name
+            PbService.refresh(this)
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing not completed: ${e.message}")
             message.value = "Pairing not completed"
@@ -200,7 +191,7 @@ class MainActivity : ComponentActivity() {
             else -> HomeScreen(onSettings = { screen = "settings" })
         }
         sas.value?.let { code ->
-            val pcName = Bridge.linked.value ?: "your PC"
+            val amber = if (isDark()) AmberDark else Amber
             AlertDialog(
                 onDismissRequest = {},
                 title = { Text("Does the PC show this code?") },
@@ -212,10 +203,10 @@ class MainActivity : ComponentActivity() {
                                     it,
                                     fontSize = 40.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (isSystemInDarkTheme()) AmberDark else Amber,
+                                    color = amber,
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(14.dp))
-                                        .background((if (isSystemInDarkTheme()) AmberDark else Amber).copy(alpha = 0.16f))
+                                        .background(amber.copy(alpha = 0.16f))
                                         .padding(horizontal = 12.dp, vertical = 2.dp),
                                 )
                             }
@@ -237,6 +228,7 @@ class MainActivity : ComponentActivity() {
     private fun HomeScreen(onSettings: () -> Unit) {
         var clipOn by remember { mutableStateOf(prefs.clipboardSync) }
         val pc = Bridge.linked.value
+        val running = Bridge.running.value
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -251,13 +243,21 @@ class MainActivity : ComponentActivity() {
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(20.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        LinkIndicator(Build.MODEL ?: "Phone", pc)
+                        LinkIndicator(Build.MODEL ?: "Phone", pc, running)
                         Text(
-                            if (pc != null) "Linked. Anything you share to Phone Bridge arrives on your PC." else "Not paired yet. On your PC, open Phone Bridge and choose Pair new device, then tap Pair below.",
+                            when {
+                                !running -> "Phone Bridge is off. Your PC cannot reach this phone."
+                                pc != null -> "Linked. Anything you share to Phone Bridge arrives on your PC."
+                                else -> "Not paired yet. On your PC, open Phone Bridge and choose Pair new device, then tap Pair below."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (pc == null) Button(onClick = { startActivity(Intent(this@MainActivity, ScanActivity::class.java)) }) { Text("Pair: scan QR from PC") }
+                        if (!running) {
+                            Button(onClick = { setBridgeEnabled(this@MainActivity, true) }) { Text("Turn on") }
+                        } else if (pc == null) {
+                            Button(onClick = { startActivity(Intent(this@MainActivity, ScanActivity::class.java)) }) { Text("Pair: scan QR from PC") }
+                        }
                     }
                 }
                 item {
@@ -295,17 +295,39 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun SettingsScreen(onBack: () -> Unit) {
         var clipOn by remember { mutableStateOf(prefs.clipboardSync) }
+        var sens by remember { mutableStateOf(prefs.sendSensitive) }
         var auto by remember { mutableStateOf(prefs.autoAccept) }
+        var tree by remember { mutableStateOf(prefs.saveTree) }
         val peers = remember { Bridge.node?.peers().orEmpty() }
+        val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+            if (uri != null) {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                prefs.saveTree?.let { old -> runCatching { contentResolver.releasePersistableUriPermission(old, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
+                prefs.saveTree = uri
+                tree = uri
+            }
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
                     title = { Text("Settings") },
-                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
+                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 )
             },
         ) { pad ->
             LazyColumn(Modifier.padding(pad)) {
+                item { Section("Appearance") }
+                item {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        listOf("System", "Light", "Dark").forEachIndexed { i, label ->
+                            SegmentedButton(
+                                selected = ThemeChoice.mode.intValue == i,
+                                onClick = { ThemeChoice.mode.intValue = i; prefs.theme = i },
+                                shape = SegmentedButtonDefaults.itemShape(i, 3),
+                            ) { Text(label) }
+                        }
+                    }
+                }
                 item { Section("Clipboard") }
                 item {
                     ListItem(
@@ -316,14 +338,14 @@ class MainActivity : ComponentActivity() {
                 }
                 item {
                     ListItem(
-                        headlineContent = { Text("Skip passwords and codes") },
-                        supportingContent = { Text("Text marked sensitive by its app never leaves this phone") },
-                        trailingContent = { Switch(true, {}, enabled = false) },
+                        headlineContent = { Text("Also send passwords and codes") },
+                        supportingContent = { Text("Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC") },
+                        trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clipOn) },
                     )
                 }
                 item {
                     Text(
-                        "Android only lets apps read the clipboard while they are open. To send a copy from anywhere, use the Send clipboard tile or the notification button.",
+                        "Android only lets apps read the clipboard while they are open. To send a copy from anywhere, long-press the Phone Bridge tile in Quick Settings.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -337,7 +359,43 @@ class MainActivity : ComponentActivity() {
                         trailingContent = { Switch(auto, { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) }) },
                     )
                 }
-                item { ListItem(headlineContent = { Text("Save files to") }, supportingContent = { Text("Downloads/Phone Bridge") }) }
+                item {
+                    ListItem(
+                        headlineContent = { Text("Save files to") },
+                        supportingContent = { Text(treeLabel(tree)) },
+                        trailingContent = {
+                            if (tree != null) {
+                                TextButton(onClick = {
+                                    tree?.let { runCatching { contentResolver.releasePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
+                                    prefs.saveTree = null
+                                    tree = null
+                                }) { Text("Reset") }
+                            }
+                        },
+                        modifier = Modifier.clickable { pickFolder.launch(null) },
+                    )
+                }
+                item { Section("Background") }
+                item {
+                    ListItem(
+                        headlineContent = { Text("Phone Bridge") },
+                        supportingContent = { Text(if (Bridge.running.value) "On: your PC can reach this phone. Quick Settings tile turns it off" else "Off: your PC cannot reach this phone") },
+                        trailingContent = { Switch(Bridge.running.value, { setBridgeEnabled(this@MainActivity, it) }) },
+                    )
+                }
+                item {
+                    ListItem(
+                        headlineContent = { Text("Hide the status notification") },
+                        supportingContent = { Text("Android needs it while Phone Bridge runs in the background. You can turn it off for this app; Phone Bridge keeps working") },
+                        modifier = Modifier.clickable {
+                            startActivity(
+                                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                                    .putExtra(Settings.EXTRA_CHANNEL_ID, "status"),
+                            )
+                        },
+                    )
+                }
                 item { Section("Devices") }
                 items(peers) { p ->
                     ListItem(
@@ -347,6 +405,7 @@ class MainActivity : ComponentActivity() {
                             TextButton(onClick = {
                                 Bridge.node?.unpair(p.id)
                                 Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
+                                PbService.refresh(this@MainActivity)
                                 onBack()
                             }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
                         },
@@ -359,16 +418,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Stop Phone Bridge") },
-                        supportingContent = { Text("Your phone stops being reachable until you open the app again") },
-                        modifier = Modifier.clickable {
-                            startService(Intent(this@MainActivity, PbService::class.java).setAction(PbService.ACTION_STOP))
-                            finish()
-                        },
-                    )
-                }
             }
         }
     }
@@ -381,7 +430,7 @@ private fun Section(title: String) {
 
 /** Phone and PC joined by the link line: the design's signature element. */
 @Composable
-private fun LinkIndicator(phone: String, pc: String?) {
+private fun LinkIndicator(phone: String, pc: String?, running: Boolean) {
     val badge = MaterialTheme.colorScheme.primaryContainer
     val onBadge = MaterialTheme.colorScheme.onPrimaryContainer
     val line = MaterialTheme.colorScheme.outline
@@ -390,7 +439,7 @@ private fun LinkIndicator(phone: String, pc: String?) {
         Box(Modifier.weight(1f).height(44.dp), contentAlignment = Alignment.Center) {
             Canvas(Modifier.fillMaxWidth().height(2.dp).padding(horizontal = 8.dp)) {
                 drawLine(
-                    if (pc != null) line else line.copy(alpha = 0.35f),
+                    if (pc != null && running) line else line.copy(alpha = 0.35f),
                     Offset(0f, size.height / 2), Offset(size.width, size.height / 2),
                     strokeWidth = 4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 10f)),
                 )
@@ -405,10 +454,10 @@ private fun DeviceBadge(name: String, bg: Color, fg: Color, isPhone: Boolean) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(bg), contentAlignment = Alignment.Center) {
             Canvas(Modifier.size(if (isPhone) 14.dp else 20.dp, if (isPhone) 22.dp else 14.dp)) {
-                drawRoundRect(fg, cornerRadius = CornerRadius(6f, 6f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f))
+                drawRoundRect(fg, cornerRadius = CornerRadius(6f, 6f), style = Stroke(width = 4f))
             }
         }
-        Text(name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(110.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Text(name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(110.dp), textAlign = TextAlign.Center)
     }
 }
 

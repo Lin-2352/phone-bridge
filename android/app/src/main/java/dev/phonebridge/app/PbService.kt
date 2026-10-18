@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.os.PersistableBundle
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
@@ -54,6 +55,8 @@ object Bridge {
     /** Compose-observable state for the Home screen. */
     val recent = mutableStateListOf<RecentItem>()
     val linked = mutableStateOf<String?>(null)
+    /** True while the service (and node) runs. */
+    val running = mutableStateOf(false)
     /** Long-lived scope for sends started from share/tile entry points. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val pendingClips = java.util.concurrent.ConcurrentHashMap<Int, Pair<String, Boolean>>()
@@ -80,7 +83,8 @@ object NativeInit {
 
 /**
  * Keeps the node reachable while the UI is closed. `connectedDevice` FGS type:
- * no 6-hour limit; one low-priority ongoing notification with a Stop action.
+ * no 6-hour limit. Android requires an ongoing notification; it is minimal
+ * priority, silent and has no buttons (the Quick Settings tile turns us off).
  * Idle cost is network-driven (no polling): events arrive via [EventListener].
  */
 class PbService : Service() {
@@ -94,16 +98,19 @@ class PbService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
-        val ongoing = statusNotification("Ready")
-        startForeground(ONGOING_ID, ongoing, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        Bridge.running.value = true
+        refreshTile(this)
         scope.launch { start() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            Prefs(this).enabled = false
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_REFRESH) updateStatus()
         return START_STICKY
     }
 
@@ -113,6 +120,8 @@ class PbService : Service() {
         runBlocking { n?.shutdown() }
         n?.destroy()
         scope.cancel()
+        Bridge.running.value = false
+        refreshTile(this)
         super.onDestroy()
     }
 
@@ -134,6 +143,7 @@ class PbService : Service() {
             n.setAutoAccept(prefs.autoAccept)
             Bridge.node = n
             Bridge.linked.value = n.peers().firstOrNull()?.name
+            updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
         } catch (e: Throwable) {
             Log.e(TAG, "SERVICE failed to start: $e")
@@ -146,11 +156,12 @@ class PbService : Service() {
             is PbEvent.RemoteClipboard -> {
                 // Universal Clipboard: writing the clipboard is allowed in the background.
                 Prefs(this).lastClip = e.text.hashCode()
-                writeClipboard(e.text, sensitive = false)
-                Log.i(TAG, "CLIPSYNC received from ${e.peerName}")
-                Bridge.addRecent(RecentItem(e.text.take(80), "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+                writeClipboard(e.text, e.sensitive)
+                Log.i(TAG, "CLIPSYNC received from ${e.peerName}${if (e.sensitive) " (sensitive)" else ""}")
+                val title = if (e.sensitive) "Password or code" else e.text.take(80)
+                Bridge.addRecent(RecentItem(title, "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
             }
-            is PbEvent.FileReceived -> saveToDownloads(e)
+            is PbEvent.FileReceived -> saveReceived(e)
             is PbEvent.SharedText -> {
                 if (e.isLink) notifyLink(e.peerName, e.text) else writeClipboard(e.text, false)
                 Bridge.addRecent(RecentItem(e.text.take(80), if (e.isLink) "Link from ${e.peerName}" else "Text from ${e.peerName}", if (e.isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
@@ -171,10 +182,32 @@ class PbService : Service() {
         android.os.Handler(mainLooper).post { getSystemService(ClipboardManager::class.java).setPrimaryClip(clip) }
     }
 
-    /** Move a received file into Downloads/Phone Bridge via MediaStore (no storage permission needed). */
-    private fun saveToDownloads(e: PbEvent.FileReceived) {
+    /** Into the folder the user picked, else Downloads/Phone Bridge. */
+    private fun saveReceived(e: PbEvent.FileReceived) {
         val src = File(e.path)
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(src.extension.lowercase()) ?: "application/octet-stream"
+        val tree = Prefs(this).saveTree
+        if (tree != null) {
+            try {
+                val dir = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+                val uri = DocumentsContract.createDocument(contentResolver, dir, mime, e.name) ?: error("could not create file")
+                contentResolver.openOutputStream(uri)!!.use { out -> src.inputStream().use { it.copyTo(out, 256 * 1024) } }
+                src.delete()
+                val label = treeLabel(tree)
+                Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName} to $label")
+                Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to $label", RecentItem.Kind.File, uri))
+                notifyFile(e.peerName, e.name, e.size, uri, mime, label)
+                return
+            } catch (t: Throwable) {
+                // Folder removed or access revoked: fall back to Downloads.
+                Log.e(TAG, "FILE save to chosen folder failed: $t")
+            }
+        }
+        saveToDownloads(e, src, mime)
+    }
+
+    /** Move a received file into Downloads/Phone Bridge via MediaStore (no storage permission needed). */
+    private fun saveToDownloads(e: PbEvent.FileReceived, src: File, mime: String) {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, e.name)
             put(MediaStore.Downloads.MIME_TYPE, mime)
@@ -192,14 +225,14 @@ class PbService : Service() {
             src.delete()
             Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName}")
             Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to Downloads", RecentItem.Kind.File, uri))
-            notifyFile(e.peerName, e.name, e.size, uri, mime)
+            notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/Phone Bridge")
         } catch (t: Throwable) {
             contentResolver.delete(uri, null, null)
             notifySimple("Could not save ${e.name}", t.message ?: "")
         }
     }
 
-    private fun notifyFile(from: String, name: String, size: ULong, uri: Uri, mime: String) {
+    private fun notifyFile(from: String, name: String, size: ULong, uri: Uri, mime: String, folder: String) {
         val id = nextId.incrementAndGet()
         val open = PendingIntent.getActivity(
             this, id,
@@ -210,7 +243,7 @@ class PbService : Service() {
         val n = Notification.Builder(this, CH_EVENTS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("$from sent $name")
-            .setContentText("%.1f MB, saved to Downloads/Phone Bridge".format(mb))
+            .setContentText("%.1f MB, saved to %s".format(mb, folder))
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()
@@ -281,23 +314,32 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(nextId.incrementAndGet(), n)
     }
 
-    private fun statusNotification(text: String): Notification {
-        val stop = PendingIntent.getService(this, 0, Intent(this, PbService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
+    /** One quiet line: who we are linked with. No buttons; tap opens the app. */
+    private fun statusNotification(): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val sync = PendingIntent.getActivity(this, 1, Intent(this, ClipSyncActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE)
+        val peer = Bridge.linked.value
         return Notification.Builder(this, CH_STATUS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
-            .setContentTitle("Phone Bridge")
-            .setContentText(text)
+            .setContentTitle(if (peer != null) "Linked with $peer" else "Not paired yet")
             .setOngoing(true)
+            .setShowWhen(false)
             .setContentIntent(open)
-            .addAction(Notification.Action.Builder(null, "Send clipboard", sync).build())
-            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .build()
+    }
+
+    private fun updateStatus() {
+        getSystemService(NotificationManager::class.java).notify(ONGOING_ID, statusNotification())
+        refreshTile(this)
     }
 
     companion object {
         const val ACTION_STOP = "dev.phonebridge.app.STOP"
+        private const val ACTION_REFRESH = "dev.phonebridge.app.REFRESH"
+
+        /** Pairing changed: refresh the status line and the tile. */
+        fun refresh(ctx: Context) {
+            if (Bridge.running.value) ctx.startService(Intent(ctx, PbService::class.java).setAction(ACTION_REFRESH))
+        }
     }
 }
 

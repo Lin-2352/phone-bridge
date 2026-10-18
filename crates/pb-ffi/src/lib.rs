@@ -75,6 +75,8 @@ pub enum PbEvent {
     RemoteClipboard {
         peer_name: String,
         text: String,
+        /// Marked private on the PC: keep it out of history, hide previews.
+        sensitive: bool,
     },
     /// A file finished arriving; Kotlin moves it into Downloads/Phone Bridge.
     FileReceived {
@@ -228,6 +230,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         PbEvent::RemoteClipboard {
                             peer_name: name.clone(),
                             text: u.text,
+                            sensitive: u.sensitive,
                         },
                     );
                 }
@@ -451,7 +454,7 @@ impl PbNode {
 
     /// Universal Clipboard, phone -> PC. Skips text that just arrived from
     /// the PC so the two clipboards never bounce the same text.
-    pub async fn sync_clipboard(&self, text: String) -> Result<(), PbError> {
+    pub async fn sync_clipboard(&self, text: String, sensitive: bool) -> Result<(), PbError> {
         if !self
             .shared
             .clipboard_sync
@@ -476,6 +479,7 @@ impl PbNode {
                 pb_protocol::control::ClipboardUpdate {
                     text: text.clone(),
                     hash: h.to_vec(),
+                    sensitive,
                 },
             ))
             .await

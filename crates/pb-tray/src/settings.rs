@@ -8,8 +8,8 @@ pub struct Settings {
     /// Share what is copied on either device automatically. Off by default:
     /// clipboard content is sensitive, so syncing is the user's choice.
     pub universal_clipboard: bool,
-    /// Never sync content a password manager marked private (always on; kept
-    /// as a setting so the UI can show it, but the code ignores `false`).
+    /// Never sync content a password manager marked private. On by default;
+    /// when off it is sent flagged sensitive (kept out of history on arrival).
     pub skip_private: bool,
     /// Keep received clipboard items in Win+V history / cloud clipboard.
     pub keep_in_history: bool,
@@ -58,6 +58,7 @@ impl Settings {
                 "universal_clipboard" => {
                     s.universal_clipboard = parse_bool(v).unwrap_or(s.universal_clipboard)
                 }
+                "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
                 "save_dir" if !v.is_empty() => s.save_dir = PathBuf::from(v),
@@ -69,8 +70,9 @@ impl Settings {
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let text = format!(
-            "universal_clipboard={}\nkeep_in_history={}\nauto_accept={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\nsave_dir={}\n",
             self.universal_clipboard,
+            self.skip_private,
             self.keep_in_history,
             self.auto_accept,
             self.save_dir.display()

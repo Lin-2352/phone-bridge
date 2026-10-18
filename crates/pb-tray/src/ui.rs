@@ -17,7 +17,7 @@ use windows::{
         UI::{
             Shell::{
                 Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
-                NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+                NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
             },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
@@ -26,8 +26,7 @@ use windows::{
                 TranslateMessage, HWND_MESSAGE, IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK,
                 MB_SETFOREGROUND, MB_YESNO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
                 MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE,
-                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
-                WNDCLASSW,
+                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WNDCLASSW,
             },
         },
     },
@@ -59,8 +58,12 @@ const ID_TOGGLE_CLIP: usize = 5;
 const ID_TOGGLE_AUTO: usize = 6;
 const ID_OPEN_FOLDER: usize = 7;
 const ID_SENDTO: usize = 8;
+const ID_TOGGLE_PRIVATE: usize = 9;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
+/// Version-4 tray callbacks: left click / keyboard Enter on the icon.
+const NIN_SELECT: u32 = 0x0400;
+const NIN_KEYSELECT: u32 = 0x0401;
 const TIMER_CLIP: usize = 7;
 
 /// Clipboard sequence number right after our own write, so the listener
@@ -68,6 +71,29 @@ const TIMER_CLIP: usize = 7;
 static OWN_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Last received file, opened when the user clicks the notification.
 static LAST_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+/// Last received link; when set, a notification click opens it instead.
+static LAST_LINK: Mutex<Option<String>> = Mutex::new(None);
+
+/// Open a received link in the default browser. Web links only: anything else
+/// (file:, ms-settings:, custom schemes) could launch arbitrary handlers.
+fn open_link(url: &str) {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return;
+    }
+    let wide_url = wide(url);
+    // SAFETY: valid NUL-terminated strings for the duration of the call.
+    unsafe {
+        windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide_url.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        );
+    }
+}
 
 fn clipboard_seq() -> u32 {
     // SAFETY: plain query with no arguments.
@@ -397,13 +423,23 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 &format!("Could not set clipboard: {e}"),
             ),
         },
-        UiEvent::RemoteClipboard { from, text } => {
+        UiEvent::RemoteClipboard {
+            from,
+            text,
+            sensitive,
+        } => {
             let keep = st
                 .settings
                 .lock()
                 .map(|s| s.keep_in_history)
                 .unwrap_or(false);
-            match set_clipboard_own(hwnd, &text, !keep) {
+            // Sensitive text never enters Win+V history, whatever the setting.
+            match set_clipboard_own(hwnd, &text, sensitive || !keep) {
+                Ok(()) if sensitive => balloon(
+                    hwnd,
+                    &format!("Copied on {from}"),
+                    "Password or code, ready to paste",
+                ),
                 Ok(()) => balloon(hwnd, &format!("Copied on {from}"), "Ready to paste"),
                 Err(e) => balloon(
                     hwnd,
@@ -412,6 +448,18 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 ),
             }
         }
+        UiEvent::Link { from, url } => {
+            if let Ok(mut l) = LAST_LINK.lock() {
+                *l = Some(url.clone());
+            }
+            note_activity(&format!("Last: link from {from}"));
+            let shown: String = url.chars().take(120).collect();
+            balloon(
+                hwnd,
+                &format!("Link from {from}"),
+                &format!("{shown}\nClick to open."),
+            );
+        }
         UiEvent::FileReceived { from, path, size } => {
             let name = path
                 .file_name()
@@ -419,6 +467,9 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 .unwrap_or_default();
             if let Ok(mut l) = LAST_FILE.lock() {
                 *l = Some(path.clone());
+            }
+            if let Ok(mut l) = LAST_LINK.lock() {
+                *l = None;
             }
             let mb = size as f64 / 1_048_576.0;
             note_activity(&format!("Last: {name} received"));
@@ -482,11 +533,11 @@ fn show_menu(hwnd: HWND, st: &State) {
             w!("Show in Explorer \u{201c}Send to\u{201d} menu"),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let (clip_on, auto_on) = st
+        let (clip_on, auto_on, private_on) = st
             .settings
             .lock()
-            .map(|s| (s.universal_clipboard, s.auto_accept))
-            .unwrap_or((false, true));
+            .map(|s| (s.universal_clipboard, s.auto_accept, !s.skip_private))
+            .unwrap_or((false, true, false));
         let check = |on: bool| {
             if on {
                 MF_STRING | MF_CHECKED
@@ -499,6 +550,16 @@ fn show_menu(hwnd: HWND, st: &State) {
             check(clip_on),
             ID_TOGGLE_CLIP,
             w!("Universal Clipboard"),
+        );
+        let _ = AppendMenuW(
+            menu,
+            if clip_on {
+                check(private_on)
+            } else {
+                check(private_on) | MF_GRAYED
+            },
+            ID_TOGGLE_PRIVATE,
+            w!("Also send passwords and codes"),
         );
         let _ = AppendMenuW(
             menu,
@@ -616,6 +677,13 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 },
             );
         }
+        ID_TOGGLE_PRIVATE => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.skip_private = !s.skip_private);
+            save_settings(st);
+        }
         ID_TOGGLE_AUTO => {
             let _ = st
                 .settings
@@ -658,12 +726,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     match msg {
         WM_TRAY => {
             let ev = (lparam.0 & 0xffff) as u32;
-            if ev == WM_LBUTTONUP {
+            // Version 4: exactly one event per gesture, so a click opens one surface.
+            if ev == NIN_SELECT || ev == NIN_KEYSELECT {
                 open_flyout(hwnd, st);
-            } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
+            } else if ev == WM_CONTEXTMENU {
+                crate::flyout::close();
                 show_menu(hwnd, st);
             } else if ev == NIN_BALLOONUSERCLICK {
-                if let Some(p) = LAST_FILE.lock().ok().and_then(|g| g.clone()) {
+                if let Some(u) = LAST_LINK.lock().ok().and_then(|mut g| g.take()) {
+                    open_link(&u);
+                } else if let Some(p) = LAST_FILE.lock().ok().and_then(|g| g.clone()) {
                     reveal(&p);
                 }
             }
@@ -707,8 +779,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or(false)
             {
                 // Private (password manager) content reads as Excluded and is skipped.
-                if let Ok(ClipText::Text(t)) = clipboard::get_text(Some(hwnd)) {
-                    let _ = st.cmds.send(Cmd::ClipboardChanged(t));
+                // Passing it along is the user's choice ("Send passwords and codes").
+                let skip = st.settings.lock().map(|s| s.skip_private).unwrap_or(true);
+                if let Ok((ClipText::Text(text), sensitive)) =
+                    clipboard::get_text_marked(Some(hwnd))
+                {
+                    if !(sensitive && skip) {
+                        let _ = st.cmds.send(Cmd::ClipboardChanged { text, sensitive });
+                    }
                 }
             }
             LRESULT(0)
@@ -788,6 +866,8 @@ pub fn create(
         .or_else(|_| LoadIconW(None, IDI_APPLICATION))?;
         copy_into(&mut nid.szTip, "Phone Bridge (starting)");
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.
         let _ = windows::Win32::System::DataExchange::AddClipboardFormatListener(hwnd);
         Ok(hwnd.0 as isize)
