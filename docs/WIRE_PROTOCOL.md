@@ -51,7 +51,13 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 ### Local second-instance requests (Windows only)
 `pb-tray --send <files>` / `--pair` / `--send-clipboard` reach the running tray over the named pipe `\\.\pipe\PhoneBridgeTray-<user>` (remote clients rejected; default ACL: owner write). Lines: verb, then one path per line.
 
-Further messages (input mode, camera session) are added with their features.
+### Shared mouse and keyboard
+1. controller -> `InputStart { id }` (control tag 9); receiver -> `OfferReply { id, accept }`. The PC accepts only if "Let my phone control this PC" is on; the phone only while its accessibility service ("Phone Bridge control") is enabled.
+2. Controller opens one unidirectional stream of fixed 8-byte records: `kind u8 | flags u8 | seq u16 | a i16 | b i16` (little-endian). Kinds: 0 move (dx, dy), 1 button (button, flags&1 = pressed), 2 wheel (dx, dy in 1/120 notches), 3 key (PC set-1 scan code, 0xE0xx extended), 4 character (one UTF-16 unit).
+3. Reliable and ordered (not datagrams): a lost key-up or click would be worse than any latency on a local link. Moves queued faster than the link drains are summed into one record.
+4. The session ends when the stream ends; the receiver closes. Whatever is still pressed is released on the receiver.
+
+Further messages (camera session) are added with their features.
 
 ## Input datagram (fixed 8 bytes, little-endian)
 ```

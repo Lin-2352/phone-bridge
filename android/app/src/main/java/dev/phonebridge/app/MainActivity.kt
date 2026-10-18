@@ -368,6 +368,21 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.clickable { pickFolder.launch(null) },
                     )
                 }
+                item { Section("Control from PC") }
+                item {
+                    val on = ControlService.instance != null
+                    ListItem(
+                        headlineContent = { Text("Let my PC control this phone") },
+                        supportingContent = {
+                            Text(
+                                if (on) "On. Press Ctrl+Alt+P on your PC to use its mouse and keyboard here, and again to return"
+                                else "Off. Turn on \u201cPhone Bridge control\u201d in Accessibility settings",
+                            )
+                        },
+                        trailingContent = { Text(if (on) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
+                        modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                    )
+                }
                 item { Section("Background") }
                 item {
                     ListItem(

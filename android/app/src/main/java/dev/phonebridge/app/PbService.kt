@@ -141,6 +141,7 @@ class PbService : Service() {
             val prefs = Prefs(this)
             n.setClipboardSync(prefs.clipboardSync)
             n.setAutoAccept(prefs.autoAccept)
+            ControlService.instance?.let { n.setInputListener(it) }
             Bridge.node = n
             Bridge.linked.value = n.peers().firstOrNull()?.name
             updateStatus()

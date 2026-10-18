@@ -120,6 +120,17 @@ pub trait EventListener: Send + Sync {
 
 type Events = Arc<dyn EventListener>;
 
+/// PC -> phone control: implemented by the Kotlin accessibility service,
+/// which exists only while the user has it enabled. Called on a Rust thread.
+#[uniffi::export(with_foreign)]
+pub trait InputListener: Send + Sync {
+    /// `kind`: 0 move (a=dx, b=dy), 1 button (a=button), 2 wheel (a=dx, b=dy),
+    /// 3 key (a=scan code), 4 character (a=UTF-16 unit).
+    fn on_input(&self, kind: u8, a: i32, b: i32, pressed: bool);
+    /// Control started (`active`) or ended, with the controlling device.
+    fn on_control(&self, active: bool, peer_name: String);
+}
+
 fn push(events: &Events, e: PbEvent) {
     events.on_event(e);
 }
@@ -139,6 +150,7 @@ struct Shared {
     clipboard_sync: std::sync::atomic::AtomicBool,
     pending: Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<bool>>>,
     last_remote_clip: Mutex<[u8; 32]>,
+    input: Mutex<Option<Arc<dyn InputListener>>>,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -174,6 +186,7 @@ pub async fn start_node(
         clipboard_sync: std::sync::atomic::AtomicBool::new(false),
         pending: Mutex::default(),
         last_remote_clip: Mutex::new([0; 32]),
+        input: Mutex::new(None),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -234,6 +247,39 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         },
                     );
                 }
+            }
+            Ok(Some(ControlMsg::InputStart(start))) => {
+                // Accept only while the accessibility service is running.
+                let listener = sh.input.lock().ok().and_then(|g| g.clone());
+                if let Some(l) = &listener {
+                    l.on_control(true, name.clone());
+                }
+                let l2 = listener.clone();
+                let _ = pb_transport::input::receive_input(
+                    &mut s,
+                    start,
+                    listener.is_some(),
+                    move |e| {
+                        use pb_protocol::InputEvent as E;
+                        let Some(l) = &l2 else { return };
+                        match e {
+                            E::MouseMove { dx, dy } => l.on_input(0, dx.into(), dy.into(), false),
+                            E::MouseButton { button, pressed } => {
+                                l.on_input(1, button.into(), 0, pressed)
+                            }
+                            E::Wheel { dx, dy } => l.on_input(2, dx.into(), dy.into(), false),
+                            E::Key { scancode, pressed } => {
+                                l.on_input(3, scancode.into(), 0, pressed)
+                            }
+                            E::Char { unit } => l.on_input(4, unit.into(), 0, false),
+                        }
+                    },
+                )
+                .await;
+                if let Some(l) = &listener {
+                    l.on_control(false, name.clone());
+                }
+                break "input done".to_owned();
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
                 let accept = if sh.auto_accept.load(std::sync::atomic::Ordering::Relaxed) {
@@ -487,6 +533,13 @@ impl PbNode {
             s.finish().await;
         }
         Ok(())
+    }
+
+    /// Register (service connected) or clear (service gone) the PC-control handler.
+    pub fn set_input_listener(&self, listener: Option<Arc<dyn InputListener>>) {
+        if let Ok(mut g) = self.shared.input.lock() {
+            *g = listener;
+        }
     }
 
     pub fn set_auto_accept(&self, on: bool) {
