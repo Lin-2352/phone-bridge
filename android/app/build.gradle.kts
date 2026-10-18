@@ -24,4 +24,10 @@ android {
 dependencies {
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    // QR scanning: CameraX preview + on-device ZXing decoding (Apache-2.0, no Play Services).
+    implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("com.google.zxing:core:3.5.3")
 }

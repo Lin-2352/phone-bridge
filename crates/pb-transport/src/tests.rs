@@ -163,3 +163,32 @@ async fn revoked_peer_can_no_longer_connect() {
     let err = phone.connect(&pc.peer_id()).await.err();
     assert!(matches!(err, Some(Error::NotPaired)), "{err:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rotating_codes_invalidate_the_previous_one_and_closing_kills_the_current() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let old = pc
+        .open_pairing_for(loopback(&pc), Duration::from_secs(35))
+        .unwrap();
+    let new = pc
+        .open_pairing_for(loopback(&pc), Duration::from_secs(35))
+        .unwrap();
+    assert_ne!(old.token, new.token);
+    assert!(
+        phone.join(&old).await.is_err(),
+        "rotated-out code must be dead"
+    );
+    pc.close_pairing();
+    assert!(
+        phone.join(&new).await.is_err(),
+        "closing the window must kill the code"
+    );
+    let fresh = pc
+        .open_pairing_for(loopback(&pc), Duration::from_secs(35))
+        .unwrap();
+    let joining = phone.join(&fresh).await.unwrap();
+    let pending = pc_ev.pairings.recv().await.unwrap();
+    let (h, j) = tokio::join!(pending.decide(true), joining.decide(true));
+    assert!(h.is_ok() && j.is_ok());
+}

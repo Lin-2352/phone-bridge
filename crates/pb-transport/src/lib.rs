@@ -58,7 +58,7 @@ impl fmt::Display for Error {
             Self::NotPaired => f.write_str("peer is not paired with this device"),
             Self::UnknownPeer => f.write_str("no such paired peer"),
             Self::Pairing(e) => write!(f, "pairing failed: {e}"),
-            Self::Rejected => f.write_str("pairing was not confirmed"),
+            Self::Rejected => f.write_str("pairing refused: the code expired or was already used, or the other device declined"),
             Self::Timeout => f.write_str("timed out"),
             Self::Closed => f.write_str("connection closed"),
         }
@@ -250,7 +250,17 @@ impl Node {
     /// Open a pairing window and return the code to show. Replaces any
     /// earlier code. Valid for [`pairing::PAIRING_TTL`], single use.
     pub fn open_pairing(&self, addrs: Vec<String>) -> Result<PairingCode, Error> {
-        let ticket = Ticket::new(Instant::now())?;
+        self.open_pairing_for(addrs, pairing::PAIRING_TTL)
+    }
+
+    /// Like [`Self::open_pairing`] with a shorter lifetime, for rotating
+    /// codes. Issuing a new code invalidates the previous one immediately.
+    pub fn open_pairing_for(
+        &self,
+        addrs: Vec<String>,
+        ttl: Duration,
+    ) -> Result<PairingCode, Error> {
+        let ticket = Ticket::with_ttl(Instant::now(), ttl)?;
         let code = PairingCode {
             host_id: *self.inner.me.as_bytes(),
             token: ticket.token(),
@@ -278,7 +288,12 @@ impl Node {
             self.addrs(),
         )?;
         write_frame(&mut send, &Pair::from(PairMsg::Start(start))).await?;
-        let nonce = match recv.next::<Pair>().await?.and_then(|p| p.msg) {
+        // A refused code makes the host close the connection (code 400).
+        let first = recv
+            .next::<Pair>()
+            .await
+            .map_err(|e| closed_by_peer(&conn, e))?;
+        let nonce = match first.and_then(|p| p.msg) {
             Some(PairMsg::Nonce(n)) => n,
             _ => {
                 conn.close(CLOSE_PAIR_FAILED.into(), b"pairing refused");

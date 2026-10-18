@@ -93,8 +93,12 @@ class MainActivity : Activity() {
         }
         status = TextView(this).apply { textSize = 13f }
         peersView = TextView(this).apply { textSize = 15f; setPadding(0, 24, 0, 24) }
+        val scanBtn = Button(this).apply {
+            text = "Pair: scan QR from PC"
+            setOnClickListener { startActivity(Intent(context, ScanActivity::class.java)) }
+        }
         val pairBtn = Button(this).apply {
-            text = "Pair: paste code from PC"
+            text = "Pair: paste code instead"
             setOnClickListener {
                 val code = clipboard().primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
                 if (code.isNullOrBlank()) say("Copy the code shown by the PC first") else join(code)
@@ -126,7 +130,7 @@ class MainActivity : Activity() {
             }
         }
         log = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        listOf(status, peersView, pairBtn, sasPanel, sendBtn, stopBtn, log).forEach(root::addView)
+        listOf(status, peersView, scanBtn, pairBtn, sasPanel, sendBtn, stopBtn, log).forEach(root::addView)
         setContentView(ScrollView(this).apply { addView(root) })
     }
 

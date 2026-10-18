@@ -10,6 +10,10 @@
 
 #[cfg(windows)]
 mod core;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod qr;
+#[cfg(windows)]
+mod qr_window;
 #[cfg(windows)]
 mod ui;
 

@@ -15,10 +15,22 @@ use pb_protocol::control::{ClipboardText, ControlMsg, MAX_CLIPBOARD_TEXT};
 use pb_transport::{Node, NodeConfig, PendingPairing, Session, SharedStore};
 use tokio::sync::mpsc;
 
+/// Rotating pairing codes, like an authenticator: a fresh code every
+/// `ROTATE`, each valid a little longer (scan-to-connect grace), and the
+/// whole pairing window closes after `ROUNDS` codes.
+pub const ROTATE: std::time::Duration = std::time::Duration::from_secs(30);
+const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(35);
+const ROUNDS: u32 = 4;
+
 pub enum Cmd {
     Pair,
+    /// The user closed the QR window: kill the current code now.
+    CancelPair,
     SendClipboard(String),
-    Decide { id: u64, accept: bool },
+    Decide {
+        id: u64,
+        accept: bool,
+    },
     Unpair(PeerId),
 }
 
@@ -26,7 +38,14 @@ pub enum UiEvent {
     Ready {
         fingerprint: String,
     },
-    Code(String),
+    /// New QR code; `closes_in` is the time left for the whole pairing window.
+    Code {
+        code: String,
+        refresh_in: std::time::Duration,
+        closes_in: std::time::Duration,
+    },
+    /// Pairing window ended without anyone joining.
+    PairingClosed,
     Sas {
         id: u64,
         peer_name: String,
@@ -116,14 +135,27 @@ pub async fn run(
 
     let mut pending: HashMap<u64, PendingPairing> = HashMap::new();
     let mut next_id = 0u64;
+    let mut rotation: Option<tokio::task::JoinHandle<()>> = None;
     if opts.pair_on_start {
-        open_pairing(&node, &log, &*ui);
+        rotation = Some(start_rotation(&node, &log, &ui));
     }
     loop {
         tokio::select! {
             cmd = cmds.recv() => match cmd {
                 None => break,
-                Some(Cmd::Pair) => open_pairing(&node, &log, &*ui),
+                Some(Cmd::Pair) => {
+                    if let Some(r) = rotation.take() {
+                        r.abort();
+                    }
+                    rotation = Some(start_rotation(&node, &log, &ui));
+                }
+                Some(Cmd::CancelPair) => {
+                    if let Some(r) = rotation.take() {
+                        r.abort();
+                        node.close_pairing();
+                        log.line("PAIRING window closed by user; code revoked");
+                    }
+                }
                 Some(Cmd::Decide { id, accept }) => {
                     if let Some(p) = pending.remove(&id) {
                         let (node, peers, log, ui) = (node.clone(), peers.clone(), log.clone(), ui.clone());
@@ -181,6 +213,11 @@ pub async fn run(
                 }
             },
             Some(p) = ev.pairings.recv() => {
+                // Someone joined with a valid code: stop issuing new ones.
+                if let Some(r) = rotation.take() {
+                    r.abort();
+                }
+                node.close_pairing();
                 next_id += 1;
                 log.line(&format!("SAS={} peer=\"{}\"", p.sas, p.peer_name));
                 ui(UiEvent::Sas { id: next_id, peer_name: p.peer_name.clone(), sas: p.sas.clone() });
@@ -195,14 +232,34 @@ pub async fn run(
     Ok(())
 }
 
-fn open_pairing(node: &Node, log: &Log, ui: &(impl Fn(UiEvent) + ?Sized)) {
-    match node.open_pairing(node.addrs()) {
-        Ok(code) => {
-            log.line(&format!("CODE={code}"));
-            ui(UiEvent::Code(code.to_string()));
+fn start_rotation(
+    node: &Node,
+    log: &Log,
+    ui: &Arc<impl Fn(UiEvent) + Send + Sync + 'static>,
+) -> tokio::task::JoinHandle<()> {
+    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+    tokio::spawn(async move {
+        for round in 0..ROUNDS {
+            match node.open_pairing_for(node.addrs(), CODE_TTL) {
+                Ok(code) => {
+                    log.line(&format!("CODE round={} {code}", round + 1));
+                    ui(UiEvent::Code {
+                        code: code.to_string(),
+                        refresh_in: ROTATE,
+                        closes_in: ROTATE * (ROUNDS - round),
+                    });
+                }
+                Err(e) => {
+                    ui(UiEvent::Info(format!("Could not start pairing: {e}")));
+                    return;
+                }
+            }
+            tokio::time::sleep(ROTATE).await;
         }
-        Err(e) => ui(UiEvent::Info(format!("Could not start pairing: {e}"))),
-    }
+        node.close_pairing();
+        log.line("PAIRING window expired; code revoked");
+        ui(UiEvent::PairingClosed);
+    })
 }
 
 async fn pump(mut s: Session, log: Log, ui: Arc<impl Fn(UiEvent) + Send + Sync + 'static>) {

@@ -144,15 +144,30 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         UiEvent::Ready { fingerprint } => {
             set_tip(hwnd, &format!("Phone Bridge ({})", &fingerprint[..9]))
         }
-        UiEvent::Code(code) => {
-            // Until QR (milestone 4): copy the code so it can be sent to the phone.
-            let _ = clipboard::set_text(&code, false, Some(hwnd));
-            show_info(
-                format!("On your phone, open Phone Bridge and tap \"Pair\".\n\nPairing code (copied to the clipboard, valid 2 minutes):\n\n{code}"),
-                "Pair a new device",
-            );
+        UiEvent::Code {
+            code,
+            refresh_in,
+            closes_in,
+        } => {
+            if let Err(e) = crate::qr_window::show(&code, refresh_in, closes_in) {
+                show_info(
+                    format!(
+                        "Pairing code (valid 30 seconds):
+
+{code}
+
+({e})"
+                    ),
+                    "Pair a new device",
+                );
+            }
+        }
+        UiEvent::PairingClosed => {
+            crate::qr_window::close();
+            balloon(hwnd, "Phone Bridge", "Pairing window expired");
         }
         UiEvent::Sas { id, peer_name, sas } => {
+            crate::qr_window::close();
             let cmds = st.cmds.clone();
             if st.auto_accept {
                 st.log.line("SAS auto-accepted (test mode)");
@@ -345,6 +360,10 @@ pub fn create(
     auto_accept: bool,
     log: crate::core::Log,
 ) -> windows::core::Result<isize> {
+    let close_cmds = cmds.clone();
+    crate::qr_window::set_on_user_close(Box::new(move || {
+        let _ = close_cmds.send(Cmd::CancelPair);
+    }));
     let _ = STATE.set(State {
         cmds,
         peers,

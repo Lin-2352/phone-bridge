@@ -76,9 +76,14 @@ pub struct Ticket {
 
 impl Ticket {
     pub fn new(now: Instant) -> Result<Self, PairError> {
+        Self::with_ttl(now, PAIRING_TTL)
+    }
+
+    /// A code valid for `ttl` (short-lived, rotating codes use ~35 s).
+    pub fn with_ttl(now: Instant, ttl: Duration) -> Result<Self, PairError> {
         Ok(Self {
             token: random()?,
-            expires: now + PAIRING_TTL,
+            expires: now + ttl.min(PAIRING_TTL),
             bad_attempts: 0,
         })
     }
@@ -322,6 +327,34 @@ mod tests {
             })
             .err(),
             Some(PairError::Malformed)
+        );
+    }
+
+    #[test]
+    fn short_ttl_code_expires_and_ttl_is_capped() {
+        let (host, joiner) = ids();
+        let now = Instant::now();
+        let mut ticket = Some(Ticket::with_ttl(now, Duration::from_secs(35)).unwrap());
+        let code = code_for(host, ticket.as_ref().unwrap());
+        let (_, start) = JoinPairing::start(&code, joiner, "P".into(), vec![]).unwrap();
+        assert_eq!(
+            HostPairing::start(
+                &mut ticket,
+                host,
+                joiner,
+                &start,
+                now + Duration::from_secs(36)
+            )
+            .err(),
+            Some(PairError::Expired)
+        );
+        // A huge TTL is capped at PAIRING_TTL.
+        let mut t2 = Some(Ticket::with_ttl(now, Duration::from_secs(3600)).unwrap());
+        let code2 = code_for(host, t2.as_ref().unwrap());
+        let (_, s2) = JoinPairing::start(&code2, joiner, "P".into(), vec![]).unwrap();
+        assert_eq!(
+            HostPairing::start(&mut t2, host, joiner, &s2, now + PAIRING_TTL).err(),
+            Some(PairError::Expired)
         );
     }
 }
