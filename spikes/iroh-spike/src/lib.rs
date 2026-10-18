@@ -38,9 +38,12 @@ pub fn drain_events() -> Vec<String> {
 
 /// UDP segmentation offload (GSO) fails with EIO on some interfaces, notably the
 /// phone's USB-tether `rndis0`; see docs/DECISIONS.md. `--no-gso` turns it off up front.
+/// GSO is always off on Android (EIO on rndis0 kills the connection), and
+/// optional elsewhere.
 pub fn transport(no_gso: bool) -> QuicTransportConfig {
+    let gso = !no_gso && !cfg!(target_os = "android");
     QuicTransportConfig::builder()
-        .enable_segmentation_offload(!no_gso)
+        .enable_segmentation_offload(gso)
         .build()
 }
 
@@ -53,11 +56,13 @@ pub fn relay_mode(relay: &Option<RelayUrl>) -> RelayMode {
 
 /// Deterministic, cheap-to-generate payload so both ends can hash it.
 pub fn fill_pattern(buf: &mut [u8], counter: &mut u64) {
-    for b in buf.iter_mut() {
+    // 8 bytes per LCG step, so pattern generation never limits throughput.
+    for chunk in buf.chunks_mut(8) {
         *counter = counter
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        *b = (*counter >> 56) as u8;
+        let word = (*counter ^ (*counter >> 29)).to_le_bytes();
+        chunk.copy_from_slice(&word[..chunk.len()]);
     }
 }
 

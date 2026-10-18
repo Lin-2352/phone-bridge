@@ -50,7 +50,7 @@ class MainActivity : Activity() {
             try {
                 NativeInit.initContext(applicationContext)
                 say("JNI context installed")
-                val s = startSpike(PORT.toUShort(), true)
+                val s = startSpike(PORT.toUShort(), false)
                 spike = s
                 say("ENDPOINT_ID=${s.endpointId()}")
                 say("ADDRS=${s.addresses()}")
