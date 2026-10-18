@@ -5,6 +5,7 @@
 //! so nothing leaves the local network unless a relay is configured later.
 //! GSO is disabled on Android (see docs/DECISIONS.md, finding 1).
 
+pub mod discovery;
 pub mod files;
 pub mod input;
 pub mod pairing;
@@ -101,6 +102,9 @@ pub struct NodeConfig {
     pub device_name: String,
     /// Fixed UDP port; `None` picks a free one.
     pub port: Option<u16>,
+    /// UDP port for finding paired devices again after a network change
+    /// (`discovery::DISCOVERY_PORT` in the apps); `None` disables it.
+    pub discovery_port: Option<u16>,
 }
 
 /// A pairing request waiting for the local user's decision.
@@ -168,6 +172,8 @@ struct Inner {
     ticket: Mutex<Option<Ticket>>,
     pairings: mpsc::Sender<PendingPairing>,
     sessions: mpsc::Sender<Session>,
+    discovery: Mutex<Option<discovery::Discovery>>,
+    candidates: discovery::Candidates,
 }
 
 fn lock<T: ?Sized>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -218,9 +224,14 @@ impl Node {
                 ticket: Mutex::new(None),
                 pairings: pair_tx,
                 sessions: sess_tx,
+                discovery: Mutex::new(None),
+                candidates: Mutex::default(),
             }),
         };
         tokio::spawn(node.clone().accept_loop());
+        if let Some(port) = config.discovery_port {
+            node.start_discovery(port).await;
+        }
         Ok((
             node,
             NodeEvents {
@@ -340,7 +351,7 @@ impl Node {
         let known = lock(&self.inner.store)
             .get(peer)
             .ok_or(Error::UnknownPeer)?;
-        let conn = self.dial(*peer, &known.addrs, SESSION_ALPN).await?;
+        let conn = self.dial_known(*peer, &known.addrs).await?;
         let started = async {
             let (send, recv) = conn.open_bi().await.map_err(tx)?;
             Session::start(
@@ -359,23 +370,65 @@ impl Node {
     }
 
     pub async fn shutdown(&self) {
+        self.stop_discovery();
         self.inner.endpoint.close().await;
     }
 
+    /// Dial a paired peer, recovering from a network change: addresses
+    /// learned by discovery are tried first (briefly), then the saved ones;
+    /// if both fail, probe the local network and try what answers. Learned
+    /// addresses are saved only after the authenticated connection succeeds.
+    async fn dial_known(&self, peer: PeerId, saved: &[String]) -> Result<Connection, Error> {
+        let try_candidates = |cands: Vec<SocketAddr>, wait: Duration| async move {
+            let strs: Vec<String> = cands.iter().map(|a| a.to_string()).collect();
+            let c = self.dial_for(peer, &strs, SESSION_ALPN, wait).await?;
+            self.confirm_addrs(&peer, &cands);
+            Ok::<_, Error>(c)
+        };
+        let cands = self.candidates(&peer);
+        if !cands.is_empty() {
+            if let Ok(c) = try_candidates(cands, Duration::from_secs(5)).await {
+                return Ok(c);
+            }
+        }
+        let first = self.dial(peer, saved, SESSION_ALPN).await;
+        if first.is_ok() || lock(&self.inner.discovery).is_none() {
+            return first;
+        }
+        // Saved addresses failed: maybe the network changed. Ask once.
+        self.rediscover().await;
+        for _ in 0..30 {
+            let cands = self.candidates(&peer);
+            if !cands.is_empty() {
+                return try_candidates(cands, Duration::from_secs(10)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        first
+    }
+
     async fn dial(&self, peer: PeerId, addrs: &[String], alpn: &[u8]) -> Result<Connection, Error> {
+        self.dial_for(peer, addrs, alpn, Duration::from_secs(15))
+            .await
+    }
+
+    async fn dial_for(
+        &self,
+        peer: PeerId,
+        addrs: &[String],
+        alpn: &[u8],
+        wait: Duration,
+    ) -> Result<Connection, Error> {
         let id = EndpointId::from_bytes(peer.as_bytes()).map_err(tx)?;
         let parts = addrs
             .iter()
             .filter_map(|a| a.parse::<SocketAddr>().ok())
             .map(TransportAddr::Ip);
         let addr = EndpointAddr::from_parts(id, parts);
-        tokio::time::timeout(
-            Duration::from_secs(15),
-            self.inner.endpoint.connect(addr, alpn),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(tx)
+        tokio::time::timeout(wait, self.inner.endpoint.connect(addr, alpn))
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(tx)
     }
 
     async fn accept_loop(self) {

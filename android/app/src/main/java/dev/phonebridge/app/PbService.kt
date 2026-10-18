@@ -93,6 +93,19 @@ class PbService : Service() {
     /** Network events are handled here, one at a time, never on Rust's runtime threads. */
     private val events = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pb-events") }
     @Volatile private var destroyed = false
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var rediscoverJob: kotlinx.coroutines.Job? = null
+
+    /** New Wi-Fi or new address: find the paired PC again (debounced). */
+    private fun rediscoverSoon() {
+        rediscoverJob?.cancel()
+        rediscoverJob = scope.launch {
+            kotlinx.coroutines.delay(2000)
+            val n = Bridge.node ?: return@launch
+            runCatching { n.rediscover() }
+            Log.i(TAG, "DISCOVERY probe sent")
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -115,6 +128,12 @@ class PbService : Service() {
         refreshTile(this)
         scheduleRecovery(this)
         scope.launch { start() }
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) = rediscoverSoon()
+            override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) = rediscoverSoon()
+        }
+        runCatching { getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(cb) }
+            .onSuccess { netCallback = cb }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -150,6 +169,8 @@ class PbService : Service() {
                 n.destroy()
             }
         }
+        netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
+        netCallback = null
         scope.cancel()
         events.shutdown()
         Bridge.running.value = false
@@ -197,6 +218,7 @@ class PbService : Service() {
             Bridge.linked.value = n.peers().firstOrNull()?.name
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
+            rediscoverSoon()
         } catch (e: Throwable) {
             // Keystore not ready, port busy...: do not sit in the foreground
             // pretending to work. RecoveryJob retries later.

@@ -183,6 +183,7 @@ pub async fn start_node(
     let config = NodeConfig {
         device_name,
         port: (port != 0).then_some(port),
+        discovery_port: Some(pb_transport::discovery::DISCOVERY_PORT),
     };
     // Anything still in incoming/ was left by a process the system killed
     // mid-transfer or mid-save; it would otherwise use storage forever.
@@ -591,6 +592,12 @@ impl PbNode {
         {
             let _ = tx.send(accept);
         }
+    }
+
+    /// Find paired devices again on the current network (call on start and
+    /// whenever the phone's network changes).
+    pub async fn rediscover(&self) {
+        self.node.rediscover().await;
     }
 
     /// Stop the node. (Never name a UniFFI method `close`.)

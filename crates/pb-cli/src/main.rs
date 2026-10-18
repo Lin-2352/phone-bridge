@@ -164,6 +164,7 @@ async fn run(o: Opts) -> Res<()> {
     let config = NodeConfig {
         device_name: o.name.clone(),
         port: Some(o.port),
+        discovery_port: None,
     };
     let (node, mut ev): (Node, NodeEvents) = Node::bind(&identity, store.clone(), config).await?;
     println!(

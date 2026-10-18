@@ -192,9 +192,15 @@ pub async fn run(
         NodeConfig {
             device_name: opts.name.clone(),
             port: Some(opts.port),
+            discovery_port: Some(pb_transport::discovery::DISCOVERY_PORT),
         },
     )
     .await?;
+    // Peers may have moved to a new network since we last saw them.
+    tokio::spawn({
+        let node = node.clone();
+        async move { node.rediscover().await }
+    });
     log.line(&format!("READY id={} port={}", node.peer_id(), node.port()));
     refresh(&node, &peers);
     ui(UiEvent::Ready {

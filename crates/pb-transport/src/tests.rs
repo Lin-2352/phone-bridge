@@ -15,6 +15,7 @@ async fn node(seed: u8, name: &str) -> (Node, NodeEvents, SharedStore) {
         NodeConfig {
             device_name: name.into(),
             port: None,
+            discovery_port: None,
         },
     )
     .await
@@ -530,6 +531,75 @@ mod input {
             got.len() <= 400,
             "at most the budget is injected, got {}",
             got.len()
+        );
+    }
+}
+
+mod rediscovery {
+    use std::net::SocketAddr;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_probe_from_a_paired_peer_updates_its_address_and_gets_an_answer() {
+        // Node A answers probes on a free port; B is paired with A.
+        let probe_port = {
+            let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            s.local_addr().unwrap().port()
+        };
+        let id_a = Identity::from_seed([31; 32]);
+        let store_a: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+        let (a, mut a_ev) = Node::bind(
+            &id_a,
+            store_a.clone(),
+            NodeConfig {
+                device_name: "PC".into(),
+                port: None,
+                discovery_port: Some(probe_port),
+            },
+        )
+        .await
+        .unwrap();
+        let (b, _b_ev, _) = node(32, "Phone").await;
+        let (h, j, _, _) = pair(&a, &mut a_ev, &b, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+
+        // B "moved": pretend it now lives at 127.0.0.1:<moved_port>.
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let moved_port: u16 = 40555;
+        let mut probe = Vec::from(*b"PBD1");
+        probe.push(1);
+        probe.extend_from_slice(&moved_port.to_le_bytes());
+        probe.extend_from_slice(&crate::discovery::test_tag(&b.peer_id()));
+        sock.send_to(&probe, ("127.0.0.1", probe_port))
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 64];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(3), sock.recv_from(&mut buf))
+            .await
+            .expect("answer")
+            .unwrap();
+        assert_eq!(n, 23);
+        assert_eq!(&buf[..5], b"PBD1");
+        // Learned as an unverified candidate; the saved addresses are untouched.
+        assert_eq!(
+            a.candidates(&b.peer_id()).first().copied(),
+            Some(SocketAddr::from(([127, 0, 0, 1], moved_port)))
+        );
+        let saved = store_a.lock().unwrap().get(&b.peer_id()).unwrap().addrs;
+        assert!(!saved.contains(&format!("127.0.0.1:{moved_port}")));
+
+        // A probe tagged with an unpaired id is ignored (no answer).
+        let mut stranger = probe.clone();
+        stranger[7..].copy_from_slice(&[0xAB; 16]);
+        sock.send_to(&stranger, ("127.0.0.1", probe_port))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), sock.recv_from(&mut buf))
+                .await
+                .is_err()
         );
     }
 }
