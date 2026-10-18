@@ -12,19 +12,20 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            InvalidateRect, ScreenToClient, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE,
-            DT_VCENTER, DT_WORDBREAK,
+            GetMonitorInfoW, InvalidateRect, MonitorFromPoint, ScreenToClient, DT_CENTER,
+            DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, MONITORINFO,
+            MONITOR_DEFAULTTONEAREST,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE},
             Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, LoadCursorW,
-                RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow, HTCLIENT,
-                HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SW_SHOW, WM_DESTROY, WM_DROPFILES,
-                WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
-                WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowRect,
+                LoadCursorW, RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow,
+                HTCLIENT, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SW_SHOW, WM_DESTROY,
+                WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+                WM_SETCURSOR, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
@@ -75,6 +76,12 @@ enum Hit {
 }
 
 static CURRENT: Mutex<Option<State>> = Mutex::new(None);
+/// Where the user last dragged the flyout (this session); it reopens there.
+static LAST_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+const WM_NCHITTEST: u32 = 0x0084;
+const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
+const WM_EXITSIZEMOVE: u32 = 0x0232;
+const HTCAPTION: isize = 2;
 
 /// Layout rectangles in physical pixels for a given DPI scale.
 struct Layout {
@@ -305,6 +312,32 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        // Empty areas act as a title bar: drag the flyout anywhere.
+        WM_NCHITTEST => {
+            let mut pt = POINT {
+                x: (lparam.0 & 0xffff) as i16 as i32,
+                y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+            };
+            // SAFETY: maps a screen point into our client area.
+            let _ = unsafe { ScreenToClient(hwnd, &mut pt) };
+            if hit(hwnd, pt.x, pt.y).is_some() {
+                LRESULT(HTCLIENT as isize)
+            } else {
+                LRESULT(HTCAPTION)
+            }
+        }
+        // A popup must not maximise on a double-click of its drag area.
+        WM_NCLBUTTONDBLCLK => LRESULT(0),
+        WM_EXITSIZEMOVE => {
+            let mut r = RECT::default();
+            // SAFETY: our own window.
+            if unsafe { GetWindowRect(hwnd, &mut r) }.is_ok() {
+                if let Ok(mut p) = LAST_POS.lock() {
+                    *p = Some((r.left, r.top));
+                }
+            }
+            LRESULT(0)
+        }
         WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
             let mut pt = POINT::default();
             // SAFETY: cursor position mapped into our client area.
@@ -478,16 +511,31 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
         let (w, h) = (px(s, W), px(s, H));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
-        // Above-left of the tray icon, like Windows' own flyouts.
-        let _ = SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            (pt.x - w + px(s, 24)).max(0),
-            (pt.y - h - px(s, 16)).max(0),
-            w,
-            h,
-            SWP_NOACTIVATE,
+        // Above-left of the tray icon, like Windows' own flyouts, unless the
+        // user dragged it somewhere this session.
+        let (mut x, mut y) = LAST_POS
+            .lock()
+            .ok()
+            .and_then(|p| *p)
+            .unwrap_or((pt.x - w + px(s, 24), pt.y - h - px(s, 16)));
+        // Keep it fully on the monitor's work area (taskbar excluded).
+        let mon = MonitorFromPoint(
+            POINT {
+                x: x + w / 2,
+                y: y + h / 2,
+            },
+            MONITOR_DEFAULTTONEAREST,
         );
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(mon, &mut mi).as_bool() {
+            let wa = mi.rcWork;
+            x = x.clamp(wa.left, (wa.right - w).max(wa.left));
+            y = y.clamp(wa.top, (wa.bottom - h).max(wa.top));
+        }
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
         fluent::frame(hwnd, false);
         DragAcceptFiles(hwnd, true);
         let _ = ShowWindow(hwnd, SW_SHOW);
