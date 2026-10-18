@@ -115,6 +115,11 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 - realme throttles background apps' network: during a background 100 MB receive it installed per-uid rate limits halving every 5 s (78 Mbit/s down to 1.2 Mbit/s, 3.1 MB/s overall). With an ongoing progress notification during transfers, a 300 MB background receive ran at 8.8 MB/s (link ceiling) with no throttle rules.
 - Measurement artefact found: `dumpsys meminfo` forces a GC in the app and blocks realme's freezer; samplers now run every 5 minutes.
 
+## Phase 3.6 (2026-10-19): memory-pressure test on the realme (5-year-old phone, 8 GB)
+- 40 min with the user's apps open (Instagram, WhatsApp, Clash Royale, Google Pay, a reader, Play Store) including a thrashing burst (30+ LMK kills in 15 s): Phone Bridge stayed alive at oom_score_adj 200 the whole time (cached apps 900+), never killed; Android trimmed it to 12.9 MB PSS (1.9 MB native heap); every clipboard ping from the PC (every 2 min) arrived within 4-6 s.
+- Transfers under that pressure: 300 MB PC->phone in the background at 7.3 MB/s and 2 x 100 MB phone->PC, all MD5 OK; 0 thrashing reports during the transfers, 0 Phone Bridge kills, no freeze or reboot (phone up 3 h).
+- Next: speed is bound by the 2.4 GHz hotspot double hop (~9 MB/s); Wi-Fi Direct + BLE presence (both devices support it) proposed as a feasibility spike.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
