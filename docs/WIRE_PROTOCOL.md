@@ -26,7 +26,7 @@ body   = protobuf message (prost), at most 65536 bytes
 | `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera` |
 
 ### `Control` envelope (session stream)
-`oneof msg { Hello hello = 1; Heartbeat heartbeat = 2; ClipboardText clipboard_text = 3; }`
+`oneof msg { Hello = 1; Heartbeat = 2; ClipboardText = 3; Offer = 4; OfferReply = 5; TransferDone = 6; Cancel = 7; ClipboardUpdate = 8; }`
 - `Heartbeat { seq: uint64 }` every 5 s from both sides; 15 s of silence ends the session.
 - `ClipboardText { text: string (max 60 KiB), sensitive: bool }`, sent only on explicit user action; receivers must not preview or keep sensitive text in history.
 
@@ -38,7 +38,20 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 4. both show `SAS = 6 digits of SHA-256("phone-bridge/sas/v0" || sorted(id, nonce) pairs)`; each side sends `PairConfirm { accepted }`. Pinned only if both accept.
 5. Close order: joiner finishes its stream, host finishes after reading the joiner's confirm, joiner closes after the host's end-of-stream (closing earlier can discard an unread confirm).
 
-Further messages (file offer and accept, input mode, camera session) are added with their features.
+### Sharing (AirDrop-style), one session per transfer
+1. sender -> `Offer { id: u64 random, kind: File|Text|Link, name, size, mime, text }` (text/links inline, max 60 KiB)
+2. receiver -> `OfferReply { id, accept }` (auto-accept from paired devices is a receiver setting; otherwise the user is asked; offers over the size cap (4 GiB default) are declined)
+3. File only: sender opens a unidirectional QUIC stream: `FileHeader { id }` frame, then exactly `size` raw bytes; then `TransferDone { id, sha256 }` on the control stream.
+4. Receiver writes `.<name>.partial-<id>`, checks byte count and SHA-256, then renames to a unique sanitised name (`name (2).ext` on collision); any failure deletes the partial.
+5. Close order: whoever reads the last message closes (sender after a decline/text reply; receiver after `TransferDone`).
+
+### Universal Clipboard
+`ClipboardUpdate { text, hash = SHA-256(text) }`, sent automatically when the setting is on at both ends. Each side remembers the hash of the last text it received and sent and never re-sends it (no ping-pong). Content marked private (Windows `ExcludeClipboardContentFromMonitorProcessing`, Android `EXTRA_IS_SENSITIVE`) is never sent. Android can only read the clipboard while focused: phone->PC sync runs when the app gains focus (only if the clipboard changed since the last sync, persisted) and on the Send clipboard tile/notification.
+
+### Local second-instance requests (Windows only)
+`pb-tray --send <files>` / `--pair` / `--send-clipboard` reach the running tray over the named pipe `\\.\pipe\PhoneBridgeTray-<user>` (remote clients rejected; default ACL: owner write). Lines: verb, then one path per line.
+
+Further messages (input mode, camera session) are added with their features.
 
 ## Input datagram (fixed 8 bytes, little-endian)
 ```
@@ -54,7 +67,7 @@ offset 6  b      i16   MouseMove dy | 0           | Wheel dy | 0
 - Maximum datagram payload is about 1162 to 1414 bytes depending on the path MTU, so these are far below the limit.
 
 ## Limits (enforced in code)
-- Control frame body: 64 KiB.
+- Control frame body: 64 KiB. Inline text/links and clipboard text: 60 KiB. Files: 4 GiB default cap.
 - Input datagram: exactly 8 bytes, anything else is dropped.
 
 ## Open items

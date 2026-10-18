@@ -75,6 +75,15 @@ Real phone (RMX3561 app) and Windows `pb` CLI over the USB-tether link:
 ### Windows tray (`pb-tray`, milestone 3)
 Win32 tray (no WebView), message-only window, EcoQoS on, 2 tokio workers. Tested PC-locally against the `pb` CLI: pairing (SAS shown, auto-accept test flag), received text written to the Windows clipboard (sensitive text gets the history/cloud/monitor exclusion formats and is never logged), menu "Send clipboard" delivered, clipboard content marked private by its source app (`ExcludeClipboardContentFromMonitorProcessing`) is refused. Real phone (after the user added a scoped UDP firewall rule for `pb-tray.exe`): paired (SAS 892543 on both), phone -> tray text landed on the Windows clipboard, tray -> phone delivered with the phone screen off. Idle 60 s: 0.000 CPU-seconds, 17.2 MB working set, 3.2 MB private, 7 threads (CLI spike default was 36).
 
+## Phase 3 results (2026-10-18): AirDrop-style sharing + Universal Clipboard
+Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether link:
+- PC -> phone 100 MiB via Explorer path (`pb-tray --send`): 35.7 MB/s, saved to Downloads/Phone Bridge, MD5 equal.
+- Phone -> PC same file via Android share sheet (detached fd, no copy): 37.6 MB/s, MD5 equal. Link shared from phone -> PC clipboard.
+- Universal Clipboard: PC copy reached the phone with the screen off; opening the app did not bounce it back; password-manager content never synced (PC-local test); loopback file throughput ~140 MB/s.
+- Bugs found and fixed: reply-before-close race for declines/text (same rule as pairing); tray wrote shared links to the clipboard outside the echo guard (bounced to the phone); app re-sent an unchanged clipboard on focus after a restart (fingerprint now persisted); second-instance forwarding moved from window lookup to a user-scoped named pipe.
+- Idle: phone ~0.03% CPU (2 ticks/60 s), PSS 101 MB with the Compose UI resident in the background (68 MB before Compose); tray 0 CPU-s, 20.6 MB, 7 threads. APK (debug, 2 ABIs) 45 MB.
+- Not done / known: Windows share sheet target needs package identity (later, with the installer); flyout and Send-to entry need a manual click to verify; incoming link on PC goes to the clipboard (no "open in browser" prompt yet).
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
