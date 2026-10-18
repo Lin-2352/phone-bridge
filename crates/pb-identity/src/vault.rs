@@ -50,7 +50,12 @@ pub fn open_identity(dir: &Path, wrapper: &dyn SeedWrapper) -> io::Result<Identi
     let legacy = dir.join(LEGACY_PLAIN_FILE);
     match std::fs::read(&sealed) {
         Ok(bytes) => {
-            let plain = wrapper.unwrap(&bytes)?;
+            let plain = wrapper.unwrap(&bytes).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("this device's identity could not be unsealed ({e}); the keystore may have been reset or the file damaged"),
+                )
+            })?;
             return Ok(Identity::from_seed(seed_from(&plain, "sealed identity")?));
         }
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),

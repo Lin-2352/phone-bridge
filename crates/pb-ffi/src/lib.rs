@@ -274,6 +274,13 @@ mod android_init {
         _class: JClass,
         context: JObject,
     ) {
+        // ndk-context asserts it is initialised only once per process, and the
+        // service can be created several times in one process (Stop, then
+        // start again; sticky restarts). A second call must be a no-op.
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        if INSTALLED.is_completed() {
+            return;
+        }
         let (Ok(vm), Ok(global)) = (env.get_java_vm(), env.new_global_ref(&context)) else {
             return;
         };
@@ -282,8 +289,8 @@ mod android_init {
         std::mem::forget(global);
         // SAFETY: `vm` is the process JavaVM and `context_ptr` is a leaked
         // global reference, so both stay valid until the process exits.
-        unsafe {
+        INSTALLED.call_once(|| unsafe {
             iroh::dns::install_android_jni_context(vm.get_java_vm_pointer().cast(), context_ptr);
-        }
+        });
     }
 }

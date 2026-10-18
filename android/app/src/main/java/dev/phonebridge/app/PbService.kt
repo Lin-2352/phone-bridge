@@ -89,6 +89,8 @@ class PbService : Service() {
         val n = Bridge.node
         Bridge.node = null
         runBlocking { n?.shutdown() }
+        // Release the Rust object (and its UDP socket) now instead of at GC time.
+        n?.destroy()
         scope.cancel()
         super.onDestroy()
     }

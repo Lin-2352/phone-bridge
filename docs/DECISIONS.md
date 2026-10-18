@@ -69,6 +69,7 @@ Real phone (RMX3561 app) and Windows `pb` CLI over the USB-tether link:
 ## Phase 2 results (2026-10-18)
 - Identity seeds sealed: Windows DPAPI (current user + app entropy, `pb-platform-win`), Android Keystore AES-256-GCM (`KeystoreWrapper`). Phase 1 plain seeds migrated on first start with the same ids (pairings kept) and deleted.
 - Android `connectedDevice` foreground service owns the node; events pushed from Rust (no polling). With the app in the background and the screen dozing, PC -> phone clipboard arrived as a notification (sensitive text hidden).
+- Bug found by /verify and fixed: the JNI context may only be installed once per process; a second `PbService` creation in the same process (Stop then start, or sticky restart) aborted the app. Now idempotent (`Once`). Also: the Rust node is destroyed explicitly on service stop so its UDP socket is released immediately.
 - Idle with screen off (60 s, paired, no traffic): 1 CPU tick (~0.02% of one core), 33 threads, PSS 67.6 MB (native heap 18 MB).
 
 ## Performance budgets (provisional)
