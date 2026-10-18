@@ -5,6 +5,7 @@
 //! so nothing leaves the local network unless a relay is configured later.
 //! GSO is disabled on Android (see docs/DECISIONS.md, finding 1).
 
+pub mod files;
 pub mod pairing;
 
 use std::{
@@ -48,6 +49,13 @@ pub enum Error {
     Rejected,
     Timeout,
     Closed,
+    /// The other device declined the offer.
+    Declined,
+    /// The offer exceeds the size limit.
+    TooLarge,
+    /// The received bytes do not match the sender's SHA-256.
+    HashMismatch,
+    Io(String),
 }
 
 impl fmt::Display for Error {
@@ -61,6 +69,10 @@ impl fmt::Display for Error {
             Self::Rejected => f.write_str("pairing refused: the code expired or was already used, or the other device declined"),
             Self::Timeout => f.write_str("timed out"),
             Self::Closed => f.write_str("connection closed"),
+            Self::Declined => f.write_str("the other device declined"),
+            Self::TooLarge => f.write_str("too large to send"),
+            Self::HashMismatch => f.write_str("file was corrupted in transit (hash mismatch); nothing was saved"),
+            Self::Io(e) => write!(f, "file error: {e}"),
         }
     }
 }

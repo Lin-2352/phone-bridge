@@ -12,7 +12,7 @@ pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 /// Envelope for every message on a session control stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Control {
-    #[prost(oneof = "ControlMsg", tags = "1, 2, 3")]
+    #[prost(oneof = "ControlMsg", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
     pub msg: Option<ControlMsg>,
 }
 
@@ -24,6 +24,85 @@ pub enum ControlMsg {
     Heartbeat(Heartbeat),
     #[prost(message, tag = "3")]
     ClipboardText(ClipboardText),
+    #[prost(message, tag = "4")]
+    Offer(Offer),
+    #[prost(message, tag = "5")]
+    OfferReply(OfferReply),
+    #[prost(message, tag = "6")]
+    TransferDone(TransferDone),
+    #[prost(message, tag = "7")]
+    Cancel(Cancel),
+    #[prost(message, tag = "8")]
+    ClipboardUpdate(ClipboardUpdate),
+}
+
+/// What an offer carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+#[repr(i32)]
+pub enum OfferKind {
+    File = 0,
+    Text = 1,
+    Link = 2,
+}
+
+/// "I want to send you this." Files follow on their own QUIC stream after an
+/// accepting [`OfferReply`]; text and links travel inline in `text`.
+#[derive(Clone, PartialEq, Message)]
+pub struct Offer {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(enumeration = "OfferKind", tag = "2")]
+    pub kind: i32,
+    /// Display name only; the receiver sanitises it before touching disk.
+    #[prost(string, tag = "3")]
+    pub name: String,
+    #[prost(uint64, tag = "4")]
+    pub size: u64,
+    #[prost(string, tag = "5")]
+    pub mime: String,
+    #[prost(string, tag = "6")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct OfferReply {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(bool, tag = "2")]
+    pub accept: bool,
+}
+
+/// Sent after the last file byte; the receiver compares the hash before
+/// moving the file into place.
+#[derive(Clone, PartialEq, Message)]
+pub struct TransferDone {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub sha256: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct Cancel {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+}
+
+/// Automatic Universal Clipboard sync. `hash` lets the receiver ignore an
+/// update that only echoes what it just sent (no ping-pong loops).
+#[derive(Clone, PartialEq, Message)]
+pub struct ClipboardUpdate {
+    #[prost(string, tag = "1")]
+    pub text: String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub hash: Vec<u8>,
+}
+
+/// First frame on a file data stream: which accepted offer these bytes belong to.
+#[derive(Clone, PartialEq, Message)]
+pub struct FileHeader {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
 }
 
 impl From<ControlMsg> for Control {
@@ -199,6 +278,27 @@ mod tests {
             ControlMsg::ClipboardText(ClipboardText {
                 text: "héllo".into(),
                 sensitive: true,
+            }),
+            ControlMsg::Offer(Offer {
+                id: 9,
+                kind: OfferKind::File as i32,
+                name: "a.jpg".into(),
+                size: 1 << 33,
+                mime: "image/jpeg".into(),
+                text: String::new(),
+            }),
+            ControlMsg::OfferReply(OfferReply {
+                id: 9,
+                accept: true,
+            }),
+            ControlMsg::TransferDone(TransferDone {
+                id: 9,
+                sha256: vec![7; 32],
+            }),
+            ControlMsg::Cancel(Cancel { id: 9 }),
+            ControlMsg::ClipboardUpdate(ClipboardUpdate {
+                text: "x".into(),
+                hash: vec![1; 32],
             }),
         ];
         for m in msgs {
