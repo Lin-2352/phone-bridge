@@ -58,6 +58,14 @@ Idle thread count on Windows (36) is high for a resident daemon; cap tokio worke
 3. **Rust MSRV is 1.91** (iroh 1.3.0). Workspace `rust-version` raised.
 4. **Same-uplink limitation.** PC and phone share one uplink here, so real cross-network hole-punching is untested; the hole-punch success rate remains an unverified claim.
 
+## Phase 1 results (2026-10-18)
+Real phone (RMX3561 app) and Windows `pb` CLI over the USB-tether link:
+- Pairing: both sides showed SAS 771917; pinned on both.
+- Clipboard text PC -> phone (plain and sensitive; sensitive is not displayed) and phone -> PC; still works after restarting the app without re-pairing.
+- PC revokes the phone: the phone's next send fails with "peer is not paired with this device".
+- Windows Firewall blocks inbound UDP for new binaries on Public networks (the tether link is Public); the user must allow the app. The installer must create a scoped rule (UDP, our binary only).
+- Bug found and fixed: closing the pairing connection right after reading discarded the other side's unread Confirm (~5% of pairings failed on one side). Fixed with an ordered close; 40/40 runs pass.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

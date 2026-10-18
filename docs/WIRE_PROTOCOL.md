@@ -4,7 +4,7 @@ Status: draft. Matches the `pb-protocol` crate at protocol version 0. Versions m
 
 ## Layers
 1. **QUIC** (iroh 1.3.0 / noq) provides encryption, authentication of the peer's Ed25519 key, streams and unreliable datagrams.
-2. **ALPN** `pb/0` selects this protocol. (Spikes used `pb-spike/0`.)
+2. **ALPN** `pb/0` for sessions, `pb-pair/0` for pairing. (Spikes used `pb-spike/0`.) Session connections from peers not in the paired-peer store are closed with application code 403 before any stream is read.
 3. **Control stream**: the first bidirectional stream opened by the connecting side. Carries length-prefixed protobuf frames.
 4. **Feature streams**: one bidirectional stream per transfer (files, clipboard payloads, camera). Each begins with a frame naming the feature.
 5. **Datagrams**: unreliable, unordered, small. Used for input and low-latency media.
@@ -25,7 +25,20 @@ body   = protobuf message (prost), at most 65536 bytes
 | `device_name` | 2 | string | User-visible; only sent after authentication, never in discovery |
 | `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera` |
 
-Further messages (clipboard offer, file offer and accept, input mode, camera session) are added with their features, each with its own tag space and tests.
+### `Control` envelope (session stream)
+`oneof msg { Hello hello = 1; Heartbeat heartbeat = 2; ClipboardText clipboard_text = 3; }`
+- `Heartbeat { seq: uint64 }` every 5 s from both sides; 15 s of silence ends the session.
+- `ClipboardText { text: string (max 60 KiB), sensitive: bool }`, sent only on explicit user action; receivers must not preview or keep sensitive text in history.
+
+### Pairing (`pb-pair/0`, envelope `Pair`)
+Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<addr>` (single use, 2 minutes, burned after 3 wrong tokens).
+1. joiner -> host `PairStart { token, commitment = SHA-256("phone-bridge/commit/v0" || nonce_j), device_name, addrs }`
+2. host -> joiner `PairNonce { nonce_h, device_name }`
+3. joiner -> host `PairReveal { nonce_j }` (host verifies the commitment)
+4. both show `SAS = 6 digits of SHA-256("phone-bridge/sas/v0" || sorted(id, nonce) pairs)`; each side sends `PairConfirm { accepted }`. Pinned only if both accept.
+5. Close order: joiner finishes its stream, host finishes after reading the joiner's confirm, joiner closes after the host's end-of-stream (closing earlier can discard an unread confirm).
+
+Further messages (file offer and accept, input mode, camera session) are added with their features.
 
 ## Input datagram (fixed 8 bytes, little-endian)
 ```
@@ -46,7 +59,7 @@ offset 6  b      i16   MouseMove dy | 0           | Wheel dy | 0
 
 ## Open items
 - ALPN naming and per-feature stream headers.
-- Pairing messages (QR payload format, SAS commitment round).
+- QR rendering of the pairing code (text only so far).
 - Heartbeat and key-release message.
 - Flow control and priorities between control, input and bulk traffic.
 - Version negotiation after 1.0.

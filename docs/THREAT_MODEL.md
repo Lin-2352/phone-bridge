@@ -25,9 +25,9 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 ## Trust boundaries and main threats
 | # | Boundary | Threat | Mitigation (status) |
 |---|---|---|---|
-| 1 | Pairing | Man in the middle during first contact | QR bootstrap carries the peer public key; 6-digit SAS compared by the user; nonce commitment before reveal (SAS derivation implemented in `pb-identity`; commitment protocol **not yet implemented**) |
-| 2 | Pairing | Stranger pairs by guessing or spamming requests | Pairing only while the user has opened the pairing screen; rate limit; short expiry (**planned**) |
-| 3 | Transport | Eavesdropping or tampering | QUIC with TLS 1.3, peers authenticated by pinned Ed25519 keys (iroh endpoint ids). Only keys in the paired-peer store may open application streams (**planned**; iroh provides the encrypted, authenticated channel, verified working in Spike 1) |
+| 1 | Pairing | Man in the middle during first contact | QR bootstrap carries the peer public key; 6-digit SAS compared by the user; nonce commitment before reveal (**implemented** in `pb-transport::pairing`, tested; QR rendering still planned) |
+| 2 | Pairing | Stranger pairs by guessing or spamming requests | Codes exist only while the host shows one; single use, 2-minute expiry, burned after 3 wrong tokens (**implemented**) |
+| 3 | Transport | Eavesdropping or tampering | QUIC with TLS 1.3, peers authenticated by pinned Ed25519 keys (iroh endpoint ids). Only keys in the paired-peer store may open sessions; others are closed with code 403 before any stream is read; revocation takes effect for new connections (**implemented**, tested in-process and on the real phone) |
 | 4 | Discovery | Tracking a device by its broadcasts | Rotating HMAC identifiers, no device name in discovery (**planned**) |
 | 5 | Relay | Operator reads content | End-to-end encryption between devices; relay only forwards QUIC packets. Self-hostable relay; default build must not use third-party relays without consent (Spike 1 uses none) |
 | 6 | Relay | Operator learns metadata | Cannot be eliminated; documented. Users can self-host. |
@@ -36,12 +36,13 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 | 9 | Input control | Hijacking the phone | Separate explicit opt-in per paired device; visible indicator while active; instant revocation; auto key-up on disconnect (**planned**) |
 | 10 | Accessibility service | Abuse by other apps or policy loss | Only in the `foss` flavor; no data collection; never ships in the Play flavor (**decided**, see DECISIONS.md) |
 | 11 | Parsers | Memory corruption or DoS from malformed input | Size limits before allocation, no panics on bad input, fuzz targets (**implemented for control frames and input datagrams**; fuzzing harness **planned**) |
-| 12 | Keys at rest | Theft from disk or backup | Seed wrapped by Android Keystore / Windows DPAPI; excluded from backups (**planned**; `pb-identity` only exposes the seed, never logs it) |
+| 12 | Keys at rest | Theft from disk or backup | Seed wrapped by Android Keystore / Windows DPAPI; excluded from backups (**planned**; today the seed is a plain 32-byte file in app-private storage / %LOCALAPPDATA%, and Android backup is disabled) |
 | 13 | Updates | Malicious update | Signed releases, reproducible builds where possible (**planned**) |
 | 14 | Resource use | Battery or CPU drain used as DoS | Rate limits per peer; idle budget tracked in DECISIONS.md |
 
 ## Known limitations found so far
 - Relay metadata exposure (row 6) is inherent to any relay design.
+- `pb --auto-accept` and the app's adb intent hooks skip or script the SAS decision; they are test-only and must not ship in release builds.
 - Spike 1 used an unauthenticated test protocol on throw-away keys; it proves transport, not authorisation. Do not treat spike code as secure.
 - The first GSO send failure on USB tethering (DECISIONS.md) is an availability bug, not a confidentiality one, but a flaky transport invites insecure retries; do not add silent fallbacks.
 
