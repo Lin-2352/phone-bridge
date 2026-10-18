@@ -84,6 +84,11 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 - Idle: phone ~0.03% CPU (2 ticks/60 s), PSS 101 MB with the Compose UI resident in the background (68 MB before Compose); tray 0 CPU-s, 20.6 MB, 7 threads. APK (debug, 2 ABIs) 45 MB.
 - Not done / known: Windows share sheet target needs package identity (later, with the installer); flyout and Send-to entry need a manual click to verify; incoming link on PC goes to the clipboard (no "open in browser" prompt yet).
 
+## Phase 3.1 (2026-10-18): user feedback
+- Quick Settings tile is the on/off switch for Phone Bridge (service + node); long-press opens a compact panel. Status notification reduced to one silent line (Android requires it for a foreground service).
+- Theme choice, save-folder choice (SAF), opt-in password/code sync (`ClipboardUpdate.sensitive`, kept out of history on arrival), links open from a PC notification instead of overwriting the clipboard. Tray uses NOTIFYICON_VERSION_4 so one click opens one surface.
+- Phone memory in background (UI backgrounded, not swiped): PSS 111 MB = native 27 (Rust core) + graphics 21 (UI surfaces kept alive) + code 29 + Java 14. Trim-memory does not release the graphics while the activity exists. Fix candidate: run the service in a separate `:bridge` process so Android can drop the UI process; expected background ~55-65 MB. Deferred: needs an IPC layer between UI and node.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
