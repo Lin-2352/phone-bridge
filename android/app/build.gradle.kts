@@ -11,9 +11,20 @@ android {
         applicationId = "dev.phonebridge.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.0.2"
+        versionCode = 3
+        versionName = "0.0.3"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    buildTypes {
+        release {
+            // R8: drop unused Compose/Kotlin code so less is mapped into memory.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Local installs only; a real release key comes with publishing.
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
 
     buildFeatures { compose = true }

@@ -1,7 +1,7 @@
 # Builds the Android app: Rust cdylib -> UniFFI Kotlin bindings -> debug APK.
 # Needs: rustup targets aarch64-linux-android, cargo-ndk, ANDROID_HOME, ANDROID_NDK_HOME, JAVA_HOME (17+).
-# Usage: pwsh scripts/android-build.ps1 [-Profile spike-abort]
-param([string]$Profile = "spike-abort")
+# Usage: pwsh scripts/android-build.ps1 [-Profile spike-abort] [-Debug]  (default: size-optimised library, minified release APK)
+param([string]$Profile = "android", [switch]$Debug)
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot
 Set-Location $root
@@ -17,6 +17,7 @@ cargo build -p pb-ffi
 cargo run -q -p uniffi-bindgen -- generate --library target/debug/pb_ffi.dll --language kotlin --out-dir android/app/src/main/java
 
 Push-Location android
-./gradlew.bat assembleDebug --console=plain
+if ($Debug) { ./gradlew.bat assembleDebug --console=plain; $apk = "debug/app-debug.apk" }
+else { ./gradlew.bat assembleRelease --console=plain; $apk = "release/app-release.apk" }
 Pop-Location
-Write-Host "APK: android/app/build/outputs/apk/debug/app-debug.apk"
+Write-Host "APK: android/app/build/outputs/apk/$apk"

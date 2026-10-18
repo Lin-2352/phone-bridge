@@ -558,6 +558,12 @@ mod android_init {
         if INSTALLED.is_completed() {
             return;
         }
+        // UniFFI's tokio runtime is created lazily on the first async call
+        // with one worker per core (8 here). Two are plenty for this
+        // network-bound workload and halve idle threads and stacks.
+        // SAFETY: runs on the first service start, before any runtime or
+        // Rust thread exists; nothing reads the environment concurrently.
+        unsafe { std::env::set_var("TOKIO_WORKER_THREADS", "2") };
         let (Ok(vm), Ok(global)) = (env.get_java_vm(), env.new_global_ref(&context)) else {
             return;
         };

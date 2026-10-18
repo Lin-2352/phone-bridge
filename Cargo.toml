@@ -44,3 +44,8 @@ panic = "unwind"
 [profile.spike-abort]
 inherits = "spike"
 panic = "abort"
+
+# Android library: smallest code (less memory mapped per process) at full LTO.
+[profile.android]
+inherits = "release"
+opt-level = "s"

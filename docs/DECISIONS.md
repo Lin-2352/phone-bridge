@@ -87,7 +87,14 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 ## Phase 3.1 (2026-10-18): user feedback
 - Quick Settings tile is the on/off switch for Phone Bridge (service + node); long-press opens a compact panel. Status notification reduced to one silent line (Android requires it for a foreground service).
 - Theme choice, save-folder choice (SAF), opt-in password/code sync (`ClipboardUpdate.sensitive`, kept out of history on arrival), links open from a PC notification instead of overwriting the clipboard. Tray uses NOTIFYICON_VERSION_4 so one click opens one surface.
-- Phone memory in background (UI backgrounded, not swiped): PSS 111 MB = native 27 (Rust core) + graphics 21 (UI surfaces kept alive) + code 29 + Java 14. Trim-memory does not release the graphics while the activity exists. Fix candidate: run the service in a separate `:bridge` process so Android can drop the UI process; expected background ~55-65 MB. Deferred: needs an IPC layer between UI and node.
+- Phone memory in background (UI backgrounded, not swiped): PSS 111 MB = native 27 (Rust core) + graphics 21 (UI surfaces kept alive) + code 29 + Java 14. Trim-memory does not release the graphics while the activity exists. Fix candidate: run the service in a separate `:bridge` process so Android can drop the UI process; expected background ~55-65 MB. Superseded, see Phase 3.2.
+
+## Phase 3.2 (2026-10-18): all-day footprint
+- Android library built with a size profile (`opt-level="s"`, fat LTO, abort, strip): 8.4 -> 4.3 MB. Release APK with R8 minify + resource shrink: 45 -> 12 MB.
+- UniFFI's tokio runtime capped to 2 workers (`TOKIO_WORKER_THREADS`, set in JNI init before the first runtime).
+- Background PSS (UI backgrounded): 111 -> 55 MB (Java 14->3, code 29->17, native 27->21, graphics 21->8). This meets the <=60 MB goal, so the `:bridge` process split is not needed; revisit only if long soaks show growth.
+- Idle 5 min: phone 0 CPU ticks, ~0.3 context switches/s for the whole process; tray 0 ms CPU, 3.4 MB private, 4 threads. Relay disabled; heartbeats only exist while a session is open.
+- Share sheet: sparse package registered per user (Developer Mode, no certificate); signed MSIX comes with the installer.
 
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
