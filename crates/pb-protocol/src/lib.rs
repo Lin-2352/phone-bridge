@@ -8,6 +8,8 @@
 
 use std::fmt;
 
+pub mod control;
+
 use prost::Message;
 
 /// Wire protocol version. Bumped on any incompatible change.

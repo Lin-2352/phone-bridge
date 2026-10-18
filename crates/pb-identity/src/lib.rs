@@ -42,6 +42,19 @@ impl PeerId {
         Ok(Self(bytes))
     }
 
+    /// Parse the 64-character lowercase or uppercase hex form ([`fmt::Display`]).
+    pub fn from_hex(hex: &str) -> Result<Self, IdentityError> {
+        if hex.len() != 64 || !hex.is_ascii() {
+            return Err(IdentityError::InvalidPublicKey);
+        }
+        let mut bytes = [0u8; 32];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+                .map_err(|_| IdentityError::InvalidPublicKey)?;
+        }
+        Self::from_bytes(bytes)
+    }
+
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -148,6 +161,8 @@ pub struct PairedPeer {
     pub id: PeerId,
     /// User-visible label chosen at pairing time. Never sent in discovery.
     pub name: String,
+    /// Last known direct addresses (`ip:port`), used to dial the peer.
+    pub addrs: Vec<String>,
 }
 
 /// Persistent set of pinned peers. Only peers in the store may connect.
@@ -182,6 +197,127 @@ impl PeerStore for MemoryPeerStore {
 
     fn list(&self) -> Vec<PairedPeer> {
         self.peers.values().cloned().collect()
+    }
+}
+
+/// [`PeerStore`] persisted to a small text file (one peer per line:
+/// `hex id<TAB>name<TAB>addr,addr`). Every change is written atomically
+/// (temp file + rename). Names have tabs and newlines replaced.
+pub struct FilePeerStore {
+    path: std::path::PathBuf,
+    mem: MemoryPeerStore,
+}
+
+impl FilePeerStore {
+    /// Open the store, creating an empty one if the file does not exist.
+    /// Malformed lines are skipped rather than failing the whole store.
+    pub fn open(path: impl Into<std::path::PathBuf>) -> std::io::Result<Self> {
+        let path = path.into();
+        let mut mem = MemoryPeerStore::default();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                for line in text.lines() {
+                    if let Some(peer) = parse_peer_line(line) {
+                        mem.pin(peer);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        Ok(Self { path, mem })
+    }
+
+    fn save(&self) -> std::io::Result<()> {
+        let mut out = String::new();
+        for p in self.mem.list() {
+            let name: String = p
+                .name
+                .chars()
+                .map(|c| {
+                    if matches!(c, '\t' | '\n' | '\r') {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            out.push_str(&format!("{}\t{}\t{}\n", p.id, name, p.addrs.join(",")));
+        }
+        let tmp = self.path.with_extension("tmp");
+        std::fs::write(&tmp, out)?;
+        std::fs::rename(tmp, &self.path)
+    }
+}
+
+fn parse_peer_line(line: &str) -> Option<PairedPeer> {
+    let mut parts = line.split('\t');
+    let hex = parts.next()?;
+    let name = parts.next()?.to_owned();
+    let addrs = parts
+        .next()
+        .unwrap_or("")
+        .split(',')
+        .filter(|a| !a.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Some(PairedPeer {
+        id: PeerId::from_hex(hex).ok()?,
+        name,
+        addrs,
+    })
+}
+
+impl PeerStore for FilePeerStore {
+    fn get(&self, id: &PeerId) -> Option<PairedPeer> {
+        self.mem.get(id)
+    }
+
+    /// Persists immediately; on I/O failure the in-memory change is kept
+    /// and the error is only visible on the next successful save.
+    fn pin(&mut self, peer: PairedPeer) {
+        self.mem.pin(peer);
+        let _ = self.save();
+    }
+
+    fn remove(&mut self, id: &PeerId) -> bool {
+        let removed = self.mem.remove(id);
+        if removed {
+            let _ = self.save();
+        }
+        removed
+    }
+
+    fn list(&self) -> Vec<PairedPeer> {
+        self.mem.list()
+    }
+}
+
+/// Load the identity seed from `path`, or create a new identity and save it.
+/// The file holds the raw 32-byte seed; wrapping it with the OS keystore is
+/// tracked in docs/THREAT_MODEL.md.
+pub fn load_or_create_identity(path: &std::path::Path) -> std::io::Result<Identity> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "identity file is not 32 bytes",
+                )
+            })?;
+            Ok(Identity::from_seed(seed))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let id = Identity::generate().map_err(std::io::Error::other)?;
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let tmp = path.with_extension("tmp");
+            std::fs::write(&tmp, id.seed())?;
+            std::fs::rename(tmp, path)?;
+            Ok(id)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -274,6 +410,7 @@ mod tests {
         let peer = PairedPeer {
             id: id(1).peer_id(),
             name: "Pixel".into(),
+            addrs: vec!["10.0.0.2:47100".into()],
         };
         assert_eq!(store.get(&peer.id), None);
         store.pin(peer.clone());
@@ -282,5 +419,67 @@ mod tests {
         assert!(store.remove(&peer.id));
         assert!(!store.remove(&peer.id));
         assert_eq!(store.get(&peer.id), None);
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pb-identity-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn hex_round_trip_and_rejects_bad_input() {
+        let p = id(3).peer_id();
+        assert_eq!(PeerId::from_hex(&p.to_string()), Ok(p));
+        assert_eq!(PeerId::from_hex(&p.to_string().to_uppercase()), Ok(p));
+        assert!(PeerId::from_hex("abc").is_err());
+        assert!(PeerId::from_hex(&"zz".repeat(32)).is_err());
+        assert!(PeerId::from_hex(&"é".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn file_store_persists_across_reopen_and_sanitises_names() {
+        let dir = temp_dir("store");
+        let path = dir.join("peers.txt");
+        let peer = PairedPeer {
+            id: id(1).peer_id(),
+            name: "My\tPhone\n".into(),
+            addrs: vec!["10.0.0.2:47100".into(), "[::1]:5".into()],
+        };
+        {
+            let mut s = FilePeerStore::open(&path).unwrap();
+            assert!(s.list().is_empty());
+            s.pin(peer.clone());
+        }
+        let s = FilePeerStore::open(&path).unwrap();
+        let got = s.get(&peer.id).unwrap();
+        assert_eq!(got.name, "My Phone ");
+        assert_eq!(got.addrs, peer.addrs);
+        let mut s = s;
+        assert!(s.remove(&peer.id));
+        assert!(FilePeerStore::open(&path).unwrap().list().is_empty());
+    }
+
+    #[test]
+    fn file_store_skips_malformed_lines() {
+        let dir = temp_dir("malformed");
+        let path = dir.join("peers.txt");
+        let good = id(2).peer_id();
+        std::fs::write(&path, format!("garbage\nnothex\tx\t\n{good}\tLaptop\t\n")).unwrap();
+        let s = FilePeerStore::open(&path).unwrap();
+        assert_eq!(s.list().len(), 1);
+        assert_eq!(s.get(&good).unwrap().addrs, Vec::<String>::new());
+    }
+
+    #[test]
+    fn identity_file_is_created_once_then_reused() {
+        let dir = temp_dir("seed");
+        let path = dir.join("sub").join("identity.key");
+        let a = load_or_create_identity(&path).unwrap();
+        let b = load_or_create_identity(&path).unwrap();
+        assert_eq!(a.peer_id(), b.peer_id());
+        std::fs::write(&path, [0u8; 5]).unwrap();
+        assert!(load_or_create_identity(&path).is_err());
     }
 }
