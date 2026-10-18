@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.phonebridge.smoke"
+    namespace = "dev.phonebridge.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.phonebridge.smoke"
+        applicationId = "dev.phonebridge.app"
         minSdk = 29
         targetSdk = 36
         versionCode = 1

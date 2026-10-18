@@ -11,5 +11,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "phone-bridge-smoke"
+rootProject.name = "phone-bridge"
 include(":app")

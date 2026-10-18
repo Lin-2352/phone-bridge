@@ -2276,6 +2276,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pb-ffi"
+version = "0.0.1"
+dependencies = [
+ "iroh",
+ "jni 0.21.1",
+ "pb-identity",
+ "pb-protocol",
+ "pb-transport",
+ "tokio",
+ "uniffi",
+]
+
+[[package]]
 name = "pb-identity"
 version = "0.0.1"
 dependencies = [
