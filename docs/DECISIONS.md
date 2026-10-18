@@ -36,7 +36,8 @@ Setup: Windows 11 PC <-> realme RMX3561 (Android 13, arm64) over the phone's USB
 | Idle phone endpoint (30 s, no peers) | ~0.03% of one core (1 tick), 18 MB RSS, 9 threads |
 | Idle Windows endpoint (30 s) | 0.00 CPU-seconds, 14.8 MB working set, 36 threads |
 | Relay-only dial (self-hosted `iroh-relay --dev`, loopback via `adb reverse`) | connected in 16 ms, then moved to a direct path; data verified |
-| Loopback on the PC (reference) | 260 MB/s up, 1.7 ms handshake |
+| Loopback on the PC (reference) | ~390 MB/s each way, 1.7 ms handshake (after making the test pattern generator word-wise; the earlier 72 MB/s download was a test artifact) |
+| Android emulator x86_64 (CLI to PC, and the APK) | Works; APK starts with JNI context; CLI 32 MiB verified at ~14 MB/s (emulator NAT limit) |
 
 Idle thread count on Windows (36) is high for a resident daemon; cap tokio workers in the real daemon.
 
@@ -52,7 +53,7 @@ Idle thread count on Windows (36) is high for a resident daemon; cap tokio worke
 | App idle CPU (30 s, Kotlin polls once per second) | ~0.5% of one core; an upper bound, the real app must not poll |
 
 ### Findings that change the design
-1. **UDP GSO breaks the first large send on `rndis0`.** The first GSO `sendmsg` (12780 B, 1420 B segments) fails with `EIO` on the phone's USB-tether interface. noq-udp then halts GSO, but the connection never recovers and dies at the 30 s idle timeout. Reproduced 11 of 11 times on a fresh phone process (first download always fails, later transfers work); with `enable_segmentation_offload(false)` 3 of 3 fresh runs passed. Decision: **disable GSO on Android** (`QuicTransportConfig::builder().enable_segmentation_offload(false)`) until the upstream recovery is fixed; measure the cost on Wi-Fi. TODO: file an upstream issue with the trace.
+1. **UDP GSO breaks the first large send on `rndis0`.** The first GSO `sendmsg` (12780 B, 1420 B segments) fails with `EIO` on the phone's USB-tether interface. noq-udp then halts GSO, but the connection never recovers and dies at the 30 s idle timeout. Reproduced 11 of 11 times on a fresh phone process (first download always fails, later transfers work); with `enable_segmentation_offload(false)` 3 of 3 fresh runs passed. Decision: **disable GSO on Android** (now the default in the spike: 3/3 fresh-process runs pass without flags) (`QuicTransportConfig::builder().enable_segmentation_offload(false)`) until the upstream recovery is fixed; measure the cost on Wi-Fi. Upstream report drafted in `docs/upstream/noq-gso-eio.md` (not filed yet). Not testable here: GSO behaviour on the phone's Wi-Fi, because enabling Wi-Fi would disturb the USB tethering used for this PC's internet.
 2. **iroh needs an Android JNI context.** A bare native binary aborted with `android context was not initialized` (from `ndk-context`, used by iroh-dns and netdev). iroh only survives this by catching a panic, so it needs `panic = "unwind"`; our release profile uses `panic = "abort"`. Decision: the Android library installs the JNI context (`iroh::dns::install_android_jni_context`, an `unsafe` FFI call in a dedicated crate) and the Android build must not rely on unwind to recover. Verified inside a real APK (above).
 3. **Rust MSRV is 1.91** (iroh 1.3.0). Workspace `rust-version` raised.
 4. **Same-uplink limitation.** PC and phone share one uplink here, so real cross-network hole-punching is untested; the hole-punch success rate remains an unverified claim.
