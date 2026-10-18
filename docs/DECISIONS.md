@@ -109,6 +109,12 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 - Three parallel code reviews (Rust core, Android, tray). Confirmed and fixed the critical one in UniFFI 0.32.2 source: a unit-returning callback interface panics when Kotlin throws (`ffi_converter_traits.rs:393`), which aborts the app under `panic = "abort"`. Callbacks now return `Result`; Kotlin hands events to one background thread. Other fixes: received-file copies off the Rust runtime threads, guarded startForeground, async shutdown without orphaned nodes, debug intent hooks only in debuggable builds (exported activity allowed silent pairing), connection caps and handshake timeouts, flood budget on every record, free-space check, tray hook thread, owner-only pipe DACL, icon restore on Explorer restart.
 - Realme results after fixes (fresh boot, release build): no crashes/ANRs/LMK kills in 30+ min of monitoring; idle 1 tick/120 s; PSS 38-65 MB depending on UI use; tray private 3.4-4.1 MB, leak test flat, stuck-pipe client no longer blocks (48 ms).
 
+## Phase 3.5 (2026-10-19): network change, link test on Wi-Fi, realme throttling
+- Moving both devices to another Wi-Fi broke the link (stored pairing-time addresses only). Added LAN rediscovery (discovery.rs): on-demand probes with 30-minute rotating tags only paired devices can recognise; learned addresses stay in-memory candidates until an authenticated QUIC connection succeeds through them. Verified on the realme: found again without re-pairing.
+- Link test on a 2.4 GHz hotspot (independently audited): clipboard 10/10 each way, sensitive clip flagged and absent from all logs, files PC->phone 4/4 MD5 OK (saved to the user-chosen folder), phone->PC 3x100 MB MD5 OK at 7-10 MB/s, touchpad OK, no crash/ANR/kill/disconnect.
+- realme throttles background apps' network: during a background 100 MB receive it installed per-uid rate limits halving every 5 s (78 Mbit/s down to 1.2 Mbit/s, 3.1 MB/s overall). With an ongoing progress notification during transfers, a 300 MB background receive ran at 8.8 MB/s (link ceiling) with no throttle rules.
+- Measurement artefact found: `dumpsys meminfo` forces a GC in the app and blocks realme's freezer; samplers now run every 5 minutes.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
