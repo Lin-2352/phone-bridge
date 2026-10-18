@@ -81,7 +81,7 @@ private const val TAG = "PhoneBridge"
 
 /**
  * UI over the [PbService]-owned node. Screens follow design v2: Home (link
- * status, Universal Clipboard, recent), Settings, and the pairing code check.
+ * status, Share clipboard, recent), Settings, and the pairing code check.
  *
  * Test hooks (debug use over adb): intent extras `pair_code`, `confirm` ("yes"/"no"),
  * `send_text`. They drive exactly the same code paths as the UI.
@@ -121,17 +121,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // Universal Clipboard, phone -> PC: the clipboard is readable while we
-        // have focus. Sensitive text only when the user allowed it.
-        if (hasFocus && prefs.clipboardSync) {
-            val (text, sensitive) = readClipboard(this) ?: return
-            if (sensitive && !prefs.sendSensitive) return
-            // Only when it changed since the last sync in either direction.
-            if (text.hashCode() == prefs.lastClip) return
-            val node = Bridge.node ?: return
-            prefs.lastClip = text.hashCode()
-            Bridge.scope.launch { runCatching { node.syncClipboard(text, sensitive) } }
-        }
+        // Share clipboard, phone -> PC: readable only while we have focus.
+        if (hasFocus) shareClipboardIfChanged(this, prefs)
     }
 
     private fun handleIntent(intent: Intent?) {
@@ -262,7 +253,7 @@ class MainActivity : ComponentActivity() {
                 }
                 item {
                     ListItem(
-                        headlineContent = { Text("Universal Clipboard") },
+                        headlineContent = { Text("Share clipboard") },
                         supportingContent = { Text("Copy here, paste on your PC, and back") },
                         trailingContent = {
                             Switch(checked = clipOn, onCheckedChange = {
@@ -331,21 +322,21 @@ class MainActivity : ComponentActivity() {
                 item { Section("Clipboard") }
                 item {
                     ListItem(
-                        headlineContent = { Text("Universal Clipboard") },
+                        headlineContent = { Text("Share clipboard") },
                         supportingContent = { Text("Share what you copy with your paired PC") },
                         trailingContent = { Switch(clipOn, { clipOn = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }) },
                     )
                 }
                 item {
                     ListItem(
-                        headlineContent = { Text("Also send passwords and codes") },
+                        headlineContent = { Text("Passwords and codes") },
                         supportingContent = { Text("Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC") },
                         trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clipOn) },
                     )
                 }
                 item {
                     Text(
-                        "Android only lets apps read the clipboard while they are open. To send a copy from anywhere, long-press the Phone Bridge tile in Quick Settings.",
+                        "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open Phone Bridge or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),

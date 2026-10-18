@@ -13,7 +13,7 @@ import android.os.Bundle
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
-import android.widget.Toast
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -21,17 +21,18 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
@@ -127,33 +128,45 @@ class StarterActivity : Activity() {
         finish()
     }
 }
-
 /**
- * Long-press on the tile: the everyday switches in a small sheet, without
- * opening the whole app. Being focused, it can also read the clipboard.
+ * Tile detail panel, laid out like the system's own (DND, Bluetooth): blurred
+ * shade behind, a card with close, title and master switch, the options, and
+ * MORE. Opening it also shares the clipboard: Android lets only a focused
+ * app read it, and this panel is focused.
  */
 class QuickPanelActivity : ComponentActivity() {
+    private lateinit var prefs: Prefs
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val prefs = Prefs(this)
+        prefs = Prefs(this)
         ThemeChoice.mode.intValue = prefs.theme
+        if (Build.VERSION.SDK_INT >= 31) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+            window.attributes = window.attributes.apply { blurBehindRadius = 80 }
+        }
         setContent {
             PbTheme {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.32f))
+                        .background(Color.Black.copy(alpha = 0.35f))
                         .clickable(remember { MutableInteractionSource() }, null) { finish() },
-                    contentAlignment = Alignment.BottomCenter,
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Panel(prefs)
+                    Panel()
                 }
             }
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) shareClipboardIfChanged(this, prefs)
+    }
+
     @Composable
-    private fun Panel(prefs: Prefs) {
+    private fun Panel() {
         var on by remember { mutableStateOf(prefs.enabled) }
         var clip by remember { mutableStateOf(prefs.clipboardSync) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
@@ -172,79 +185,73 @@ class QuickPanelActivity : ComponentActivity() {
         val itemColors = ListItemDefaults.colors(containerColor = Color.Transparent)
         Column(
             Modifier
+                .padding(horizontal = 14.dp)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                .clip(RoundedCornerShape(32.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainer)
                 .clickable(remember { MutableInteractionSource() }, null) {}
-                .navigationBarsPadding()
-                .padding(vertical = 12.dp),
+                .padding(vertical = 16.dp),
         ) {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { finish() }) { Icon(Icons.Filled.Close, "Close") }
+                Text("Phone Bridge", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Switch(on, { on = it; setBridgeEnabled(this@QuickPanelActivity, it) })
+            }
             Text(
-                "Phone Bridge",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
-            )
-            ListItem(
-                colors = itemColors,
-                headlineContent = { Text("Phone Bridge") },
-                supportingContent = {
-                    Text(if (on) Bridge.linked.value?.let { "On, paired with $it" } ?: "On" else "Off. Your PC cannot reach this phone")
+                when {
+                    !on -> "Off. Your PC cannot reach this phone"
+                    Bridge.linked.value != null -> "Linked with ${Bridge.linked.value}"
+                    else -> "On, not paired yet"
                 },
-                trailingContent = { Switch(on, { on = it; setBridgeEnabled(this@QuickPanelActivity, it) }) },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 72.dp, bottom = 8.dp),
             )
             ListItem(
                 colors = itemColors,
-                headlineContent = { Text("Universal Clipboard") },
+                headlineContent = { Text("Share clipboard") },
                 supportingContent = { Text("Copy on one device, paste on the other") },
-                trailingContent = { Switch(clip, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }) },
+                trailingContent = { Switch(clip, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }, enabled = on) },
             )
             ListItem(
                 colors = itemColors,
-                headlineContent = { Text("Also send passwords and codes") },
-                supportingContent = { Text("Text apps mark as sensitive. Kept out of clipboard history on the PC") },
-                trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clip) },
+                headlineContent = { Text("Passwords and codes") },
+                supportingContent = { Text("Share them too. Kept out of clipboard history") },
+                trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = on && clip) },
             )
             ListItem(
                 colors = itemColors,
                 headlineContent = { Text("Accept files automatically") },
                 supportingContent = { Text("From your paired PC only") },
-                trailingContent = { Switch(auto, { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) }) },
+                trailingContent = { Switch(auto, { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) }, enabled = on) },
             )
-            HorizontalDivider(Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilledTonalButton(onClick = { sendClipboardNow(prefs) }, enabled = on) { Text("Send clipboard") }
-                FilledTonalButton(onClick = { pick.launch("*/*") }, enabled = on) { Text("Send files") }
-                FilledTonalButton(onClick = {
+            ListItem(
+                colors = itemColors,
+                headlineContent = { Text("Send files to PC") },
+                modifier = Modifier.clickable(enabled = on) { pick.launch("*/*") },
+            )
+            TextButton(
+                onClick = {
                     startActivity(Intent(this@QuickPanelActivity, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     finish()
-                }) { Text("Open") }
-            }
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 8.dp),
+            ) { Text("MORE", style = MaterialTheme.typography.titleMedium) }
         }
     }
+}
 
-    private fun sendClipboardNow(prefs: Prefs) {
-        val node = Bridge.node
-        val peer = Bridge.firstPeer()
-        val clip = readClipboard(this)
-        val msg = when {
-            node == null || peer == null -> "Pair Phone Bridge with your PC first"
-            clip == null -> "Clipboard is empty"
-            clip.second && !prefs.sendSensitive -> "Not sent: it is a password or code. Allow that in this panel first"
-            else -> {
-                val text = clip.first
-                prefs.lastClip = text.hashCode()
-                Bridge.scope.launch {
-                    runCatching { node.sendText(peer.id, text, false) }
-                        .onSuccess { Log.i(TAG, "CLIPSEND ${text.length} chars to ${peer.name}") }
-                        .onFailure { Log.e(TAG, "CLIPSEND failed: $it") }
-                }
-                "Clipboard sent to ${peer.name}"
-            }
-        }
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-        finish()
+/** Phone -> PC Share clipboard, run whenever one of our windows gains focus. */
+fun shareClipboardIfChanged(ctx: Context, prefs: Prefs) {
+    if (!prefs.clipboardSync) return
+    val (text, sensitive) = readClipboard(ctx) ?: return
+    if (sensitive && !prefs.sendSensitive) return
+    // Only when it changed since the last sync in either direction.
+    if (text.hashCode() == prefs.lastClip) return
+    val node = Bridge.node ?: return
+    prefs.lastClip = text.hashCode()
+    Bridge.scope.launch {
+        runCatching { node.syncClipboard(text, sensitive) }
+            .onSuccess { Log.i(TAG, "CLIPSYNC sent ${text.length} chars") }
     }
 }

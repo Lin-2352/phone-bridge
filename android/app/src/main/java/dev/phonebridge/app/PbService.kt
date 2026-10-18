@@ -154,7 +154,7 @@ class PbService : Service() {
         when (e) {
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
-                // Universal Clipboard: writing the clipboard is allowed in the background.
+                // Share clipboard: writing the clipboard is allowed in the background.
                 Prefs(this).lastClip = e.text.hashCode()
                 writeClipboard(e.text, e.sensitive)
                 Log.i(TAG, "CLIPSYNC received from ${e.peerName}${if (e.sensitive) " (sensitive)" else ""}")

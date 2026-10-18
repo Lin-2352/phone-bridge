@@ -3,7 +3,7 @@ package dev.phonebridge.app
 import android.content.Context
 import android.net.Uri
 
-/** User settings. Universal Clipboard is off until the user turns it on. */
+/** User settings. Share clipboard is off until the user turns it on. */
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
