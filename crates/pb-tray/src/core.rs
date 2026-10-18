@@ -54,6 +54,11 @@ pub enum Cmd {
         text: String,
         sensitive: bool,
     },
+    /// Text or a link shared from Windows (share sheet).
+    SendText {
+        text: String,
+        link: bool,
+    },
     Decide {
         id: u64,
         accept: bool,
@@ -273,6 +278,26 @@ pub async fn run(
                             match r {
                                 Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
                                 Err(e) => log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}")),
+                            }
+                        }
+                    });
+                }
+                Some(Cmd::SendText { text, link }) => {
+                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    tokio::spawn(async move {
+                        let Some((id, name)) = target else {
+                            ui(UiEvent::Info("Pair a device first".into()));
+                            return;
+                        };
+                        match node.send_text(&id, &text, link).await {
+                            Ok(()) => {
+                                log.line(&format!("SHARE sent {} to \"{name}\"", if link { "link" } else { "text" }));
+                                ui(UiEvent::Info(format!("Sent to {name}")));
+                            }
+                            Err(e) => {
+                                log.line(&format!("SHARE failed: {e}"));
+                                ui(UiEvent::Info(format!("Could not send to {name}: {e}")));
                             }
                         }
                     });

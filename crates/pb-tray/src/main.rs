@@ -27,6 +27,8 @@ mod settings;
 #[cfg(windows)]
 mod settings_window;
 #[cfg(windows)]
+mod share;
+#[cfg(windows)]
 mod ui;
 
 #[cfg(not(windows))]
@@ -101,6 +103,36 @@ fn main() {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
+    }
+    // Started by the Windows share sheet: hand the item to the running tray
+    // (starting it if needed), tell Windows we are done, and exit.
+    if let Some(share) = share::take() {
+        let req = match &share.item {
+            share::Shared::Files(f) => ipc::Request::Send(f.clone()),
+            share::Shared::Text(t) => ipc::Request::Text {
+                link: false,
+                text: t.clone(),
+            },
+            share::Shared::Link(u) => ipc::Request::Text {
+                link: true,
+                text: u.clone(),
+            },
+        };
+        let mut ok = ipc::send_request(&req);
+        if !ok {
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = std::process::Command::new(exe).spawn();
+            }
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if ipc::send_request(&req) {
+                    ok = true;
+                    break;
+                }
+            }
+        }
+        share.done();
+        std::process::exit(if ok { 0 } else { 1 });
     }
     if !single_instance() {
         // Hand the request to the running tray over its local pipe.

@@ -33,6 +33,11 @@ pub enum Request {
     Open,
     /// Show the tray menu (for checks without clicking the icon).
     Menu,
+    /// Text or a link from the share sheet.
+    Text {
+        link: bool,
+        text: String,
+    },
     Send(Vec<PathBuf>),
 }
 
@@ -43,6 +48,7 @@ fn encode(r: &Request) -> String {
         Request::Settings => "settings\n".into(),
         Request::Open => "open\n".into(),
         Request::Menu => "menu\n".into(),
+        Request::Text { link, text } => format!("text\n{}\n{text}", u8::from(*link)),
         Request::Send(files) => {
             let mut s = "send\n".to_owned();
             for f in files {
@@ -63,6 +69,14 @@ pub fn decode(text: &str) -> Option<Request> {
         "settings" => Some(Request::Settings),
         "open" => Some(Request::Open),
         "menu" => Some(Request::Menu),
+        "text" => {
+            let link = lines.next()? == "1";
+            let text: Vec<&str> = lines.collect();
+            Some(Request::Text {
+                link,
+                text: text.join("\n"),
+            })
+        }
         "send" => {
             let files: Vec<PathBuf> = lines.filter(|l| !l.is_empty()).map(PathBuf::from).collect();
             (!files.is_empty()).then_some(Request::Send(files))
@@ -107,6 +121,9 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
             }
             Some(Request::Send(files)) => {
                 let _ = cmds.send(Cmd::SendFiles(files));
+            }
+            Some(Request::Text { link, text }) => {
+                let _ = cmds.send(Cmd::SendText { text, link });
             }
             Some(
                 r @ (Request::SendClipboard | Request::Settings | Request::Open | Request::Menu),
