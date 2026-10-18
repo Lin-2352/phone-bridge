@@ -223,6 +223,23 @@ impl Node {
     }
 }
 
+/// Free space left after a transfer, at minimum.
+const KEEP_FREE: u64 = 256 * 1024 * 1024;
+
+fn room_for(dir: &Path, size: u64) -> bool {
+    // The directory may not exist yet; its parent is on the same volume.
+    let probe = if dir.exists() {
+        dir
+    } else {
+        dir.parent().unwrap_or(dir)
+    };
+    match fs4::available_space(probe) {
+        Ok(free) => free >= size.saturating_mul(2).saturating_add(KEEP_FREE),
+        // Unknown: do not refuse on a failed query.
+        Err(_) => true,
+    }
+}
+
 /// Handle an incoming [`Offer`] on `session`: reply, and for files receive
 /// the bytes into `dir`, verify the hash, and move into place.
 pub async fn receive_offer(
@@ -235,7 +252,10 @@ pub async fn receive_offer(
 ) -> Result<Received, Error> {
     let id = offer.id;
     let kind = OfferKind::try_from(offer.kind).unwrap_or(OfferKind::File);
-    let too_big = kind == OfferKind::File && offer.size > max_size;
+    // Too big for the cap, or for the disk: the file is written once here and
+    // may be copied once more by the app (Android moves it into MediaStore),
+    // and the device must keep some room to stay usable.
+    let too_big = kind == OfferKind::File && (offer.size > max_size || !room_for(dir, offer.size));
     if !accept || too_big {
         session
             .send(ControlMsg::OfferReply(OfferReply { id, accept: false }))

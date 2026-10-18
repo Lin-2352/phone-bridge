@@ -18,6 +18,7 @@ tokio = { version = "1", features = ["rt", "macros", "time", "sync", "fs", "io-u
 sha2 = "0.10"
 getrandom = "0.3"
 prost = "0.14"
+fs4 = { version = "0.13", default-features = false, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

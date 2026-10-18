@@ -3,9 +3,10 @@
 //! `--pair`, `--send-clipboard`.
 //!
 //! The pipe name includes the user name; remote clients are rejected and the
-//! default pipe ACL only lets the creating user (and admins/SYSTEM) write.
+//! pipe's ACL admits only this user (owner) and SYSTEM.
 //! Messages are UTF-8 lines: a verb, then one file path per line for `send`.
 
+#![allow(unsafe_code)]
 use std::{io::Write, path::PathBuf};
 
 use tokio::{
@@ -93,16 +94,53 @@ pub fn send_request(r: &Request) -> bool {
     }
 }
 
+/// Security attributes for the pipe: only this user (owner) and SYSTEM.
+/// The default pipe DACL also lets other accounts on the PC connect.
+fn owner_only() -> Option<usize> {
+    use windows::{
+        core::w,
+        Win32::Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        },
+    };
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    // SAFETY: valid SDDL string; the descriptor is intentionally never freed
+    // because every pipe instance of this process uses it.
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("D:P(A;;GA;;;OW)(A;;GA;;;SY)"),
+            SDDL_REVISION_1,
+            &mut sd,
+            None,
+        )
+        .ok()?;
+    }
+    let sa = Box::new(SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.0,
+        bInheritHandle: false.into(),
+    });
+    Some(Box::into_raw(sa) as usize)
+}
+
 /// Server side: accept requests forever. Requests that need the UI thread
 /// (clipboard, windows) go to `on_ui`.
 pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send + Sync + 'static) {
     let name = pipe_name();
     let on_ui = std::sync::Arc::new(on_ui);
+    let sa = owner_only();
     let create = |first: bool| {
-        ServerOptions::new()
-            .first_pipe_instance(first)
-            .reject_remote_clients(true)
-            .create(&name)
+        let mut opts = ServerOptions::new();
+        opts.first_pipe_instance(first).reject_remote_clients(true);
+        match sa {
+            // SAFETY: `sa` points to a SECURITY_ATTRIBUTES that lives for the
+            // rest of the process (leaked once in `owner_only`).
+            Some(p) => unsafe { opts.create_with_security_attributes_raw(&name, p as *mut _) },
+            None => opts.create(&name),
+        }
     };
     let Ok(mut server) = create(true) else {
         return; // another tray owns the pipe
