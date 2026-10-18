@@ -11,6 +11,8 @@
 #[cfg(windows)]
 mod core;
 #[cfg(windows)]
+mod flyout;
+#[cfg(windows)]
 mod ipc;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
@@ -81,6 +83,14 @@ fn main() {
             "--send" => send_files.extend(args.by_ref().map(PathBuf::from)),
             _ => {}
         }
+    }
+    // Crisp text and correct sizes on scaled displays.
+    #[allow(unsafe_code)]
+    // SAFETY: called once at startup before any window exists.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
     }
     if !single_instance() {
         // Hand the request to the running tray over its local pipe.

@@ -58,6 +58,7 @@ pub const ID_SEND_FILES: usize = 4;
 const ID_TOGGLE_CLIP: usize = 5;
 const ID_TOGGLE_AUTO: usize = 6;
 const ID_OPEN_FOLDER: usize = 7;
+const ID_SENDTO: usize = 8;
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 const TIMER_CLIP: usize = 7;
@@ -77,6 +78,97 @@ fn set_clipboard_own(hwnd: HWND, text: &str, sensitive: bool) -> std::io::Result
     clipboard::set_text(text, sensitive, Some(hwnd))?;
     OWN_SEQ.store(clipboard_seq(), std::sync::atomic::Ordering::Relaxed);
     Ok(())
+}
+
+fn sendto_link() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|a| {
+        std::path::PathBuf::from(a)
+            .join("Microsoft")
+            .join("Windows")
+            .join("SendTo")
+            .join("Phone Bridge.lnk")
+    })
+}
+
+/// Create (or remove) the Explorer "Send to > Phone Bridge" shortcut. Explorer
+/// runs it as `pb-tray.exe --send <selected files>`, which reaches the running
+/// tray over the local pipe.
+fn toggle_sendto() -> Result<bool, String> {
+    use windows::{
+        core::{Interface, HSTRING},
+        Win32::{
+            System::Com::{
+                CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
+                COINIT_APARTMENTTHREADED,
+            },
+            UI::Shell::{IShellLinkW, ShellLink},
+        },
+    };
+    let link = sendto_link().ok_or("no APPDATA folder")?;
+    if link.exists() {
+        std::fs::remove_file(&link).map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // SAFETY: standard IShellLink usage on this thread's STA; strings are
+    // HSTRINGs that outlive each call.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let sl: IShellLinkW =
+            CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+        sl.SetPath(&HSTRING::from(exe.as_os_str()))
+            .map_err(|e| e.to_string())?;
+        sl.SetArguments(&HSTRING::from("--send"))
+            .map_err(|e| e.to_string())?;
+        sl.SetDescription(&HSTRING::from("Send to your phone with Phone Bridge"))
+            .map_err(|e| e.to_string())?;
+        sl.SetIconLocation(&HSTRING::from(exe.as_os_str()), 0)
+            .map_err(|e| e.to_string())?;
+        let pf: IPersistFile = sl.cast().map_err(|e| e.to_string())?;
+        pf.Save(&HSTRING::from(link.as_os_str()), true)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(true)
+}
+
+/// Last thing that happened, shown at the bottom of the flyout.
+static LAST_ACTIVITY: Mutex<String> = Mutex::new(String::new());
+
+fn note_activity(s: &str) {
+    if let Ok(mut l) = LAST_ACTIVITY.lock() {
+        *l = s.to_owned();
+    }
+}
+
+fn open_flyout(hwnd: HWND, st: &State) {
+    let model = crate::flyout::Model {
+        peer: st
+            .peers
+            .lock()
+            .ok()
+            .and_then(|g| g.first().map(|(_, n)| n.clone())),
+        clipboard_on: st
+            .settings
+            .lock()
+            .map(|s| s.universal_clipboard)
+            .unwrap_or(false),
+        last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
+    };
+    let raw = hwnd.0 as isize;
+    let cmds = st.cmds.clone();
+    // Runs on the UI thread from the flyout's window procedure: only post
+    // messages here, never call back into the flyout.
+    crate::flyout::toggle(
+        model,
+        Box::new(move |a| match a {
+            crate::flyout::Action::ToggleClipboard => post_command(raw, ID_TOGGLE_CLIP),
+            crate::flyout::Action::SendFiles => post_command(raw, ID_SEND_FILES),
+            crate::flyout::Action::Pair => post_command(raw, ID_PAIR),
+            crate::flyout::Action::Dropped(files) => {
+                let _ = cmds.send(Cmd::SendFiles(files));
+            }
+        }),
+    );
 }
 
 fn save_settings(st: &State) {
@@ -329,6 +421,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 *l = Some(path.clone());
             }
             let mb = size as f64 / 1_048_576.0;
+            note_activity(&format!("Last: {name} received"));
             balloon(
                 hwnd,
                 &format!("{from} sent {name}"),
@@ -350,7 +443,12 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 },
             );
         }
-        UiEvent::Info(msg) => balloon(hwnd, "Phone Bridge", &msg),
+        UiEvent::Info(msg) => {
+            if msg.starts_with("Sent ") {
+                note_activity(&format!("Last: {}", msg));
+            }
+            balloon(hwnd, "Phone Bridge", &msg)
+        }
     }
 }
 
@@ -372,6 +470,17 @@ fn show_menu(hwnd: HWND, st: &State) {
         let _ = AppendMenuW(menu, flags, ID_SEND_CLIPBOARD, PCWSTR(send_label.as_ptr()));
         let _ = AppendMenuW(menu, flags, ID_SEND_FILES, w!("Send files\u{2026}"));
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, w!("Open received files"));
+        let sendto_on = sendto_link().is_some_and(|l| l.exists());
+        let _ = AppendMenuW(
+            menu,
+            if sendto_on {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            },
+            ID_SENDTO,
+            w!("Show in Explorer \u{201c}Send to\u{201d} menu"),
+        );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let (clip_on, auto_on) = st
             .settings
@@ -465,6 +574,19 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 }
             });
         }
+        ID_SENDTO => match toggle_sendto() {
+            Ok(true) => balloon(
+                hwnd,
+                "Phone Bridge",
+                "Added: right-click files, Send to, Phone Bridge",
+            ),
+            Ok(false) => balloon(hwnd, "Phone Bridge", "Removed from the Send to menu"),
+            Err(e) => balloon(
+                hwnd,
+                "Phone Bridge",
+                &format!("Could not change the Send to menu: {e}"),
+            ),
+        },
         ID_OPEN_FOLDER => {
             if let Ok(s) = st.settings.lock() {
                 let _ = std::fs::create_dir_all(&s.save_dir);
@@ -536,7 +658,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     match msg {
         WM_TRAY => {
             let ev = (lparam.0 & 0xffff) as u32;
-            if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU || ev == WM_LBUTTONUP {
+            if ev == WM_LBUTTONUP {
+                open_flyout(hwnd, st);
+            } else if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
                 show_menu(hwnd, st);
             } else if ev == NIN_BALLOONUSERCLICK {
                 if let Some(p) = LAST_FILE.lock().ok().and_then(|g| g.clone()) {
@@ -656,7 +780,12 @@ pub fn create(
         let mut nid = icon_data(hwnd);
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY;
-        nid.hIcon = LoadIconW(None, IDI_APPLICATION)?;
+        // Resource 1 is the app icon embedded by build.rs.
+        nid.hIcon = LoadIconW(
+            Some(hinstance.into()),
+            PCWSTR(std::ptr::without_provenance::<u16>(1)), /* MAKEINTRESOURCE(1) */
+        )
+        .or_else(|_| LoadIconW(None, IDI_APPLICATION))?;
         copy_into(&mut nid.szTip, "Phone Bridge (starting)");
         let _ = Shell_NotifyIconW(NIM_ADD, &nid);
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.

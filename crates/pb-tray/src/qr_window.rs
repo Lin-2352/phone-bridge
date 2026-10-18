@@ -45,6 +45,11 @@ struct Shown {
 static CURRENT: Mutex<Option<Shown>> = Mutex::new(None);
 static ON_USER_CLOSE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 
+fn sys_scale() -> f32 {
+    // SAFETY: plain query.
+    (unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }.max(96)) as f32 / 96.0
+}
+
 /// Called when the user closes the window (not when we close it).
 pub fn set_on_user_close(f: Box<dyn Fn() + Send + Sync>) {
     let _ = ON_USER_CLOSE.set(f);
@@ -101,12 +106,30 @@ fn paint(hwnd: HWND) {
         let bmp = CreateCompatibleBitmap(screen, w, h);
         let old = SelectObject(hdc, HGDIOBJ(bmp.0));
         SetBkMode(hdc, TRANSPARENT);
+        let ui_font = windows::Win32::Graphics::Gdi::CreateFontW(
+            -((15.0 * sys_scale()) as i32),
+            0,
+            0,
+            0,
+            400,
+            0,
+            0,
+            0,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            0,
+            w!("Segoe UI Variable Text"),
+        );
+        let old_font = SelectObject(hdc, HGDIOBJ(ui_font.0));
         let white = CreateSolidBrush(COLORREF(0x00FF_FFFF));
         let black = CreateSolidBrush(COLORREF(0));
         FillRect(hdc, &client, white);
         if let Some(s) = guard.as_ref() {
             let width = client.right - client.left;
-            let avail = width.min(client.bottom - client.top - TEXT_H).max(1) as usize;
+            let text_h = (TEXT_H as f32 * sys_scale()) as i32;
+            let avail = width.min(client.bottom - client.top - text_h).max(1) as usize;
             let total = s.matrix.size + 2 * QUIET;
             let scale = (avail / total).max(1) as i32;
             let off_x = (width - scale * total as i32) / 2;
@@ -152,6 +175,8 @@ fn paint(hwnd: HWND) {
             let _ = DeleteObject(HGDIOBJ(b.0));
         }
         let _ = BitBlt(screen, 0, 0, w, h, Some(hdc), 0, 0, SRCCOPY);
+        SelectObject(hdc, old_font);
+        let _ = DeleteObject(HGDIOBJ(ui_font.0));
         SelectObject(hdc, old);
         let _ = DeleteObject(HGDIOBJ(bmp.0));
         let _ = DeleteDC(hdc);
@@ -183,8 +208,8 @@ pub fn show(code: &str, refresh_in: Duration, closes_in: Duration) -> Result<(),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                460,
-                620,
+                (460.0 * sys_scale()) as i32,
+                (620.0 * sys_scale()) as i32,
                 None,
                 None,
                 Some(hinstance.into()),
