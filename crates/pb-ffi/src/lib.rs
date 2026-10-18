@@ -518,6 +518,74 @@ impl PbNode {
     pub async fn shutdown(&self) {
         self.node.shutdown().await;
     }
+
+    /// Start using this phone as the PC's touchpad and keyboard. Fails if
+    /// the PC declines (control turned off there).
+    pub async fn start_input(&self, peer_id: String) -> Result<Arc<PbInput>, PbError> {
+        let peer = self.find(&peer_id)?;
+        let sender = self.node.open_input(&peer).await.map_err(fail)?;
+        Ok(Arc::new(PbInput {
+            sender: Mutex::new(Some(sender)),
+        }))
+    }
+}
+
+/// A running touchpad/keyboard session. Every call only queues an event
+/// (never blocks the UI thread); moves are merged when the link is busy.
+#[derive(uniffi::Object)]
+pub struct PbInput {
+    sender: Mutex<Option<pb_transport::input::InputSender>>,
+}
+
+impl PbInput {
+    fn send(&self, e: pb_protocol::InputEvent) -> bool {
+        self.sender
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.send(e)))
+            .unwrap_or(false)
+    }
+}
+
+#[uniffi::export]
+impl PbInput {
+    /// Relative pointer motion in PC pixels (before the PC's acceleration).
+    pub fn move_by(&self, dx: i16, dy: i16) -> bool {
+        self.send(pb_protocol::InputEvent::MouseMove { dx, dy })
+    }
+
+    /// 0 left, 1 right, 2 middle.
+    pub fn button(&self, button: u8, pressed: bool) -> bool {
+        self.send(pb_protocol::InputEvent::MouseButton { button, pressed })
+    }
+
+    /// Scroll in 1/120 notch units; positive `dy` scrolls up.
+    pub fn scroll(&self, dx: i16, dy: i16) -> bool {
+        self.send(pb_protocol::InputEvent::Wheel { dx, dy })
+    }
+
+    /// PC set-1 scan code; 0xE0xx for extended keys.
+    pub fn key(&self, scancode: u16, pressed: bool) -> bool {
+        self.send(pb_protocol::InputEvent::Key { scancode, pressed })
+    }
+
+    pub fn type_text(&self, text: String) -> bool {
+        text.encode_utf16()
+            .all(|unit| self.send(pb_protocol::InputEvent::Char { unit }))
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.sender
+            .lock()
+            .ok()
+            .is_some_and(|g| g.as_ref().is_some_and(|s| s.is_open()))
+    }
+
+    pub fn stop(&self) {
+        if let Some(s) = self.sender.lock().ok().and_then(|mut g| g.take()) {
+            s.stop();
+        }
+    }
 }
 
 /// JNI entry point. The only `unsafe` in this crate.

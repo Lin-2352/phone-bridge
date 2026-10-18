@@ -415,3 +415,101 @@ mod transfers {
         );
     }
 }
+
+mod input {
+    use pb_protocol::InputEvent;
+
+    use super::*;
+    use crate::input::receive_input;
+
+    async fn paired() -> (Node, NodeEvents, Node, NodeEvents) {
+        let (pc, mut pc_ev, _) = node(11, "PC").await;
+        let (phone, phone_ev, _) = node(12, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        (pc, pc_ev, phone, phone_ev)
+    }
+
+    /// Receiver: take the next session, expect InputStart, collect events.
+    async fn receive(ev: &mut NodeEvents, accept: bool) -> (Result<(), Error>, Vec<InputEvent>) {
+        let mut s = ev.sessions.recv().await.unwrap();
+        loop {
+            match s.recv().await {
+                Ok(Some(ControlMsg::InputStart(start))) => {
+                    let mut got = Vec::new();
+                    let r = receive_input(&mut s, start, accept, |e| got.push(e)).await;
+                    return (r, got);
+                }
+                Ok(Some(_)) => continue,
+                _ => return (Err(Error::Closed), Vec::new()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn events_arrive_in_order_and_moves_merge() {
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        let input = phone.open_input(&pc.peer_id()).await.unwrap();
+        for _ in 0..100 {
+            input.send(InputEvent::MouseMove { dx: 1, dy: -2 });
+        }
+        input.send(InputEvent::MouseButton {
+            button: 0,
+            pressed: true,
+        });
+        input.send(InputEvent::MouseButton {
+            button: 0,
+            pressed: false,
+        });
+        for u in "hé😀".encode_utf16() {
+            input.send(InputEvent::Char { unit: u });
+        }
+        input.stop();
+        let (r, got) = rx.await.unwrap();
+        r.unwrap();
+        let (mut x, mut y) = (0i32, 0i32);
+        let mut rest = Vec::new();
+        for e in got {
+            match e {
+                InputEvent::MouseMove { dx, dy } => {
+                    assert!(rest.is_empty(), "moves come before the click");
+                    x += i32::from(dx);
+                    y += i32::from(dy);
+                }
+                other => rest.push(other),
+            }
+        }
+        assert_eq!((x, y), (100, -200), "no motion lost by merging");
+        let typed: Vec<u16> = rest
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Char { unit } => Some(*unit),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(String::from_utf16(&typed).unwrap(), "hé😀");
+        assert_eq!(
+            &rest[..2],
+            &[
+                InputEvent::MouseButton {
+                    button: 0,
+                    pressed: true
+                },
+                InputEvent::MouseButton {
+                    button: 0,
+                    pressed: false
+                }
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn declined_input_reports_declined() {
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, false).await });
+        let r = phone.open_input(&pc.peer_id()).await;
+        assert!(matches!(r, Err(Error::Declined)));
+        assert!(matches!(rx.await.unwrap().0, Err(Error::Declined)));
+    }
+}

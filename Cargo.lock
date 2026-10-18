@@ -2346,6 +2346,7 @@ name = "pb-platform-win"
 version = "0.0.1"
 dependencies = [
  "pb-identity",
+ "pb-protocol",
  "windows",
 ]
 

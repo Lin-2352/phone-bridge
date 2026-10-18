@@ -25,6 +25,10 @@
             </intent-filter>
         </activity>
         <activity
+            android:name=".TouchpadActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
             android:name=".ScanActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />

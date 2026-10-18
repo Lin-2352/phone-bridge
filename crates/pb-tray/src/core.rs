@@ -54,6 +54,8 @@ pub enum Cmd {
         text: String,
         sensitive: bool,
     },
+    /// Start driving the phone with this PC's mouse and keyboard.
+    ControlPhone,
     /// Text or a link shared from Windows (share sheet).
     SendText {
         text: String,
@@ -92,6 +94,11 @@ pub enum UiEvent {
     Link {
         from: String,
         url: String,
+    },
+    /// Control-phone session accepted; the UI installs its input hooks.
+    ControlReady {
+        name: String,
+        sender: pb_transport::input::InputSender,
     },
     /// Universal Clipboard: text copied on the other device.
     RemoteClipboard {
@@ -282,6 +289,28 @@ pub async fn run(
                         }
                     });
                 }
+                Some(Cmd::ControlPhone) => {
+                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    tokio::spawn(async move {
+                        let Some((id, name)) = target else {
+                            ui(UiEvent::Info("Pair a phone first".into()));
+                            return;
+                        };
+                        match node.open_input(&id).await {
+                            Ok(sender) => {
+                                log.line(&format!("CONTROL phone \"{name}\" started"));
+                                ui(UiEvent::ControlReady { name, sender });
+                            }
+                            Err(e) => {
+                                log.line(&format!("CONTROL phone \"{name}\" refused: {e}"));
+                                ui(UiEvent::Info(format!(
+                                    "{name} did not allow control. On the phone, turn on Phone Bridge control in Settings, Accessibility."
+                                )));
+                            }
+                        }
+                    });
+                }
                 Some(Cmd::SendText { text, link }) => {
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
@@ -468,6 +497,31 @@ async fn pump(
                     text: u.text,
                     sensitive: u.sensitive,
                 });
+            }
+            Ok(Some(ControlMsg::InputStart(start))) => {
+                let allow = settings.lock().map(|x| x.allow_control).unwrap_or(false);
+                let from = s.peer_name.clone();
+                log.line(&format!("INPUT from \"{from}\" allowed={allow}"));
+                if allow {
+                    ui(UiEvent::Info(format!("{from} is controlling this PC")));
+                }
+                let mut injector = pb_platform_win::input::Injector::default();
+                let started = Instant::now();
+                let mut n = 0u64;
+                let r = pb_transport::input::receive_input(&mut s, start, allow, |e| {
+                    n += 1;
+                    injector.inject(e);
+                })
+                .await;
+                drop(injector); // releases anything still held
+                if allow {
+                    log.line(&format!(
+                        "INPUT from \"{from}\" ended after {:.1}s, {n} events: {r:?}",
+                        started.elapsed().as_secs_f32()
+                    ));
+                    ui(UiEvent::Info(format!("{from} stopped controlling this PC")));
+                }
+                break;
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
                 let (auto, dir) = settings

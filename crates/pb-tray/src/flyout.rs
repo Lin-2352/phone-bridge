@@ -51,6 +51,7 @@ pub enum Action {
     ToggleClipboard,
     SendFiles,
     Pair,
+    ControlPhone,
     Settings,
     Dropped(Vec<std::path::PathBuf>),
 }
@@ -209,7 +210,11 @@ fn paint(hwnd: HWND) {
         let tiles = [
             (glyph::CLIPBOARD, "Share clipboard", Hit::Clip),
             (glyph::SEND, "Send files", Hit::Send),
-            (glyph::ADD, "Pair device", Hit::Pair),
+            if st.model.peer.is_some() {
+                (glyph::KEYBOARD, "Control phone", Hit::Pair)
+            } else {
+                (glyph::ADD, "Pair device", Hit::Pair)
+            },
         ];
         for (r, (g, label, h)) in l.tiles.iter().zip(tiles) {
             let on = h == Hit::Clip && st.model.clipboard_on;
@@ -363,7 +368,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     close();
                 }
                 Some(Hit::Pair) => {
-                    act(Action::Pair);
+                    let paired = CURRENT
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.as_ref().map(|s| s.model.peer.is_some()))
+                        .unwrap_or(false);
+                    act(if paired {
+                        Action::ControlPhone
+                    } else {
+                        Action::Pair
+                    });
                     close();
                 }
                 Some(Hit::Settings) => {

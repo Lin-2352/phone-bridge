@@ -6,6 +6,7 @@
 //! GSO is disabled on Android (see docs/DECISIONS.md, finding 1).
 
 pub mod files;
+pub mod input;
 pub mod pairing;
 
 use std::{

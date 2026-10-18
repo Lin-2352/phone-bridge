@@ -248,6 +248,8 @@ class MainActivity : ComponentActivity() {
                             Button(onClick = { setBridgeEnabled(this@MainActivity, true) }) { Text("Turn on") }
                         } else if (pc == null) {
                             Button(onClick = { startActivity(Intent(this@MainActivity, ScanActivity::class.java)) }) { Text("Pair: scan QR from PC") }
+                        } else {
+                            Button(onClick = { startActivity(Intent(this@MainActivity, TouchpadActivity::class.java)) }) { Text("Use as touchpad and keyboard") }
                         }
                     }
                 }

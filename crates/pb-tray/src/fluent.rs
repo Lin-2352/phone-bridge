@@ -41,6 +41,7 @@ pub mod glyph {
     pub const ADD: char = '\u{E710}';
     pub const CLOSE: char = '\u{E711}';
     pub const UPLOAD: char = '\u{E898}';
+    pub const KEYBOARD: char = '\u{E765}';
 }
 
 /// 0 = follow Windows, 1 = light, 2 = dark (from settings).

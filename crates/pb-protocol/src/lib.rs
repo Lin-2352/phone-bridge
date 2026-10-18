@@ -114,7 +114,10 @@ pub enum InputEvent {
     /// Scroll in 1/120 notch units.
     Wheel { dx: i16, dy: i16 },
     /// Hardware scan code (not a character) for layout-independent keys.
+    /// PC set 1; extended keys carry 0xE0 in the high byte (0xE048 = Up).
     Key { scancode: u16, pressed: bool },
+    /// One UTF-16 code unit of typed text (surrogate pairs are two events).
+    Char { unit: u16 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +157,7 @@ impl InputDatagram {
             }
             InputEvent::Wheel { dx, dy } => (2, 0, dx, dy),
             InputEvent::Key { scancode, pressed } => (3, u8::from(pressed), scancode as i16, 0),
+            InputEvent::Char { unit } => (4, 0, unit as i16, 0),
         };
         let mut out = [0u8; INPUT_DATAGRAM_LEN];
         out[0] = kind;
@@ -183,6 +187,7 @@ impl InputDatagram {
                 scancode: a as u16,
                 pressed,
             },
+            4 => InputEvent::Char { unit: a as u16 },
             k => return Err(DatagramError::UnknownKind(k)),
         };
         Ok(Self { seq, event })
@@ -286,6 +291,8 @@ mod tests {
                 scancode: 0xe05b,
                 pressed: false,
             },
+            InputEvent::Char { unit: 0x20ac },
+            InputEvent::Char { unit: 0xd83d },
         ];
         for (i, event) in events.into_iter().enumerate() {
             let d = InputDatagram {

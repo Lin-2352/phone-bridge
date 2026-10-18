@@ -18,6 +18,8 @@ pub struct Settings {
     pub save_dir: PathBuf,
     /// 0 = follow Windows, 1 = light, 2 = dark.
     pub theme: u8,
+    /// Let a paired phone drive this PC's pointer and keyboard.
+    pub allow_control: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             auto_accept: true,
             save_dir: downloads,
             theme: 0,
+            allow_control: true,
         }
     }
 }
@@ -68,6 +71,7 @@ impl Settings {
                         _ => 0,
                     }
                 }
+                "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
@@ -80,12 +84,13 @@ impl Settings {
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let text = format!(
-            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\ntheme={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\ntheme={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
             self.keep_in_history,
             self.auto_accept,
             ["system", "light", "dark"][self.theme.min(2) as usize],
+            self.allow_control,
             self.save_dir.display()
         );
         let tmp = path.with_extension("tmp");
@@ -118,6 +123,7 @@ mod tests {
             auto_accept: false,
             save_dir: PathBuf::from(r"D:\Inbox"),
             theme: 2,
+            allow_control: false,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);

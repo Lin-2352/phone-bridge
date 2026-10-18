@@ -95,14 +95,14 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
         .expect("unbounded range")
 }
 
-fn new_id() -> u64 {
+pub(crate) fn new_id() -> u64 {
     let mut b = [0u8; 8];
     let _ = getrandom::fill(&mut b);
     u64::from_le_bytes(b)
 }
 
 /// Wait for the reply to `id`, skipping anything else.
-async fn await_reply(s: &mut Session, id: u64) -> Result<bool, Error> {
+pub(crate) async fn await_reply(s: &mut Session, id: u64) -> Result<bool, Error> {
     tokio::time::timeout(OFFER_TIMEOUT, async {
         loop {
             match s.recv().await? {
@@ -117,13 +117,13 @@ async fn await_reply(s: &mut Session, id: u64) -> Result<bool, Error> {
 }
 
 /// Receiver side: let the sender close after reading our last reply.
-async fn wait_for_close(session: &Session) {
+pub(crate) async fn wait_for_close(session: &Session) {
     let _ = tokio::time::timeout(Duration::from_secs(10), session.conn.closed()).await;
 }
 
 /// After our last message, wait until the receiver closes, so nothing we
 /// sent is discarded by an early close.
-async fn await_peer_close(s: &mut Session) {
+pub(crate) async fn await_peer_close(s: &mut Session) {
     let _ = tokio::time::timeout(Duration::from_secs(60), async {
         while let Ok(Some(_)) = s.recv().await {}
     })

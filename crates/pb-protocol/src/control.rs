@@ -12,7 +12,7 @@ pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 /// Envelope for every message on a session control stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Control {
-    #[prost(oneof = "ControlMsg", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+    #[prost(oneof = "ControlMsg", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub msg: Option<ControlMsg>,
 }
 
@@ -34,6 +34,19 @@ pub enum ControlMsg {
     Cancel(Cancel),
     #[prost(message, tag = "8")]
     ClipboardUpdate(ClipboardUpdate),
+    /// The sender wants to control this device's pointer and keyboard. The
+    /// receiver answers with `OfferReply { id, accept }`; if accepted, the
+    /// sender opens one unidirectional stream of 8-byte `InputDatagram`
+    /// records (see `pb_protocol::InputDatagram`) and the session lasts until
+    /// that stream ends.
+    #[prost(message, tag = "9")]
+    InputStart(InputStart),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct InputStart {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
 }
 
 /// What an offer carries.

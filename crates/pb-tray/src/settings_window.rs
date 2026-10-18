@@ -44,6 +44,7 @@ pub enum Key {
     Auto,
     SendTo,
     Startup,
+    Control,
 }
 
 #[derive(Clone, Default)]
@@ -57,6 +58,7 @@ pub struct Model {
     pub save_dir: String,
     pub sendto: bool,
     pub startup: bool,
+    pub control: bool,
     /// (name, fingerprint)
     pub devices: Vec<(String, String)>,
     pub my_fingerprint: String,
@@ -71,6 +73,7 @@ impl Model {
             Key::Auto => self.auto,
             Key::SendTo => self.sendto,
             Key::Startup => self.startup,
+            Key::Control => self.control,
         }
     }
 }
@@ -131,6 +134,11 @@ fn rows(m: &Model) -> Vec<Row> {
             Key::Startup,
             "Start with Windows",
             "Phone Bridge waits quietly in the tray",
+        ),
+        Row::Toggle(
+            Key::Control,
+            "Let my phone control this PC",
+            "Use the phone as a touchpad and keyboard",
         ),
         Row::Header("Devices"),
     ];

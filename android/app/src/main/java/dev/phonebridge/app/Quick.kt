@@ -227,6 +227,15 @@ class QuickPanelActivity : ComponentActivity() {
             )
             ListItem(
                 colors = itemColors,
+                headlineContent = { Text("Touchpad and keyboard") },
+                supportingContent = { Text("Control your PC from this phone") },
+                modifier = Modifier.clickable(enabled = on && Bridge.linked.value != null) {
+                    startActivity(Intent(this@QuickPanelActivity, TouchpadActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    finish()
+                },
+            )
+            ListItem(
+                colors = itemColors,
                 headlineContent = { Text("Send files to PC") },
                 modifier = Modifier.clickable(enabled = on) { pick.launch("*/*") },
             )

@@ -5,6 +5,8 @@ pub mod clipboard;
 #[cfg(windows)]
 mod dpapi;
 #[cfg(windows)]
+pub mod input;
+#[cfg(windows)]
 pub mod power;
 
 #[cfg(windows)]

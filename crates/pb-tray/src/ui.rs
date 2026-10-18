@@ -60,6 +60,9 @@ const ID_TOGGLE_PRIVATE: usize = 9;
 pub const ID_OPEN_FLYOUT: usize = 10;
 pub const ID_SETTINGS: usize = 11;
 pub const ID_MENU: usize = 12;
+const ID_CONTROL: usize = 13;
+const TIMER_CONTROL: usize = 8;
+const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
 static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_window::Action>> =
     Mutex::new(VecDeque::new());
@@ -196,6 +199,7 @@ fn open_flyout(hwnd: HWND, st: &State) {
             crate::flyout::Action::SendFiles => post_command(raw, ID_SEND_FILES),
             crate::flyout::Action::Pair => post_command(raw, ID_PAIR),
             crate::flyout::Action::Settings => post_command(raw, ID_SETTINGS),
+            crate::flyout::Action::ControlPhone => post_command(raw, ID_CONTROL),
             crate::flyout::Action::Dropped(files) => {
                 let _ = cmds.send(Cmd::SendFiles(files));
             }
@@ -457,6 +461,24 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 ),
             }
         }
+        UiEvent::ControlReady { name, sender } => {
+            if crate::control::start(hwnd, sender) {
+                // SAFETY: timer on our own window; checks the session is alive.
+                unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::SetTimer(
+                        Some(hwnd),
+                        TIMER_CONTROL,
+                        1000,
+                        None,
+                    )
+                };
+                balloon(
+                    hwnd,
+                    &format!("Controlling {name}"),
+                    "Your mouse and keyboard now drive the phone. Press Ctrl+Alt+P to return.",
+                );
+            }
+        }
         UiEvent::Link { from, url } => {
             if let Ok(mut l) = LAST_LINK.lock() {
                 *l = Some(url.clone());
@@ -512,6 +534,22 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     }
 }
 
+fn toggle_control(hwnd: HWND, st: &State) {
+    if crate::control::is_active() {
+        end_control(hwnd, "Back to this PC");
+    } else {
+        let _ = st.cmds.send(Cmd::ControlPhone);
+    }
+}
+
+fn end_control(hwnd: HWND, why: &str) {
+    crate::control::stop();
+    // SAFETY: timer on our own window.
+    let _ =
+        unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_CONTROL) };
+    balloon(hwnd, "Phone Bridge", why);
+}
+
 fn show_menu(hwnd: HWND) {
     use crate::fluent::glyph;
     use crate::menu::Item;
@@ -530,7 +568,7 @@ fn show_menu(hwnd: HWND) {
 
 /// Snapshot of everything the settings window shows.
 fn settings_model(st: &State) -> crate::settings_window::Model {
-    let (theme, share, passwords, keep, auto, save_dir) = st
+    let (theme, share, passwords, keep, auto, save_dir, control) = st
         .settings
         .lock()
         .map(|s| {
@@ -541,6 +579,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
                 s.keep_in_history,
                 s.auto_accept,
                 s.save_dir.display().to_string(),
+                s.allow_control,
             )
         })
         .unwrap_or_default();
@@ -553,6 +592,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
         save_dir,
         sendto: sendto_link().is_some_and(|l| l.exists()),
         startup: startup_enabled(),
+        control,
         devices: st
             .peers
             .lock()
@@ -601,6 +641,13 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
         Action::Toggle(Key::Passwords) => command(hwnd, st, ID_TOGGLE_PRIVATE),
         Action::Toggle(Key::Auto) => command(hwnd, st, ID_TOGGLE_AUTO),
         Action::Toggle(Key::SendTo) => command(hwnd, st, ID_SENDTO),
+        Action::Toggle(Key::Control) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.allow_control = !s.allow_control);
+            save_settings(st);
+        }
         Action::Toggle(Key::Keep) => {
             let _ = st
                 .settings
@@ -810,6 +857,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_OPEN_FLYOUT => open_flyout(hwnd, st),
         ID_SETTINGS => open_settings(hwnd, st),
         ID_MENU => show_menu(hwnd),
+        ID_CONTROL => toggle_control(hwnd, st),
         ID_QUIT => {
             // SAFETY: our own window.
             let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd) };
@@ -920,6 +968,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY if wparam.0 as i32 == HOTKEY_CONTROL => {
+            toggle_control(hwnd, st);
+            LRESULT(0)
+        }
+        crate::control::WM_CONTROL_EXIT => {
+            end_control(hwnd, "Back to this PC");
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_CONTROL => {
+            if crate::control::session_closed() {
+                end_control(hwnd, "The phone ended control");
+            }
+            LRESULT(0)
+        }
         WM_SETTINGS_ACTION => {
             let drained: Vec<_> = SETTINGS_ACTIONS
                 .lock()
@@ -1006,6 +1068,15 @@ pub fn create(
         let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.
         let _ = windows::Win32::System::DataExchange::AddClipboardFormatListener(hwnd);
+        // Ctrl+Alt+P: drive the phone with this PC's mouse and keyboard.
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::RegisterHotKey(
+            Some(hwnd),
+            HOTKEY_CONTROL,
+            windows::Win32::UI::Input::KeyboardAndMouse::MOD_CONTROL
+                | windows::Win32::UI::Input::KeyboardAndMouse::MOD_ALT
+                | windows::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT,
+            0x50,
+        );
         Ok(hwnd.0 as isize)
     }
 }
