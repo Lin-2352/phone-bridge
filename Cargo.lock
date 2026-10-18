@@ -2327,6 +2327,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pb-tray"
+version = "0.0.1"
+dependencies = [
+ "pb-identity",
+ "pb-platform-win",
+ "pb-protocol",
+ "pb-transport",
+ "tokio",
+ "windows",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

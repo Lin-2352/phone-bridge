@@ -72,6 +72,9 @@ Real phone (RMX3561 app) and Windows `pb` CLI over the USB-tether link:
 - Bug found by /verify and fixed: the JNI context may only be installed once per process; a second `PbService` creation in the same process (Stop then start, or sticky restart) aborted the app. Now idempotent (`Once`). Also: the Rust node is destroyed explicitly on service stop so its UDP socket is released immediately.
 - Idle with screen off (60 s, paired, no traffic): 1 CPU tick (~0.02% of one core), 33 threads, PSS 67.6 MB (native heap 18 MB).
 
+### Windows tray (`pb-tray`, milestone 3)
+Win32 tray (no WebView), message-only window, EcoQoS on, 2 tokio workers. Tested PC-locally against the `pb` CLI: pairing (SAS shown, auto-accept test flag), received text written to the Windows clipboard (sensitive text gets the history/cloud/monitor exclusion formats and is never logged), menu "Send clipboard" delivered, clipboard content marked private by its source app (`ExcludeClipboardContentFromMonitorProcessing`) is refused. Idle 60 s: 0.000 CPU-seconds, 17.2 MB working set, 3.2 MB private, 7 threads (CLI spike default was 36).
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

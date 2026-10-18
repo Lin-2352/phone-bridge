@@ -1,0 +1,30 @@
+[package]
+name = "pb-tray"
+description = "Phone Bridge Windows tray app (Win32, no WebView)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Win32 UI needs `unsafe`; confined to the `ui` module with SAFETY comments.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+
+[[bin]]
+name = "pb-tray"
+path = "src/main.rs"
+
+[dependencies]
+pb-identity = { path = "../pb-identity" }
+pb-protocol = { path = "../pb-protocol" }
+pb-transport = { path = "../pb-transport" }
+pb-platform-win = { path = "../pb-platform-win" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Graphics_Gdi"] }
