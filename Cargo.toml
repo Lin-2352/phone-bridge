@@ -4,6 +4,7 @@ members = [
     "crates/pb-identity",
     "crates/pb-protocol",
     "crates/pb-transport",
+    "crates/pb-cli",
     "spikes/iroh-spike",
     "spikes/ffi-smoke",
     "tools/uniffi-bindgen",

@@ -15,7 +15,7 @@ use std::{
 };
 
 use iroh::{
-    endpoint::{presets, Connection, QuicTransportConfig, RecvStream, SendStream},
+    endpoint::{presets, Connection, ConnectionError, QuicTransportConfig, RecvStream, SendStream},
     Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr,
 };
 use pairing::{HostPairing, JoinPairing, PairError, Ticket};
@@ -457,6 +457,19 @@ impl Node {
     }
 }
 
+/// Turn a failure on a connection the peer closed into a meaningful error.
+fn closed_by_peer(conn: &Connection, fallback: Error) -> Error {
+    match conn.close_reason() {
+        Some(ConnectionError::ApplicationClosed(c)) if c.error_code == CLOSE_NOT_PAIRED.into() => {
+            Error::NotPaired
+        }
+        Some(ConnectionError::ApplicationClosed(c)) if c.error_code == CLOSE_PAIR_FAILED.into() => {
+            Error::Rejected
+        }
+        _ => fallback,
+    }
+}
+
 /// Reads length-prefixed frames from a QUIC stream.
 struct FrameReader {
     recv: RecvStream,
@@ -518,11 +531,12 @@ impl Session {
         let hello = Hello::new(my_name, vec!["clipboard".into()]);
         write_frame(&mut send, &Control::from(ControlMsg::Hello(hello))).await?;
         let mut recv = FrameReader::new(recv);
-        let remote_hello = match tokio::time::timeout(HEARTBEAT * 3, recv.next::<Control>()).await {
+        let first = tokio::time::timeout(HEARTBEAT * 3, recv.next::<Control>()).await;
+        let remote_hello = match first {
             Ok(Ok(Some(Control {
                 msg: Some(ControlMsg::Hello(h)),
             }))) => h,
-            Ok(Err(e)) => return Err(e),
+            Ok(Err(e)) => return Err(closed_by_peer(&conn, e)),
             Err(_) => return Err(Error::Timeout),
             _ => return Err(Error::Protocol("expected Hello".into())),
         };

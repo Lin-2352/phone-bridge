@@ -160,5 +160,6 @@ async fn revoked_peer_can_no_longer_connect() {
     let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
     assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
     assert!(pc.unpair(&phone.peer_id()));
-    assert!(phone.connect(&pc.peer_id()).await.is_err());
+    let err = phone.connect(&pc.peer_id()).await.err();
+    assert!(matches!(err, Some(Error::NotPaired)), "{err:?}");
 }

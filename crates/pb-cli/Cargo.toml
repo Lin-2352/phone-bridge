@@ -1,0 +1,22 @@
+[package]
+name = "pb-cli"
+description = "Phone Bridge command-line client for Windows (pairing, clipboard text); a test harness until the tray app exists"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pb"
+path = "src/main.rs"
+
+[dependencies]
+pb-identity = { path = "../pb-identity" }
+pb-protocol = { path = "../pb-protocol" }
+pb-transport = { path = "../pb-transport" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
