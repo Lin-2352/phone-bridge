@@ -2,6 +2,7 @@
 //! starts `pb-tray.exe` inside its (sparse) package with share activation;
 //! this reads what was shared so `main` can hand it to the running tray.
 //! Outside the package `take` returns `None` at once.
+#![allow(unsafe_code)]
 
 use std::path::PathBuf;
 
@@ -30,9 +31,29 @@ impl Share {
     pub fn done(&self) {
         let _ = self.op.ReportCompleted();
     }
+
+    /// Delivery failed: Windows shows the error instead of a fake success.
+    pub fn failed(&self, why: &str) {
+        let _ = self.op.ReportError(&windows::core::HSTRING::from(why));
+    }
+}
+
+/// True only when Windows started us inside our package (the share target).
+/// Checked first so a normal launch never loads the WinRT activation runtime
+/// (and its thread pool) just to find out there is nothing to do.
+fn packaged() -> bool {
+    let mut len = 0u32;
+    // SAFETY: size query; APPMODEL_ERROR_NO_PACKAGE (15700) means unpackaged.
+    let r = unsafe {
+        windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(&mut len, None)
+    };
+    r.0 != 15700
 }
 
 pub fn take() -> Option<Share> {
+    if !packaged() {
+        return None;
+    }
     let args = AppInstance::GetActivatedEventArgs().ok()?;
     if args.Kind().ok()? != ActivationKind::ShareTarget {
         return None;

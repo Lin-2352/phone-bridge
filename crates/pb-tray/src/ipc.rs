@@ -95,44 +95,69 @@ pub fn send_request(r: &Request) -> bool {
 
 /// Server side: accept requests forever. Requests that need the UI thread
 /// (clipboard, windows) go to `on_ui`.
-pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send + 'static) {
+pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send + Sync + 'static) {
     let name = pipe_name();
-    let mut first = true;
-    loop {
-        let server = match ServerOptions::new()
+    let on_ui = std::sync::Arc::new(on_ui);
+    let create = |first: bool| {
+        ServerOptions::new()
             .first_pipe_instance(first)
             .reject_remote_clients(true)
             .create(&name)
-        {
-            Ok(s) => s,
-            Err(_) => return, // another tray owns the pipe
-        };
-        first = false;
+    };
+    let Ok(mut server) = create(true) else {
+        return; // another tray owns the pipe
+    };
+    loop {
         if server.connect().await.is_err() {
+            match create(false) {
+                Ok(s) => server = s,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+            }
             continue;
         }
-        let mut server = server;
-        let mut buf = Vec::new();
-        // Bounded read: a request is a handful of paths.
-        let _ = (&mut server).take(64 * 1024).read_to_end(&mut buf).await;
-        match decode(&String::from_utf8_lossy(&buf)) {
-            Some(Request::Pair) => {
-                let _ = cmds.send(Cmd::Pair);
+        // Next instance first, so another request never finds the pipe busy
+        // while this client is being served.
+        let client = server;
+        server = loop {
+            match create(false) {
+                Ok(s) => break s,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
             }
-            Some(Request::Send(files)) => {
-                let files: Vec<_> = files.into_iter().filter(|f| f.is_file()).collect();
-                if !files.is_empty() {
-                    let _ = cmds.send(Cmd::SendFiles(files));
+        };
+        let (cmds, on_ui) = (cmds.clone(), on_ui.clone());
+        tokio::spawn(async move {
+            let mut client = client;
+            let mut buf = Vec::new();
+            // Bounded in size and time: a request is a handful of paths, and a
+            // client that never finishes must not hold anything.
+            let mut limited = (&mut client).take(64 * 1024);
+            let read = limited.read_to_end(&mut buf);
+            if tokio::time::timeout(std::time::Duration::from_secs(2), read)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            match decode(&String::from_utf8_lossy(&buf)) {
+                Some(Request::Pair) => {
+                    let _ = cmds.send(Cmd::Pair);
                 }
+                Some(Request::Send(files)) => {
+                    let files: Vec<_> = files.into_iter().filter(|f| f.is_file()).collect();
+                    if !files.is_empty() {
+                        let _ = cmds.send(Cmd::SendFiles(files));
+                    }
+                }
+                Some(Request::Text { link, text }) => {
+                    let _ = cmds.send(Cmd::SendText { text, link });
+                }
+                Some(
+                    r
+                    @ (Request::SendClipboard | Request::Settings | Request::Open | Request::Menu),
+                ) => on_ui(&r),
+                None => {}
             }
-            Some(Request::Text { link, text }) => {
-                let _ = cmds.send(Cmd::SendText { text, link });
-            }
-            Some(
-                r @ (Request::SendClipboard | Request::Settings | Request::Open | Request::Menu),
-            ) => on_ui(&r),
-            None => {}
-        }
+        });
     }
 }
 

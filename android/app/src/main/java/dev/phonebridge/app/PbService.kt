@@ -31,7 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.pb_ffi.EventListener
 import uniffi.pb_ffi.PbEvent
 import uniffi.pb_ffi.PbNode
@@ -89,7 +89,10 @@ object NativeInit {
  */
 class PbService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val nextId = AtomicInteger(100)
+    private val nextId = AtomicInteger(0)
+    /** Network events are handled here, one at a time, never on Rust's runtime threads. */
+    private val events = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pb-events") }
+    @Volatile private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -98,7 +101,16 @@ class PbService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
-        startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        try {
+            startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } catch (t: Throwable) {
+            // A background restart (after a low-memory kill) may be refused on
+            // Android 12+. Stop cleanly instead of crash-looping; RecoveryJob retries.
+            Log.e(TAG, "SERVICE could not go foreground: $t")
+            destroyed = true
+            stopSelf()
+            return
+        }
         Bridge.running.value = true
         refreshTile(this)
         scheduleRecovery(this)
@@ -123,15 +135,23 @@ class PbService : Service() {
                 while (Bridge.recent.size > 5) Bridge.recent.removeAt(Bridge.recent.size - 1)
             }
         }
-        Log.i(TAG, "TRIM level=$level pss=${android.os.Debug.getPss() / 1024}MB")
+        Log.i(TAG, "TRIM level=$level")
     }
 
     override fun onDestroy() {
+        destroyed = true
         val n = Bridge.node
         Bridge.node = null
-        runBlocking { n?.shutdown() }
-        n?.destroy()
+        // Never block the main thread on the network: close in the background,
+        // bounded so a stuck peer cannot keep the node alive.
+        if (n != null) {
+            Bridge.scope.launch {
+                withTimeoutOrNull(3000) { n.shutdown() }
+                n.destroy()
+            }
+        }
         scope.cancel()
+        events.shutdown()
         Bridge.running.value = false
         refreshTile(this)
         super.onDestroy()
@@ -147,9 +167,28 @@ class PbService : Service() {
                 PORT.toUShort(),
                 KeystoreWrapper(),
                 object : EventListener {
-                    override fun onEvent(event: PbEvent) = handle(event)
+                    // Called on a Rust runtime thread: hand off and return at once.
+                    override fun onEvent(event: PbEvent) {
+                        try {
+                            events.execute {
+                                try {
+                                    handle(event)
+                                } catch (t: Throwable) {
+                                    Log.e(TAG, "EVENT handling failed: $t")
+                                }
+                            }
+                        } catch (_: Throwable) {
+                            // Executor shut down: the service is going away.
+                        }
+                    }
                 },
             )
+            if (destroyed) {
+                // Stopped while starting: do not leave an orphaned node holding the port.
+                withTimeoutOrNull(3000) { n.shutdown() }
+                n.destroy()
+                return
+            }
             val prefs = Prefs(this)
             n.setClipboardSync(prefs.clipboardSync)
             n.setAutoAccept(prefs.autoAccept)
@@ -159,7 +198,10 @@ class PbService : Service() {
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
         } catch (e: Throwable) {
+            // Keystore not ready, port busy...: do not sit in the foreground
+            // pretending to work. RecoveryJob retries later.
             Log.e(TAG, "SERVICE failed to start: $e")
+            android.os.Handler(mainLooper).post { stopSelf() }
         }
     }
 
@@ -227,8 +269,13 @@ class PbService : Service() {
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Phone Bridge")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        val uri = try {
+            contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        } catch (t: Throwable) {
+            null
+        }
         if (uri == null) {
+            src.delete()
             notifySimple("Could not save ${e.name}", "Storage is not available")
             return
         }
@@ -240,13 +287,14 @@ class PbService : Service() {
             Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to Downloads", RecentItem.Kind.File, uri))
             notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/Phone Bridge")
         } catch (t: Throwable) {
-            contentResolver.delete(uri, null, null)
+            runCatching { contentResolver.delete(uri, null, null) }
+            src.delete()
             notifySimple("Could not save ${e.name}", t.message ?: "")
         }
     }
 
     private fun notifyFile(from: String, name: String, size: ULong, uri: Uri, mime: String, folder: String) {
-        val id = nextId.incrementAndGet()
+        val id = nextNotificationId()
         val open = PendingIntent.getActivity(
             this, id,
             Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -264,7 +312,7 @@ class PbService : Service() {
     }
 
     private fun notifyLink(from: String, link: String) {
-        val id = nextId.incrementAndGet()
+        val id = nextNotificationId()
         val open = PendingIntent.getActivity(
             this, id, Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE,
         )
@@ -279,7 +327,7 @@ class PbService : Service() {
     }
 
     private fun notifyOffer(e: PbEvent.IncomingOffer) {
-        val id = nextId.incrementAndGet()
+        val id = nextNotificationId()
         fun action(accept: Boolean) = PendingIntent.getBroadcast(
             this, id * 2 + if (accept) 1 else 0,
             Intent(this, OfferReceiver::class.java).putExtra("offer", e.id.toLong()).putExtra("accept", accept).putExtra("nid", id),
@@ -298,9 +346,11 @@ class PbService : Service() {
     }
 
     private fun notifyClip(from: String, text: String, sensitive: Boolean) {
-        Log.i(TAG, if (sensitive) "CLIP from $from (sensitive)" else "CLIP from $from: $text")
-        val id = nextId.incrementAndGet()
+        Log.i(TAG, "CLIP from $from (${text.length} chars${if (sensitive) ", sensitive" else ""})")
+        val id = nextNotificationId()
         Bridge.pendingClips[id] = text to sensitive
+        // Swiped-away clips are never claimed: keep only the newest few.
+        while (Bridge.pendingClips.size > 10) Bridge.pendingClips.keys.minOrNull()?.let { Bridge.pendingClips.remove(it) }
         val copy = PendingIntent.getBroadcast(
             this, id, Intent(this, CopyReceiver::class.java).putExtra("id", id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -317,6 +367,9 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(id, n)
     }
 
+    /** Ids 100..139, reused: at most 40 of our notifications exist at once. */
+    private fun nextNotificationId() = 100 + Math.floorMod(nextId.getAndIncrement(), 40)
+
     private fun notifySimple(title: String, text: String) {
         val n = Notification.Builder(this, CH_EVENTS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
@@ -324,7 +377,7 @@ class PbService : Service() {
             .setContentText(text)
             .setAutoCancel(true)
             .build()
-        getSystemService(NotificationManager::class.java).notify(nextId.incrementAndGet(), n)
+        getSystemService(NotificationManager::class.java).notify(nextNotificationId(), n)
     }
 
     /** One quiet line: who we are linked with. No buttons; tap opens the app. */

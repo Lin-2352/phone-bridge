@@ -111,7 +111,7 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) { App() }
             }
         }
-        handleIntent(intent)
+        if (savedInstanceState == null) handleIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -127,6 +127,10 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         intent ?: return
+        // Test hooks: MainActivity is exported, so in a release build any app
+        // could use them to pair this phone with its own PC. Debug builds only.
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        if (!intent.hasExtra("pair_code") && !intent.hasExtra("confirm") && !intent.hasExtra("send_text")) return
         Bridge.scope.launch {
             val node = awaitNode() ?: return@launch
             intent.getStringExtra("pair_code")?.let { join(node, it) }

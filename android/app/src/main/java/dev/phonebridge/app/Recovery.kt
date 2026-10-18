@@ -60,5 +60,9 @@ fun scheduleRecovery(ctx: Context) {
     )
 }
 
+fun cancelRecovery(ctx: Context) {
+    ctx.getSystemService(JobScheduler::class.java).cancel(JOB_ID)
+}
+
 fun isBatteryUnrestricted(ctx: Context): Boolean =
     ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)

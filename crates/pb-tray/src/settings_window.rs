@@ -554,8 +554,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 pub fn open(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
     if let Some(h) = CURRENT.lock().ok().and_then(|g| g.as_ref().map(|s| s.hwnd)) {
         update(model);
-        // SAFETY: our own window.
-        let _ = unsafe { SetForegroundWindow(HWND(h as *mut _)) };
+        // SAFETY: our own window; restore it if minimised, then raise it.
+        unsafe {
+            let _ = ShowWindow(
+                HWND(h as *mut _),
+                windows::Win32::UI::WindowsAndMessaging::SW_RESTORE,
+            );
+            let _ = SetForegroundWindow(HWND(h as *mut _));
+        }
         return;
     }
     // SAFETY: window creation on the UI thread.

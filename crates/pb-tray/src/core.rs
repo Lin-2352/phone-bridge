@@ -474,7 +474,11 @@ async fn pump(
                 if c.sensitive {
                     log.line(&format!("CLIP from \"{}\" (sensitive)", s.peer_name));
                 } else {
-                    log.line(&format!("CLIP from \"{}\": {}", s.peer_name, c.text));
+                    log.line(&format!(
+                        "CLIP from \"{}\" ({} chars)",
+                        s.peer_name,
+                        c.text.chars().count()
+                    ));
                 }
                 ui(UiEvent::Clipboard {
                     from: s.peer_name.clone(),

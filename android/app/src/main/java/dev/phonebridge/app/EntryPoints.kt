@@ -20,6 +20,11 @@ private const val TAG = "PhoneBridge"
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!Prefs(this).enabled) {
+            Toast.makeText(this, "Phone Bridge is off. Turn it on from its Quick Settings tile", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
         startForegroundService(Intent(this, PbService::class.java))
         val node = Bridge.node
         val peer = Bridge.firstPeer()

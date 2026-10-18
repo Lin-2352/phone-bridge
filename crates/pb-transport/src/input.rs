@@ -121,6 +121,7 @@ fn push_move(
 
 const MAX_MOVES_PER_SEC: u32 = 1000;
 const MAX_OTHER_PER_SEC: u32 = 400;
+const MAX_RECORDS_PER_SEC: u32 = 2000;
 
 /// Receiver side, called when `InputStart` arrives on a session. Answers,
 /// then feeds every event to `on_event` until the controller stops.
@@ -149,12 +150,19 @@ pub async fn receive_input(
     // second. Beyond the budget, moves are dropped; a peer flooding clicks or
     // keys far past any human rate ends the session.
     let mut window = std::time::Instant::now();
-    let (mut moves, mut others) = (0u32, 0u32);
+    let (mut moves, mut others, mut total) = (0u32, 0u32, 0u32);
     while stream.read_exact(&mut rec).await.is_ok() {
         if window.elapsed() >= Duration::from_secs(1) {
             window = std::time::Instant::now();
             moves = 0;
             others = 0;
+            total = 0;
+        }
+        // Every record counts, even ones we drop or cannot decode.
+        total += 1;
+        if total > MAX_RECORDS_PER_SEC {
+            session.conn.close(1u32.into(), b"input flood");
+            return Err(Error::Io("input flood".into()));
         }
         let Ok(d) = InputDatagram::decode(&rec) else {
             continue;

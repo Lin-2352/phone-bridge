@@ -78,10 +78,32 @@ class ControlService : AccessibilityService(), InputListener {
         }
     }
 
+    private val moveLock = Any()
+    private var pendingDx = 0
+    private var pendingDy = 0
+    private var moveQueued = false
+
     override fun onInput(kind: UByte, a: Int, b: Int, pressed: Boolean) {
+        if (kind.toInt() == 0) {
+            // Pointer moves arrive up to 1000/s; merge them and touch the
+            // window manager at most once per main-loop turn.
+            synchronized(moveLock) {
+                pendingDx += a
+                pendingDy += b
+                if (moveQueued) return
+                moveQueued = true
+            }
+            main.post {
+                val (dx, dy) = synchronized(moveLock) {
+                    moveQueued = false
+                    (pendingDx to pendingDy).also { pendingDx = 0; pendingDy = 0 }
+                }
+                move(dx, dy)
+            }
+            return
+        }
         main.post {
             when (kind.toInt()) {
-                0 -> move(a, b)
                 1 -> button(a, pressed)
                 2 -> wheel(a, b)
                 3 -> key(a, pressed)

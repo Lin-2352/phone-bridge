@@ -34,6 +34,10 @@ pub const PAIR_ALPN: &[u8] = b"pb-pair/0";
 
 /// Heartbeat interval; a session with no traffic for 3 intervals is dead.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
+/// Unauthenticated handshake steps must finish within this.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Incoming connections handled at once.
+const MAX_INCOMING: usize = 16;
 /// How long either side waits for the user to confirm the SAS.
 pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -375,14 +379,29 @@ impl Node {
     }
 
     async fn accept_loop(self) {
+        // Bound the work any LAN host can make us do: a few connections in
+        // flight at once; the rest are refused until one finishes.
+        let slots = Arc::new(tokio::sync::Semaphore::new(MAX_INCOMING));
         while let Some(incoming) = self.inner.endpoint.accept().await {
+            let Ok(permit) = slots.clone().try_acquire_owned() else {
+                drop(incoming);
+                continue;
+            };
             let node = self.clone();
             tokio::spawn(async move {
-                let Ok(conn) = incoming.await else { return };
+                let _permit = permit;
+                let Ok(Ok(conn)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming).await else {
+                    return;
+                };
                 let Ok(peer) = PeerId::from_bytes(*conn.remote_id().as_bytes()) else {
                     return;
                 };
                 if conn.alpn() == PAIR_ALPN {
+                    // Pairing is only possible while this device shows a code.
+                    if lock(&node.inner.ticket).is_none() {
+                        conn.close(CLOSE_PAIR_FAILED.into(), b"not pairing");
+                        return;
+                    }
                     let _ = node.host_pairing(conn, peer).await;
                 } else {
                     node.accept_session(conn, peer).await;
@@ -410,9 +429,17 @@ impl Node {
 
     async fn host_pairing(&self, conn: Connection, joiner: PeerId) -> Result<(), Error> {
         let fail = |conn: &Connection| conn.close(CLOSE_PAIR_FAILED.into(), b"pairing failed");
-        let (mut send, recv) = conn.accept_bi().await.map_err(tx)?;
+        // The joiner is not authenticated yet: every step before the user's
+        // decision is time-boxed.
+        let (mut send, recv) = tokio::time::timeout(HANDSHAKE_TIMEOUT, conn.accept_bi())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(tx)?;
         let mut recv = FrameReader::new(recv);
-        let Some(PairMsg::Start(start)) = recv.next::<Pair>().await?.and_then(|p| p.msg) else {
+        let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.next::<Pair>())
+            .await
+            .map_err(|_| Error::Timeout)??;
+        let Some(PairMsg::Start(start)) = first.and_then(|p| p.msg) else {
             fail(&conn);
             return Err(Error::Protocol("expected PairStart".into()));
         };
@@ -429,7 +456,10 @@ impl Node {
         };
         nonce.device_name = self.inner.device_name.clone();
         write_frame(&mut send, &Pair::from(PairMsg::Nonce(nonce))).await?;
-        let Some(PairMsg::Reveal(reveal)) = recv.next::<Pair>().await?.and_then(|p| p.msg) else {
+        let second = tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.next::<Pair>())
+            .await
+            .map_err(|_| Error::Timeout)??;
+        let Some(PairMsg::Reveal(reveal)) = second.and_then(|p| p.msg) else {
             fail(&conn);
             return Err(Error::Protocol("expected PairReveal".into()));
         };

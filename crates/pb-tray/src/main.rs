@@ -110,6 +110,10 @@ fn main() {
     // (starting it if needed), tell Windows we are done, and exit.
     if let Some(share) = share::take() {
         let req = match &share.item {
+            share::Shared::Files(f) if f.is_empty() => {
+                share.failed("Only files on this PC can be sent");
+                std::process::exit(1);
+            }
             share::Shared::Files(f) => ipc::Request::Send(f.clone()),
             share::Shared::Text(t) => ipc::Request::Text {
                 link: false,
@@ -133,7 +137,11 @@ fn main() {
                 }
             }
         }
-        share.done();
+        if ok {
+            share.done();
+        } else {
+            share.failed("Phone Bridge is not running");
+        }
         std::process::exit(if ok { 0 } else { 1 });
     }
     if !single_instance() {
@@ -181,6 +189,12 @@ fn main() {
             return;
         }
     };
+
+    // Started by Explorer "Send to" (or with --send) while no tray ran:
+    // queue the files; the core sends them once it is up.
+    if !send_files.is_empty() {
+        let _ = cmd_tx.send(core::Cmd::SendFiles(send_files));
+    }
 
     let core_log = log.clone();
     std::thread::spawn(move || {

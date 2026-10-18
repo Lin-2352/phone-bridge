@@ -22,9 +22,8 @@ use windows::{
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
                 MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage,
-                HWND_MESSAGE, IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
-                MB_YESNO, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU,
-                WM_DESTROY, WNDCLASSW,
+                IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO, MSG,
+                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WNDCLASSW,
             },
         },
     },
@@ -368,6 +367,16 @@ pub fn post_event(hwnd_raw: isize, e: UiEvent) {
 }
 
 fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
+    // A balloon click acts on the latest file or link only if that balloon
+    // is the one showing; any other balloon clears the targets.
+    if !matches!(e, UiEvent::FileReceived { .. } | UiEvent::Link { .. }) {
+        if let Ok(mut l) = LAST_LINK.lock() {
+            *l = None;
+        }
+        if let Ok(mut f) = LAST_FILE.lock() {
+            *f = None;
+        }
+    }
     match e {
         UiEvent::Ready { fingerprint } => {
             set_tip(hwnd, &format!("Phone Bridge ({})", &fingerprint[..9]));
@@ -906,6 +915,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         // SAFETY: default handling for messages before init.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     };
+    let taskbar = TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed);
+    if taskbar != 0 && msg == taskbar {
+        // Explorer restarted: our icon is gone, add it again.
+        add_icon(hwnd, "Phone Bridge");
+        return LRESULT(0);
+    }
     match msg {
         WM_TRAY => {
             let ev = (lparam.0 & 0xffff) as u32;
@@ -1055,33 +1070,28 @@ pub fn create(
             ..Default::default()
         };
         RegisterClassW(&wc);
+        // A hidden top-level window (never shown), not a message-only one:
+        // only top-level windows get the TaskbarCreated broadcast we need to
+        // put the icon back after Explorer restarts.
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            windows::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW,
             CLASS,
             w!("Phone Bridge"),
-            WINDOW_STYLE::default(),
+            windows::Win32::UI::WindowsAndMessaging::WS_POPUP,
             0,
             0,
             0,
             0,
-            Some(HWND_MESSAGE),
+            None,
             None,
             Some(hinstance.into()),
             None,
         )?;
-        let mut nid = icon_data(hwnd);
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAY;
-        // Resource 1 is the app icon embedded by build.rs.
-        nid.hIcon = LoadIconW(
-            Some(hinstance.into()),
-            PCWSTR(std::ptr::without_provenance::<u16>(1)), /* MAKEINTRESOURCE(1) */
-        )
-        .or_else(|_| LoadIconW(None, IDI_APPLICATION))?;
-        copy_into(&mut nid.szTip, "Phone Bridge (starting)");
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-        nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
+        TASKBAR_CREATED.store(
+            windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(w!("TaskbarCreated")),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        add_icon(hwnd, "Phone Bridge (starting)");
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.
         let _ = windows::Win32::System::DataExchange::AddClipboardFormatListener(hwnd);
         // Ctrl+Alt+P: drive the phone with this PC's mouse and keyboard.
@@ -1094,6 +1104,34 @@ pub fn create(
             0x50,
         );
         Ok(hwnd.0 as isize)
+    }
+}
+
+/// Message Explorer broadcasts when the taskbar is (re)created.
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn add_icon(hwnd: HWND, tip: &str) {
+    // SAFETY: icon data refers to our window; resource 1 is the app icon
+    // embedded by build.rs.
+    unsafe {
+        let mut nid = icon_data(hwnd);
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAY;
+        nid.hIcon = GetModuleHandleW(None)
+            .ok()
+            .and_then(|h| {
+                LoadIconW(
+                    Some(h.into()),
+                    PCWSTR(std::ptr::without_provenance::<u16>(1)), /* MAKEINTRESOURCE(1) */
+                )
+                .ok()
+            })
+            .or_else(|| LoadIconW(None, IDI_APPLICATION).ok())
+            .unwrap_or_default();
+        copy_into(&mut nid.szTip, tip);
+        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        let _ = Shell_NotifyIconW(NIM_SETVERSION, &nid);
     }
 }
 

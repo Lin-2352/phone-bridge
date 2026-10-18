@@ -102,12 +102,19 @@ pub fn set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<
     set(u32::from(CF_UNICODETEXT.0), &bytes)?;
     if sensitive {
         let zero = 0u32.to_le_bytes();
-        set(
+        let marked = set(
             format(w!("ExcludeClipboardContentFromMonitorProcessing")),
             &zero,
-        )?;
-        set(format(w!("CanIncludeInClipboardHistory")), &zero)?;
-        set(format(w!("CanUploadToCloudClipboard")), &zero)?;
+        )
+        .and_then(|_| set(format(w!("CanIncludeInClipboardHistory")), &zero))
+        .and_then(|_| set(format(w!("CanUploadToCloudClipboard")), &zero));
+        if let Err(e) = marked {
+            // Never leave a password on the clipboard without its markers
+            // (it would reach Win+V history and the cloud clipboard).
+            // SAFETY: the clipboard is still open (guard above).
+            let _ = unsafe { EmptyClipboard() };
+            return Err(e);
+        }
     }
     Ok(())
 }

@@ -56,6 +56,7 @@ fun setBridgeEnabled(ctx: Context, on: Boolean) {
         ctx.startForegroundService(Intent(ctx, PbService::class.java))
     } else {
         ctx.stopService(Intent(ctx, PbService::class.java))
+        cancelRecovery(ctx)
     }
     refreshTile(ctx)
 }
@@ -78,7 +79,9 @@ fun readClipboard(ctx: Context): Pair<String, Boolean>? {
  */
 class BridgeTileService : TileService() {
     override fun onStartListening() {
-        val on = Prefs(this).enabled
+        // What is actually running, not just the saved wish (after a crash
+        // reboot those differ, and a tap must do what the tile shows).
+        val on = Bridge.running.value
         qsTile?.apply {
             state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             if (Build.VERSION.SDK_INT >= 29) {
@@ -93,7 +96,7 @@ class BridgeTileService : TileService() {
     }
 
     override fun onClick() {
-        val on = !Prefs(this).enabled
+        val on = !Bridge.running.value
         if (!on) {
             setBridgeEnabled(this, false)
         } else {

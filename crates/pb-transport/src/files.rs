@@ -333,7 +333,11 @@ async fn receive_bytes(
             }
             pending.clear();
         }
-        match reader.recv.read(&mut buf).await.map_err(tx)? {
+        // A sender that stops sending must not hold the partial file forever.
+        let chunk = tokio::time::timeout(Duration::from_secs(30), reader.recv.read(&mut buf))
+            .await
+            .map_err(|_| Error::Timeout)?;
+        match chunk.map_err(tx)? {
             Some(n) => pending.extend_from_slice(&buf[..n]),
             None => break,
         }
