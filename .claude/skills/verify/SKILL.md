@@ -11,3 +11,9 @@ description: How to run and drive Phone Bridge for runtime verification (pb CLI 
 - Don't `logcat -c` between an action and reading its result.
 - Emulator: UDP cannot be adb-forwarded; run CLIs on the emulator as clients to the PC at `10.0.2.2`.
 - PowerShell gotcha: the harness blocks `Remove-Item` in some compound commands; avoid it.
+- Never put the phone screen to sleep (no KEYCODE_SLEEP); background the app with KEYCODE_HOME instead and leave the screen as is.
+- Tray: `target/spike/pb-tray.exe --dir <d> [--port N] [--pair] [--test-auto-accept]`; settings in `<d>/settings.txt` (`universal_clipboard=true`, `auto_accept=true`, `save_dir=...`); log `<d>/tray.log` (FILE sent/received with MB/s, CLIPSYNC lines). Firewall rule exists for `target\spike\pb-tray.exe`.
+- Drive the tray without clicks: `pb-tray --send "<file>"` (quote paths; Start-Process splits on spaces), `--pair`, `--send-clipboard` go over the pipe `\.\pipe\PhoneBridgeTray-<user>`. Clipboard: `Set-Clipboard`/`Get-Clipboard`.
+- Phone share target from adb: `am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "<t>" -n dev.phonebridge.app/.ShareActivity`; for files use a MediaStore URI the app owns, e.g. a file it received: `content query --uri content://media/external/downloads --projection _id:_display_name`. Verify with `md5sum '/sdcard/Download/Phone Bridge/<f>'`.
+- PowerShell variables are case-insensitive (`$t` == `$T`); use distinct names in test scripts.
+- My shell cannot see other windows by handle lookup; to screenshot a window use UIA (find by name) + PrintWindow, never a full-screen capture.
