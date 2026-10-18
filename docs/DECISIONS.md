@@ -96,6 +96,12 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 - Idle 5 min: phone 0 CPU ticks, ~0.3 context switches/s for the whole process; tray 0 ms CPU, 3.4 MB private, 4 threads. Relay disabled; heartbeats only exist while a session is open.
 - Share sheet: sparse package registered per user (Developer Mode, no certificate); signed MSIX comes with the installer.
 
+## Phase 3.3 (2026-10-18): stability check and hardening
+- PC lag investigation: pb-tray 26 MB / 2 CPU-s over an hour; 300 flyout/menu/settings open-close cycles: private 4.5 -> 4.6 MB, handles 315 flat, GDI 18 flat, idle 0 CPU. The lag came from the development workflow: Gradle + Kotlin daemons left running (3.3 GB, ~54 CPU-min) and full-LTO Android builds using every core. Builds now run below-normal priority on half the cores, Gradle without a daemon, Kotlin in-process.
+- Android on the AVD: 2 monkey runs (7,000+ events), 0 Phone Bridge crashes/ANRs, PSS flat (47.6 -> 48.0 MB), idle 0 ticks/60 s.
+- Realme SystemUI only reads `ACTIVE_TILE`, `TOGGLEABLE_TILE` and `com.oplus.systemui.qs.hide_tile` from third-party tiles; the ▾ detail panel (`OplusQSDetail`) is for system tiles only. Long-press stays the way into our panel.
+- Hardening: PC control off until the user allows it in a prompt; receivers cap input at 1000 moves/s and end the session above 400 clicks/keys per second; pipe sends only existing files; accessibility service subscribes only to announcements.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

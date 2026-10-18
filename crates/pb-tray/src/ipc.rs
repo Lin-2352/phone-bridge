@@ -120,7 +120,10 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
                 let _ = cmds.send(Cmd::Pair);
             }
             Some(Request::Send(files)) => {
-                let _ = cmds.send(Cmd::SendFiles(files));
+                let files: Vec<_> = files.into_iter().filter(|f| f.is_file()).collect();
+                if !files.is_empty() {
+                    let _ = cmds.send(Cmd::SendFiles(files));
+                }
             }
             Some(Request::Text { link, text }) => {
                 let _ = cmds.send(Cmd::SendText { text, link });

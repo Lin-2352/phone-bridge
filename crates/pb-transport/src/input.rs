@@ -119,6 +119,9 @@ fn push_move(
     }
 }
 
+const MAX_MOVES_PER_SEC: u32 = 1000;
+const MAX_OTHER_PER_SEC: u32 = 400;
+
 /// Receiver side, called when `InputStart` arrives on a session. Answers,
 /// then feeds every event to `on_event` until the controller stops.
 pub async fn receive_input(
@@ -142,10 +145,33 @@ pub async fn receive_input(
         .map_err(|_| Error::Io("controller did not open the input stream".into()))?
         .map_err(tx)?;
     let mut rec = [0u8; INPUT_DATAGRAM_LEN];
+    // A real mouse and keyboard produce at most a few hundred events per
+    // second. Beyond the budget, moves are dropped; a peer flooding clicks or
+    // keys far past any human rate ends the session.
+    let mut window = std::time::Instant::now();
+    let (mut moves, mut others) = (0u32, 0u32);
     while stream.read_exact(&mut rec).await.is_ok() {
-        if let Ok(d) = InputDatagram::decode(&rec) {
-            on_event(d.event);
+        if window.elapsed() >= Duration::from_secs(1) {
+            window = std::time::Instant::now();
+            moves = 0;
+            others = 0;
         }
+        let Ok(d) = InputDatagram::decode(&rec) else {
+            continue;
+        };
+        if matches!(d.event, InputEvent::MouseMove { .. }) {
+            moves += 1;
+            if moves > MAX_MOVES_PER_SEC {
+                continue;
+            }
+        } else {
+            others += 1;
+            if others > MAX_OTHER_PER_SEC {
+                session.conn.close(1u32.into(), b"input flood");
+                return Err(Error::Io("input flood".into()));
+            }
+        }
+        on_event(d.event);
     }
     // Stream ended: we read last, so we close.
     session.conn.close(0u32.into(), b"input done");

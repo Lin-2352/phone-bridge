@@ -36,7 +36,7 @@ impl Default for Settings {
             auto_accept: true,
             save_dir: downloads,
             theme: 0,
-            allow_control: true,
+            allow_control: false,
         }
     }
 }

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- PC -> phone control. Gestures for taps/swipes, window content to type
-     into the focused field. Receives no accessibility events it does not use. -->
+     into the focused field. Subscribes only to rare announcements so it never wakes on screen changes. -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/control_description"
     android:summary="@string/control_summary"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeAnnouncement"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault"
     android:canPerformGestures="true"

@@ -111,6 +111,11 @@ pub enum UiEvent {
         path: PathBuf,
         size: u64,
     },
+    /// A phone wants to control this PC and the user has not allowed it yet.
+    AskControl {
+        from: String,
+        reply: oneshot::Sender<bool>,
+    },
     /// Ask the user whether to accept (only when auto-accept is off).
     IncomingOffer {
         from: String,
@@ -499,8 +504,21 @@ async fn pump(
                 });
             }
             Ok(Some(ControlMsg::InputStart(start))) => {
-                let allow = settings.lock().map(|x| x.allow_control).unwrap_or(false);
                 let from = s.peer_name.clone();
+                let mut allow = settings.lock().map(|x| x.allow_control).unwrap_or(false);
+                if !allow {
+                    // First time: ask. "Yes" turns the setting on (Settings can turn it off).
+                    let (tx, rx) = oneshot::channel();
+                    ui(UiEvent::AskControl {
+                        from: from.clone(),
+                        reply: tx,
+                    });
+                    allow = tokio::time::timeout(std::time::Duration::from_secs(60), rx)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(false);
+                }
                 log.line(&format!("INPUT from \"{from}\" allowed={allow}"));
                 if allow {
                     ui(UiEvent::Info(format!("{from} is controlling this PC")));

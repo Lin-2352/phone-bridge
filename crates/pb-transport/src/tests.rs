@@ -512,4 +512,24 @@ mod input {
         assert!(matches!(r, Err(Error::Declined)));
         assert!(matches!(rx.await.unwrap().0, Err(Error::Declined)));
     }
+
+    #[tokio::test]
+    async fn click_floods_end_the_session_and_excess_moves_are_dropped() {
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        let input = phone.open_input(&pc.peer_id()).await.unwrap();
+        for i in 0..2000 {
+            input.send(InputEvent::MouseButton {
+                button: 0,
+                pressed: i % 2 == 0,
+            });
+        }
+        let (r, got) = rx.await.unwrap();
+        assert!(r.is_err(), "flood must end the session");
+        assert!(
+            got.len() <= 400,
+            "at most the budget is injected, got {}",
+            got.len()
+        );
+    }
 }

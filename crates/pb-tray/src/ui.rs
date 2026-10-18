@@ -510,6 +510,22 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 &format!("{mb:.1} MB, saved to Downloads\\Phone Bridge. Click to show."),
             );
         }
+        UiEvent::AskControl { from, reply } => {
+            ask_yes_no(
+                format!("Allow {from} to control this PC's mouse and keyboard?\n\nYou can turn this off any time in Phone Bridge settings."),
+                "Phone Bridge",
+                move |yes| {
+                    if yes {
+                        // Remember the choice; Settings can turn it off again.
+                        if let Some(st) = STATE.get() {
+                            let _ = st.settings.lock().map(|mut s| s.allow_control = true);
+                            save_settings(st);
+                        }
+                    }
+                    let _ = reply.send(yes);
+                },
+            );
+        }
         UiEvent::IncomingOffer {
             from,
             name,

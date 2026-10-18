@@ -7,7 +7,6 @@ import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.service.quicksettings.Tile
@@ -15,9 +14,7 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -171,17 +168,6 @@ class QuickPanelActivity : ComponentActivity() {
         var clip by remember { mutableStateOf(prefs.clipboardSync) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
         var auto by remember { mutableStateOf(prefs.autoAccept) }
-        val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris: List<Uri> ->
-            if (uris.isNotEmpty()) {
-                startActivity(
-                    Intent(this, ShareActivity::class.java)
-                        .setAction(Intent.ACTION_SEND_MULTIPLE)
-                        .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
-                )
-            }
-            finish()
-        }
         val itemColors = ListItemDefaults.colors(containerColor = Color.Transparent)
         Column(
             Modifier
@@ -233,11 +219,6 @@ class QuickPanelActivity : ComponentActivity() {
                     startActivity(Intent(this@QuickPanelActivity, TouchpadActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     finish()
                 },
-            )
-            ListItem(
-                colors = itemColors,
-                headlineContent = { Text("Send files to PC") },
-                modifier = Modifier.clickable(enabled = on) { pick.launch("*/*") },
             )
             TextButton(
                 onClick = {
