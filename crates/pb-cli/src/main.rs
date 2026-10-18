@@ -16,7 +16,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use pb_identity::{load_or_create_identity, FilePeerStore, PairedPeer};
+#[cfg(not(windows))]
+use pb_identity::load_or_create_identity;
+use pb_identity::{FilePeerStore, PairedPeer};
 use pb_protocol::control::{ClipboardText, ControlMsg, PairingCode, MAX_CLIPBOARD_TEXT};
 use pb_transport::{Node, NodeConfig, NodeEvents, Session, SharedStore};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -123,6 +125,10 @@ async fn pump(mut s: Session) {
 
 async fn run(o: Opts) -> Res<()> {
     std::fs::create_dir_all(&o.dir)?;
+    // Seed sealed with DPAPI on Windows; a Phase 1 plain file is migrated.
+    #[cfg(windows)]
+    let identity = pb_identity::vault::open_identity(&o.dir, &pb_platform_win::Dpapi)?;
+    #[cfg(not(windows))]
     let identity = load_or_create_identity(&o.dir.join("identity.key"))?;
     let store: SharedStore = Arc::new(Mutex::new(FilePeerStore::open(o.dir.join("peers.txt"))?));
     let cmd: Vec<&str> = o.cmd.iter().map(String::as_str).collect();

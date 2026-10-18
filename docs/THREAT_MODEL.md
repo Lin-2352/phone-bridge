@@ -36,7 +36,7 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 | 9 | Input control | Hijacking the phone | Separate explicit opt-in per paired device; visible indicator while active; instant revocation; auto key-up on disconnect (**planned**) |
 | 10 | Accessibility service | Abuse by other apps or policy loss | Only in the `foss` flavor; no data collection; never ships in the Play flavor (**decided**, see DECISIONS.md) |
 | 11 | Parsers | Memory corruption or DoS from malformed input | Size limits before allocation, no panics on bad input, fuzz targets (**implemented for control frames and input datagrams**; fuzzing harness **planned**) |
-| 12 | Keys at rest | Theft from disk or backup | Seed wrapped by Android Keystore / Windows DPAPI; excluded from backups (**planned**; today the seed is a plain 32-byte file in app-private storage / %LOCALAPPDATA%, and Android backup is disabled) |
+| 12 | Keys at rest | Theft from disk or backup | Seed wrapped by Android Keystore / Windows DPAPI; excluded from backups (**implemented**: DPAPI on Windows, Keystore AES-GCM on Android; unseal failure is an error, never a silent new identity; Android backup disabled) |
 | 13 | Updates | Malicious update | Signed releases, reproducible builds where possible (**planned**) |
 | 14 | Resource use | Battery or CPU drain used as DoS | Rate limits per peer; idle budget tracked in DECISIONS.md |
 

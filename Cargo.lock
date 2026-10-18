@@ -2270,6 +2270,7 @@ name = "pb-cli"
 version = "0.0.1"
 dependencies = [
  "pb-identity",
+ "pb-platform-win",
  "pb-protocol",
  "pb-transport",
  "tokio",
@@ -2295,6 +2296,14 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "pb-platform-win"
+version = "0.0.1"
+dependencies = [
+ "pb-identity",
+ "windows",
 ]
 
 [[package]]

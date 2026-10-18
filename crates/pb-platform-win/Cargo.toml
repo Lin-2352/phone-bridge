@@ -1,0 +1,22 @@
+[package]
+name = "pb-platform-win"
+description = "Windows platform glue for Phone Bridge (DPAPI seed protection; later clipboard, tray)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Win32 FFI needs `unsafe`; every block carries a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]
+pb-identity = { path = "../pb-identity" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory"] }

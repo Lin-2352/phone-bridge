@@ -4,6 +4,8 @@
 //! Secrets never leave this crate except through [`Identity::seed`], which the
 //! platform layer must wrap with the OS keystore (Android Keystore / Windows DPAPI).
 
+pub mod vault;
+
 use std::{collections::BTreeMap, fmt};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};

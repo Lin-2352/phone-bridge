@@ -1,13 +1,12 @@
 package dev.phonebridge.app
 
+import android.Manifest
 import android.app.Activity
-import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.PersistableBundle
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -17,56 +16,47 @@ import android.widget.TextView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.pb_ffi.PbEvent
 import uniffi.pb_ffi.PbNode
-import uniffi.pb_ffi.startNode
 
 private const val TAG = "PhoneBridge"
-private const val PORT = 47100
-
-/** Hands the Application context to Rust (iroh needs it for system network config). */
-object NativeInit {
-    init {
-        System.loadLibrary("pb_ffi")
-    }
-
-    @JvmStatic
-    external fun initContext(context: Context)
-}
 
 /**
- * Phase 1 screen: pair with a PC, then send and receive clipboard text.
+ * UI over the [PbService]-owned node: pair with a PC, send clipboard text.
+ * Received clips arrive as notifications from the service even when this
+ * screen is closed.
  *
  * Test hooks (debug use over adb): intent extras `pair_code`, `confirm` ("yes"/"no"),
  * `send_text`. They drive exactly the same code paths as the buttons.
  */
 class MainActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var node: PbNode? = null
     private lateinit var status: TextView
     private lateinit var peersView: TextView
     private lateinit var sasPanel: LinearLayout
     private lateinit var sasText: TextView
     private lateinit var log: LinearLayout
+    private val listener: (PbEvent) -> Unit = { e -> runOnUiThread { onEvent(e) } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        startForegroundService(Intent(this, PbService::class.java))
+        Bridge.listeners.add(listener)
         scope.launch {
-            try {
-                NativeInit.initContext(applicationContext)
-                val n = startNode(filesDir.absolutePath, Build.MODEL ?: "Android", PORT.toUShort())
-                node = n
-                status.text = "This phone: ${n.fingerprint()}\n${n.addresses().joinToString()}"
-                say("NODE_ID=${n.peerId()}")
-                refreshPeers()
-                handleIntent(intent)
-                pollEvents(n)
-            } catch (e: Throwable) {
-                say("FAILED to start: $e")
-            }
+            val n = awaitNode() ?: run { say("Service did not start (see logcat)"); return@launch }
+            status.text = "This phone: ${n.fingerprint()}\n${n.addresses().joinToString()}"
+            say("NODE_ID=${n.peerId()}")
+            refreshPeers()
+            handleIntent(intent)
         }
     }
 
@@ -76,9 +66,17 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        val n = node
-        scope.launch { n?.shutdown() }
+        Bridge.listeners.remove(listener)
+        scope.cancel()
         super.onDestroy()
+    }
+
+    private suspend fun awaitNode(): PbNode? {
+        repeat(100) {
+            Bridge.node?.let { return it }
+            delay(100)
+        }
+        return null
     }
 
     private fun handleIntent(intent: Intent?) {
@@ -99,7 +97,7 @@ class MainActivity : Activity() {
             text = "Pair: paste code from PC"
             setOnClickListener {
                 val code = clipboard().primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
-                if (code.isNullOrBlank()) say("Copy the code shown by `pb pair-host` first") else join(code)
+                if (code.isNullOrBlank()) say("Copy the code shown by the PC first") else join(code)
             }
         }
         sasText = TextView(this).apply { textSize = 28f }
@@ -120,8 +118,15 @@ class MainActivity : Activity() {
                 if (text.isNullOrEmpty()) say("Clipboard is empty") else send(text)
             }
         }
+        val stopBtn = Button(this).apply {
+            text = "Stop Phone Bridge"
+            setOnClickListener {
+                startService(Intent(context, PbService::class.java).setAction(PbService.ACTION_STOP))
+                finish()
+            }
+        }
         log = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        listOf(status, peersView, pairBtn, sasPanel, sendBtn, log).forEach(root::addView)
+        listOf(status, peersView, pairBtn, sasPanel, sendBtn, stopBtn, log).forEach(root::addView)
         setContentView(ScrollView(this).apply { addView(root) })
     }
 
@@ -132,14 +137,20 @@ class MainActivity : Activity() {
         log.addView(TextView(this).apply { text = line }, 0)
     }
 
+    private fun onEvent(e: PbEvent) = when (e) {
+        is PbEvent.Connected -> say("Connected: ${e.peerName}")
+        is PbEvent.Disconnected -> say("Disconnected: ${e.peerName} (${e.reason})")
+        is PbEvent.Clipboard -> say(if (e.sensitive) "From ${e.peerName}: (hidden)" else "From ${e.peerName}: ${e.text}")
+    }
+
     private fun refreshPeers() {
-        val peers = node?.peers().orEmpty()
+        val peers = Bridge.node?.peers().orEmpty()
         peersView.text = if (peers.isEmpty()) "Not paired yet" else
             "Paired: " + peers.joinToString { "${it.name} (${it.fingerprint.take(9)})" }
     }
 
     private fun join(code: String) = scope.launch {
-        val n = node ?: return@launch
+        val n = Bridge.node ?: return@launch
         try {
             val sas = n.joinPairing(code.trim())
             sasText.text = sas
@@ -151,11 +162,10 @@ class MainActivity : Activity() {
     }
 
     private fun confirm(accept: Boolean) = scope.launch {
-        val n = node ?: return@launch
+        val n = Bridge.node ?: return@launch
         sasPanel.visibility = View.GONE
         try {
-            val name = n.confirmPairing(accept)
-            say("PAIRED with $name")
+            say("PAIRED with ${n.confirmPairing(accept)}")
         } catch (e: Throwable) {
             say("Pairing not completed: ${e.message}")
         }
@@ -163,7 +173,7 @@ class MainActivity : Activity() {
     }
 
     private fun send(text: String) = scope.launch {
-        val n = node ?: return@launch
+        val n = Bridge.node ?: return@launch
         val peer = n.peers().firstOrNull() ?: run { say("Pair with a PC first"); return@launch }
         try {
             n.sendClipboard(peer.id, text, false)
@@ -171,38 +181,5 @@ class MainActivity : Activity() {
         } catch (e: Throwable) {
             say("Send failed: ${e.message}")
         }
-    }
-
-    private suspend fun pollEvents(n: PbNode) {
-        while (true) {
-            for (e in n.events()) when (e) {
-                is PbEvent.Connected -> say("Connected: ${e.peerName}")
-                is PbEvent.Disconnected -> say("Disconnected: ${e.peerName} (${e.reason})")
-                is PbEvent.Clipboard -> showClip(e)
-            }
-            delay(500)
-        }
-    }
-
-    private fun showClip(e: PbEvent.Clipboard) {
-        Log.i(TAG, if (e.sensitive) "CLIP from ${e.peerName} (sensitive)" else "CLIP from ${e.peerName}: ${e.text}")
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(TextView(this).apply {
-            text = if (e.sensitive) "From ${e.peerName}: (hidden)" else "From ${e.peerName}: ${e.text}"
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        row.addView(Button(this).apply {
-            text = "Copy"
-            setOnClickListener {
-                val clip = ClipData.newPlainText("Phone Bridge", e.text)
-                if (e.sensitive) {
-                    clip.description.extras = PersistableBundle().apply {
-                        putBoolean("android.content.extra.IS_SENSITIVE", true)
-                    }
-                }
-                clipboard().setPrimaryClip(clip)
-            }
-        })
-        log.addView(row, 0)
     }
 }

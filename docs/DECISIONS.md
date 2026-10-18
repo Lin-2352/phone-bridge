@@ -66,6 +66,11 @@ Real phone (RMX3561 app) and Windows `pb` CLI over the USB-tether link:
 - Windows Firewall blocks inbound UDP for new binaries on Public networks (the tether link is Public); the user must allow the app. The installer must create a scoped rule (UDP, our binary only).
 - Bug found and fixed: closing the pairing connection right after reading discarded the other side's unread Confirm (~5% of pairings failed on one side). Fixed with an ordered close; 40/40 runs pass.
 
+## Phase 2 results (2026-10-18)
+- Identity seeds sealed: Windows DPAPI (current user + app entropy, `pb-platform-win`), Android Keystore AES-256-GCM (`KeystoreWrapper`). Phase 1 plain seeds migrated on first start with the same ids (pairings kept) and deleted.
+- Android `connectedDevice` foreground service owns the node; events pushed from Rust (no polling). With the app in the background and the screen dozing, PC -> phone clipboard arrived as a notification (sensitive text hidden).
+- Idle with screen off (60 s, paired, no traffic): 1 CPU tick (~0.02% of one core), 33 threads, PSS 67.6 MB (native heap 18 MB).
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

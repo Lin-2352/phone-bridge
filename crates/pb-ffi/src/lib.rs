@@ -1,16 +1,15 @@
 //! UniFFI surface for the Android app: start the node, join a pairing code,
-//! confirm the SAS, send clipboard text, and poll events.
+//! confirm the SAS, send clipboard text; events are pushed to a Kotlin listener.
 
 use std::sync::{Arc, Mutex};
 
-use pb_identity::{load_or_create_identity, FilePeerStore};
+use pb_identity::FilePeerStore;
 use pb_protocol::control::{ClipboardText, ControlMsg, PairingCode, MAX_CLIPBOARD_TEXT};
 use pb_transport::{Joining, Node, NodeConfig, Session, SharedStore};
 
 uniffi::setup_scaffolding!();
 
 #[derive(Debug, uniffi::Error)]
-#[uniffi(flat_error)]
 pub enum PbError {
     Failed { reason: String },
 }
@@ -23,6 +22,33 @@ impl std::fmt::Display for PbError {
 }
 
 impl std::error::Error for PbError {}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for PbError {
+    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        fail(e.reason)
+    }
+}
+
+/// Implemented in Kotlin with an Android Keystore AES-GCM key, so the identity
+/// seed is never stored in clear.
+#[uniffi::export(with_foreign)]
+pub trait KeyWrapper: Send + Sync {
+    fn wrap(&self, plain: Vec<u8>) -> Result<Vec<u8>, PbError>;
+    fn unwrap(&self, sealed: Vec<u8>) -> Result<Vec<u8>, PbError>;
+}
+
+struct ForeignWrapper(Arc<dyn KeyWrapper>);
+
+impl pb_identity::vault::SeedWrapper for ForeignWrapper {
+    fn wrap(&self, plain: &[u8]) -> std::io::Result<Vec<u8>> {
+        self.0.wrap(plain.to_vec()).map_err(std::io::Error::other)
+    }
+    fn unwrap(&self, sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+        self.0
+            .unwrap(sealed.to_vec())
+            .map_err(std::io::Error::other)
+    }
+}
 
 fn fail(e: impl std::fmt::Display) -> PbError {
     PbError::Failed {
@@ -54,22 +80,22 @@ pub struct PbPeer {
     pub fingerprint: String,
 }
 
-type Events = Arc<Mutex<Vec<PbEvent>>>;
+/// Implemented in Kotlin (the foreground service); called from Rust threads.
+#[uniffi::export(with_foreign)]
+pub trait EventListener: Send + Sync {
+    fn on_event(&self, event: PbEvent);
+}
+
+type Events = Arc<dyn EventListener>;
 
 fn push(events: &Events, e: PbEvent) {
-    if let Ok(mut v) = events.lock() {
-        if v.len() >= 100 {
-            v.remove(0);
-        }
-        v.push(e);
-    }
+    events.on_event(e);
 }
 
 #[derive(uniffi::Object)]
 pub struct PbNode {
     node: Node,
     joining: tokio::sync::Mutex<Option<Joining>>,
-    events: Events,
 }
 
 /// Start the node. `data_dir` holds the identity seed and the paired-peer list.
@@ -78,10 +104,13 @@ pub async fn start_node(
     data_dir: String,
     device_name: String,
     port: u16,
+    key_wrapper: Arc<dyn KeyWrapper>,
+    listener: Arc<dyn EventListener>,
 ) -> Result<Arc<PbNode>, PbError> {
     let dir = std::path::PathBuf::from(data_dir);
     std::fs::create_dir_all(&dir).map_err(fail)?;
-    let identity = load_or_create_identity(&dir.join("identity.key")).map_err(fail)?;
+    let identity =
+        pb_identity::vault::open_identity(&dir, &ForeignWrapper(key_wrapper)).map_err(fail)?;
     let store: SharedStore = Arc::new(Mutex::new(
         FilePeerStore::open(dir.join("peers.txt")).map_err(fail)?,
     ));
@@ -90,7 +119,7 @@ pub async fn start_node(
         port: (port != 0).then_some(port),
     };
     let (node, ev) = Node::bind(&identity, store, config).await.map_err(fail)?;
-    let events: Events = Arc::default();
+    let events: Events = listener;
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
     let mut sessions = ev.sessions;
@@ -103,7 +132,6 @@ pub async fn start_node(
     Ok(Arc::new(PbNode {
         node,
         joining: tokio::sync::Mutex::new(None),
-        events,
     }))
 }
 
@@ -218,14 +246,6 @@ impl PbNode {
             .map_err(fail)?;
         session.finish().await;
         Ok(())
-    }
-
-    /// Events since the last call.
-    pub fn events(&self) -> Vec<PbEvent> {
-        self.events
-            .lock()
-            .map(|mut v| std::mem::take(&mut *v))
-            .unwrap_or_default()
     }
 
     /// Stop the node. (Never name a UniFFI method `close`.)
