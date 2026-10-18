@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use windows::{
     core::{w, PCWSTR},
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Shell::{
@@ -20,13 +20,11 @@ use windows::{
                 NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
             },
             WindowsAndMessaging::{
-                AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-                DispatchMessageW, GetCursorPos, GetMessageW, LoadIconW, MessageBoxW, PostMessageW,
-                PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-                TranslateMessage, HWND_MESSAGE, IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK,
-                MB_SETFOREGROUND, MB_YESNO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
-                MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE,
-                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WNDCLASSW,
+                CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
+                MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage,
+                HWND_MESSAGE, IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND,
+                MB_YESNO, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU,
+                WM_DESTROY, WNDCLASSW,
             },
         },
     },
@@ -59,6 +57,13 @@ const ID_TOGGLE_AUTO: usize = 6;
 const ID_OPEN_FOLDER: usize = 7;
 const ID_SENDTO: usize = 8;
 const ID_TOGGLE_PRIVATE: usize = 9;
+pub const ID_OPEN_FLYOUT: usize = 10;
+pub const ID_SETTINGS: usize = 11;
+pub const ID_MENU: usize = 12;
+const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
+static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_window::Action>> =
+    Mutex::new(VecDeque::new());
+static MY_FINGERPRINT: Mutex<String> = Mutex::new(String::new());
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 /// Version-4 tray callbacks: left click / keyboard Enter on the icon.
@@ -190,6 +195,7 @@ fn open_flyout(hwnd: HWND, st: &State) {
             crate::flyout::Action::ToggleClipboard => post_command(raw, ID_TOGGLE_CLIP),
             crate::flyout::Action::SendFiles => post_command(raw, ID_SEND_FILES),
             crate::flyout::Action::Pair => post_command(raw, ID_PAIR),
+            crate::flyout::Action::Settings => post_command(raw, ID_SETTINGS),
             crate::flyout::Action::Dropped(files) => {
                 let _ = cmds.send(Cmd::SendFiles(files));
             }
@@ -360,7 +366,10 @@ pub fn post_event(hwnd_raw: isize, e: UiEvent) {
 fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     match e {
         UiEvent::Ready { fingerprint } => {
-            set_tip(hwnd, &format!("Phone Bridge ({})", &fingerprint[..9]))
+            set_tip(hwnd, &format!("Phone Bridge ({})", &fingerprint[..9]));
+            if let Ok(mut f) = MY_FINGERPRINT.lock() {
+                *f = fingerprint[..9].to_owned();
+            }
         }
         UiEvent::Code {
             code,
@@ -503,101 +512,208 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     }
 }
 
-fn show_menu(hwnd: HWND, st: &State) {
-    // SAFETY: menu handles are created, used and destroyed on this thread.
-    unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
-        let peers = st.peers.lock().map(|g| g.clone()).unwrap_or_default();
-        let _ = AppendMenuW(menu, MF_STRING, ID_PAIR, w!("Pair new device…"));
-        let send_label = match peers.first() {
-            Some((_, name)) => wide(&format!("Send clipboard to {name}")),
-            None => wide("Send clipboard (no paired device)"),
-        };
-        let flags = if peers.is_empty() {
-            MF_STRING | MF_GRAYED
-        } else {
-            MF_STRING
-        };
-        let _ = AppendMenuW(menu, flags, ID_SEND_CLIPBOARD, PCWSTR(send_label.as_ptr()));
-        let _ = AppendMenuW(menu, flags, ID_SEND_FILES, w!("Send files\u{2026}"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_FOLDER, w!("Open received files"));
-        let sendto_on = sendto_link().is_some_and(|l| l.exists());
-        let _ = AppendMenuW(
-            menu,
-            if sendto_on {
-                MF_STRING | MF_CHECKED
-            } else {
-                MF_STRING
-            },
-            ID_SENDTO,
-            w!("Show in Explorer \u{201c}Send to\u{201d} menu"),
-        );
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let (clip_on, auto_on, private_on) = st
-            .settings
+fn show_menu(hwnd: HWND) {
+    use crate::fluent::glyph;
+    use crate::menu::Item;
+    crate::menu::show(
+        hwnd,
+        vec![
+            Item::new(glyph::PHONE, "Open Phone Bridge", ID_OPEN_FLYOUT),
+            Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
+            Item::new(glyph::FOLDER, "Open received files", ID_OPEN_FOLDER),
+            Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
+            Item::separator(),
+            Item::new(glyph::POWER, "Quit Phone Bridge", ID_QUIT),
+        ],
+    );
+}
+
+/// Snapshot of everything the settings window shows.
+fn settings_model(st: &State) -> crate::settings_window::Model {
+    let (theme, share, passwords, keep, auto, save_dir) = st
+        .settings
+        .lock()
+        .map(|s| {
+            (
+                s.theme,
+                s.universal_clipboard,
+                !s.skip_private,
+                s.keep_in_history,
+                s.auto_accept,
+                s.save_dir.display().to_string(),
+            )
+        })
+        .unwrap_or_default();
+    crate::settings_window::Model {
+        theme,
+        share,
+        passwords,
+        keep,
+        auto,
+        save_dir,
+        sendto: sendto_link().is_some_and(|l| l.exists()),
+        startup: startup_enabled(),
+        devices: st
+            .peers
             .lock()
-            .map(|s| (s.universal_clipboard, s.auto_accept, !s.skip_private))
-            .unwrap_or((false, true, false));
-        let check = |on: bool| {
-            if on {
-                MF_STRING | MF_CHECKED
-            } else {
-                MF_STRING
+            .map(|g| {
+                g.iter()
+                    .map(|(id, n)| (n.clone(), id.fingerprint()[..9].to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
+    }
+}
+
+fn open_settings(hwnd: HWND, st: &State) {
+    let raw = hwnd.0 as isize;
+    // Runs inside the settings window procedure: queue and post, never call
+    // back into the window from here.
+    crate::settings_window::open(
+        settings_model(st),
+        Box::new(move |a| {
+            if let Ok(mut q) = SETTINGS_ACTIONS.lock() {
+                q.push_back(a);
             }
-        };
-        let _ = AppendMenuW(
-            menu,
-            check(clip_on),
-            ID_TOGGLE_CLIP,
-            w!("Universal Clipboard"),
-        );
-        let _ = AppendMenuW(
-            menu,
-            if clip_on {
-                check(private_on)
-            } else {
-                check(private_on) | MF_GRAYED
-            },
-            ID_TOGGLE_PRIVATE,
-            w!("Also send passwords and codes"),
-        );
-        let _ = AppendMenuW(
-            menu,
-            check(auto_on),
-            ID_TOGGLE_AUTO,
-            w!("Accept files automatically"),
-        );
-        if let Ok(sub) = CreatePopupMenu() {
-            let labels: Vec<Vec<u16>> = peers
-                .iter()
-                .map(|(id, name)| wide(&format!("Remove {name} ({})", &id.fingerprint()[..9])))
-                .collect();
-            for (i, l) in labels.iter().enumerate() {
-                let _ = AppendMenuW(sub, MF_STRING, ID_UNPAIR_BASE + i, PCWSTR(l.as_ptr()));
-            }
-            let f = if peers.is_empty() {
-                MF_POPUP | MF_GRAYED
-            } else {
-                MF_POPUP
+            // SAFETY: posting to our own message window.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(raw as *mut _)),
+                    WM_SETTINGS_ACTION,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
             };
-            let _ = AppendMenuW(menu, f, sub.0 as usize, w!("Paired devices"));
+        }),
+    );
+}
+
+fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Action) {
+    use crate::settings_window::{Action, Key};
+    match a {
+        Action::Theme(t) => {
+            let _ = st.settings.lock().map(|mut s| s.theme = t);
+            crate::fluent::set_theme(t);
+            save_settings(st);
         }
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quit"));
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        // Required so the menu closes when the user clicks elsewhere.
-        let _ = SetForegroundWindow(hwnd);
-        let _ = TrackPopupMenu(
-            menu,
-            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
-            pt.x,
-            pt.y,
+        Action::Toggle(Key::Share) => command(hwnd, st, ID_TOGGLE_CLIP),
+        Action::Toggle(Key::Passwords) => command(hwnd, st, ID_TOGGLE_PRIVATE),
+        Action::Toggle(Key::Auto) => command(hwnd, st, ID_TOGGLE_AUTO),
+        Action::Toggle(Key::SendTo) => command(hwnd, st, ID_SENDTO),
+        Action::Toggle(Key::Keep) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.keep_in_history = !s.keep_in_history);
+            save_settings(st);
+        }
+        Action::Toggle(Key::Startup) => {
+            if let Err(e) = set_startup(!startup_enabled()) {
+                balloon(
+                    hwnd,
+                    "Phone Bridge",
+                    &format!("Could not change startup: {e}"),
+                );
+            }
+        }
+        Action::ChangeFolder => {
+            let raw = hwnd.0 as isize;
+            std::thread::spawn(move || {
+                let Some(dir) = pick_folder() else { return };
+                if let Some(st) = STATE.get() {
+                    let _ = st.settings.lock().map(|mut s| s.save_dir = dir);
+                    save_settings(st);
+                }
+                // SAFETY: posting to our own message window.
+                let _ = unsafe {
+                    PostMessageW(
+                        Some(HWND(raw as *mut _)),
+                        WM_SETTINGS_ACTION,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                };
+            });
+        }
+        Action::OpenFolder => command(hwnd, st, ID_OPEN_FOLDER),
+        Action::Remove(i) => command(hwnd, st, ID_UNPAIR_BASE + i),
+        Action::Pair => command(hwnd, st, ID_PAIR),
+    }
+}
+
+const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+
+fn startup_enabled() -> bool {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let mut size = 0u32;
+    // SAFETY: size query only.
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            w!("Phone Bridge"),
+            RRF_RT_REG_SZ,
             None,
-            hwnd,
             None,
-        );
-        let _ = DestroyMenu(menu);
+            Some(&mut size),
+        )
+    }
+    .is_ok()
+}
+
+/// "Start with Windows": a per-user Run entry for this exe (no admin, removable).
+fn set_startup(on: bool) -> Result<(), String> {
+    use windows::Win32::System::Registry::{
+        RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ,
+    };
+    if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let value = wide(&format!("\"{}\"", exe.display()));
+        // SAFETY: NUL-terminated UTF-16 value with its byte length.
+        unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                RUN_KEY,
+                w!("Phone Bridge"),
+                REG_SZ.0,
+                Some(value.as_ptr() as *const _),
+                (value.len() * 2) as u32,
+            )
+        }
+        .ok()
+        .map_err(|e| e.to_string())
+    } else {
+        // SAFETY: deletes our own value.
+        unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, w!("Phone Bridge")) }
+            .ok()
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Folder picker for "Save received files to"; runs on its own thread.
+fn pick_folder() -> Option<std::path::PathBuf> {
+    use windows::Win32::{
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
+            COINIT_APARTMENTTHREADED,
+        },
+        UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_PICKFOLDERS, SIGDN_FILESYSPATH},
+    };
+    // SAFETY: standard COM usage on a fresh STA thread; the string is freed.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let opts = dlg.GetOptions().ok()?;
+        dlg.SetOptions(opts | FOS_PICKFOLDERS).ok()?;
+        let _ = dlg.SetTitle(w!("Save received files to"));
+        dlg.Show(None).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = name.to_string().ok().map(std::path::PathBuf::from);
+        CoTaskMemFree(Some(name.0 as *const _));
+        path
     }
 }
 
@@ -669,7 +785,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             st.log.line(&format!("SETTING universal_clipboard={on}"));
             balloon(
                 hwnd,
-                "Universal Clipboard",
+                "Share clipboard",
                 if on {
                     "On: what you copy is shared with your devices"
                 } else {
@@ -691,6 +807,9 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 .map(|mut s| s.auto_accept = !s.auto_accept);
             save_settings(st);
         }
+        ID_OPEN_FLYOUT => open_flyout(hwnd, st),
+        ID_SETTINGS => open_settings(hwnd, st),
+        ID_MENU => show_menu(hwnd),
         ID_QUIT => {
             // SAFETY: our own window.
             let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd) };
@@ -731,7 +850,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 open_flyout(hwnd, st);
             } else if ev == WM_CONTEXTMENU {
                 crate::flyout::close();
-                show_menu(hwnd, st);
+                show_menu(hwnd);
             } else if ev == NIN_BALLOONUSERCLICK {
                 if let Some(u) = LAST_LINK.lock().ok().and_then(|mut g| g.take()) {
                     open_link(&u);
@@ -748,6 +867,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_default();
             for e in drained {
                 handle_event(hwnd, st, e);
+            }
+            if crate::settings_window::is_open() {
+                crate::settings_window::update(settings_model(st));
             }
             LRESULT(0)
         }
@@ -793,6 +915,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_COMMAND => {
             command(hwnd, st, wparam.0 & 0xffff);
+            if crate::settings_window::is_open() {
+                crate::settings_window::update(settings_model(st));
+            }
+            LRESULT(0)
+        }
+        WM_SETTINGS_ACTION => {
+            let drained: Vec<_> = SETTINGS_ACTIONS
+                .lock()
+                .map(|mut q| q.drain(..).collect())
+                .unwrap_or_default();
+            for a in drained {
+                apply_settings_action(hwnd, st, a);
+            }
+            crate::settings_window::update(settings_model(st));
             LRESULT(0)
         }
         WM_DESTROY => {

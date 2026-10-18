@@ -27,6 +27,12 @@ fn pipe_name() -> String {
 pub enum Request {
     Pair,
     SendClipboard,
+    /// Open the settings window.
+    Settings,
+    /// Open the flyout.
+    Open,
+    /// Show the tray menu (for checks without clicking the icon).
+    Menu,
     Send(Vec<PathBuf>),
 }
 
@@ -34,6 +40,9 @@ fn encode(r: &Request) -> String {
     match r {
         Request::Pair => "pair\n".into(),
         Request::SendClipboard => "send-clipboard\n".into(),
+        Request::Settings => "settings\n".into(),
+        Request::Open => "open\n".into(),
+        Request::Menu => "menu\n".into(),
         Request::Send(files) => {
             let mut s = "send\n".to_owned();
             for f in files {
@@ -51,6 +60,9 @@ pub fn decode(text: &str) -> Option<Request> {
     match lines.next()? {
         "pair" => Some(Request::Pair),
         "send-clipboard" => Some(Request::SendClipboard),
+        "settings" => Some(Request::Settings),
+        "open" => Some(Request::Open),
+        "menu" => Some(Request::Menu),
         "send" => {
             let files: Vec<PathBuf> = lines.filter(|l| !l.is_empty()).map(PathBuf::from).collect();
             (!files.is_empty()).then_some(Request::Send(files))
@@ -67,9 +79,9 @@ pub fn send_request(r: &Request) -> bool {
     }
 }
 
-/// Server side: accept requests forever. `on_clipboard` is called for
-/// `send-clipboard` (it needs the UI thread to read the clipboard).
-pub async fn serve(cmds: UnboundedSender<Cmd>, on_clipboard: impl Fn() + Send + 'static) {
+/// Server side: accept requests forever. Requests that need the UI thread
+/// (clipboard, windows) go to `on_ui`.
+pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send + 'static) {
     let name = pipe_name();
     let mut first = true;
     loop {
@@ -96,7 +108,9 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_clipboard: impl Fn() + Send + 
             Some(Request::Send(files)) => {
                 let _ = cmds.send(Cmd::SendFiles(files));
             }
-            Some(Request::SendClipboard) => on_clipboard(),
+            Some(
+                r @ (Request::SendClipboard | Request::Settings | Request::Open | Request::Menu),
+            ) => on_ui(&r),
             None => {}
         }
     }

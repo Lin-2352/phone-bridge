@@ -1,7 +1,8 @@
-//! Fluent-style flyout opened by left-clicking the tray icon (design v2):
-//! link status, a drop zone for files, and three tiles (Universal Clipboard,
-//! Send files, Pair device). Closes when it loses focus. Per-monitor DPI aware,
-//! follows the system light/dark theme, rounded corners via DWM.
+//! Fluent-style flyout opened by left-clicking the tray icon: link status,
+//! a drop zone for files, and three tiles (Share clipboard, Send files, Pair
+//! device), plus settings and close. It stays open when another window is
+//! clicked, so files can be dragged in from Explorer; it closes with Esc, the
+//! close button, the tray icon, or after a drop.
 #![allow(unsafe_code)]
 
 use std::sync::Mutex;
@@ -9,42 +10,33 @@ use std::sync::Mutex;
 use windows::{
     core::{w, PCWSTR},
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        Graphics::{
-            Dwm::{
-                DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-            },
-            Gdi::{
-                BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-                CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-                InvalidateRect, RoundRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER,
-                DT_LEFT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, HDC, HGDIOBJ, PAINTSTRUCT,
-                PS_DASH, PS_SOLID, SRCCOPY, TRANSPARENT,
-            },
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{
+            InvalidateRect, ScreenToClient, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE,
+            DT_VCENTER, DT_WORDBREAK,
         },
-        System::{
-            LibraryLoader::GetModuleHandleW,
-            Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
-        },
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
-            HiDpi::GetDpiForWindow,
+            Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE},
             Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
-                RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST,
-                SWP_NOACTIVATE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_DESTROY, WM_DROPFILES,
-                WM_ERASEBKGND, WM_LBUTTONUP, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-                WS_POPUP,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, LoadCursorW,
+                RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow, HTCLIENT,
+                HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SW_SHOW, WM_DESTROY, WM_DROPFILES,
+                WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
+                WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
 };
 
+use crate::fluent::{self, glyph, px};
+
+const WM_MOUSELEAVE: u32 = 0x02A3;
 const CLASS: PCWSTR = w!("PhoneBridgeFlyout");
 /// Logical (96-dpi) size of the flyout.
-const W: i32 = 340;
-const H: i32 = 300;
+const W: i32 = 360;
+const H: i32 = 312;
 
 /// What the flyout shows; filled in by the UI before opening.
 #[derive(Clone, Default)]
@@ -59,297 +51,227 @@ pub enum Action {
     ToggleClipboard,
     SendFiles,
     Pair,
+    Settings,
     Dropped(Vec<std::path::PathBuf>),
 }
 
 struct State {
     hwnd: isize,
     model: Model,
+    hover: Option<Hit>,
+    tracking: bool,
     on_action: Box<dyn Fn(Action) + Send>,
 }
 
-static CLOSED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+#[derive(Clone, Copy, PartialEq)]
+enum Hit {
+    Drop,
+    Clip,
+    Send,
+    Pair,
+    Settings,
+    Close,
+}
+
 static CURRENT: Mutex<Option<State>> = Mutex::new(None);
-
-fn dark_mode() -> bool {
-    let mut v: u32 = 1;
-    let mut size = 4u32;
-    // SAFETY: reads one DWORD into `v`; failure leaves the light default.
-    let r = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
-            w!("AppsUseLightTheme"),
-            RRF_RT_REG_DWORD,
-            None,
-            Some(&mut v as *mut u32 as *mut _),
-            Some(&mut size),
-        )
-    };
-    r.is_ok() && v == 0
-}
-
-struct Palette {
-    bg: u32,
-    tile: u32,
-    stroke: u32,
-    text: u32,
-    text2: u32,
-    accent: u32,
-    on_accent: u32,
-}
-
-fn palette() -> Palette {
-    // COLORREF is 0x00BBGGRR.
-    if dark_mode() {
-        Palette {
-            bg: 0x2c2c2c,
-            tile: 0x3a3a3a,
-            stroke: 0x4a4a4a,
-            text: 0xffffff,
-            text2: 0xc5c5c5,
-            accent: 0xffa793,
-            on_accent: 0x40140a,
-        }
-    } else {
-        Palette {
-            bg: 0xf5f3f3,
-            tile: 0xffffff,
-            stroke: 0xdddddd,
-            text: 0x1b1b1b,
-            text2: 0x5d5d5d,
-            accent: 0xc94b2a,
-            on_accent: 0xffffff,
-        }
-    }
-}
 
 /// Layout rectangles in physical pixels for a given DPI scale.
 struct Layout {
+    badge: RECT,
+    settings: RECT,
+    close: RECT,
     drop: RECT,
     tiles: [RECT; 3],
+    footer: RECT,
 }
 
 fn layout(s: f32) -> Layout {
-    let px = |v: i32| (v as f32 * s).round() as i32;
-    let pad = px(16);
-    let drop = RECT {
-        left: pad,
-        top: px(64),
-        right: px(W) - pad,
-        bottom: px(150),
+    let p = |v: i32| px(s, v);
+    let sq = |l: i32, t: i32, n: i32| RECT {
+        left: p(l),
+        top: p(t),
+        right: p(l + n),
+        bottom: p(t + n),
     };
-    let tw = (px(W) - 2 * pad - 2 * px(8)) / 3;
-    let ty = px(164);
-    let tiles = std::array::from_fn(|i| {
-        let l = pad + i as i32 * (tw + px(8));
-        RECT {
-            left: l,
-            top: ty,
-            right: l + tw,
-            bottom: ty + px(74),
-        }
-    });
-    Layout { drop, tiles }
-}
-
-fn scale(hwnd: HWND) -> f32 {
-    // SAFETY: plain query on our window.
-    (unsafe { GetDpiForWindow(hwnd) }.max(96)) as f32 / 96.0
-}
-
-unsafe fn font(s: f32, size: i32, weight: i32) -> HGDIOBJ {
-    let f = CreateFontW(
-        -((size as f32 * s).round() as i32),
-        0,
-        0,
-        0,
-        weight,
-        0,
-        0,
-        0,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        Default::default(),
-        0,
-        w!("Segoe UI Variable Text"),
-    );
-    HGDIOBJ(f.0)
-}
-
-unsafe fn text(
-    hdc: HDC,
-    s: &str,
-    r: RECT,
-    color: u32,
-    flags: windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT,
-) {
-    let mut w: Vec<u16> = s.encode_utf16().collect();
-    let mut r = r;
-    SetTextColor(hdc, COLORREF(color));
-    DrawTextW(hdc, &mut w, &mut r, flags);
-}
-
-unsafe fn round_rect(hdc: HDC, r: &RECT, fill: u32, stroke: u32, radius: i32, dashed: bool) {
-    let brush = CreateSolidBrush(COLORREF(fill));
-    let pen = CreatePen(if dashed { PS_DASH } else { PS_SOLID }, 1, COLORREF(stroke));
-    let ob = SelectObject(hdc, HGDIOBJ(brush.0));
-    let op = SelectObject(hdc, HGDIOBJ(pen.0));
-    let _ = RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius, radius);
-    SelectObject(hdc, ob);
-    SelectObject(hdc, op);
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-    let _ = DeleteObject(HGDIOBJ(pen.0));
+    let tw = (p(W) - 2 * p(16) - 2 * p(8)) / 3;
+    Layout {
+        badge: sq(16, 16, 40),
+        settings: sq(W - 16 - 32 - 36, 20, 32),
+        close: sq(W - 16 - 32, 20, 32),
+        drop: RECT {
+            left: p(16),
+            top: p(72),
+            right: p(W - 16),
+            bottom: p(164),
+        },
+        tiles: std::array::from_fn(|i| {
+            let l = p(16) + i as i32 * (tw + p(8));
+            RECT {
+                left: l,
+                top: p(176),
+                right: l + tw,
+                bottom: p(256),
+            }
+        }),
+        footer: RECT {
+            left: p(16),
+            top: p(268),
+            right: p(W - 16),
+            bottom: p(296),
+        },
+    }
 }
 
 fn paint(hwnd: HWND) {
     let Ok(guard) = CURRENT.lock() else { return };
     let Some(st) = guard.as_ref() else { return };
-    let s = scale(hwnd);
-    let p = palette();
+    let s = fluent::scale(hwnd);
+    let p = fluent::palette();
+    let f = fluent::Fonts::new(s);
     let l = layout(s);
-    let px = |v: i32| (v as f32 * s).round() as i32;
-    let mut ps = PAINTSTRUCT::default();
-    // SAFETY: standard double-buffered WM_PAINT; every GDI object created
-    // here is selected out and deleted before returning.
-    unsafe {
-        let screen = BeginPaint(hwnd, &mut ps);
-        let mut c = RECT::default();
-        let _ = GetClientRect(hwnd, &mut c);
-        let hdc = CreateCompatibleDC(Some(screen));
-        let bmp = CreateCompatibleBitmap(screen, c.right, c.bottom);
-        let old_bmp = SelectObject(hdc, HGDIOBJ(bmp.0));
-        SetBkMode(hdc, TRANSPARENT);
-        let bg = CreateSolidBrush(COLORREF(p.bg));
-        FillRect(hdc, &c, bg);
-        let _ = DeleteObject(HGDIOBJ(bg.0));
-
-        let f_title = font(s, 15, 600);
-        let f_body = font(s, 12, 400);
-        let old_font = SelectObject(hdc, f_title);
+    let hv = st.hover;
+    fluent::paint(hwnd, |hdc, c| {
+        // Header: device badge, name, status, settings and close.
+        fluent::round_rect(hdc, &l.badge, p.card, Some(p.stroke), px(s, 10), false);
+        fluent::icon(hdc, f.icon_big, glyph::PHONE, l.badge, p.accent);
         let (title, sub) = match &st.model.peer {
             Some(n) => (n.clone(), "Linked".to_owned()),
             None => (
                 "No device paired".to_owned(),
-                "Choose Pair device to start".to_owned(),
+                "Pair a phone to start".to_owned(),
             ),
         };
-        text(
+        let tx = l.badge.right + px(s, 12);
+        fluent::text(
             hdc,
+            f.title,
             &title,
             RECT {
-                left: px(16),
-                top: px(14),
-                right: c.right - px(16),
-                bottom: px(36),
+                left: tx,
+                top: px(s, 16),
+                right: l.settings.left - px(s, 4),
+                bottom: px(s, 36),
             },
             p.text,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
-        SelectObject(hdc, f_body);
-        text(
+        fluent::text(
             hdc,
+            f.small,
             &sub,
             RECT {
-                left: px(16),
-                top: px(36),
-                right: c.right - px(16),
-                bottom: px(54),
+                left: tx,
+                top: px(s, 36),
+                right: l.settings.left,
+                bottom: px(s, 56),
             },
             p.text2,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER,
         );
+        for (r, g, h) in [
+            (l.settings, glyph::SETTINGS, Hit::Settings),
+            (l.close, glyph::CLOSE, Hit::Close),
+        ] {
+            if hv == Some(h) {
+                fluent::round_rect(hdc, &r, p.hover, None, px(s, 6), false);
+            }
+            fluent::icon(hdc, f.icon, g, r, p.text2);
+        }
 
-        round_rect(hdc, &l.drop, p.tile, p.stroke, px(10), true);
-        let drop_label = match &st.model.peer {
+        // Drop zone.
+        let drop_fill = if hv == Some(Hit::Drop) {
+            p.hover
+        } else {
+            p.card
+        };
+        fluent::round_rect(hdc, &l.drop, drop_fill, Some(p.text2), px(s, 10), true);
+        let mut ic = l.drop;
+        ic.bottom = ic.top + (ic.bottom - ic.top) / 2 + px(s, 4);
+        ic.top += px(s, 10);
+        fluent::icon(hdc, f.icon_big, glyph::UPLOAD, ic, p.text2);
+        let label = match &st.model.peer {
             Some(n) => format!("Drop files here to send to {n}"),
             None => "Pair a device to send files".to_owned(),
         };
-        text(
+        let mut lr = l.drop;
+        lr.top = ic.bottom;
+        lr.bottom -= px(s, 10);
+        fluent::text(
             hdc,
-            &drop_label,
-            l.drop,
+            f.small,
+            &label,
+            lr,
             p.text2,
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
 
-        let labels = ["Universal Clipboard", "Send files", "Pair device"];
-        for (i, r) in l.tiles.iter().enumerate() {
-            let on = i == 0 && st.model.clipboard_on;
-            round_rect(
+        // Tiles.
+        let tiles = [
+            (glyph::CLIPBOARD, "Share clipboard", Hit::Clip),
+            (glyph::SEND, "Send files", Hit::Send),
+            (glyph::ADD, "Pair device", Hit::Pair),
+        ];
+        for (r, (g, label, h)) in l.tiles.iter().zip(tiles) {
+            let on = h == Hit::Clip && st.model.clipboard_on;
+            let (fill, fg) = if on {
+                (p.accent, p.on_accent)
+            } else if hv == Some(h) {
+                (p.hover, p.text)
+            } else {
+                (p.card, p.text)
+            };
+            fluent::round_rect(
                 hdc,
                 r,
-                if on { p.accent } else { p.tile },
-                if on { p.accent } else { p.stroke },
-                px(8),
+                fill,
+                if on { None } else { Some(p.stroke) },
+                px(s, 8),
                 false,
             );
-            let mut tr = *r;
-            tr.left += px(10);
-            tr.right -= px(6);
-            tr.top += px(34);
-            text(
-                hdc,
-                labels[i],
-                tr,
-                if on { p.on_accent } else { p.text },
-                DT_LEFT | DT_WORDBREAK,
-            );
-            // Small state dot for the toggle tile.
-            if i == 0 {
-                let dot = RECT {
-                    left: r.left + px(10),
-                    top: r.top + px(12),
-                    right: r.left + px(20),
-                    bottom: r.top + px(22),
-                };
-                round_rect(
-                    hdc,
-                    &dot,
-                    if on { p.on_accent } else { p.text2 },
-                    if on { p.on_accent } else { p.text2 },
-                    px(10),
-                    false,
-                );
-            }
+            let ir = RECT {
+                left: r.left + px(s, 12),
+                top: r.top + px(s, 12),
+                right: r.left + px(s, 36),
+                bottom: r.top + px(s, 36),
+            };
+            fluent::icon(hdc, f.icon, g, ir, fg);
+            let tr = RECT {
+                left: r.left + px(s, 12),
+                top: r.top + px(s, 42),
+                right: r.right - px(s, 6),
+                bottom: r.bottom - px(s, 4),
+            };
+            fluent::text(hdc, f.small, label, tr, fg, DT_LEFT | DT_WORDBREAK);
         }
-        text(
-            hdc,
-            &st.model.last,
-            RECT {
-                left: px(16),
-                top: px(252),
-                right: c.right - px(16),
-                bottom: px(284),
-            },
-            p.text2,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-        );
 
-        let _ = BitBlt(screen, 0, 0, c.right, c.bottom, Some(hdc), 0, 0, SRCCOPY);
-        SelectObject(hdc, old_font);
-        let _ = DeleteObject(f_title);
-        let _ = DeleteObject(f_body);
-        SelectObject(hdc, old_bmp);
-        let _ = DeleteObject(HGDIOBJ(bmp.0));
-        let _ = DeleteDC(hdc);
-        let _ = EndPaint(hwnd, &ps);
-    }
+        // Footer: last activity.
+        if !st.model.last.is_empty() {
+            fluent::text(
+                hdc,
+                f.small,
+                &st.model.last,
+                l.footer,
+                p.text2,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+            );
+        }
+        let _ = c;
+    });
 }
 
-fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Action> {
-    let l = layout(scale(hwnd));
-    let inside = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-    if inside(&l.tiles[0]) {
-        Some(Action::ToggleClipboard)
-    } else if inside(&l.tiles[1]) || inside(&l.drop) {
-        Some(Action::SendFiles)
-    } else if inside(&l.tiles[2]) {
-        Some(Action::Pair)
-    } else {
-        None
-    }
+fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Hit> {
+    let l = layout(fluent::scale(hwnd));
+    [
+        (l.settings, Hit::Settings),
+        (l.close, Hit::Close),
+        (l.drop, Hit::Drop),
+        (l.tiles[0], Hit::Clip),
+        (l.tiles[1], Hit::Send),
+        (l.tiles[2], Hit::Pair),
+    ]
+    .into_iter()
+    .find(|(r, _)| fluent::inside(r, x, y))
+    .map(|(_, h)| h)
 }
 
 fn act(a: Action) {
@@ -360,31 +282,101 @@ fn act(a: Action) {
     }
 }
 
+fn repaint(hwnd: HWND) {
+    // SAFETY: repaint our own window.
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let xy = || {
+        (
+            (lparam.0 & 0xffff) as i16 as i32,
+            ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+        )
+    };
     match msg {
         WM_PAINT => {
             paint(hwnd);
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_SETCURSOR if (lparam.0 & 0xffff) as u32 == HTCLIENT => {
+            let mut pt = POINT::default();
+            // SAFETY: cursor position mapped into our client area.
+            unsafe {
+                let _ = GetCursorPos(&mut pt);
+                let _ = ScreenToClient(hwnd, &mut pt);
+            }
+            fluent::set_cursor(hit(hwnd, pt.x, pt.y).is_some());
+            LRESULT(1)
+        }
+        WM_MOUSEMOVE => {
+            let (x, y) = xy();
+            let h = hit(hwnd, x, y);
+            let mut changed = false;
+            if let Ok(mut g) = CURRENT.lock() {
+                if let Some(st) = g.as_mut() {
+                    changed = st.hover != h;
+                    st.hover = h;
+                    if !st.tracking {
+                        st.tracking = true;
+                        let mut t = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: hwnd,
+                            dwHoverTime: 0,
+                        };
+                        // SAFETY: valid struct for our window.
+                        let _ = unsafe { TrackMouseEvent(&mut t) };
+                    }
+                }
+            }
+            if changed {
+                repaint(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            if let Ok(mut g) = CURRENT.lock() {
+                if let Some(st) = g.as_mut() {
+                    st.hover = None;
+                    st.tracking = false;
+                }
+            }
+            repaint(hwnd);
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
-            let x = (lparam.0 & 0xffff) as i16 as i32;
-            let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
-            if let Some(a) = hit(hwnd, x, y) {
-                let keep_open = matches!(a, Action::ToggleClipboard);
-                act(a);
-                if keep_open {
+            let (x, y) = xy();
+            match hit(hwnd, x, y) {
+                Some(Hit::Clip) => {
+                    act(Action::ToggleClipboard);
                     if let Ok(mut g) = CURRENT.lock() {
                         if let Some(st) = g.as_mut() {
                             st.model.clipboard_on = !st.model.clipboard_on;
                         }
                     }
-                    // SAFETY: repaint our own window.
-                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
-                } else {
+                    repaint(hwnd);
+                }
+                Some(Hit::Send | Hit::Drop) => {
+                    act(Action::SendFiles);
                     close();
                 }
+                Some(Hit::Pair) => {
+                    act(Action::Pair);
+                    close();
+                }
+                Some(Hit::Settings) => {
+                    act(Action::Settings);
+                    close();
+                }
+                Some(Hit::Close) => close(),
+                None => {}
             }
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {
+            close();
             LRESULT(0)
         }
         WM_DROPFILES => {
@@ -410,14 +402,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             close();
             LRESULT(0)
         }
-        WM_ACTIVATE if (wparam.0 & 0xffff) as u32 == WA_INACTIVE => {
-            close();
-            LRESULT(0)
-        }
         WM_DESTROY => {
-            if let Ok(mut t) = CLOSED_AT.lock() {
-                *t = Some(std::time::Instant::now());
-            }
             if let Ok(mut g) = CURRENT.lock() {
                 if g.as_ref().is_some_and(|s| s.hwnd == hwnd.0 as isize) {
                     *g = None;
@@ -436,16 +421,6 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
         close();
         return;
     }
-    // Clicking the tray icon while open first deactivates (closes) the flyout;
-    // that same click must not reopen it.
-    if CLOSED_AT
-        .lock()
-        .ok()
-        .and_then(|g| *g)
-        .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300))
-    {
-        return;
-    }
     // SAFETY: window creation and positioning on the UI thread.
     unsafe {
         let Ok(hinstance) = GetModuleHandleW(None) else {
@@ -455,6 +430,8 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
             lpfnWndProc: Some(wndproc),
             hInstance: hinstance.into(),
             lpszClassName: CLASS,
+            // Without a class cursor Windows keeps showing the busy cursor.
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             ..Default::default()
         };
         RegisterClassW(&wc);
@@ -478,37 +455,26 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
             *g = Some(State {
                 hwnd: hwnd.0 as isize,
                 model,
+                hover: None,
+                tracking: false,
                 on_action,
             });
         }
-        let s = scale(hwnd);
-        let (w, h) = ((W as f32 * s) as i32, (H as f32 * s) as i32);
+        let s = fluent::scale(hwnd);
+        let (w, h) = (px(s, W), px(s, H));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
         // Above-left of the tray icon, like Windows' own flyouts.
         let _ = SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
-            (pt.x - w + (24.0 * s) as i32).max(0),
-            (pt.y - h - (16.0 * s) as i32).max(0),
+            (pt.x - w + px(s, 24)).max(0),
+            (pt.y - h - px(s, 16)).max(0),
             w,
             h,
             SWP_NOACTIVATE,
         );
-        let pref = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &pref as *const _ as *const _,
-            4,
-        );
-        let dark: i32 = dark_mode() as i32;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark as *const _ as *const _,
-            4,
-        );
+        fluent::frame(hwnd, false);
         DragAcceptFiles(hwnd, true);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);

@@ -11,15 +11,21 @@
 #[cfg(windows)]
 mod core;
 #[cfg(windows)]
+mod fluent;
+#[cfg(windows)]
 mod flyout;
 #[cfg(windows)]
 mod ipc;
+#[cfg(windows)]
+mod menu;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
 mod qr_window;
 #[cfg(windows)]
 mod settings;
+#[cfg(windows)]
+mod settings_window;
 #[cfg(windows)]
 mod ui;
 
@@ -64,6 +70,7 @@ fn main() {
     };
     let mut auto_accept = false;
     let mut send_clipboard = false;
+    let mut ui_request: Option<ipc::Request> = None;
     let mut send_files: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -79,6 +86,9 @@ fn main() {
             "--pair" => opts.pair_on_start = true,
             "--test-auto-accept" => auto_accept = true,
             "--send-clipboard" => send_clipboard = true,
+            "--settings" => ui_request = Some(ipc::Request::Settings),
+            "--open" => ui_request = Some(ipc::Request::Open),
+            "--menu" => ui_request = Some(ipc::Request::Menu),
             // Everything after --send is a file (Explorer "Send to" passes paths).
             "--send" => send_files.extend(args.by_ref().map(PathBuf::from)),
             _ => {}
@@ -101,6 +111,9 @@ fn main() {
         if send_clipboard {
             ok &= ipc::send_request(&ipc::Request::SendClipboard);
         }
+        if let Some(r) = &ui_request {
+            ok &= ipc::send_request(r);
+        }
         if !send_files.is_empty() {
             ok &= ipc::send_request(&ipc::Request::Send(send_files));
         }
@@ -119,6 +132,7 @@ fn main() {
     let settings_path = opts.dir.join("settings.txt");
     let settings: core::SharedSettings =
         Arc::new(Mutex::new(settings::Settings::load(&settings_path)));
+    fluent::set_theme(settings.lock().map(|s| s.theme).unwrap_or(0));
     let hwnd = match ui::create(
         cmd_tx.clone(),
         peers.clone(),
@@ -141,8 +155,16 @@ fn main() {
             .enable_all()
             .build()
             .expect("tokio runtime");
-        rt.spawn(ipc::serve(ipc_tx, move || {
-            ui::post_command(hwnd, ui::ID_SEND_CLIPBOARD)
+        rt.spawn(ipc::serve(ipc_tx, move |r| {
+            ui::post_command(
+                hwnd,
+                match r {
+                    ipc::Request::Settings => ui::ID_SETTINGS,
+                    ipc::Request::Open => ui::ID_OPEN_FLYOUT,
+                    ipc::Request::Menu => ui::ID_MENU,
+                    _ => ui::ID_SEND_CLIPBOARD,
+                },
+            )
         }));
         let result = rt.block_on(core::run(
             opts,

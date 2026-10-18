@@ -16,6 +16,8 @@ pub struct Settings {
     /// Accept files from paired devices without asking.
     pub auto_accept: bool,
     pub save_dir: PathBuf,
+    /// 0 = follow Windows, 1 = light, 2 = dark.
+    pub theme: u8,
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             keep_in_history: false,
             auto_accept: true,
             save_dir: downloads,
+            theme: 0,
         }
     }
 }
@@ -58,6 +61,13 @@ impl Settings {
                 "universal_clipboard" => {
                     s.universal_clipboard = parse_bool(v).unwrap_or(s.universal_clipboard)
                 }
+                "theme" => {
+                    s.theme = match v {
+                        "light" => 1,
+                        "dark" => 2,
+                        _ => 0,
+                    }
+                }
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
@@ -70,11 +80,12 @@ impl Settings {
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let text = format!(
-            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\ntheme={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
             self.keep_in_history,
             self.auto_accept,
+            ["system", "light", "dark"][self.theme.min(2) as usize],
             self.save_dir.display()
         );
         let tmp = path.with_extension("tmp");
@@ -102,10 +113,11 @@ mod tests {
         let path = dir.join("settings.txt");
         let s = Settings {
             universal_clipboard: true,
-            skip_private: true,
+            skip_private: false,
             keep_in_history: true,
             auto_accept: false,
             save_dir: PathBuf::from(r"D:\Inbox"),
+            theme: 2,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
