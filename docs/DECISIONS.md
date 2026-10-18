@@ -102,6 +102,13 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 - Realme SystemUI only reads `ACTIVE_TILE`, `TOGGLEABLE_TILE` and `com.oplus.systemui.qs.hide_tile` from third-party tiles; the ▾ detail panel (`OplusQSDetail`) is for system tiles only. Long-press stays the way into our panel.
 - Hardening: PC control off until the user allows it in a prompt; receivers cap input at 1000 moves/s and end the session above 400 clicks/keys per second; pipe sends only existing files; accessibility service subscribes only to announcements.
 
+## Phase 3.4 (2026-10-18/19): realme reboots, review, fixes
+- Phone rebooted twice (20:17, 22:56): `kernel_panic,sysrq_trigwarmd_crash`, realme's hang watchdog. No pre-reboot log kept. Both happened with no test load from us; the phone was under heavy memory pressure (LMK thrashing kills of launcher/GMS/WhatsApp), HDFC PayZapp crash-looping every few minutes, Instagram ~700 MB, GMS ~650 MB. Phone Bridge ~45 MB, not in the top 10. Integrity after: verified boot green/locked, no filesystem errors.
+- USB debugging off at 23:16:17: realme system_server disables adb 83 ms after `USB_STATE=DISCONNECTED`; not app-triggerable (needs WRITE_SECURE_SETTINGS).
+- MediaTek kernel: 16 threads (wdtk-*, hang_detect) sit permanently in D state, so load average ~18 at 8.5% real CPU.
+- Three parallel code reviews (Rust core, Android, tray). Confirmed and fixed the critical one in UniFFI 0.32.2 source: a unit-returning callback interface panics when Kotlin throws (`ffi_converter_traits.rs:393`), which aborts the app under `panic = "abort"`. Callbacks now return `Result`; Kotlin hands events to one background thread. Other fixes: received-file copies off the Rust runtime threads, guarded startForeground, async shutdown without orphaned nodes, debug intent hooks only in debuggable builds (exported activity allowed silent pairing), connection caps and handshake timeouts, flood budget on every record, free-space check, tray hook thread, owner-only pipe DACL, icon restore on Explorer restart.
+- Realme results after fixes (fresh boot, release build): no crashes/ANRs/LMK kills in 30+ min of monitoring; idle 1 tick/120 s; PSS 38-65 MB depending on UI use; tray private 3.4-4.1 MB, leak test flat, stuck-pipe client no longer blocks (48 ms).
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

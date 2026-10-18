@@ -51,3 +51,9 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 2. Anything that reads from or controls the other device needs its own explicit, revocable permission.
 3. All parsing of remote bytes is bounded and fuzzed before a feature ships.
 4. No telemetry, no third-party services by default.
+
+## Review findings fixed (2026-10-19)
+- Exported `MainActivity` honoured test extras (`pair_code`, `confirm`) in release builds: any installed app could pair the phone with an attacker PC without the SAS check. Now only in debuggable builds.
+- Unauthenticated LAN hosts could hold pairing connections open indefinitely: pairing ALPN refused unless a code is shown; handshake steps time-boxed; at most 16 incoming connections in flight.
+- Tray pipe used the default DACL (other local accounts could connect): now owner + SYSTEM only.
+- Clipboard text no longer written to logs (tray.log, logcat).
