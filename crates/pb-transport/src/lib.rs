@@ -309,16 +309,21 @@ impl Node {
             .get(peer)
             .ok_or(Error::UnknownPeer)?;
         let conn = self.dial(*peer, &known.addrs, SESSION_ALPN).await?;
-        let (send, recv) = conn.open_bi().await.map_err(tx)?;
-        Session::start(
-            conn,
-            *peer,
-            send,
-            recv,
-            &self.inner.device_name,
-            &known.name,
-        )
-        .await
+        let started = async {
+            let (send, recv) = conn.open_bi().await.map_err(tx)?;
+            Session::start(
+                conn.clone(),
+                *peer,
+                send,
+                recv,
+                &self.inner.device_name,
+                &known.name,
+            )
+            .await
+        }
+        .await;
+        // Whichever step noticed the peer's close, report why it closed.
+        started.map_err(|e| closed_by_peer(&conn, e))
     }
 
     pub async fn shutdown(&self) {
