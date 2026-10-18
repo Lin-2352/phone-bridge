@@ -103,6 +103,48 @@ pub enum PbEvent {
         peer_name: String,
         reason: String,
     },
+    /// A file transfer is under way (at most every 0.7 s, and once at the end).
+    TransferProgress {
+        peer_name: String,
+        name: String,
+        done: u64,
+        total: u64,
+        incoming: bool,
+    },
+}
+
+/// Progress callback for a transfer, rate-limited so the UI is not flooded.
+fn progress_events(
+    events: Events,
+    peer_name: String,
+    name: String,
+    incoming: bool,
+) -> pb_transport::files::Progress {
+    let last = Mutex::new(None::<std::time::Instant>);
+    Arc::new(move |done, total| {
+        let due = {
+            let mut l = last.lock().unwrap_or_else(|p| p.into_inner());
+            let now = std::time::Instant::now();
+            let due = done >= total
+                || l.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(700));
+            if due {
+                *l = Some(now);
+            }
+            due
+        };
+        if due {
+            push(
+                &events,
+                PbEvent::TransferProgress {
+                    peer_name: peer_name.clone(),
+                    name: name.clone(),
+                    done,
+                    total,
+                    incoming,
+                },
+            );
+        }
+    })
 }
 
 #[derive(uniffi::Record)]
@@ -338,7 +380,12 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     accept,
                     &sh.incoming_dir,
                     DEFAULT_MAX_FILE,
-                    None,
+                    Some(progress_events(
+                        sh.events.clone(),
+                        name.clone(),
+                        file_name.clone(),
+                        true,
+                    )),
                 )
                 .await
                 {
@@ -505,7 +552,24 @@ impl PbNode {
         let peer = self.find(&peer_id)?;
         let reader = tokio::fs::File::from_std(file);
         self.node
-            .send_file(&peer, &name, size, &mime, reader, None)
+            .send_file(
+                &peer,
+                &name,
+                size,
+                &mime,
+                reader,
+                Some(progress_events(
+                    self.shared.events.clone(),
+                    self.node
+                        .paired_peers()
+                        .into_iter()
+                        .find(|p| p.id == peer)
+                        .map(|p| p.name)
+                        .unwrap_or_default(),
+                    name.clone(),
+                    false,
+                )),
+            )
             .await
             .map(|_| ())
             .map_err(fail)

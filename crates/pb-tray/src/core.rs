@@ -294,6 +294,7 @@ pub async fn run(
                             }
                             .await;
                             match r {
+                                Ok(()) if sensitive => log.line(&format!("CLIPSYNC sent a sensitive clip to \"{name}\"")),
                                 Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
                                 Err(e) => log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}")),
                             }

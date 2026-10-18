@@ -42,6 +42,9 @@ private const val PORT = 47100
 private const val CH_STATUS = "status"
 private const val CH_EVENTS = "events"
 private const val ONGOING_ID = 1
+private const val CH_PROGRESS = "progress"
+private const val PROGRESS_IN_ID = 2
+private const val PROGRESS_OUT_ID = 3
 
 /** One line in the Home screen's Recent list. */
 data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
@@ -114,6 +117,7 @@ class PbService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel(CH_PROGRESS, "Transfer progress", NotificationManager.IMPORTANCE_LOW))
         try {
             startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } catch (t: Throwable) {
@@ -238,13 +242,21 @@ class PbService : Service() {
                 val title = if (e.sensitive) "Password or code" else e.text.take(80)
                 Bridge.addRecent(RecentItem(title, "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
             }
-            is PbEvent.FileReceived -> saveReceived(e)
+            is PbEvent.FileReceived -> {
+                cancelProgress(true)
+                saveReceived(e)
+            }
             is PbEvent.SharedText -> {
                 if (e.isLink) notifyLink(e.peerName, e.text) else writeClipboard(e.text, false)
                 Bridge.addRecent(RecentItem(e.text.take(80), if (e.isLink) "Link from ${e.peerName}" else "Text from ${e.peerName}", if (e.isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
             }
             is PbEvent.IncomingOffer -> notifyOffer(e)
-            is PbEvent.TransferFailed -> notifySimple("Transfer from ${e.peerName} failed", e.reason)
+            is PbEvent.TransferFailed -> {
+                cancelProgress(true)
+                cancelProgress(false)
+                notifySimple("Transfer from ${e.peerName} failed", e.reason)
+            }
+            is PbEvent.TransferProgress -> notifyProgress(e)
             is PbEvent.Connected -> Log.i(TAG, "Connected: ${e.peerName}")
             is PbEvent.Disconnected -> Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
         }
@@ -387,6 +399,30 @@ class PbService : Service() {
             .setContentIntent(copy)
             .build()
         getSystemService(NotificationManager::class.java).notify(id, n)
+    }
+
+    /** Quiet progress for a file on its way (one per direction). */
+    private fun notifyProgress(e: PbEvent.TransferProgress) {
+        val id = if (e.incoming) PROGRESS_IN_ID else PROGRESS_OUT_ID
+        if (e.done >= e.total) {
+            cancelProgress(e.incoming)
+            return
+        }
+        val pct = if (e.total == 0uL) 0 else (e.done.toDouble() * 100 / e.total.toDouble()).toInt()
+        val n = Notification.Builder(this, CH_PROGRESS)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle(if (e.incoming) "Receiving ${e.name}" else "Sending ${e.name}")
+            .setContentText("${if (e.incoming) "From" else "To"} ${e.peerName} \u00b7 $pct%")
+            .setProgress(100, pct, false)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, n)
+    }
+
+    private fun cancelProgress(incoming: Boolean) {
+        getSystemService(NotificationManager::class.java).cancel(if (incoming) PROGRESS_IN_ID else PROGRESS_OUT_ID)
     }
 
     /** Ids 100..139, reused: at most 40 of our notifications exist at once. */

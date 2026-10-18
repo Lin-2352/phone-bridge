@@ -59,13 +59,22 @@ class ShareActivity : Activity() {
                         if (!c.isNull(1)) size = c.getLong(1)
                     }
                 }
-                val pfd = resolver.openFileDescriptor(uri, "r") ?: return@mapNotNull null
+                val pfd = resolver.openFileDescriptor(uri, "r")
+                if (pfd == null) {
+                    Log.e(TAG, "SHARE could not open $uri: no file descriptor")
+                    return@mapNotNull null
+                }
                 if (size < 0) size = pfd.statSize
                 Opened(name, size, resolver.getType(uri) ?: "", pfd.detachFd())
             } catch (t: Throwable) {
                 Log.e(TAG, "SHARE could not open $uri: $t")
                 null
             }
+        }
+        if (uris.isNotEmpty() && opened.isEmpty()) {
+            Toast.makeText(this, "Could not read the shared files", Toast.LENGTH_LONG).show()
+            finish()
+            return
         }
         Bridge.scope.launch {
             for (f in opened) {
