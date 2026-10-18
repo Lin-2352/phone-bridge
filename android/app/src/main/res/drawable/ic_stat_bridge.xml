@@ -1,20 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Status-bar glyph: a phone and a laptop joined by a link. Monochrome, as Android requires. -->
+<!-- Status-bar glyph from the design: a phone tile in front of a screen tile. Monochrome. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- phone -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M4,4h5a1.5,1.5 0,0 1,1.5 1.5v13A1.5,1.5 0,0 1,9 20H4a1.5,1.5 0,0 1,-1.5 -1.5v-13A1.5,1.5 0,0 1,4 4zM4.5,6v11.5h4V6z" />
-    <!-- laptop -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M14,8h6.5A1.5,1.5 0,0 1,22 9.5V16h-9.5V9.5A1.5,1.5 0,0 1,14 8zM14.5,10v4h5.5v-4zM12,17h10.5v1.2a0.8,0.8 0,0 1,-0.8 0.8H12.8a0.8,0.8 0,0 1,-0.8 -0.8z" />
-    <!-- link between them -->
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M10.5,11h2v2h-2z" />
+    <path android:fillColor="#FFFFFFFF" android:fillAlpha="0.5"
+        android:pathData="M10,4h10a2,2 0,0 1,2 2v6.5a2,2 0,0 1,-2 2H12V10a3,3 0,0 0,-3 -3H8V6a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M4.5,8h4a2,2 0,0 1,2 2v8.5a2,2 0,0 1,-2 2h-4a2,2 0,0 1,-2 -2V10a2,2 0,0 1,2 -2zM6.5,16.7a0.9,0.9 0,1 0,0.01 0z" />
 </vector>

@@ -10,6 +10,8 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="Phone Bridge"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
@@ -26,12 +28,51 @@
             android:name=".ScanActivity"
             android:exported="false"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <!-- "Phone Bridge" in Android's share sheet: any file(s), text or links. -->
+        <activity
+            android:name=".ShareActivity"
+            android:exported="true"
+            android:label="Send to PC"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Reads the clipboard while focused (Android 10+ rule), sends, closes. -->
+        <activity
+            android:name=".ClipSyncActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".PbService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
-        <receiver
-            android:name=".CopyReceiver"
-            android:exported="false" />
+        <service
+            android:name=".ClipTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_bridge"
+            android:label="Send clipboard"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+        <receiver android:name=".CopyReceiver" android:exported="false" />
+        <receiver android:name=".OfferReceiver" android:exported="false" />
     </application>
 </manifest>

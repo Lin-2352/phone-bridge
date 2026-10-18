@@ -71,6 +71,36 @@ pub enum PbEvent {
         text: String,
         sensitive: bool,
     },
+    /// Universal Clipboard: text copied on the PC (only when sync is on).
+    RemoteClipboard {
+        peer_name: String,
+        text: String,
+    },
+    /// A file finished arriving; Kotlin moves it into Downloads/Phone Bridge.
+    FileReceived {
+        peer_name: String,
+        path: String,
+        name: String,
+        size: u64,
+    },
+    /// A link or text shared from the PC.
+    SharedText {
+        peer_name: String,
+        text: String,
+        is_link: bool,
+    },
+    /// Asks the UI to accept or decline (only when auto-accept is off);
+    /// answer with `PbNode::answer_offer(id, ..)`.
+    IncomingOffer {
+        id: u64,
+        peer_name: String,
+        name: String,
+        size: u64,
+    },
+    TransferFailed {
+        peer_name: String,
+        reason: String,
+    },
 }
 
 #[derive(uniffi::Record)]
@@ -96,6 +126,22 @@ fn push(events: &Events, e: PbEvent) {
 pub struct PbNode {
     node: Node,
     joining: tokio::sync::Mutex<Option<Joining>>,
+    shared: Arc<Shared>,
+}
+
+/// State shared between the node object and the session pumps.
+struct Shared {
+    events: Events,
+    incoming_dir: std::path::PathBuf,
+    auto_accept: std::sync::atomic::AtomicBool,
+    clipboard_sync: std::sync::atomic::AtomicBool,
+    pending: Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<bool>>>,
+    last_remote_clip: Mutex<[u8; 32]>,
+}
+
+fn clip_hash(text: &str) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes()).into()
 }
 
 /// Start the node. `data_dir` holds the identity seed and the paired-peer list.
@@ -119,26 +165,45 @@ pub async fn start_node(
         port: (port != 0).then_some(port),
     };
     let (node, ev) = Node::bind(&identity, store, config).await.map_err(fail)?;
-    let events: Events = listener;
+    let shared = Arc::new(Shared {
+        events: listener,
+        incoming_dir: dir.join("incoming"),
+        auto_accept: std::sync::atomic::AtomicBool::new(true),
+        clipboard_sync: std::sync::atomic::AtomicBool::new(false),
+        pending: Mutex::default(),
+        last_remote_clip: Mutex::new([0; 32]),
+    });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
     let mut sessions = ev.sessions;
-    let ev2 = events.clone();
+    let sh = shared.clone();
     tokio::spawn(async move {
         while let Some(s) = sessions.recv().await {
-            tokio::spawn(pump(s, ev2.clone()));
+            tokio::spawn(pump(s, sh.clone()));
         }
     });
     Ok(Arc::new(PbNode {
         node,
         joining: tokio::sync::Mutex::new(None),
+        shared,
     }))
 }
 
-async fn pump(mut s: Session, events: Events) {
+#[cfg(target_os = "android")]
+fn fd_to_file(fd: i32) -> Result<std::fs::File, PbError> {
+    android_init::file_from_fd(fd)
+}
+
+#[cfg(not(target_os = "android"))]
+fn fd_to_file(_fd: i32) -> Result<std::fs::File, PbError> {
+    Err(fail("file descriptors are only accepted on Android"))
+}
+
+async fn pump(mut s: Session, sh: Arc<Shared>) {
+    use pb_transport::files::{receive_offer, Received, DEFAULT_MAX_FILE};
     let name = s.peer_name.clone();
     push(
-        &events,
+        &sh.events,
         PbEvent::Connected {
             peer_name: name.clone(),
         },
@@ -146,20 +211,108 @@ async fn pump(mut s: Session, events: Events) {
     let reason = loop {
         match s.recv().await {
             Ok(Some(ControlMsg::ClipboardText(c))) => push(
-                &events,
+                &sh.events,
                 PbEvent::Clipboard {
                     peer_name: name.clone(),
                     text: c.text,
                     sensitive: c.sensitive,
                 },
             ),
+            Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
+                if sh.clipboard_sync.load(std::sync::atomic::Ordering::Relaxed) {
+                    *sh.last_remote_clip
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = clip_hash(&u.text);
+                    push(
+                        &sh.events,
+                        PbEvent::RemoteClipboard {
+                            peer_name: name.clone(),
+                            text: u.text,
+                        },
+                    );
+                }
+            }
+            Ok(Some(ControlMsg::Offer(offer))) => {
+                let accept = if sh.auto_accept.load(std::sync::atomic::Ordering::Relaxed) {
+                    true
+                } else {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    sh.pending
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(offer.id, tx);
+                    push(
+                        &sh.events,
+                        PbEvent::IncomingOffer {
+                            id: offer.id,
+                            peer_name: name.clone(),
+                            name: offer.name.clone(),
+                            size: offer.size,
+                        },
+                    );
+                    tokio::time::timeout(pb_transport::files::OFFER_TIMEOUT, rx)
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .unwrap_or(false)
+                };
+                let file_name = offer.name.clone();
+                match receive_offer(
+                    &mut s,
+                    offer,
+                    accept,
+                    &sh.incoming_dir,
+                    DEFAULT_MAX_FILE,
+                    None,
+                )
+                .await
+                {
+                    Ok(Received::File { path, size }) => push(
+                        &sh.events,
+                        PbEvent::FileReceived {
+                            peer_name: name.clone(),
+                            path: path.display().to_string(),
+                            name: path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or(file_name),
+                            size,
+                        },
+                    ),
+                    Ok(Received::Text(t)) => push(
+                        &sh.events,
+                        PbEvent::SharedText {
+                            peer_name: name.clone(),
+                            text: t,
+                            is_link: false,
+                        },
+                    ),
+                    Ok(Received::Link(l)) => push(
+                        &sh.events,
+                        PbEvent::SharedText {
+                            peer_name: name.clone(),
+                            text: l,
+                            is_link: true,
+                        },
+                    ),
+                    Err(pb_transport::Error::Declined) => {}
+                    Err(e) => push(
+                        &sh.events,
+                        PbEvent::TransferFailed {
+                            peer_name: name.clone(),
+                            reason: e.to_string(),
+                        },
+                    ),
+                }
+                break "transfer done".to_owned();
+            }
             Ok(Some(_)) => {}
             Ok(None) => break "closed".to_owned(),
             Err(e) => break e.to_string(),
         }
     };
     push(
-        &events,
+        &sh.events,
         PbEvent::Disconnected {
             peer_name: name,
             reason,
@@ -214,7 +367,21 @@ impl PbNode {
             .ok_or_else(|| fail("no pairing in progress"))?;
         joining.decide(accept).await.map(|p| p.name).map_err(fail)
     }
+}
 
+impl PbNode {
+    fn find(&self, peer_id: &str) -> Result<pb_identity::PeerId, PbError> {
+        self.node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id.to_string() == peer_id)
+            .map(|p| p.id)
+            .ok_or_else(|| fail("not a paired device"))
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl PbNode {
     pub fn unpair(&self, peer_id: String) -> bool {
         self.node
             .paired_peers()
@@ -248,6 +415,101 @@ impl PbNode {
         Ok(())
     }
 
+    /// Share a file with a paired device. `fd` is a detached file descriptor
+    /// (ParcelFileDescriptor.detachFd()); this call takes ownership of it.
+    pub async fn send_file_fd(
+        &self,
+        peer_id: String,
+        fd: i32,
+        name: String,
+        size: u64,
+        mime: String,
+    ) -> Result<(), PbError> {
+        let peer = self.find(&peer_id)?;
+        let file = fd_to_file(fd)?;
+        let reader = tokio::fs::File::from_std(file);
+        self.node
+            .send_file(&peer, &name, size, &mime, reader, None)
+            .await
+            .map(|_| ())
+            .map_err(fail)
+    }
+
+    /// Share text or a link with a paired device.
+    pub async fn send_text(
+        &self,
+        peer_id: String,
+        text: String,
+        is_link: bool,
+    ) -> Result<(), PbError> {
+        let peer = self.find(&peer_id)?;
+        self.node
+            .send_text(&peer, &text, is_link)
+            .await
+            .map_err(fail)
+    }
+
+    /// Universal Clipboard, phone -> PC. Skips text that just arrived from
+    /// the PC so the two clipboards never bounce the same text.
+    pub async fn sync_clipboard(&self, text: String) -> Result<(), PbError> {
+        if !self
+            .shared
+            .clipboard_sync
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || text.is_empty()
+        {
+            return Ok(());
+        }
+        let h = clip_hash(&text);
+        if *self
+            .shared
+            .last_remote_clip
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            == h
+        {
+            return Ok(());
+        }
+        for p in self.node.paired_peers() {
+            let s = self.node.connect(&p.id).await.map_err(fail)?;
+            s.send(ControlMsg::ClipboardUpdate(
+                pb_protocol::control::ClipboardUpdate {
+                    text: text.clone(),
+                    hash: h.to_vec(),
+                },
+            ))
+            .await
+            .map_err(fail)?;
+            s.finish().await;
+        }
+        Ok(())
+    }
+
+    pub fn set_auto_accept(&self, on: bool) {
+        self.shared
+            .auto_accept
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_clipboard_sync(&self, on: bool) {
+        self.shared
+            .clipboard_sync
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Reply to an `IncomingOffer` event.
+    pub fn answer_offer(&self, id: u64, accept: bool) {
+        if let Some(tx) = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id)
+        {
+            let _ = tx.send(accept);
+        }
+    }
+
     /// Stop the node. (Never name a UniFFI method `close`.)
     pub async fn shutdown(&self) {
         self.node.shutdown().await;
@@ -264,6 +526,17 @@ mod android_init {
         objects::{JClass, JObject},
         JNIEnv,
     };
+
+    /// Take ownership of a detached Android file descriptor.
+    pub fn file_from_fd(fd: i32) -> Result<std::fs::File, super::PbError> {
+        use std::os::fd::FromRawFd;
+        if fd < 0 {
+            return Err(super::fail("invalid file descriptor"));
+        }
+        // SAFETY: Kotlin passes ParcelFileDescriptor.detachFd(), which hands
+        // over sole ownership of an open descriptor; File closes it on drop.
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
 
     /// Called once from Kotlin with the Application context before
     /// [`super::start_node`]; iroh needs it to read system network settings

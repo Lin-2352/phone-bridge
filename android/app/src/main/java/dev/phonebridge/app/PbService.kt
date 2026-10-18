@@ -8,13 +8,21 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
 import android.os.PersistableBundle
+import android.provider.MediaStore
 import android.util.Log
+import android.webkit.MimeTypeMap
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
@@ -31,15 +39,33 @@ import uniffi.pb_ffi.startNode
 private const val TAG = "PhoneBridge"
 private const val PORT = 47100
 private const val CH_STATUS = "status"
-private const val CH_CLIP = "clipboard"
+private const val CH_EVENTS = "events"
 private const val ONGOING_ID = 1
+
+/** One line in the Home screen's Recent list. */
+data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
+    enum class Kind { File, Clipboard, Link }
+}
 
 /** Process-wide handle to the running node, shared by the service and the UI. */
 object Bridge {
     @Volatile var node: PbNode? = null
     val listeners = CopyOnWriteArrayList<(PbEvent) -> Unit>()
-    /** Last received clipboard texts by notification id (cleared when copied). */
+    /** Compose-observable state for the Home screen. */
+    val recent = mutableStateListOf<RecentItem>()
+    val linked = mutableStateOf<String?>(null)
+    /** Long-lived scope for sends started from share/tile entry points. */
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val pendingClips = java.util.concurrent.ConcurrentHashMap<Int, Pair<String, Boolean>>()
+
+    fun addRecent(item: RecentItem) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            recent.add(0, item)
+            while (recent.size > 20) recent.removeAt(recent.size - 1)
+        }
+    }
+
+    fun firstPeer() = node?.peers()?.firstOrNull()
 }
 
 /** Hands the Application context to Rust (iroh needs it for system network config). */
@@ -67,13 +93,9 @@ class PbService : Service() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
-        nm.createNotificationChannel(NotificationChannel(CH_CLIP, "Received clipboard", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
         val ongoing = statusNotification("Ready")
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(ONGOING_ID, ongoing, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(ONGOING_ID, ongoing)
-        }
+        startForeground(ONGOING_ID, ongoing, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         scope.launch { start() }
     }
 
@@ -89,7 +111,6 @@ class PbService : Service() {
         val n = Bridge.node
         Bridge.node = null
         runBlocking { n?.shutdown() }
-        // Release the Rust object (and its UDP socket) now instead of at GC time.
         n?.destroy()
         scope.cancel()
         super.onDestroy()
@@ -99,7 +120,7 @@ class PbService : Service() {
         if (Bridge.node != null) return
         try {
             NativeInit.initContext(applicationContext)
-            Bridge.node = startNode(
+            val n = startNode(
                 filesDir.absolutePath,
                 Build.MODEL ?: "Android",
                 PORT.toUShort(),
@@ -108,7 +129,12 @@ class PbService : Service() {
                     override fun onEvent(event: PbEvent) = handle(event)
                 },
             )
-            Log.i(TAG, "SERVICE node started id=${Bridge.node?.peerId()}")
+            val prefs = Prefs(this)
+            n.setClipboardSync(prefs.clipboardSync)
+            n.setAutoAccept(prefs.autoAccept)
+            Bridge.node = n
+            Bridge.linked.value = n.peers().firstOrNull()?.name
+            Log.i(TAG, "SERVICE node started id=${n.peerId()}")
         } catch (e: Throwable) {
             Log.e(TAG, "SERVICE failed to start: $e")
         }
@@ -116,27 +142,128 @@ class PbService : Service() {
 
     private fun handle(e: PbEvent) {
         when (e) {
-            is PbEvent.Clipboard -> notifyClip(e)
+            is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
+            is PbEvent.RemoteClipboard -> {
+                // Universal Clipboard: writing the clipboard is allowed in the background.
+                Prefs(this).lastClip = e.text.hashCode()
+                writeClipboard(e.text, sensitive = false)
+                Log.i(TAG, "CLIPSYNC received from ${e.peerName}")
+                Bridge.addRecent(RecentItem(e.text.take(80), "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+            }
+            is PbEvent.FileReceived -> saveToDownloads(e)
+            is PbEvent.SharedText -> {
+                if (e.isLink) notifyLink(e.peerName, e.text) else writeClipboard(e.text, false)
+                Bridge.addRecent(RecentItem(e.text.take(80), if (e.isLink) "Link from ${e.peerName}" else "Text from ${e.peerName}", if (e.isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
+            }
+            is PbEvent.IncomingOffer -> notifyOffer(e)
+            is PbEvent.TransferFailed -> notifySimple("Transfer from ${e.peerName} failed", e.reason)
             is PbEvent.Connected -> Log.i(TAG, "Connected: ${e.peerName}")
             is PbEvent.Disconnected -> Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
         }
         Bridge.listeners.forEach { it(e) }
     }
 
-    private fun notifyClip(e: PbEvent.Clipboard) {
-        Log.i(TAG, if (e.sensitive) "CLIP from ${e.peerName} (sensitive)" else "CLIP from ${e.peerName}: ${e.text}")
+    private fun writeClipboard(text: String, sensitive: Boolean) {
+        val clip = ClipData.newPlainText("Phone Bridge", text)
+        if (sensitive) {
+            clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+        }
+        android.os.Handler(mainLooper).post { getSystemService(ClipboardManager::class.java).setPrimaryClip(clip) }
+    }
+
+    /** Move a received file into Downloads/Phone Bridge via MediaStore (no storage permission needed). */
+    private fun saveToDownloads(e: PbEvent.FileReceived) {
+        val src = File(e.path)
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(src.extension.lowercase()) ?: "application/octet-stream"
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, e.name)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Phone Bridge")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        if (uri == null) {
+            notifySimple("Could not save ${e.name}", "Storage is not available")
+            return
+        }
+        try {
+            contentResolver.openOutputStream(uri)!!.use { out -> src.inputStream().use { it.copyTo(out, 256 * 1024) } }
+            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            src.delete()
+            Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName}")
+            Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to Downloads", RecentItem.Kind.File, uri))
+            notifyFile(e.peerName, e.name, e.size, uri, mime)
+        } catch (t: Throwable) {
+            contentResolver.delete(uri, null, null)
+            notifySimple("Could not save ${e.name}", t.message ?: "")
+        }
+    }
+
+    private fun notifyFile(from: String, name: String, size: ULong, uri: Uri, mime: String) {
         val id = nextId.incrementAndGet()
-        Bridge.pendingClips[id] = e.text to e.sensitive
-        val copy = PendingIntent.getBroadcast(
+        val open = PendingIntent.getActivity(
             this, id,
-            Intent(this, CopyReceiver::class.java).putExtra("id", id),
+            Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val mb = size.toDouble() / 1_048_576
+        val n = Notification.Builder(this, CH_EVENTS)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle("$from sent $name")
+            .setContentText("%.1f MB, saved to Downloads/Phone Bridge".format(mb))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, n)
+    }
+
+    private fun notifyLink(from: String, link: String) {
+        val id = nextId.incrementAndGet()
+        val open = PendingIntent.getActivity(
+            this, id, Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE,
+        )
+        val n = Notification.Builder(this, CH_EVENTS)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle("Link from $from")
+            .setContentText(link)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, n)
+    }
+
+    private fun notifyOffer(e: PbEvent.IncomingOffer) {
+        val id = nextId.incrementAndGet()
+        fun action(accept: Boolean) = PendingIntent.getBroadcast(
+            this, id * 2 + if (accept) 1 else 0,
+            Intent(this, OfferReceiver::class.java).putExtra("offer", e.id.toLong()).putExtra("accept", accept).putExtra("nid", id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val n = Notification.Builder(this, CH_CLIP)
+        val mb = e.size.toDouble() / 1_048_576
+        val n = Notification.Builder(this, CH_EVENTS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
-            .setContentTitle("Clipboard from ${e.peerName}")
-            .setContentText(if (e.sensitive) "Sensitive text (hidden)" else e.text)
-            .setVisibility(if (e.sensitive) Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE)
+            .setContentTitle("${e.peerName} wants to send ${e.name}")
+            .setContentText("%.1f MB".format(mb))
+            .addAction(Notification.Action.Builder(null, "Decline", action(false)).build())
+            .addAction(Notification.Action.Builder(null, "Accept", action(true)).build())
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, n)
+    }
+
+    private fun notifyClip(from: String, text: String, sensitive: Boolean) {
+        Log.i(TAG, if (sensitive) "CLIP from $from (sensitive)" else "CLIP from $from: $text")
+        val id = nextId.incrementAndGet()
+        Bridge.pendingClips[id] = text to sensitive
+        val copy = PendingIntent.getBroadcast(
+            this, id, Intent(this, CopyReceiver::class.java).putExtra("id", id),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = Notification.Builder(this, CH_EVENTS)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle("Clipboard from $from")
+            .setContentText(if (sensitive) "Sensitive text (hidden)" else text)
+            .setVisibility(if (sensitive) Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
             .addAction(Notification.Action.Builder(null, "Copy", copy).build())
             .setContentIntent(copy)
@@ -144,19 +271,27 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(id, n)
     }
 
+    private fun notifySimple(title: String, text: String) {
+        val n = Notification.Builder(this, CH_EVENTS)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(nextId.incrementAndGet(), n)
+    }
+
     private fun statusNotification(text: String): Notification {
-        val stop = PendingIntent.getService(
-            this, 0, Intent(this, PbService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
-        )
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
-        )
+        val stop = PendingIntent.getService(this, 0, Intent(this, PbService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val sync = PendingIntent.getActivity(this, 1, Intent(this, ClipSyncActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CH_STATUS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("Phone Bridge")
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)
+            .addAction(Notification.Action.Builder(null, "Send clipboard", sync).build())
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .build()
     }
@@ -173,12 +308,21 @@ class CopyReceiver : BroadcastReceiver() {
         val (text, sensitive) = Bridge.pendingClips.remove(id) ?: return
         val clip = ClipData.newPlainText("Phone Bridge", text)
         if (sensitive) {
-            clip.description.extras = PersistableBundle().apply {
-                putBoolean("android.content.extra.IS_SENSITIVE", true)
-            }
+            clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         }
         context.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
         context.getSystemService(NotificationManager::class.java).cancel(id)
         Log.i(TAG, "COPIED clip $id to clipboard")
+    }
+}
+
+/** Accept/Decline buttons on an incoming-file notification. */
+class OfferReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val offer = intent.getLongExtra("offer", -1)
+        val accept = intent.getBooleanExtra("accept", false)
+        Bridge.node?.answerOffer(offer.toULong(), accept)
+        context.getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra("nid", 0))
+        Log.i(TAG, "OFFER $offer answered accept=$accept")
     }
 }

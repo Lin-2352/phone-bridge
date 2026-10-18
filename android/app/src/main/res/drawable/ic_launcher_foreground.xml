@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground (108dp canvas, glyph inside the 66dp safe zone). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:translateX="30" android:translateY="30">
+        <path android:fillColor="#F5F7FF" android:fillAlpha="0.5"
+            android:pathData="M20,8h20a4,4 0,0 1,4 4v13a4,4 0,0 1,-4 4H24V20a6,6 0,0 0,-6 -6H16V12a4,4 0,0 1,4 -4z" />
+        <path android:fillColor="#F5F7FF"
+            android:pathData="M9,16h8a4,4 0,0 1,4 4v17a4,4 0,0 1,-4 4H9a4,4 0,0 1,-4 -4V20a4,4 0,0 1,4 -4z" />
+        <path android:fillColor="#2446C9"
+            android:pathData="M13,33.2m-1.8,0a1.8,1.8 0,1 1,3.6 0a1.8,1.8 0,1 1,-3.6 0" />
+    </group>
+</vector>

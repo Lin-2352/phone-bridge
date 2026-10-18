@@ -380,7 +380,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             from,
             text,
             sensitive,
-        } => match clipboard::set_text(&text, sensitive, Some(hwnd)) {
+        } => match set_clipboard_own(hwnd, &text, sensitive) {
             Ok(()) if sensitive => balloon(
                 hwnd,
                 &format!("Clipboard from {from}"),
