@@ -69,7 +69,9 @@ fun refreshTile(ctx: Context) {
 fun readClipboard(ctx: Context): Pair<String, Boolean>? {
     val clip = ctx.getSystemService(ClipboardManager::class.java).primaryClip ?: return null
     val sensitive = clip.description?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
-    val text = clip.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString()
+    // Plain text only: coerceToText would read a copied file's whole content
+    // through its provider, on the main thread.
+    val text = clip.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.take(60 * 1024)
     return if (text.isNullOrEmpty()) null else text to sensitive
 }
 

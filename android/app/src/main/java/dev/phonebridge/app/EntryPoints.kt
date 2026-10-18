@@ -46,23 +46,33 @@ class ShareActivity : Activity() {
         }
         val text = intent?.getStringExtra(Intent.EXTRA_TEXT)
         val resolver = contentResolver
-        Bridge.scope.launch {
-            for (uri in uris) {
-                try {
-                    var name = "file"
-                    var size = -1L
-                    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
-                        if (c.moveToFirst()) {
-                            name = c.getString(0) ?: name
-                            if (!c.isNull(1)) size = c.getLong(1)
-                        }
+        // Open every file now, while this activity still holds the sender's
+        // URI grant (it ends with finish() below); only the sending is async.
+        data class Opened(val name: String, val size: Long, val mime: String, val fd: Int)
+        val opened = uris.mapNotNull { uri ->
+            try {
+                var name = "file"
+                var size = -1L
+                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        name = c.getString(0) ?: name
+                        if (!c.isNull(1)) size = c.getLong(1)
                     }
-                    val pfd = resolver.openFileDescriptor(uri, "r") ?: continue
-                    if (size < 0) size = pfd.statSize
-                    val mime = resolver.getType(uri) ?: ""
-                    node.sendFileFd(peer.id, pfd.detachFd(), name, size.toULong(), mime)
-                    Log.i(TAG, "SHARE sent $name ($size bytes) to ${peer.name}")
-                    Bridge.addRecent(RecentItem(name, "Sent to ${peer.name}", RecentItem.Kind.File))
+                }
+                val pfd = resolver.openFileDescriptor(uri, "r") ?: return@mapNotNull null
+                if (size < 0) size = pfd.statSize
+                Opened(name, size, resolver.getType(uri) ?: "", pfd.detachFd())
+            } catch (t: Throwable) {
+                Log.e(TAG, "SHARE could not open $uri: $t")
+                null
+            }
+        }
+        Bridge.scope.launch {
+            for (f in opened) {
+                try {
+                    node.sendFileFd(peer.id, f.fd, f.name, f.size.toULong(), f.mime)
+                    Log.i(TAG, "SHARE sent ${f.name} (${f.size} bytes) to ${peer.name}")
+                    Bridge.addRecent(RecentItem(f.name, "Sent to ${peer.name}", RecentItem.Kind.File))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE failed: $t")
                 }
