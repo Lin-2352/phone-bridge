@@ -101,6 +101,7 @@ class PbService : Service() {
         startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         Bridge.running.value = true
         refreshTile(this)
+        scheduleRecovery(this)
         scope.launch { start() }
     }
 
@@ -112,6 +113,17 @@ class PbService : Service() {
         }
         if (intent?.action == ACTION_REFRESH) updateStatus()
         return START_STICKY
+    }
+
+    /** Low memory: keep the bare minimum and leave a trace for diagnosis. */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            android.os.Handler(mainLooper).post {
+                while (Bridge.recent.size > 5) Bridge.recent.removeAt(Bridge.recent.size - 1)
+            }
+        }
+        Log.i(TAG, "TRIM level=$level pss=${android.os.Debug.getPss() / 1024}MB")
     }
 
     override fun onDestroy() {

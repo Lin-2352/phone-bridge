@@ -292,6 +292,24 @@ class MainActivity : ComponentActivity() {
         var auto by remember { mutableStateOf(prefs.autoAccept) }
         var tree by remember { mutableStateOf(prefs.saveTree) }
         val peers = remember { Bridge.node?.peers().orEmpty() }
+        var removing by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
+        removing?.let { p ->
+            AlertDialog(
+                onDismissRequest = { removing = null },
+                title = { Text("Remove ${p.name}?") },
+                text = { Text("It will no longer be able to connect. You can pair again later by scanning its QR code.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        removing = null
+                        Bridge.node?.unpair(p.id)
+                        Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
+                        PbService.refresh(this@MainActivity)
+                        onBack()
+                    }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } },
+            )
+        }
         val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
             if (uri != null) {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -392,6 +410,29 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 item {
+                    val unrestricted = remember { mutableStateOf(isBatteryUnrestricted(this@MainActivity)) }
+                    ListItem(
+                        headlineContent = { Text("Keep running in background") },
+                        supportingContent = {
+                            Text(
+                                if (unrestricted.value) "On. Android lets Phone Bridge come back by itself if the phone runs low on memory"
+                                else "Recommended. Without it, Android may stop Phone Bridge when memory is low until you open it again",
+                            )
+                        },
+                        trailingContent = { Text(if (unrestricted.value) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
+                        modifier = Modifier.clickable {
+                            if (!unrestricted.value) {
+                                startActivity(
+                                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                        .setData(Uri.parse("package:$packageName")),
+                                )
+                            } else {
+                                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                            }
+                        },
+                    )
+                }
+                item {
                     ListItem(
                         headlineContent = { Text("Hide the status notification") },
                         supportingContent = { Text("Android needs it while Phone Bridge runs in the background. You can turn it off for this app; Phone Bridge keeps working") },
@@ -410,12 +451,7 @@ class MainActivity : ComponentActivity() {
                         headlineContent = { Text(p.name) },
                         supportingContent = { Text("Fingerprint ${p.fingerprint.take(9)}") },
                         trailingContent = {
-                            TextButton(onClick = {
-                                Bridge.node?.unpair(p.id)
-                                Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
-                                PbService.refresh(this@MainActivity)
-                                onBack()
-                            }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                            TextButton(onClick = { removing = p }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
                         },
                     )
                 }
