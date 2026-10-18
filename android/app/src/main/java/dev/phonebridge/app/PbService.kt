@@ -133,7 +133,7 @@ class PbService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = Notification.Builder(this, CH_CLIP)
-            .setSmallIcon(android.R.drawable.ic_menu_edit)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("Clipboard from ${e.peerName}")
             .setContentText(if (e.sensitive) "Sensitive text (hidden)" else e.text)
             .setVisibility(if (e.sensitive) Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE)
@@ -152,7 +152,7 @@ class PbService : Service() {
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CH_STATUS)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("Phone Bridge")
             .setContentText(text)
             .setOngoing(true)

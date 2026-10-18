@@ -13,15 +13,16 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-            InvalidateRect, DT_CENTER, DT_WORDBREAK, HGDIOBJ, PAINTSTRUCT,
+            BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
+            DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect, SelectObject,
+            SetBkMode, DT_CENTER, DT_WORDBREAK, HGDIOBJ, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, KillTimer,
             RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow, CW_USEDEFAULT, SW_SHOW,
-            WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION,
-            WS_OVERLAPPED, WS_SYSMENU,
+            WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_TIMER, WNDCLASSW,
+            WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU,
         },
     },
 };
@@ -31,7 +32,6 @@ use crate::qr::{self, Matrix};
 const CLASS: PCWSTR = w!("PhoneBridgePairQr");
 const QUIET: usize = 4;
 const TEXT_H: i32 = 120;
-const BAR_H: i32 = 8;
 const TIMER_ID: usize = 1;
 
 struct Shown {
@@ -56,6 +56,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             paint(hwnd);
             LRESULT(0)
         }
+        // We paint every pixel ourselves (double-buffered): skipping the
+        // background erase is what removes the once-a-second flicker.
+        WM_ERASEBKGND => LRESULT(1),
         WM_TIMER => {
             // SAFETY: repaint our own window once a second for the countdown.
             let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
@@ -90,19 +93,20 @@ fn paint(hwnd: HWND) {
     // SAFETY: standard WM_PAINT sequence on the owning thread; brushes are
     // created and deleted here.
     unsafe {
-        let hdc = BeginPaint(hwnd, &mut ps);
+        let screen = BeginPaint(hwnd, &mut ps);
         let mut client = RECT::default();
         let _ = GetClientRect(hwnd, &mut client);
+        let (w, h) = (client.right - client.left, client.bottom - client.top);
+        let hdc = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let old = SelectObject(hdc, HGDIOBJ(bmp.0));
+        SetBkMode(hdc, TRANSPARENT);
         let white = CreateSolidBrush(COLORREF(0x00FF_FFFF));
         let black = CreateSolidBrush(COLORREF(0));
-        let accent = CreateSolidBrush(COLORREF(0x00D0_7A1E)); // BGR: blue
-        let track = CreateSolidBrush(COLORREF(0x00E0_E0E0));
         FillRect(hdc, &client, white);
         if let Some(s) = guard.as_ref() {
             let width = client.right - client.left;
-            let avail = width
-                .min(client.bottom - client.top - TEXT_H - BAR_H)
-                .max(1) as usize;
+            let avail = width.min(client.bottom - client.top - TEXT_H).max(1) as usize;
             let total = s.matrix.size + 2 * QUIET;
             let scale = (avail / total).max(1) as i32;
             let off_x = (width - scale * total as i32) / 2;
@@ -124,23 +128,9 @@ fn paint(hwnd: HWND) {
                     }
                 }
             }
-            // Countdown bar for the current code.
             let now = Instant::now();
             let left = s.refresh_in.saturating_sub(now.duration_since(s.shown_at));
-            let frac = left.as_secs_f64() / s.refresh_in.as_secs_f64().max(1.0);
             let bar_top = scale * total as i32;
-            let bar = RECT {
-                left: off_x,
-                top: bar_top,
-                right: off_x + scale * total as i32,
-                bottom: bar_top + BAR_H,
-            };
-            FillRect(hdc, &bar, track);
-            let filled = RECT {
-                right: bar.left + ((bar.right - bar.left) as f64 * frac) as i32,
-                ..bar
-            };
-            FillRect(hdc, &filled, accent);
             let window_left = s.closes_at.saturating_duration_since(now).as_secs();
             let mut text: Vec<u16> = format!(
                 "Scan with Phone Bridge on your phone (\u{201c}Scan QR\u{201d}).\nNew code in {} s \u{2022} pairing closes in {}:{:02}\nEach code works once. Closing this window cancels pairing.",
@@ -152,15 +142,19 @@ fn paint(hwnd: HWND) {
             .collect();
             let mut tr = RECT {
                 left: 12,
-                top: bar_top + BAR_H + 10,
+                top: bar_top + 10,
                 right: client.right - 12,
                 bottom: client.bottom - 6,
             };
             DrawTextW(hdc, &mut text, &mut tr, DT_CENTER | DT_WORDBREAK);
         }
-        for b in [white, black, accent, track] {
+        for b in [white, black] {
             let _ = DeleteObject(HGDIOBJ(b.0));
         }
+        let _ = BitBlt(screen, 0, 0, w, h, Some(hdc), 0, 0, SRCCOPY);
+        SelectObject(hdc, old);
+        let _ = DeleteObject(HGDIOBJ(bmp.0));
+        let _ = DeleteDC(hdc);
         let _ = EndPaint(hwnd, &ps);
     }
 }
