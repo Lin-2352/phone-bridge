@@ -99,7 +99,7 @@ fn print_session(s: &Session) {
     println!("SESSION peer={} name=\"{}\"", s.peer, s.peer_name);
 }
 
-async fn pump(mut s: Session) {
+async fn pump(mut s: Session, inbox: PathBuf) {
     print_session(&s);
     loop {
         match s.recv().await {
@@ -112,6 +112,35 @@ async fn pump(mut s: Session) {
             }
             Ok(Some(ControlMsg::ClipboardText(c))) => {
                 println!("CLIP from {}: {}", s.peer_name, c.text)
+            }
+            Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
+                println!("CLIPSYNC from {}: {}", s.peer_name, u.text)
+            }
+            Ok(Some(ControlMsg::Offer(o))) => {
+                let started = std::time::Instant::now();
+                match pb_transport::files::receive_offer(
+                    &mut s,
+                    o,
+                    true,
+                    &inbox,
+                    pb_transport::files::DEFAULT_MAX_FILE,
+                    None,
+                )
+                .await
+                {
+                    Ok(pb_transport::files::Received::File { path, size }) => {
+                        let secs = started.elapsed().as_secs_f64();
+                        println!(
+                            "FILE from {}: {} ({size} bytes, {:.1} MB/s)",
+                            s.peer_name,
+                            path.display(),
+                            size as f64 / 1e6 / secs.max(1e-3)
+                        );
+                    }
+                    Ok(other) => println!("OFFER from {}: {other:?}", s.peer_name),
+                    Err(e) => println!("OFFER from {} failed: {e}", s.peer_name),
+                }
+                break;
             }
             Ok(Some(_)) => {}
             Ok(None) => break,
@@ -176,8 +205,25 @@ async fn run(o: Opts) -> Res<()> {
         ["listen"] => {
             println!("LISTENING on port {}", node.port());
             while let Some(s) = ev.sessions.recv().await {
-                tokio::spawn(pump(s));
+                tokio::spawn(pump(s, o.dir.join("inbox")));
             }
+        }
+        ["send-file", path] => {
+            let peer = find_peer(&store, o.to.as_deref())?;
+            let f = tokio::fs::File::open(path).await?;
+            let size = f.metadata().await?.len();
+            let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            let started = std::time::Instant::now();
+            let sha = node.send_file(&peer.id, &name, size, "", f, None).await?;
+            let secs = started.elapsed().as_secs_f64();
+            println!("SENT FILE {name} {size} bytes in {secs:.2}s ({:.1} MB/s) sha256={}", size as f64 / 1e6 / secs.max(1e-3), sha.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        }
+        ["clip-update", text] => {
+            let peer = find_peer(&store, o.to.as_deref())?;
+            let s = node.connect(&peer.id).await?;
+            s.send(ControlMsg::ClipboardUpdate(pb_protocol::control::ClipboardUpdate { text: (*text).to_owned(), hash: vec![] })).await?;
+            s.finish().await;
+            println!("SENT CLIPSYNC");
         }
         ["send-clip", text] => {
             if text.len() > MAX_CLIPBOARD_TEXT {

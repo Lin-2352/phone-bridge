@@ -11,9 +11,29 @@ use std::{
 };
 
 use pb_identity::{FilePeerStore, PeerId};
-use pb_protocol::control::{ClipboardText, ControlMsg, MAX_CLIPBOARD_TEXT};
-use pb_transport::{Node, NodeConfig, PendingPairing, Session, SharedStore};
-use tokio::sync::mpsc;
+use pb_protocol::control::{ClipboardText, ClipboardUpdate, ControlMsg, MAX_CLIPBOARD_TEXT};
+use pb_transport::{
+    files::{receive_offer, Received, DEFAULT_MAX_FILE},
+    Node, NodeConfig, PendingPairing, Session, SharedStore,
+};
+use sha2::{Digest, Sha256};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::settings::Settings;
+
+pub type SharedSettings = Arc<Mutex<Settings>>;
+
+/// Universal Clipboard echo guard: the hash of the last text we received and
+/// the last we sent, so neither side bounces the same text back and forth.
+#[derive(Default)]
+struct ClipSync {
+    last_remote: [u8; 32],
+    last_sent: [u8; 32],
+}
+
+fn clip_hash(text: &str) -> [u8; 32] {
+    Sha256::digest(text.as_bytes()).into()
+}
 
 /// Rotating pairing codes, like an authenticator: a fresh code every
 /// `ROTATE`, each valid a little longer (scan-to-connect grace), and the
@@ -27,6 +47,10 @@ pub enum Cmd {
     /// The user closed the QR window: kill the current code now.
     CancelPair,
     SendClipboard(String),
+    /// Files chosen in the dialog, dropped on the flyout, or sent via Explorer.
+    SendFiles(Vec<PathBuf>),
+    /// The local clipboard changed (from the clipboard listener).
+    ClipboardChanged(String),
     Decide {
         id: u64,
         accept: bool,
@@ -55,6 +79,23 @@ pub enum UiEvent {
         from: String,
         text: String,
         sensitive: bool,
+    },
+    /// Universal Clipboard: text copied on the other device.
+    RemoteClipboard {
+        from: String,
+        text: String,
+    },
+    FileReceived {
+        from: String,
+        path: PathBuf,
+        size: u64,
+    },
+    /// Ask the user whether to accept (only when auto-accept is off).
+    IncomingOffer {
+        from: String,
+        name: String,
+        size: u64,
+        reply: oneshot::Sender<bool>,
     },
     Info(String),
 }
@@ -111,6 +152,7 @@ pub async fn run(
     opts: Options,
     mut cmds: mpsc::UnboundedReceiver<Cmd>,
     peers: Peers,
+    settings: SharedSettings,
     log: Log,
     ui: impl Fn(UiEvent) + Send + Sync + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -133,6 +175,7 @@ pub async fn run(
         fingerprint: node.peer_id().fingerprint(),
     });
 
+    let clip: Arc<Mutex<ClipSync>> = Arc::default();
     let mut pending: HashMap<u64, PendingPairing> = HashMap::new();
     let mut next_id = 0u64;
     let mut rotation: Option<tokio::task::JoinHandle<()>> = None;
@@ -180,6 +223,51 @@ pub async fn run(
                     refresh(&node, &peers);
                     ui(UiEvent::Info("Device removed".into()));
                 }
+                Some(Cmd::SendFiles(paths)) => {
+                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    tokio::spawn(async move {
+                        let Some((id, name)) = target else {
+                            ui(UiEvent::Info("Pair a device first".into()));
+                            return;
+                        };
+                        for path in paths {
+                            send_one_file(&node, &id, &name, &path, &log, &*ui).await;
+                        }
+                    });
+                }
+                Some(Cmd::ClipboardChanged(text)) => {
+                    let on = settings.lock().map(|s| s.universal_clipboard).unwrap_or(false);
+                    if !on || text.is_empty() || text.len() > MAX_CLIPBOARD_TEXT {
+                        continue;
+                    }
+                    let h = clip_hash(&text);
+                    {
+                        let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
+                        // Don't echo what just arrived, or resend the same text.
+                        if h == c.last_remote || h == c.last_sent {
+                            continue;
+                        }
+                        c.last_sent = h;
+                    }
+                    let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
+                    let (node, log) = (node.clone(), log.clone());
+                    tokio::spawn(async move {
+                        for (id, name) in targets {
+                            let r = async {
+                                let s = node.connect(&id).await?;
+                                s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: text.clone(), hash: h.to_vec() })).await?;
+                                s.finish().await;
+                                Ok::<_, pb_transport::Error>(())
+                            }
+                            .await;
+                            match r {
+                                Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
+                                Err(e) => log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}")),
+                            }
+                        }
+                    });
+                }
                 Some(Cmd::SendClipboard(text)) => {
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
@@ -224,7 +312,7 @@ pub async fn run(
                 pending.insert(next_id, p);
             }
             Some(s) = ev.sessions.recv() => {
-                tokio::spawn(pump(s, log.clone(), ui.clone()));
+                tokio::spawn(pump(s, log.clone(), ui.clone(), settings.clone(), clip.clone()));
             }
         }
     }
@@ -262,7 +350,55 @@ fn start_rotation(
     })
 }
 
-async fn pump(mut s: Session, log: Log, ui: Arc<impl Fn(UiEvent) + Send + Sync + 'static>) {
+async fn send_one_file(
+    node: &Node,
+    id: &PeerId,
+    name: &str,
+    path: &std::path::Path,
+    log: &Log,
+    ui: &(impl Fn(UiEvent) + ?Sized),
+) {
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let result = async {
+        let f = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| pb_transport::Error::Io(e.to_string()))?;
+        let size = f
+            .metadata()
+            .await
+            .map_err(|e| pb_transport::Error::Io(e.to_string()))?
+            .len();
+        let started = Instant::now();
+        node.send_file(id, &file_name, size, "", f, None).await?;
+        Ok::<_, pb_transport::Error>((size, started.elapsed()))
+    }
+    .await;
+    match result {
+        Ok((size, took)) => {
+            let mbps = size as f64 / 1e6 / took.as_secs_f64().max(1e-3);
+            log.line(&format!(
+                "FILE sent \"{file_name}\" {size} bytes to \"{name}\" in {:.2}s ({mbps:.1} MB/s)",
+                took.as_secs_f64()
+            ));
+            ui(UiEvent::Info(format!("Sent {file_name} to {name}")));
+        }
+        Err(e) => {
+            log.line(&format!("FILE send \"{file_name}\" failed: {e}"));
+            ui(UiEvent::Info(format!("Could not send {file_name}: {e}")));
+        }
+    }
+}
+
+async fn pump(
+    mut s: Session,
+    log: Log,
+    ui: Arc<impl Fn(UiEvent) + Send + Sync + 'static>,
+    settings: SharedSettings,
+    clip: Arc<Mutex<ClipSync>>,
+) {
     log.line(&format!("SESSION \"{}\"", s.peer_name));
     loop {
         match s.recv().await {
@@ -277,6 +413,71 @@ async fn pump(mut s: Session, log: Log, ui: Arc<impl Fn(UiEvent) + Send + Sync +
                     text: c.text,
                     sensitive: c.sensitive,
                 });
+            }
+            Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
+                if !settings
+                    .lock()
+                    .map(|x| x.universal_clipboard)
+                    .unwrap_or(false)
+                {
+                    log.line("CLIPSYNC ignored (Universal Clipboard is off)");
+                    continue;
+                }
+                clip.lock().unwrap_or_else(|p| p.into_inner()).last_remote = clip_hash(&u.text);
+                log.line(&format!(
+                    "CLIPSYNC received {} chars from \"{}\"",
+                    u.text.chars().count(),
+                    s.peer_name
+                ));
+                ui(UiEvent::RemoteClipboard {
+                    from: s.peer_name.clone(),
+                    text: u.text,
+                });
+            }
+            Ok(Some(ControlMsg::Offer(offer))) => {
+                let (auto, dir) = settings
+                    .lock()
+                    .map(|x| (x.auto_accept, x.save_dir.clone()))
+                    .unwrap_or((false, std::env::temp_dir()));
+                let accept = if auto {
+                    true
+                } else {
+                    let (tx, rx) = oneshot::channel();
+                    ui(UiEvent::IncomingOffer {
+                        from: s.peer_name.clone(),
+                        name: offer.name.clone(),
+                        size: offer.size,
+                        reply: tx,
+                    });
+                    rx.await.unwrap_or(false)
+                };
+                let from = s.peer_name.clone();
+                let started = Instant::now();
+                match receive_offer(&mut s, offer, accept, &dir, DEFAULT_MAX_FILE, None).await {
+                    Ok(Received::File { path, size }) => {
+                        let mbps = size as f64 / 1e6 / started.elapsed().as_secs_f64().max(1e-3);
+                        log.line(&format!(
+                            "FILE received {} ({size} bytes, {mbps:.1} MB/s) from \"{from}\"",
+                            path.display()
+                        ));
+                        ui(UiEvent::FileReceived { from, path, size });
+                    }
+                    Ok(Received::Text(t)) => ui(UiEvent::Clipboard {
+                        from,
+                        text: t,
+                        sensitive: false,
+                    }),
+                    Ok(Received::Link(l)) => {
+                        log.line(&format!("LINK from \"{from}\""));
+                        ui(UiEvent::Clipboard {
+                            from,
+                            text: l,
+                            sensitive: false,
+                        });
+                    }
+                    Err(e) => log.line(&format!("OFFER from \"{from}\" not received: {e}")),
+                }
+                break;
             }
             Ok(Some(_)) => {}
             Ok(None) => break,

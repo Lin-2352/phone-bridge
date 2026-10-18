@@ -10,10 +10,14 @@
 
 #[cfg(windows)]
 mod core;
+#[cfg(windows)]
+mod ipc;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
 mod qr_window;
+#[cfg(windows)]
+mod settings;
 #[cfg(windows)]
 mod ui;
 
@@ -58,6 +62,7 @@ fn main() {
     };
     let mut auto_accept = false;
     let mut send_clipboard = false;
+    let mut send_files: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -72,18 +77,23 @@ fn main() {
             "--pair" => opts.pair_on_start = true,
             "--test-auto-accept" => auto_accept = true,
             "--send-clipboard" => send_clipboard = true,
+            // Everything after --send is a file (Explorer "Send to" passes paths).
+            "--send" => send_files.extend(args.by_ref().map(PathBuf::from)),
             _ => {}
         }
     }
     if !single_instance() {
-        let mut fwd = Vec::new();
+        // Hand the request to the running tray over its local pipe.
+        let mut ok = true;
         if opts.pair_on_start {
-            fwd.push(ui::ID_PAIR);
+            ok &= ipc::send_request(&ipc::Request::Pair);
         }
         if send_clipboard {
-            fwd.push(ui::ID_SEND_CLIPBOARD);
+            ok &= ipc::send_request(&ipc::Request::SendClipboard);
         }
-        let ok = fwd.into_iter().all(ui::forward_command);
+        if !send_files.is_empty() {
+            ok &= ipc::send_request(&ipc::Request::Send(send_files));
+        }
         std::process::exit(if ok { 0 } else { 1 });
     }
     let _ = std::fs::create_dir_all(&opts.dir);
@@ -94,8 +104,19 @@ fn main() {
     }
 
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let ipc_tx = cmd_tx.clone();
     let peers: core::Peers = Arc::new(Mutex::new(Vec::new()));
-    let hwnd = match ui::create(cmd_tx, peers.clone(), auto_accept, log.clone()) {
+    let settings_path = opts.dir.join("settings.txt");
+    let settings: core::SharedSettings =
+        Arc::new(Mutex::new(settings::Settings::load(&settings_path)));
+    let hwnd = match ui::create(
+        cmd_tx.clone(),
+        peers.clone(),
+        auto_accept,
+        log.clone(),
+        settings.clone(),
+        settings_path,
+    ) {
         Ok(h) => h,
         Err(e) => {
             log.line(&format!("could not create tray icon: {e}"));
@@ -110,9 +131,17 @@ fn main() {
             .enable_all()
             .build()
             .expect("tokio runtime");
-        let result = rt.block_on(core::run(opts, cmd_rx, peers, core_log.clone(), move |e| {
-            ui::post_event(hwnd, e)
+        rt.spawn(ipc::serve(ipc_tx, move || {
+            ui::post_command(hwnd, ui::ID_SEND_CLIPBOARD)
         }));
+        let result = rt.block_on(core::run(
+            opts,
+            cmd_rx,
+            peers,
+            settings,
+            core_log.clone(),
+            move |e| ui::post_event(hwnd, e),
+        ));
         if let Err(e) = result {
             core_log.line(&format!("FATAL {e}"));
             ui::post_event(

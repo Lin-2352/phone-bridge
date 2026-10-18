@@ -20,4 +20,4 @@ pb-identity = { path = "../pb-identity" }
 pb-protocol = { path = "../pb-protocol" }
 pb-transport = { path = "../pb-transport" }
 pb-platform-win = { path = "../pb-platform-win" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time", "fs"] }
