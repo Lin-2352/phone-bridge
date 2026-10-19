@@ -40,21 +40,21 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 
 ### Sharing (AirDrop-style), one session per transfer
 1. sender -> `Offer { id: u64 random, kind: File|Text|Link, name, size, mime, text }` (text/links inline, max 60 KiB)
-2. receiver -> `OfferReply { id, accept }` (auto-accept from paired devices is a receiver setting; otherwise the user is asked; offers over the size cap (4 GiB default) are declined)
+2. receiver -> `OfferReply { id, accept, too_large }` (auto-accept from paired devices is a receiver setting; otherwise the user is asked; offers over the size cap (4 GiB default) or the receiver's free space are declined with `too_large = true` (tag 3; older peers leave it false), so the sender can say why)
 3. File only: sender opens a unidirectional QUIC stream: `FileHeader { id }` frame, then exactly `size` raw bytes; then `TransferDone { id, sha256 }` on the control stream.
 4. Receiver writes `.<name>.partial-<id>`, checks byte count and SHA-256, then renames to a unique sanitised name (`name (2).ext` on collision); any failure deletes the partial.
-5. Close order: whoever reads the last message closes (sender after a decline/text reply; receiver after `TransferDone`).
+5. Close order: whoever reads the last message closes (sender after a decline/text reply; receiver after `TransferDone`). The receiver closes with code 0 only once the file is saved under its final name, and with 400 if it did not arrive intact or could not be saved; the sender reports success only on 0.
 
 ### Universal Clipboard
 `ClipboardUpdate { text, hash = SHA-256(text) }`, sent automatically when the setting is on at both ends. Each side remembers the hash of the last text it received and sent and never re-sends it (no ping-pong). Content marked private (Windows `ExcludeClipboardContentFromMonitorProcessing`, Android `EXTRA_IS_SENSITIVE`) is never sent. Android can only read the clipboard while focused: phone->PC sync runs when the app gains focus (only if the clipboard changed since the last sync, persisted) and on the Send clipboard tile/notification.
 
 ### Local second-instance requests (Windows only)
-`pb-tray --send <files>` / `--pair` / `--send-clipboard` reach the running tray over the named pipe `\\.\pipe\PhoneBridgeTray-<user>` (remote clients rejected; default ACL: owner write). Lines: verb, then one path per line.
+`pb-tray --send <files>` / `--pair` / `--send-clipboard` reach the running tray over the named pipe `\\.\pipe\PhoneBridgeTray-<user>` (remote clients rejected; ACL: this user by SID and SYSTEM only). Lines: verb, then one path per line.
 
 ### Shared mouse and keyboard
 1. controller -> `InputStart { id }` (control tag 9); receiver -> `OfferReply { id, accept }`. The PC accepts only if "Let my phone control this PC" is on; the phone only while its accessibility service ("Phone Bridge control") is enabled.
-2. Controller opens one unidirectional stream of fixed 8-byte records: `kind u8 | flags u8 | seq u16 | a i16 | b i16` (little-endian). Kinds: 0 move (dx, dy), 1 button (button, flags&1 = pressed), 2 wheel (dx, dy in 1/120 notches), 3 key (PC set-1 scan code, 0xE0xx extended), 4 character (one UTF-16 unit).
-3. Reliable and ordered (not datagrams): a lost key-up or click would be worse than any latency on a local link. Moves queued faster than the link drains are summed into one record.
+2. Controller opens one unidirectional stream and writes a no-op move (0, 0) at once, so the stream exists for the receiver even if the user is idle (receivers wait 10 s for it); then fixed 8-byte records: `kind u8 | flags u8 | seq u16 | a i16 | b i16` (little-endian). Kinds: 0 move (dx, dy), 1 button (button, flags&1 = pressed), 2 wheel (dx, dy in 1/120 notches), 3 key (PC set-1 scan code, 0xE0xx extended), 4 character (one UTF-16 unit).
+3. Reliable and ordered (not datagrams): a lost key-up or click would be worse than any latency on a local link. Moves queued faster than the link drains are summed into one record. The sender paces itself to stay inside the receiver's limits (receiver: 1000 moves/s dropped beyond, 400 other events/s and 2000 records/s end the session): token buckets of 800 moves/s and 250 other events/s with bursts of 100, so excess moves merge and a long paste is typed out over a few seconds.
 4. The session ends when the stream ends; the receiver closes. Whatever is still pressed is released on the receiver.
 
 Further messages (camera session) are added with their features.

@@ -24,7 +24,11 @@ pub const DEFAULT_MAX_FILE: u64 = 4 << 30;
 /// How long a sender waits for the receiver's accept/decline.
 pub const OFFER_TIMEOUT: Duration = Duration::from_secs(120);
 const CHUNK: usize = 256 * 1024;
-const MAX_NAME_CHARS: usize = 200;
+/// Bytes, not characters: file systems limit names to 255 bytes (ext4) and
+/// the partial file adds 26 more.
+const MAX_NAME_BYTES: usize = 200;
+/// Receiver close code: the file did not arrive intact or could not be saved.
+pub(crate) const CLOSE_TRANSFER_FAILED: u32 = 400;
 
 /// Progress callback: `(bytes_done, bytes_total)`.
 pub type Progress = Arc<dyn Fn(u64, u64) + Send + Sync>;
@@ -56,14 +60,17 @@ pub fn sanitize_file_name(raw: &str) -> String {
         .trim_end_matches(['.', ' '])
         .trim_start_matches('.')
         .to_owned();
-    if s.chars().count() > MAX_NAME_CHARS {
-        // Keep the extension when shortening.
+    if s.len() > MAX_NAME_BYTES {
+        // Keep the extension when shortening; cut on a character boundary.
         let (stem, ext) = match s.rfind('.') {
             Some(i) if s.len() - i <= 16 => (s[..i].to_owned(), s[i..].to_owned()),
             _ => (s.clone(), String::new()),
         };
-        let keep = MAX_NAME_CHARS - ext.chars().count();
-        s = stem.chars().take(keep).collect::<String>() + &ext;
+        let mut keep = MAX_NAME_BYTES - ext.len();
+        while !stem.is_char_boundary(keep) {
+            keep -= 1;
+        }
+        s = stem[..keep].to_owned() + &ext;
     }
     let stem_upper = s.split('.').next().unwrap_or("").to_ascii_uppercase();
     const RESERVED: [&str; 22] = [
@@ -77,6 +84,23 @@ pub fn sanitize_file_name(raw: &str) -> String {
         s = "file".to_owned();
     }
     s
+}
+
+/// Claim a free name in `dir` by creating it empty (so two transfers of the
+/// same name at once cannot both pick it); the caller renames over it.
+fn reserve_unique(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    loop {
+        let p = unique_path(dir, name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&p)
+        {
+            Ok(_) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// `dir/name`, or `dir/name (2).ext`, `(3)`... if taken.
@@ -103,10 +127,17 @@ pub(crate) fn new_id() -> u64 {
 
 /// Wait for the reply to `id`, skipping anything else.
 pub(crate) async fn await_reply(s: &mut Session, id: u64) -> Result<bool, Error> {
+    Ok(await_answer(s, id).await?.0)
+}
+
+/// The reply to `id`: accepted, and if not, whether it was too large.
+async fn await_answer(s: &mut Session, id: u64) -> Result<(bool, bool), Error> {
     tokio::time::timeout(OFFER_TIMEOUT, async {
         loop {
             match s.recv().await? {
-                Some(ControlMsg::OfferReply(r)) if r.id == id => return Ok(r.accept),
+                Some(ControlMsg::OfferReply(r)) if r.id == id => {
+                    return Ok((r.accept, r.too_large))
+                }
                 Some(_) => continue,
                 None => return Err(Error::Closed),
             }
@@ -153,9 +184,13 @@ impl Node {
             text: String::new(),
         }))
         .await?;
-        if !await_reply(&mut s, id).await? {
+        if let (false, too_large) = await_answer(&mut s, id).await? {
             s.conn.close(0u32.into(), b"declined");
-            return Err(Error::Declined);
+            return Err(if too_large {
+                Error::TooLarge
+            } else {
+                Error::Declined
+            });
         }
         let mut out = s.conn.open_uni().await.map_err(tx)?;
         write_frame(&mut out, &FileHeader { id }).await?;
@@ -188,7 +223,21 @@ impl Node {
         }))
         .await?;
         await_peer_close(&mut s).await;
-        Ok(sha)
+        // The receiver closes with 0 only once the file is saved under its name.
+        match s.conn.close_reason() {
+            Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+                if c.error_code == 0u32.into() =>
+            {
+                Ok(sha)
+            }
+            Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+                if c.error_code == CLOSE_TRANSFER_FAILED.into() =>
+            {
+                Err(Error::Io("the other device could not save the file".into()))
+            }
+            None => Err(Error::Timeout),
+            Some(_) => Err(Error::Closed),
+        }
     }
 
     /// Send text or a link (small, inline in the offer).
@@ -258,7 +307,11 @@ pub async fn receive_offer(
     let too_big = kind == OfferKind::File && (offer.size > max_size || !room_for(dir, offer.size));
     if !accept || too_big {
         session
-            .send(ControlMsg::OfferReply(OfferReply { id, accept: false }))
+            .send(ControlMsg::OfferReply(OfferReply {
+                id,
+                accept: false,
+                too_large: too_big,
+            }))
             .await?;
         // The sender closes once it has read the reply; closing first could
         // discard the reply (same rule as the pairing close handshake).
@@ -270,7 +323,11 @@ pub async fn receive_offer(
         });
     }
     session
-        .send(ControlMsg::OfferReply(OfferReply { id, accept: true }))
+        .send(ControlMsg::OfferReply(OfferReply {
+            id,
+            accept: true,
+            too_large: false,
+        }))
         .await?;
     match kind {
         OfferKind::Text | OfferKind::Link => {
@@ -289,13 +346,24 @@ pub async fn receive_offer(
         .await
         .map_err(|e| Error::Io(e.to_string()))?;
     let partial = dir.join(format!(".{name}.partial-{id:016x}"));
-    let result = receive_bytes(session, id, offer.size, &partial, progress).await;
+    let result = async {
+        receive_bytes(session, id, offer.size, &partial, progress).await?;
+        let dir = dir.to_owned();
+        let (src, n) = (partial.clone(), name.clone());
+        tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
+            let dest = reserve_unique(&dir, &n)?;
+            std::fs::rename(&src, &dest).inspect_err(|_| {
+                let _ = std::fs::remove_file(&dest);
+            })?;
+            Ok(dest)
+        })
+        .await
+        .map_err(|e| Error::Io(e.to_string()))?
+        .map_err(|e| Error::Io(e.to_string()))
+    }
+    .await;
     match result {
-        Ok(()) => {
-            let dest = unique_path(dir, &name);
-            tokio::fs::rename(&partial, &dest)
-                .await
-                .map_err(|e| Error::Io(e.to_string()))?;
+        Ok(dest) => {
             // We read the sender's TransferDone; closing now discards nothing.
             session.conn.close(0u32.into(), b"received");
             Ok(Received::File {
@@ -305,7 +373,9 @@ pub async fn receive_offer(
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&partial).await;
-            session.conn.close(400u32.into(), b"transfer failed");
+            session
+                .conn
+                .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
             Err(e)
         }
     }
@@ -323,7 +393,10 @@ async fn receive_bytes(
         .map_err(|_| Error::Timeout)?
         .map_err(tx)?;
     let mut reader = FrameReader::new(stream);
-    let header: FileHeader = reader.next().await?.ok_or(Error::Closed)?;
+    let header: FileHeader = tokio::time::timeout(Duration::from_secs(30), reader.next())
+        .await
+        .map_err(|_| Error::Timeout)??
+        .ok_or(Error::Closed)?;
     if header.id != id {
         return Err(Error::Protocol("file stream for a different offer".into()));
     }
@@ -410,8 +483,15 @@ mod tests {
         assert_eq!(sanitize_file_name("bell\u{7}\nname"), "bell__name");
         let long = format!("{}.jpeg", "x".repeat(500));
         let s = sanitize_file_name(&long);
-        assert_eq!(s.chars().count(), MAX_NAME_CHARS);
+        assert_eq!(s.len(), MAX_NAME_BYTES);
         assert!(s.ends_with(".jpeg"));
+        // Multi-byte names are limited by bytes, never split inside a character.
+        let s = sanitize_file_name(&format!("{}.txt", "\u{1F600}".repeat(100)));
+        assert!(
+            s.len() <= MAX_NAME_BYTES && s.ends_with(".txt"),
+            "{}",
+            s.len()
+        );
     }
 
     #[test]

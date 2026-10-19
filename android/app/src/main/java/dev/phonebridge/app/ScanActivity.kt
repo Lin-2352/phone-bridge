@@ -22,6 +22,7 @@ import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.launch
 
 private const val TAG = "PhoneBridge"
 
@@ -96,10 +97,11 @@ class ScanActivity : ComponentActivity() {
             }
             if (text != null && text.startsWith("pb1:") && done.compareAndSet(false, true)) {
                 Log.i(TAG, "SCAN got pairing code")
+                // In-process hand-off: MainActivity shows the code check from Bridge state.
+                Bridge.scope.launch { Bridge.join(text) }
                 runOnUiThread {
                     startActivity(
                         Intent(this, MainActivity::class.java)
-                            .putExtra("pair_code", text)
                             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                     )
                     finish()

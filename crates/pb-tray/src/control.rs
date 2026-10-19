@@ -3,6 +3,9 @@
 //! (the cursor stays parked). Printable keys are translated with the PC's own
 //! keyboard layout and sent as text; every key also goes as a scan code so
 //! the phone can act on shortcuts (Ctrl+C, Esc, arrows). Ctrl+Alt+P returns.
+//! The cursor is parked mid-screen for the session (a move is measured from
+//! there, so a cursor left at a screen edge would lose movement that way)
+//! and put back afterwards.
 //!
 //! The hooks live on their own thread with its own message loop, created for
 //! a session and ended with it. Windows calls low-level hooks on the thread
@@ -20,12 +23,12 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{GetKeyState, GetKeyboardLayout, ToUnicodeEx},
         WindowsAndMessaging::{
-            CallNextHookEx, GetCursorPos, GetMessageW, PostMessageW, PostThreadMessageW,
-            SetWindowsHookExW, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, LLKHF_EXTENDED,
-            LLKHF_INJECTED, LLKHF_UP, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL,
-            WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-            WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-            WM_XBUTTONDOWN, WM_XBUTTONUP,
+            CallNextHookEx, GetCursorPos, GetMessageW, GetSystemMetrics, PostMessageW,
+            PostThreadMessageW, SetCursorPos, SetWindowsHookExW, UnhookWindowsHookEx,
+            KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_INJECTED, LLKHF_UP, LLMHF_INJECTED, MSG,
+            MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+            WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
         },
     },
 };
@@ -36,6 +39,8 @@ pub const WM_CONTROL_EXIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP
 struct Active {
     sender: InputSender,
     anchor: POINT,
+    /// Where the cursor was before the session (restored at the end).
+    home: POINT,
     owner: isize,
     /// Thread running the hooks; WM_QUIT to it ends the session.
     hook_thread: u32,
@@ -61,16 +66,26 @@ pub fn session_closed() -> bool {
 
 pub fn start(owner: HWND, sender: InputSender) -> bool {
     stop();
-    let mut anchor = POINT::default();
-    // SAFETY: plain queries.
-    let caps_on = unsafe {
-        let _ = GetCursorPos(&mut anchor);
-        GetKeyState(VK_CAPITAL as i32) & 1 != 0
+    let mut home = POINT::default();
+    // SAFETY: plain queries, and moving the cursor before the hooks exist.
+    let (anchor, caps_on) = unsafe {
+        let _ = GetCursorPos(&mut home);
+        let mid = POINT {
+            x: GetSystemMetrics(SM_CXSCREEN) / 2,
+            y: GetSystemMetrics(SM_CYSCREEN) / 2,
+        };
+        let anchor = if SetCursorPos(mid.x, mid.y).is_ok() {
+            mid
+        } else {
+            home
+        };
+        (anchor, GetKeyState(VK_CAPITAL as i32) & 1 != 0)
     };
     if let Ok(mut g) = ACTIVE.lock() {
         *g = Some(Active {
             sender,
             anchor,
+            home,
             owner: owner.0 as isize,
             hook_thread: 0,
             keys: [0; 256],
@@ -84,6 +99,8 @@ pub fn start(owner: HWND, sender: InputSender) -> bool {
             // SAFETY: hooks installed and removed on this thread, which runs
             // the message loop Windows needs to call them.
             unsafe {
+                // The process runs under EcoQoS; this thread must not.
+                let _ = pb_platform_win::power::make_thread_responsive();
                 let Ok(hinst) = GetModuleHandleW(None) else {
                     let _ = tx.send(None);
                     return;
@@ -125,6 +142,8 @@ pub fn start(owner: HWND, sender: InputSender) -> bool {
             if let Ok(mut g) = ACTIVE.lock() {
                 *g = None;
             }
+            // SAFETY: put the cursor back where the user left it.
+            let _ = unsafe { SetCursorPos(home.x, home.y) };
             false
         }
     }
@@ -151,6 +170,8 @@ pub fn stop() {
             // SAFETY: ends the hook thread's message loop; it unhooks itself.
             let _ = unsafe { PostThreadMessageW(a.hook_thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
         }
+        // SAFETY: the cursor goes back where the user left it.
+        let _ = unsafe { SetCursorPos(a.home.x, a.home.y) };
     }
 }
 

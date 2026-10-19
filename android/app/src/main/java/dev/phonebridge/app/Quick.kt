@@ -112,8 +112,7 @@ class BridgeTileService : TileService() {
                 if (Build.VERSION.SDK_INT >= 34) {
                     startActivityAndCollapse(PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE))
                 } else {
-                    @Suppress("DEPRECATION")
-                    startActivityAndCollapse(i)
+                    collapseAndStartLegacy(i)
                 }
             }
         }
@@ -121,6 +120,11 @@ class BridgeTileService : TileService() {
         onStartListening()
     }
 }
+
+/** The only form API 29..33 has; the PendingIntent one is API 34+. */
+@android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
+@Suppress("DEPRECATION")
+private fun TileService.collapseAndStartLegacy(i: Intent) = startActivityAndCollapse(i)
 
 /** Starts the service from the foreground, then disappears. */
 class StarterActivity : Activity() {
@@ -169,7 +173,8 @@ class QuickPanelActivity : ComponentActivity() {
 
     @Composable
     private fun Panel() {
-        var on by remember { mutableStateOf(prefs.enabled) }
+        // What is running, not the saved wish (they differ after a failed start).
+        var on by remember { mutableStateOf(Bridge.running.value) }
         var clip by remember { mutableStateOf(prefs.clipboardSync) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
         var auto by remember { mutableStateOf(prefs.autoAccept) }

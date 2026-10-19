@@ -3,10 +3,33 @@
 #![allow(unsafe_code)]
 
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
+    GetCurrentProcess, GetCurrentThread, ProcessPowerThrottling, SetProcessInformation,
+    SetThreadInformation, SetThreadPriority, ThreadPowerThrottling,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-    PROCESS_POWER_THROTTLING_STATE,
+    PROCESS_POWER_THROTTLING_STATE, THREAD_POWER_THROTTLING_CURRENT_VERSION,
+    THREAD_POWER_THROTTLING_EXECUTION_SPEED, THREAD_POWER_THROTTLING_STATE,
+    THREAD_PRIORITY_ABOVE_NORMAL,
 };
+
+/// Exempt the calling thread from EcoQoS and raise its priority: for the
+/// input hook thread, which every key and mouse move on the PC waits for.
+pub fn make_thread_responsive() -> windows::core::Result<()> {
+    let state = THREAD_POWER_THROTTLING_STATE {
+        Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    };
+    // SAFETY: valid pseudo-handle and a correctly sized, initialised struct.
+    unsafe {
+        SetThreadInformation(
+            GetCurrentThread(),
+            ThreadPowerThrottling,
+            &state as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
+        )?;
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL)
+    }
+}
 
 /// Turn EcoQoS on (`true`) or let Windows decide (`false`).
 pub fn set_eco_qos(on: bool) -> windows::core::Result<()> {

@@ -45,9 +45,17 @@ class ControlService : AccessibilityService(), InputListener {
     override fun onServiceConnected() {
         instance = this
         Bridge.node?.setInputListener(this)
-        val b = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
-        w = b.width()
-        h = b.height()
+        if (Build.VERSION.SDK_INT >= 30) {
+            val b = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+            w = b.width()
+            h = b.height()
+        } else {
+            val m = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            getSystemService(WindowManager::class.java).defaultDisplay.getRealMetrics(m)
+            w = m.widthPixels
+            h = m.heightPixels
+        }
         Log.i(TAG, "CONTROL service on (${w}x$h)")
     }
 

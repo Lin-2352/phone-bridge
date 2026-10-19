@@ -1,0 +1,15 @@
+[package]
+name = "wifidirect-win"
+description = "Spike: Wi-Fi Direct group (legacy mode) on the PC to measure a direct phone <-> PC link. Not shipped."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Devices_WiFiDirect", "Foundation", "Security_Credentials"] }

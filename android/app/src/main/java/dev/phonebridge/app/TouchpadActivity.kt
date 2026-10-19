@@ -89,6 +89,8 @@ private object Scan {
 class TouchpadActivity : ComponentActivity() {
     @Volatile private var input: PbInput? = null
     @Volatile private var visible = false
+    /** Bumped on every start and stop, so a connect from an earlier start is dropped. */
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
     private val status = mutableStateOf("Connecting…")
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,6 +104,7 @@ class TouchpadActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         visible = true
+        val gen = generation.incrementAndGet()
         val node = Bridge.node
         val peer = Bridge.firstPeer()
         if (node == null || peer == null) {
@@ -111,12 +114,14 @@ class TouchpadActivity : ComponentActivity() {
         Bridge.scope.launch {
             try {
                 val session = node.startInput(peer.id)
-                if (!visible) {
-                    // The user left while we were connecting.
-                    session.stop()
-                    return@launch
+                synchronized(generation) {
+                    if (generation.get() != gen) {
+                        // The user left (or came back) while we were connecting.
+                        session.stop()
+                        return@launch
+                    }
+                    input = session
                 }
-                input = session
                 status.value = "Controlling ${peer.name}"
                 Log.i(TAG, "INPUT started to ${peer.name}")
             } catch (t: Throwable) {
@@ -128,8 +133,11 @@ class TouchpadActivity : ComponentActivity() {
 
     override fun onStop() {
         visible = false
-        input?.stop()
-        input = null
+        synchronized(generation) {
+            generation.incrementAndGet()
+            input?.stop()
+            input = null
+        }
         Log.i(TAG, "INPUT stopped")
         super.onStop()
     }

@@ -166,6 +166,22 @@ async fn revoked_peer_can_no_longer_connect() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn unpairing_ends_a_session_that_is_open() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let mut s = phone.connect(&pc.peer_id()).await.unwrap();
+    let _held = pc_ev.sessions.recv().await.unwrap();
+    assert!(pc.unpair(&phone.peer_id()));
+    let r = tokio::time::timeout(Duration::from_secs(5), s.recv()).await;
+    assert!(
+        matches!(r, Ok(Err(_) | Ok(None))),
+        "the phone's session must end at once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rotating_codes_invalidate_the_previous_one_and_closing_kills_the_current() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (phone, _pev, _) = node(2, "Phone").await;
@@ -308,6 +324,14 @@ mod transfers {
         );
         a.unwrap();
         assert_eq!(b.unwrap(), Received::Link("https://example.com".into()));
+        // Finished transfers leave no connection open on either side.
+        for _ in 0..50 {
+            if pc.live_count() == 0 && phone.live_count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!((pc.live_count(), phone.live_count()), (0, 0));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -326,7 +350,8 @@ mod transfers {
             phone.send_file(&pcid, "x.bin", 4096, "", &data[..], None),
             receive_one(&mut pc_ev, true, &dir, 1000)
         );
-        assert!(matches!(a, Err(Error::Declined)), "{a:?}");
+        // The sender learns why: too large, not a plain no.
+        assert!(matches!(a, Err(Error::TooLarge)), "{a:?}");
         assert!(matches!(b, Err(Error::TooLarge)));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     }
@@ -515,16 +540,49 @@ mod input {
     }
 
     #[tokio::test]
-    async fn click_floods_end_the_session_and_excess_moves_are_dropped() {
+    async fn a_long_paste_is_paced_and_arrives_whole() {
         let (pc, mut pc_ev, phone, _) = paired().await;
         let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
         let input = phone.open_input(&pc.peer_id()).await.unwrap();
-        for i in 0..2000 {
-            input.send(InputEvent::MouseButton {
+        // Over the receiver's 400 events/s budget if sent at once.
+        let text = "paste ".repeat(100);
+        for u in text.encode_utf16() {
+            input.send(InputEvent::Char { unit: u });
+        }
+        input.stop();
+        let (r, got) = rx.await.unwrap();
+        r.unwrap();
+        let typed: Vec<u16> = got
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::Char { unit } => Some(*unit),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(String::from_utf16(&typed).unwrap(), text);
+    }
+
+    #[tokio::test]
+    async fn click_floods_end_the_session_and_excess_moves_are_dropped() {
+        use pb_protocol::{control::InputStart, InputDatagram};
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        // A rogue controller that ignores pacing: raw records, all at once.
+        let mut s = phone.connect(&pc.peer_id()).await.unwrap();
+        s.send(ControlMsg::InputStart(InputStart { id: 7 }))
+            .await
+            .unwrap();
+        assert!(crate::files::await_reply(&mut s, 7).await.unwrap());
+        let mut out = s.conn.open_uni().await.unwrap();
+        let mut buf = Vec::new();
+        for i in 0..2000u16 {
+            let event = InputEvent::MouseButton {
                 button: 0,
                 pressed: i % 2 == 0,
-            });
+            };
+            buf.extend_from_slice(&InputDatagram { seq: i, event }.encode());
         }
+        let _ = out.write_all(&buf).await;
         let (r, got) = rx.await.unwrap();
         assert!(r.is_err(), "flood must end the session");
         assert!(
@@ -600,6 +658,34 @@ mod rediscovery {
             tokio::time::timeout(Duration::from_millis(500), sock.recv_from(&mut buf))
                 .await
                 .is_err()
+        );
+
+        // B's saved address is stale; two candidates are known, one real and
+        // one forged. Connecting saves only the one the connection uses.
+        let mut peer_b = store_a.lock().unwrap().get(&b.peer_id()).unwrap();
+        peer_b.addrs = vec!["127.0.0.1:1".into()];
+        store_a.lock().unwrap().pin(peer_b);
+        let real = SocketAddr::from(([127, 0, 0, 1], b.port()));
+        let forged = SocketAddr::from(([127, 0, 0, 1], 40556));
+        for port in [real.port(), forged.port()] {
+            let mut p = probe.clone();
+            p[5..7].copy_from_slice(&port.to_le_bytes());
+            sock.send_to(&p, ("127.0.0.1", probe_port)).await.unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(3), sock.recv_from(&mut buf)).await;
+        }
+        assert!(a.candidates(&b.peer_id()).contains(&forged));
+        let s = a
+            .connect(&b.peer_id())
+            .await
+            .expect("connects via the candidate");
+        let used = crate::used_addr(&s.conn).expect("a direct path");
+        drop(s);
+        let saved = store_a.lock().unwrap().get(&b.peer_id()).unwrap().addrs;
+        assert_eq!(saved.first(), Some(&used.to_string()), "{saved:?}");
+        assert!(!saved.contains(&forged.to_string()), "{saved:?}");
+        assert!(
+            a.candidates(&b.peer_id()).is_empty(),
+            "candidates are spent"
         );
     }
 }

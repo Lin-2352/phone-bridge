@@ -50,22 +50,50 @@ impl Node {
             return Err(Error::Declined);
         }
         let mut out = s.conn.open_uni().await.map_err(tx)?;
+        // A stream exists for the peer only once data is on it: send a no-op
+        // move now so it does not time out waiting while the user is idle.
+        let hello = InputDatagram {
+            seq: 0,
+            event: InputEvent::MouseMove { dx: 0, dy: 0 },
+        };
+        out.write_all(&hello.encode()).await.map_err(tx)?;
         let (tx, mut rx) = mpsc::unbounded_channel::<InputEvent>();
         let done = tokio::spawn(async move {
             let mut seq: u16 = 0;
             let mut buf = Vec::with_capacity(64 * INPUT_DATAGRAM_LEN);
-            while let Some(first) = rx.recv().await {
-                // Drain what is already queued and merge consecutive moves.
-                let mut batch = vec![first];
-                while let Ok(e) = rx.try_recv() {
-                    batch.push(e);
+            let mut push = |e: InputEvent, buf: &mut Vec<u8>| {
+                seq = seq.wrapping_add(1);
+                buf.extend_from_slice(&InputDatagram { seq, event: e }.encode());
+            };
+            // Stay inside the receiver's limits however fast the source is
+            // (gaming mice report 8000 times a second, a paste is thousands
+            // of keys): extra moves merge, other events wait their turn.
+            let mut moves = Bucket::new(SEND_MOVES_PER_SEC, BURST);
+            let mut others = Bucket::new(SEND_OTHER_PER_SEC, BURST);
+            let mut pending: Option<(i32, i32)> = None;
+            let mut open = true;
+            'run: while open || pending.is_some() {
+                let mut batch = Vec::new();
+                let first = if pending.is_some() {
+                    // A merged move is held back: wake when it may go.
+                    tokio::select! {
+                        e = rx.recv(), if open => Some(e),
+                        () = tokio::time::sleep(moves.wait()) => None,
+                    }
+                } else {
+                    Some(rx.recv().await)
+                };
+                match first {
+                    Some(Some(e)) => {
+                        batch.push(e);
+                        while let Ok(e) = rx.try_recv() {
+                            batch.push(e);
+                        }
+                    }
+                    Some(None) => open = false,
+                    None => {}
                 }
                 buf.clear();
-                let mut pending: Option<(i32, i32)> = None;
-                let mut push = |e: InputEvent, buf: &mut Vec<u8>| {
-                    seq = seq.wrapping_add(1);
-                    buf.extend_from_slice(&InputDatagram { seq, event: e }.encode());
-                };
                 for e in batch {
                     match e {
                         InputEvent::MouseMove { dx, dy } => {
@@ -73,17 +101,27 @@ impl Node {
                             pending = Some((x + i32::from(dx), y + i32::from(dy)));
                         }
                         other => {
+                            // Order matters: the movement before a click goes first.
                             if let Some((x, y)) = pending.take() {
+                                moves.take_anyway();
                                 push_move(x, y, &mut push, &mut buf);
+                            }
+                            while !others.try_take() {
+                                if out.write_all(&buf).await.is_err() {
+                                    break 'run;
+                                }
+                                buf.clear();
+                                tokio::time::sleep(others.wait()).await;
                             }
                             push(other, &mut buf);
                         }
                     }
                 }
-                if let Some((x, y)) = pending.take() {
+                if pending.is_some() && (!open || moves.try_take()) {
+                    let (x, y) = pending.take().unwrap_or_default();
                     push_move(x, y, &mut push, &mut buf);
                 }
-                if out.write_all(&buf).await.is_err() {
+                if !buf.is_empty() && out.write_all(&buf).await.is_err() {
                     break;
                 }
             }
@@ -119,6 +157,59 @@ fn push_move(
     }
 }
 
+/// Sender pacing; with the burst, any one second stays under the receiver's
+/// limits below (800 + 100 moves, 250 + 100 other events).
+const SEND_MOVES_PER_SEC: f64 = 800.0;
+const SEND_OTHER_PER_SEC: f64 = 250.0;
+const BURST: f64 = 100.0;
+
+/// Token bucket: `rate` events per second, up to `burst` at once.
+struct Bucket {
+    tokens: f64,
+    rate: f64,
+    burst: f64,
+    at: tokio::time::Instant,
+}
+
+impl Bucket {
+    fn new(rate: f64, burst: f64) -> Self {
+        Self {
+            tokens: burst,
+            rate,
+            burst,
+            at: tokio::time::Instant::now(),
+        }
+    }
+
+    fn refill(&mut self) {
+        let now = tokio::time::Instant::now();
+        let gained = now.duration_since(self.at).as_secs_f64() * self.rate;
+        self.tokens = (self.tokens + gained).min(self.burst);
+        self.at = now;
+    }
+
+    fn try_take(&mut self) -> bool {
+        self.refill();
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Spend a token even if there is none (repaid by waiting later).
+    fn take_anyway(&mut self) {
+        self.refill();
+        self.tokens -= 1.0;
+    }
+
+    /// How long until a token is available.
+    fn wait(&self) -> Duration {
+        Duration::from_secs_f64(((1.0 - self.tokens).max(0.0) / self.rate).max(0.001))
+    }
+}
+
 const MAX_MOVES_PER_SEC: u32 = 1000;
 const MAX_OTHER_PER_SEC: u32 = 400;
 const MAX_RECORDS_PER_SEC: u32 = 2000;
@@ -135,6 +226,7 @@ pub async fn receive_input(
         .send(ControlMsg::OfferReply(OfferReply {
             id: start.id,
             accept,
+            too_large: false,
         }))
         .await?;
     if !accept {
@@ -167,7 +259,11 @@ pub async fn receive_input(
         let Ok(d) = InputDatagram::decode(&rec) else {
             continue;
         };
-        if matches!(d.event, InputEvent::MouseMove { .. }) {
+        if let InputEvent::MouseMove { dx, dy } = d.event {
+            if dx == 0 && dy == 0 {
+                // The controller's opening no-op.
+                continue;
+            }
             moves += 1;
             if moves > MAX_MOVES_PER_SEC {
                 continue;

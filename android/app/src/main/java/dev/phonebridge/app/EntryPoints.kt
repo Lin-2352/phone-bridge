@@ -26,9 +26,10 @@ class ShareActivity : Activity() {
             return
         }
         startForegroundService(Intent(this, PbService::class.java))
-        val node = Bridge.node
-        val peer = Bridge.firstPeer()
-        if (node == null || peer == null) {
+        // The service may have been stopped by Android and is starting again
+        // now; then the node (and the peer list) comes a moment later.
+        val known = Bridge.firstPeer()
+        if (Bridge.node != null && known == null) {
             Toast.makeText(this, "Pair Phone Bridge with your PC first", Toast.LENGTH_LONG).show()
             finish()
             return
@@ -76,7 +77,18 @@ class ShareActivity : Activity() {
             finish()
             return
         }
+        val app = applicationContext
         Bridge.scope.launch {
+            val node = Bridge.awaitNode()
+            val peer = node?.peers()?.firstOrNull()
+            if (node == null || peer == null) {
+                opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() } }
+                Log.e(TAG, "SHARE dropped: ${if (node == null) "Phone Bridge did not start" else "not paired"}")
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    Toast.makeText(app, if (node == null) "Phone Bridge could not start. Try again" else "Pair Phone Bridge with your PC first", Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
             for (f in opened) {
                 try {
                     node.sendFileFd(peer.id, f.fd, f.name, f.size.toULong(), f.mime)
@@ -84,6 +96,7 @@ class ShareActivity : Activity() {
                     Bridge.addRecent(RecentItem(f.name, "Sent to ${peer.name}", RecentItem.Kind.File))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE failed: $t")
+                    PbService.cancelOutgoingProgress(app)
                 }
             }
             if (uris.isEmpty() && !text.isNullOrBlank()) {
@@ -97,7 +110,7 @@ class ShareActivity : Activity() {
                 }
             }
         }
-        Toast.makeText(this, "Sending to ${peer.name}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, if (known != null) "Sending to ${known.name}" else "Sending to your PC", Toast.LENGTH_SHORT).show()
         finish()
     }
 }

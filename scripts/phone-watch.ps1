@@ -1,6 +1,6 @@
 # Read-only watcher for the test phone: if it freezes or reboots, the minutes
 # before are on the PC. Writes to %TEMP%\pb-phone-watch:
-#   logcat-<hour>.txt  main/system/crash/events buffers, one file per hour (24 kept)
+#   logcat-<hour>.txt  main/system/crash/events buffers, one file per hour (kept 48 h; empty ones removed)
 #   samples.txt        every -SampleSeconds (default 300): memory pressure (PSI), MemAvailable/swap,
 #                      top 10 processes by PSS, Phone Bridge PSS and threads
 # Stops after -Hours (default 24). Usage: pwsh scripts/phone-watch.ps1 [-Serial X] [-Hours 24]
@@ -30,7 +30,12 @@ while ((Get-Date) -lt $end) {
         $log = Start-Process $adb -ArgumentList "-s", $Serial, "logcat", "-b", "main,system,crash,events", "-v", "threadtime" `
             -RedirectStandardOutput $file -WindowStyle Hidden -PassThru
         $logHour = $h
-        Get-ChildItem $dir -Filter "logcat-*.txt" | Sort-Object Name -Descending | Select-Object -Skip 24 | Remove-Item -ErrorAction SilentlyContinue
+        # Retention by age, never by count: while the phone is off adb, logcat
+        # exits at once and each retry leaves an empty file, which must not
+        # push out the capture from just before a freeze. Empty files go.
+        Get-ChildItem $dir -Filter "logcat-*.txt" | Where-Object {
+            $_.FullName -ne $file -and ($_.Length -eq 0 -or $_.LastWriteTime -lt (Get-Date).AddHours(-48))
+        } | Remove-Item -ErrorAction SilentlyContinue
     }
     # dumpsys meminfo makes every app collect garbage and keeps realme from
     # freezing them: sample rarely so the watcher does not change what it watches.

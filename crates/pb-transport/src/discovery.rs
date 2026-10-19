@@ -234,6 +234,17 @@ impl Node {
             .unwrap_or_default()
     }
 
+    /// A dial through these candidates failed: forget them.
+    pub(crate) fn drop_candidates(&self, peer: &PeerId, failed: &[SocketAddr]) {
+        let mut c = lock(&self.inner.candidates);
+        if let Some(list) = c.get_mut(peer) {
+            list.retain(|a| !failed.contains(a));
+            if list.is_empty() {
+                c.remove(peer);
+            }
+        }
+    }
+
     /// An authenticated connection succeeded through `addrs`: save them first
     /// in the peer's address list and forget the candidates.
     pub(crate) fn confirm_addrs(&self, peer: &PeerId, addrs: &[SocketAddr]) {

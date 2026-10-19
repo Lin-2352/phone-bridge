@@ -10,6 +10,7 @@ members = [
     "crates/pb-tray",
     "spikes/iroh-spike",
     "spikes/ffi-smoke",
+    "spikes/wifidirect-win",
     "tools/uniffi-bindgen",
 ]
 

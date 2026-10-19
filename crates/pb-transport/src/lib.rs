@@ -37,6 +37,9 @@ pub const PAIR_ALPN: &[u8] = b"pb-pair/0";
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
 /// Unauthenticated handshake steps must finish within this.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+/// An incoming QUIC handshake on a local link takes milliseconds; one that
+/// dawdles is holding a connection slot.
+const INCOMING_HANDSHAKE: Duration = Duration::from_secs(5);
 /// Incoming connections handled at once.
 const MAX_INCOMING: usize = 16;
 /// How long either side waits for the user to confirm the SAS.
@@ -174,6 +177,11 @@ struct Inner {
     sessions: mpsc::Sender<Session>,
     discovery: Mutex<Option<discovery::Discovery>>,
     candidates: discovery::Candidates,
+    /// Open connections per peer, so unpairing can cut them at once. Weak:
+    /// a connection still closes when its last user drops it.
+    live: Mutex<Vec<(PeerId, iroh::endpoint::WeakConnectionHandle)>>,
+    /// When a failed dial last probed the network (see `dial_known`).
+    last_probe: Mutex<Option<Instant>>,
 }
 
 fn lock<T: ?Sized>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -226,6 +234,8 @@ impl Node {
                 sessions: sess_tx,
                 discovery: Mutex::new(None),
                 candidates: Mutex::default(),
+                live: Mutex::default(),
+                last_probe: Mutex::new(None),
             }),
         };
         tokio::spawn(node.clone().accept_loop());
@@ -270,9 +280,36 @@ impl Node {
         lock(&self.inner.store).list()
     }
 
-    /// Revoke a peer: removed from the store, so it can no longer connect.
+    /// Revoke a peer: removed from the store, so it can no longer connect,
+    /// and anything it has open now (a transfer, a control session) ends.
     pub fn unpair(&self, peer: &PeerId) -> bool {
-        lock(&self.inner.store).remove(peer)
+        let removed = lock(&self.inner.store).remove(peer);
+        lock(&self.inner.live).retain(|(p, w)| {
+            if p != peer {
+                return true;
+            }
+            if let Some(c) = w.upgrade() {
+                c.close(CLOSE_NOT_PAIRED.into(), b"unpaired");
+            }
+            false
+        });
+        removed
+    }
+
+    /// Remember an authenticated connection (and forget finished ones).
+    fn track(&self, peer: PeerId, conn: &Connection) {
+        let mut live = lock(&self.inner.live);
+        live.retain(|(_, w)| w.upgrade().is_some_and(|c| c.close_reason().is_none()));
+        live.push((peer, conn.weak_handle()));
+    }
+
+    /// Connections still open (tests check nothing is kept alive).
+    #[cfg(test)]
+    fn live_count(&self) -> usize {
+        lock(&self.inner.live)
+            .iter()
+            .filter(|(_, w)| w.upgrade().is_some_and(|c| c.close_reason().is_none()))
+            .count()
     }
 
     /// Open a pairing window and return the code to show. Replaces any
@@ -317,9 +354,9 @@ impl Node {
         )?;
         write_frame(&mut send, &Pair::from(PairMsg::Start(start))).await?;
         // A refused code makes the host close the connection (code 400).
-        let first = recv
-            .next::<Pair>()
+        let first = tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.next::<Pair>())
             .await
+            .map_err(|_| Error::Timeout)?
             .map_err(|e| closed_by_peer(&conn, e))?;
         let nonce = match first.and_then(|p| p.msg) {
             Some(PairMsg::Nonce(n)) => n,
@@ -352,6 +389,7 @@ impl Node {
             .get(peer)
             .ok_or(Error::UnknownPeer)?;
         let conn = self.dial_known(*peer, &known.addrs).await?;
+        self.track(*peer, &conn);
         let started = async {
             let (send, recv) = conn.open_bi().await.map_err(tx)?;
             Session::start(
@@ -375,32 +413,60 @@ impl Node {
     }
 
     /// Dial a paired peer, recovering from a network change: addresses
-    /// learned by discovery are tried first (briefly), then the saved ones;
-    /// if both fail, probe the local network and try what answers. Learned
+    /// learned by discovery and the saved ones are tried together; if none
+    /// answers, probe the local network and try what answers. Learned
     /// addresses are saved only after the authenticated connection succeeds.
     async fn dial_known(&self, peer: PeerId, saved: &[String]) -> Result<Connection, Error> {
-        let try_candidates = |cands: Vec<SocketAddr>, wait: Duration| async move {
-            let strs: Vec<String> = cands.iter().map(|a| a.to_string()).collect();
-            let c = self.dial_for(peer, &strs, SESSION_ALPN, wait).await?;
-            self.confirm_addrs(&peer, &cands);
-            Ok::<_, Error>(c)
-        };
-        let cands = self.candidates(&peer);
-        if !cands.is_empty() {
-            if let Ok(c) = try_candidates(cands, Duration::from_secs(5)).await {
-                return Ok(c);
+        let try_candidates = |cands: Vec<SocketAddr>, also: &[String], wait: Duration| {
+            let mut strs: Vec<String> = cands.iter().map(|a| a.to_string()).collect();
+            strs.extend(
+                also.iter()
+                    .filter(|a| !strs.contains(a))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            async move {
+                match self.dial_for(peer, &strs, SESSION_ALPN, wait).await {
+                    Ok(c) => {
+                        // Save only the address the authenticated connection
+                        // actually uses (QUIC validated it with the peer's key),
+                        // never the rest of the batch. It may be neither a
+                        // candidate nor saved: iroh can move to a better path.
+                        if let Some(used) = used_addr(&c) {
+                            self.confirm_addrs(&peer, &[used]);
+                        }
+                        Ok(c)
+                    }
+                    Err(e) => {
+                        // Stale or forged: do not try them again on every connect.
+                        self.drop_candidates(&peer, &cands);
+                        Err(e)
+                    }
+                }
             }
-        }
-        let first = self.dial(peer, saved, SESSION_ALPN).await;
+        };
+        // All paths are tried at once, so a stale or forged candidate costs
+        // nothing when a saved address works (and vice versa).
+        let first = try_candidates(self.candidates(&peer), saved, Duration::from_secs(15)).await;
         if first.is_ok() || lock(&self.inner.discovery).is_none() {
             return first;
         }
-        // Saved addresses failed: maybe the network changed. Ask once.
+        // Saved addresses failed: maybe the network changed. Ask once and
+        // wait for an answer (failed candidates were dropped above, so
+        // whatever appears now is fresh). While a peer is away, every copy
+        // or send fails here: probe at most every 30 s, not on each one.
+        {
+            let mut last = lock(&self.inner.last_probe);
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(30)) {
+                return first;
+            }
+            *last = Some(Instant::now());
+        }
         self.rediscover().await;
         for _ in 0..30 {
             let cands = self.candidates(&peer);
             if !cands.is_empty() {
-                return try_candidates(cands, Duration::from_secs(10)).await;
+                return try_candidates(cands, &[], Duration::from_secs(10)).await;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -442,8 +508,7 @@ impl Node {
             };
             let node = self.clone();
             tokio::spawn(async move {
-                let _permit = permit;
-                let Ok(Ok(conn)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming).await else {
+                let Ok(Ok(conn)) = tokio::time::timeout(INCOMING_HANDSHAKE, incoming).await else {
                     return;
                 };
                 let Ok(peer) = PeerId::from_bytes(*conn.remote_id().as_bytes()) else {
@@ -456,7 +521,11 @@ impl Node {
                         return;
                     }
                     let _ = node.host_pairing(conn, peer).await;
+                    drop(permit);
                 } else {
+                    // A paired peer is authenticated: free the slot for the
+                    // next handshake while its session runs.
+                    drop(permit);
                     node.accept_session(conn, peer).await;
                 }
             });
@@ -469,6 +538,7 @@ impl Node {
             conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");
             return;
         };
+        self.track(peer, &conn);
         let Ok(Ok((send, recv))) = tokio::time::timeout(HEARTBEAT * 3, conn.accept_bi()).await
         else {
             return;
@@ -574,6 +644,21 @@ impl Node {
 }
 
 /// Turn a failure on a connection the peer closed into a meaningful error.
+/// The direct address a connection is using (the selected path).
+fn used_addr(conn: &Connection) -> Option<SocketAddr> {
+    let paths = conn.paths();
+    let mut any = None;
+    for p in paths.iter() {
+        if let TransportAddr::Ip(a) = p.remote_addr() {
+            if p.is_selected() {
+                return Some(*a);
+            }
+            any.get_or_insert(*a);
+        }
+    }
+    any
+}
+
 fn closed_by_peer(conn: &Connection, fallback: Error) -> Error {
     match conn.close_reason() {
         Some(ConnectionError::ApplicationClosed(c)) if c.error_code == CLOSE_NOT_PAIRED.into() => {

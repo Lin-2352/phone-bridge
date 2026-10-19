@@ -83,6 +83,10 @@ pub struct OfferReply {
     pub id: u64,
     #[prost(bool, tag = "2")]
     pub accept: bool,
+    /// Declined because the file is over the receiver's limit or free space
+    /// (so the sender can say why). Older peers leave it false.
+    #[prost(bool, tag = "3")]
+    pub too_large: bool,
 }
 
 /// Sent after the last file byte; the receiver compares the hash before
@@ -307,6 +311,7 @@ mod tests {
             ControlMsg::OfferReply(OfferReply {
                 id: 9,
                 accept: true,
+                too_large: false,
             }),
             ControlMsg::TransferDone(TransferDone {
                 id: 9,

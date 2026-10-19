@@ -31,7 +31,7 @@ use windows::{
 
 use crate::core::{Cmd, Peers, UiEvent};
 
-/// Window class name; test tooling finds the window by it (message-only window).
+/// Window class name; test tooling finds the window by it (hidden top-level window).
 pub const CLASS: PCWSTR = w!("PhoneBridgeTray");
 const WM_TRAY: u32 = WM_APP + 1;
 pub const WM_CORE_EVENT: u32 = WM_APP + 2;
@@ -524,14 +524,15 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 format!("Allow {from} to control this PC's mouse and keyboard?\n\nYou can turn this off any time in Phone Bridge settings."),
                 "Phone Bridge",
                 move |yes| {
-                    if yes {
+                    // An answer after the request timed out changes nothing.
+                    let in_time = reply.send(yes).is_ok();
+                    if yes && in_time {
                         // Remember the choice; Settings can turn it off again.
                         if let Some(st) = STATE.get() {
                             let _ = st.settings.lock().map(|mut s| s.allow_control = true);
                             save_settings(st);
                         }
                     }
-                    let _ = reply.send(yes);
                 },
             );
         }
@@ -837,11 +838,10 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             ),
         },
         ID_OPEN_FOLDER => {
-            if let Ok(s) = st.settings.lock() {
-                let _ = std::fs::create_dir_all(&s.save_dir);
-                let _ = std::process::Command::new("explorer")
-                    .arg(&s.save_dir)
-                    .spawn();
+            // Copy the path out: no disk access while holding the settings lock.
+            if let Some(dir) = st.settings.lock().ok().map(|s| s.save_dir.clone()) {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             }
         }
         ID_TOGGLE_CLIP => {
@@ -917,8 +917,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     };
     let taskbar = TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed);
     if taskbar != 0 && msg == taskbar {
-        // Explorer restarted: our icon is gone, add it again.
-        add_icon(hwnd, "Phone Bridge");
+        // Explorer restarted: our icon is gone, add it again (same tooltip).
+        let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
+        let tip = if fp.is_empty() {
+            "Phone Bridge".to_owned()
+        } else {
+            format!("Phone Bridge ({fp})")
+        };
+        add_icon(hwnd, &tip);
         return LRESULT(0);
     }
     match msg {

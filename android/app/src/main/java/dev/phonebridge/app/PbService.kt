@@ -62,7 +62,13 @@ object Bridge {
     val running = mutableStateOf(false)
     /** Long-lived scope for sends started from share/tile entry points. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val pendingClips = java.util.concurrent.ConcurrentHashMap<Int, Pair<String, Boolean>>()
+    /** Clips waiting for "Copy", oldest first (notification ids wrap, so order is by insertion). */
+    val pendingClips = java.util.LinkedHashMap<Int, Pair<String, Boolean>>()
+    /** Pairing code check in progress (survives screen rotation). */
+    val sas = mutableStateOf<String?>(null)
+    val pairMessage = mutableStateOf<String?>(null)
+    /** The previous node's shutdown; a new node waits for it so the ports are free. */
+    @Volatile var stopping: kotlinx.coroutines.Job? = null
 
     fun addRecent(item: RecentItem) {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -72,6 +78,43 @@ object Bridge {
     }
 
     fun firstPeer() = node?.peers()?.firstOrNull()
+
+    /** The node, waiting up to [ms] for a service that is just starting. */
+    suspend fun awaitNode(ms: Long = 10_000): PbNode? {
+        repeat((ms / 100).toInt()) {
+            node?.let { return it }
+            kotlinx.coroutines.delay(100)
+        }
+        return node
+    }
+
+    /** Pairing, step 1: join with the scanned code; the code check shows next. */
+    suspend fun join(code: String) {
+        val n = awaitNode() ?: run { pairMessage.value = "Phone Bridge is off"; return }
+        try {
+            val s = n.joinPairing(code.trim())
+            Log.i(TAG, "SAS=$s")
+            sas.value = s
+        } catch (e: Throwable) {
+            Log.i(TAG, "Pairing failed: ${e.message}")
+            pairMessage.value = "Pairing failed: ${e.message}"
+        }
+    }
+
+    /** Pairing, step 2: the user compared the codes. */
+    suspend fun confirm(ctx: Context, accept: Boolean) {
+        sas.value = null
+        val n = node ?: return
+        try {
+            val name = n.confirmPairing(accept)
+            Log.i(TAG, "PAIRED with $name")
+            linked.value = name
+            PbService.refresh(ctx)
+        } catch (e: Throwable) {
+            Log.i(TAG, "Pairing not completed: ${e.message}")
+            pairMessage.value = "Pairing not completed"
+        }
+    }
 }
 
 /** Hands the Application context to Rust (iroh needs it for system network config). */
@@ -162,17 +205,20 @@ class PbService : Service() {
     }
 
     override fun onDestroy() {
-        destroyed = true
-        val n = Bridge.node
-        Bridge.node = null
+        val n = synchronized(Bridge) {
+            destroyed = true
+            Bridge.node.also { Bridge.node = null }
+        }
         // Never block the main thread on the network: close in the background,
         // bounded so a stuck peer cannot keep the node alive.
         if (n != null) {
-            Bridge.scope.launch {
+            Bridge.stopping = Bridge.scope.launch {
                 withTimeoutOrNull(3000) { n.shutdown() }
                 n.destroy()
             }
         }
+        cancelProgress(true)
+        cancelProgress(false)
         netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
         netCallback = null
         scope.cancel()
@@ -184,6 +230,8 @@ class PbService : Service() {
 
     private suspend fun start() {
         if (Bridge.node != null) return
+        // Turned off and on again quickly: the old node still holds the ports.
+        Bridge.stopping?.join()
         try {
             NativeInit.initContext(applicationContext)
             val n = startNode(
@@ -208,17 +256,20 @@ class PbService : Service() {
                     }
                 },
             )
-            if (destroyed) {
-                // Stopped while starting: do not leave an orphaned node holding the port.
-                withTimeoutOrNull(3000) { n.shutdown() }
-                n.destroy()
-                return
-            }
             val prefs = Prefs(this)
             n.setClipboardSync(prefs.clipboardSync)
             n.setAutoAccept(prefs.autoAccept)
             ControlService.instance?.let { n.setInputListener(it) }
-            Bridge.node = n
+            // Published under the same lock onDestroy takes, so a stop racing
+            // this start either sees the node or makes us drop it.
+            val orphan = synchronized(Bridge) {
+                if (destroyed) true else { Bridge.node = n; false }
+            }
+            if (orphan) {
+                withTimeoutOrNull(3000) { n.shutdown() }
+                n.destroy()
+                return
+            }
             Bridge.linked.value = n.peers().firstOrNull()?.name
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
@@ -232,6 +283,10 @@ class PbService : Service() {
     }
 
     private fun handle(e: PbEvent) {
+        // Late events from a node that is shutting down: no progress bar or
+        // offer that nothing can update or answer any more. A file that
+        // already arrived is still saved.
+        if (destroyed && (e is PbEvent.TransferProgress || e is PbEvent.IncomingOffer)) return
         when (e) {
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
@@ -253,7 +308,6 @@ class PbService : Service() {
             is PbEvent.IncomingOffer -> notifyOffer(e)
             is PbEvent.TransferFailed -> {
                 cancelProgress(true)
-                cancelProgress(false)
                 notifySimple("Transfer from ${e.peerName} failed", e.reason)
             }
             is PbEvent.TransferProgress -> notifyProgress(e)
@@ -277,9 +331,11 @@ class PbService : Service() {
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(src.extension.lowercase()) ?: "application/octet-stream"
         val tree = Prefs(this).saveTree
         if (tree != null) {
+            var created: Uri? = null
             try {
                 val dir = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
                 val uri = DocumentsContract.createDocument(contentResolver, dir, mime, e.name) ?: error("could not create file")
+                created = uri
                 contentResolver.openOutputStream(uri)!!.use { out -> src.inputStream().use { it.copyTo(out, 256 * 1024) } }
                 src.delete()
                 val label = treeLabel(tree)
@@ -288,8 +344,10 @@ class PbService : Service() {
                 notifyFile(e.peerName, e.name, e.size, uri, mime, label)
                 return
             } catch (t: Throwable) {
-                // Folder removed or access revoked: fall back to Downloads.
+                // Folder removed, access revoked or full: fall back to Downloads,
+                // leaving no half-written copy behind.
                 Log.e(TAG, "FILE save to chosen folder failed: $t")
+                created?.let { runCatching { DocumentsContract.deleteDocument(contentResolver, it) } }
             }
         }
         saveToDownloads(e, src, mime)
@@ -382,9 +440,12 @@ class PbService : Service() {
     private fun notifyClip(from: String, text: String, sensitive: Boolean) {
         Log.i(TAG, "CLIP from $from (${text.length} chars${if (sensitive) ", sensitive" else ""})")
         val id = nextNotificationId()
-        Bridge.pendingClips[id] = text to sensitive
-        // Swiped-away clips are never claimed: keep only the newest few.
-        while (Bridge.pendingClips.size > 10) Bridge.pendingClips.keys.minOrNull()?.let { Bridge.pendingClips.remove(it) }
+        synchronized(Bridge.pendingClips) {
+            Bridge.pendingClips.remove(id)
+            Bridge.pendingClips[id] = text to sensitive
+            // Swiped-away clips are never claimed: keep only the newest few.
+            while (Bridge.pendingClips.size > 10) Bridge.pendingClips.remove(Bridge.pendingClips.keys.first())
+        }
         val copy = PendingIntent.getBroadcast(
             this, id, Intent(this, CopyReceiver::class.java).putExtra("id", id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -452,6 +513,8 @@ class PbService : Service() {
     }
 
     private fun updateStatus() {
+        // After stopForeground a notify would leave a stale status line behind.
+        if (destroyed) return
         getSystemService(NotificationManager::class.java).notify(ONGOING_ID, statusNotification())
         refreshTile(this)
     }
@@ -459,6 +522,11 @@ class PbService : Service() {
     companion object {
         const val ACTION_STOP = "dev.phonebridge.app.STOP"
         private const val ACTION_REFRESH = "dev.phonebridge.app.REFRESH"
+
+        /** A send from this phone ended without finishing: drop its progress bar. */
+        fun cancelOutgoingProgress(ctx: Context) {
+            ctx.getSystemService(NotificationManager::class.java).cancel(PROGRESS_OUT_ID)
+        }
 
         /** Pairing changed: refresh the status line and the tile. */
         fun refresh(ctx: Context) {
@@ -471,7 +539,7 @@ class PbService : Service() {
 class CopyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getIntExtra("id", -1)
-        val (text, sensitive) = Bridge.pendingClips.remove(id) ?: return
+        val (text, sensitive) = synchronized(Bridge.pendingClips) { Bridge.pendingClips.remove(id) } ?: return
         val clip = ClipData.newPlainText("Phone Bridge", text)
         if (sensitive) {
             clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }

@@ -10,6 +10,9 @@
 param([switch]$Remove, [string]$ExeDir = "$PSScriptRoot\..\target\spike")
 $ErrorActionPreference = "Stop"
 $pkgDir = Resolve-Path "$PSScriptRoot\..\packaging\windows"
+# Check before unregistering anything, so a missing build never leaves the
+# user with no share target at all.
+if (-not $Remove -and -not (Test-Path "$ExeDir\pb-tray.exe")) { throw "pb-tray.exe not found in $ExeDir (build it first)" }
 
 $existing = Get-AppxPackage -Name "PhoneBridge.Tray"
 if ($existing) { Remove-AppxPackage -Package $existing.PackageFullName; "Removed $($existing.PackageFullName)" }

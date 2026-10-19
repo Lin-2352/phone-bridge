@@ -56,6 +56,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -73,9 +74,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import uniffi.pb_ffi.PbNode
 
 private const val TAG = "PhoneBridge"
 
@@ -87,9 +86,11 @@ private const val TAG = "PhoneBridge"
  * `send_text`. They drive exactly the same code paths as the UI.
  */
 class MainActivity : ComponentActivity() {
-    private val sas = mutableStateOf<String?>(null)
-    private val message = mutableStateOf<String?>(null)
+    private val sas = Bridge.sas
+    private val message = Bridge.pairMessage
     private lateinit var prefs: Prefs
+    /** Bumped on every resume: rows showing system settings re-read them. */
+    private val resumed = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -114,6 +115,11 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumed.intValue++
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
@@ -132,45 +138,13 @@ class MainActivity : ComponentActivity() {
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         if (!intent.hasExtra("pair_code") && !intent.hasExtra("confirm") && !intent.hasExtra("send_text")) return
         Bridge.scope.launch {
-            val node = awaitNode() ?: return@launch
-            intent.getStringExtra("pair_code")?.let { join(node, it) }
-            intent.getStringExtra("confirm")?.let { confirm(node, it == "yes") }
+            val node = Bridge.awaitNode() ?: return@launch
+            intent.getStringExtra("pair_code")?.let { Bridge.join(it) }
+            intent.getStringExtra("confirm")?.let { Bridge.confirm(applicationContext, it == "yes") }
             intent.getStringExtra("send_text")?.let { t ->
                 val peer = node.peers().firstOrNull() ?: return@let
                 runCatching { node.sendText(peer.id, t, false) }.onSuccess { Log.i(TAG, "SENT ${t.length} chars to ${peer.name}") }
             }
-        }
-    }
-
-    private suspend fun awaitNode(): PbNode? {
-        repeat(100) {
-            Bridge.node?.let { return it }
-            delay(100)
-        }
-        return null
-    }
-
-    private suspend fun join(node: PbNode, code: String) {
-        try {
-            val s = node.joinPairing(code.trim())
-            Log.i(TAG, "SAS=$s")
-            sas.value = s
-        } catch (e: Throwable) {
-            Log.i(TAG, "Pairing failed: ${e.message}")
-            message.value = "Pairing failed: ${e.message}"
-        }
-    }
-
-    private suspend fun confirm(node: PbNode, accept: Boolean) {
-        sas.value = null
-        try {
-            val name = node.confirmPairing(accept)
-            Log.i(TAG, "PAIRED with $name")
-            Bridge.linked.value = name
-            PbService.refresh(this)
-        } catch (e: Throwable) {
-            Log.i(TAG, "Pairing not completed: ${e.message}")
-            message.value = "Pairing not completed"
         }
     }
 
@@ -209,8 +183,8 @@ class MainActivity : ComponentActivity() {
                         Text("If the codes are different, choose No. Someone may be trying to intercept the connection.", style = MaterialTheme.typography.bodyMedium)
                     }
                 },
-                confirmButton = { Button(onClick = { scope.launch { Bridge.node?.let { confirm(it, true) } } }) { Text("Yes, pair") } },
-                dismissButton = { OutlinedButton(onClick = { scope.launch { Bridge.node?.let { confirm(it, false) } } }) { Text("No") } },
+                confirmButton = { Button(onClick = { scope.launch { Bridge.confirm(applicationContext, true) } }) { Text("Yes, pair") } },
+                dismissButton = { OutlinedButton(onClick = { scope.launch { Bridge.confirm(applicationContext, false) } }) { Text("No") } },
             )
         }
         message.value?.let { m ->
@@ -224,6 +198,7 @@ class MainActivity : ComponentActivity() {
         var clipOn by remember { mutableStateOf(prefs.clipboardSync) }
         val pc = Bridge.linked.value
         val running = Bridge.running.value
+        val notificationsOn = remember(resumed.intValue) { getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled() }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -257,6 +232,17 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                if (!notificationsOn) {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("Notifications are off") },
+                            supportingContent = { Text("You will not see files, links or clips arriving from your PC. Tap to turn them on") },
+                            modifier = Modifier.clickable {
+                                startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                            },
+                        )
+                    }
+                }
                 item {
                     ListItem(
                         headlineContent = { Text("Share clipboard") },
@@ -280,7 +266,11 @@ class MainActivity : ComponentActivity() {
                         supportingContent = { Text(r.subtitle) },
                         leadingContent = { KindBadge(r.kind) },
                         modifier = Modifier.clickable(enabled = r.uri != null) {
-                            r.uri?.let { startActivity(Intent(Intent.ACTION_VIEW).setData(it).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+                            r.uri?.let {
+                                // No app for this file type, or the file is gone.
+                                runCatching { startActivity(Intent(Intent.ACTION_VIEW).setData(it).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+                                    .onFailure { message.value = "No app can open ${r.title}" }
+                            }
                         },
                     )
                 }
@@ -392,7 +382,7 @@ class MainActivity : ComponentActivity() {
                 }
                 item { Section("Control from PC") }
                 item {
-                    val on = ControlService.instance != null
+                    val on = remember(resumed.intValue) { ControlService.instance != null }
                     ListItem(
                         headlineContent = { Text("Let my PC control this phone") },
                         supportingContent = {
@@ -414,7 +404,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 item {
-                    val unrestricted = remember { mutableStateOf(isBatteryUnrestricted(this@MainActivity)) }
+                    val unrestricted = remember(resumed.intValue) { mutableStateOf(isBatteryUnrestricted(this@MainActivity)) }
                     ListItem(
                         headlineContent = { Text("Keep running in background") },
                         supportingContent = {

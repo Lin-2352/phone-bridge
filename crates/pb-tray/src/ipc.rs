@@ -3,7 +3,7 @@
 //! `--pair`, `--send-clipboard`.
 //!
 //! The pipe name includes the user name; remote clients are rejected and the
-//! pipe's ACL admits only this user (owner) and SYSTEM.
+//! pipe's ACL admits only this user (by SID) and SYSTEM.
 //! Messages are UTF-8 lines: a verb, then one file path per line for `send`.
 
 #![allow(unsafe_code)]
@@ -94,11 +94,52 @@ pub fn send_request(r: &Request) -> bool {
     }
 }
 
-/// Security attributes for the pipe: only this user (owner) and SYSTEM.
-/// The default pipe DACL also lets other accounts on the PC connect.
+/// This process's user SID as a string (`S-1-5-21-...`).
+fn user_sid() -> Option<String> {
+    use windows::{
+        core::PWSTR,
+        Win32::{
+            Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL},
+            Security::{
+                Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
+                TOKEN_USER,
+            },
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        },
+    };
+    // SAFETY: token queried into a buffer of the size Windows asked for
+    // (u64s, so TOKEN_USER is aligned); the SID string is freed with LocalFree.
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
+        let mut len = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        let got = GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            len,
+            &mut len,
+        );
+        let _ = CloseHandle(token);
+        got.ok()?;
+        let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        let mut s = PWSTR::null();
+        ConvertSidToStringSidW(user.User.Sid, &mut s).ok()?;
+        let out = s.to_string().ok();
+        let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+        out
+    }
+}
+
+/// Security attributes for the pipe: only this user and SYSTEM. The default
+/// pipe DACL also lets other accounts on the PC connect. The user's SID, not
+/// "owner": an elevated tray's objects are owned by Administrators, which
+/// would lock out the user's own unelevated "Send to".
 fn owner_only() -> Option<usize> {
     use windows::{
-        core::w,
+        core::HSTRING,
         Win32::Security::{
             Authorization::{
                 ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -106,17 +147,14 @@ fn owner_only() -> Option<usize> {
             PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
         },
     };
+    let who = user_sid().unwrap_or_else(|| "OW".into());
+    let sddl = HSTRING::from(format!("D:P(A;;GA;;;{who})(A;;GA;;;SY)"));
     let mut sd = PSECURITY_DESCRIPTOR::default();
     // SAFETY: valid SDDL string; the descriptor is intentionally never freed
     // because every pipe instance of this process uses it.
     unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            w!("D:P(A;;GA;;;OW)(A;;GA;;;SY)"),
-            SDDL_REVISION_1,
-            &mut sd,
-            None,
-        )
-        .ok()?;
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(&sddl, SDDL_REVISION_1, &mut sd, None)
+            .ok()?;
     }
     let sa = Box::new(SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,

@@ -54,6 +54,9 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 
 ## Review findings fixed (2026-10-19)
 - Exported `MainActivity` honoured test extras (`pair_code`, `confirm`) in release builds: any installed app could pair the phone with an attacker PC without the SAS check. Now only in debuggable builds.
-- Unauthenticated LAN hosts could hold pairing connections open indefinitely: pairing ALPN refused unless a code is shown; handshake steps time-boxed; at most 16 incoming connections in flight.
-- Tray pipe used the default DACL (other local accounts could connect): now owner + SYSTEM only.
+- Unauthenticated LAN hosts could hold pairing connections open indefinitely: pairing ALPN refused unless a code is shown; handshake steps time-boxed (incoming QUIC handshake 5 s); at most 16 incoming connections in flight, and a paired peer's slot is released as soon as it is authenticated.
+- Unpairing only blocked new connections: a removed device kept any session it had open (control, transfer). Now `unpair` closes its live connections at once.
+- Discovery: a forged or stale candidate address no longer delays connects (candidates and saved addresses are dialled together) and is dropped after a failed dial; only the address the authenticated connection actually uses is saved. Dial-triggered probes at most every 30 s.
+- Android: allowBackup=false did not cover Android 12+ device-to-device transfer; data extraction rules now exclude everything.
+- Tray pipe used the default DACL (other local accounts could connect): now this user (by SID, so an elevated tray still admits the user's unelevated "Send to") + SYSTEM only.
 - Clipboard text no longer written to logs (tray.log, logcat).

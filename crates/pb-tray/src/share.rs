@@ -60,6 +60,23 @@ pub fn take() -> Option<Share> {
     }
     let st: ShareTargetActivatedEventArgs = args.cast().ok()?;
     let op = st.ShareOperation().ok()?;
+    // From here on Windows waits for an answer: every failure is reported,
+    // or its share UI would spin until it gives up.
+    match read(&op) {
+        Some(item) => {
+            let _ = op.ReportStarted();
+            Some(Share { op, item })
+        }
+        None => {
+            let _ = op.ReportError(&windows::core::HSTRING::from(
+                "Phone Bridge could not read what was shared",
+            ));
+            None
+        }
+    }
+}
+
+fn read(op: &ShareOperation) -> Option<Shared> {
     let data = op.Data().ok()?;
     let has = |f: windows::core::Result<windows::core::HSTRING>| {
         f.and_then(|f| data.Contains(&f)).unwrap_or(false)
@@ -83,6 +100,5 @@ pub fn take() -> Option<Share> {
     } else {
         return None;
     };
-    let _ = op.ReportStarted();
-    Some(Share { op, item })
+    Some(item)
 }

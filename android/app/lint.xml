@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Generated UniFFI bindings: java.lang.ref.Cleaner is used only after a
+         runtime Class.forName check, with a JNA fallback below API 33. -->
+    <issue id="NewApi">
+        <ignore path="src/main/java/uniffi/**" />
+    </issue>
+</lint>

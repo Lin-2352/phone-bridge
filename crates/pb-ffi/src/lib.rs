@@ -610,20 +610,33 @@ impl PbNode {
         {
             return Ok(());
         }
-        for p in self.node.paired_peers() {
-            let s = self.node.connect(&p.id).await.map_err(fail)?;
-            s.send(ControlMsg::ClipboardUpdate(
-                pb_protocol::control::ClipboardUpdate {
+        // All peers at once: one that is away must not delay or block the rest.
+        let tasks: Vec<_> = self
+            .node
+            .paired_peers()
+            .into_iter()
+            .map(|p| {
+                let node = self.node.clone();
+                let update = pb_protocol::control::ClipboardUpdate {
                     text: text.clone(),
                     hash: h.to_vec(),
                     sensitive,
-                },
-            ))
-            .await
-            .map_err(fail)?;
-            s.finish().await;
+                };
+                tokio::spawn(async move {
+                    let s = node.connect(&p.id).await?;
+                    s.send(ControlMsg::ClipboardUpdate(update)).await?;
+                    s.finish().await;
+                    Ok::<_, pb_transport::Error>(())
+                })
+            })
+            .collect();
+        let mut first_err = None;
+        for t in tasks {
+            if let Ok(Err(e)) = t.await {
+                first_err.get_or_insert(fail(e));
+            }
         }
-        Ok(())
+        first_err.map_or(Ok(()), Err)
     }
 
     /// Register (service connected) or clear (service gone) the PC-control handler.
