@@ -30,6 +30,7 @@ mod settings;
 mod settings_window;
 #[cfg(windows)]
 mod share;
+#[cfg(windows)]
 mod status;
 #[cfg(windows)]
 mod ui;
