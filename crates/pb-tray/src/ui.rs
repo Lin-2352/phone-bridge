@@ -481,12 +481,17 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                         None,
                     )
                 };
+                crate::status::show(
+                    &format!("You're now controlling {name}. Ctrl+Alt+P returns to this PC"),
+                    6,
+                );
                 balloon(
                     hwnd,
                     &format!("Controlling {name}"),
                     "Your mouse and keyboard now drive the phone. Press Ctrl+Alt+P to return.",
                 );
             } else {
+                crate::status::show("Could not take over this PC's mouse and keyboard", 6);
                 // The session ends (sender dropped) and the phone hides its cursor.
                 balloon(
                     hwnd,
@@ -567,6 +572,10 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             if msg.starts_with("Sent ") {
                 note_activity(&format!("Last: {}", msg));
             }
+            // Answers to the user's own actions: shown in the pill (Do Not
+            // Disturb hides balloons), and as a balloon for the history.
+            let secs = if msg.starts_with("Asking ") { 35 } else { 6 };
+            crate::status::show(&msg, secs);
             balloon(hwnd, "Phone Bridge", &msg)
         }
     }
@@ -585,6 +594,7 @@ fn end_control(hwnd: HWND, why: &str) {
     // SAFETY: timer on our own window.
     let _ =
         unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_CONTROL) };
+    crate::status::show(why, 4);
     balloon(hwnd, "Phone Bridge", why);
 }
 

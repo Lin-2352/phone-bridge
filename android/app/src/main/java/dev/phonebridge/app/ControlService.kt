@@ -14,6 +14,7 @@ import android.util.Log
 import android.net.wifi.WifiManager
 import android.view.Choreographer
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -38,6 +39,11 @@ private const val TAG = "PhoneBridge"
  * the true position so moves that arrive in bursts still look continuous.
  * Taps always use the true position. A Wi-Fi lock is held during control so
  * power save does not batch the pointer packets.
+ *
+ * Typing goes through the service's own input method (Android 13+), like a
+ * keyboard: text is committed at the cursor and keys are real key events, so
+ * fast typing keeps its order and a field's placeholder is never taken as
+ * text. Older versions fall back to setting the field's text.
  */
 class ControlService : AccessibilityService(), InputListener {
     private val main = Handler(Looper.getMainLooper())
@@ -290,10 +296,17 @@ class ControlService : AccessibilityService(), InputListener {
     }
 
     private fun focused(): AccessibilityNodeInfo? =
-        rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.takeIf { it.isEditable }
+        rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?.takeIf { it.isEditable }
+            // The node is a snapshot: re-read it, or edits build on stale text.
+            ?.also { it.refresh() }
 
-    private fun currentText(n: AccessibilityNodeInfo): String =
-        if (Build.VERSION.SDK_INT >= 26 && n.isShowingHintText) "" else n.text?.toString() ?: ""
+    private fun currentText(n: AccessibilityNodeInfo): String {
+        if (n.isShowingHintText) return ""
+        val t = n.text?.toString() ?: return ""
+        // Some apps report their placeholder as the text of an empty field.
+        return if (n.hintText != null && t == n.hintText.toString()) "" else t
+    }
 
     private fun setText(n: AccessibilityNodeInfo, text: String, cursorAt: Int) {
         n.performAction(
@@ -322,15 +335,83 @@ class ControlService : AccessibilityService(), InputListener {
         setText(n, t.replaceRange(lo, hi, s), lo + s.length)
     }
 
+    /** Typed text not yet committed (characters of one main-loop turn). */
+    private val typed = StringBuilder()
+    private var typedQueued = false
+
+    /** The focused field's input connection, if any. */
+    @androidx.annotation.RequiresApi(33)
+    private fun conn(): android.accessibilityservice.InputMethod.AccessibilityInputConnection? =
+        inputMethod?.currentInputConnection
+
     private fun char(unit: Int) {
         val c = unit.toChar()
         if (c.isHighSurrogate()) {
             highSurrogate = c
             return
         }
-        val s = highSurrogate?.let { "$it$c" } ?: c.toString()
+        typed.append(highSurrogate ?: "").append(c)
         highSurrogate = null
+        if (!typedQueued) {
+            typedQueued = true
+            main.post { flushTyped() }
+        }
+    }
+
+    /** Commit what was typed, in order; before any key so order is kept. */
+    private fun flushTyped() {
+        typedQueued = false
+        if (typed.isEmpty()) return
+        val s = typed.toString()
+        typed.setLength(0)
+        if (Build.VERSION.SDK_INT >= 33) {
+            val c = conn()
+            if (c != null) {
+                c.commitText(s, 1, null)
+                return
+            }
+        }
         insert(s)
+    }
+
+    /** Press and release one Android key in the focused field. */
+    @androidx.annotation.RequiresApi(33)
+    private fun press(c: android.accessibilityservice.InputMethod.AccessibilityInputConnection, keyCode: Int) {
+        val t = SystemClock.uptimeMillis()
+        c.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_DOWN, keyCode, 0))
+        c.sendKeyEvent(KeyEvent(t, t, KeyEvent.ACTION_UP, keyCode, 0))
+    }
+
+    /** Keyboard keys through the input connection; false if not handled here. */
+    private fun keyViaInputMethod(code: Int): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return false
+        val c = conn() ?: return false
+        if (ctrl) {
+            val id = when (code) {
+                0x1E -> android.R.id.selectAll // A
+                0x2E -> android.R.id.copy // C
+                0x2F -> android.R.id.paste // V
+                0x2D -> android.R.id.cut // X
+                else -> return false
+            }
+            c.performContextMenuAction(id)
+            return true
+        }
+        val keyCode = when (code) {
+            0x0E -> KeyEvent.KEYCODE_DEL // Backspace
+            0x1C, 0xE01C -> KeyEvent.KEYCODE_ENTER
+            0x0F -> KeyEvent.KEYCODE_TAB
+            0xE053 -> KeyEvent.KEYCODE_FORWARD_DEL // Delete
+            0xE04B -> KeyEvent.KEYCODE_DPAD_LEFT
+            0xE04D -> KeyEvent.KEYCODE_DPAD_RIGHT
+            0xE048 -> KeyEvent.KEYCODE_DPAD_UP
+            0xE050 -> KeyEvent.KEYCODE_DPAD_DOWN
+            0xE047 -> KeyEvent.KEYCODE_MOVE_HOME
+            0xE04F -> KeyEvent.KEYCODE_MOVE_END
+            else -> return false
+        }
+        press(c, keyCode)
+        return true
     }
 
     private fun key(code: Int, pressed: Boolean) {
@@ -339,6 +420,9 @@ class ControlService : AccessibilityService(), InputListener {
             return
         }
         if (!pressed) return
+        // Keep order: what was typed before this key goes in first.
+        flushTyped()
+        if (keyViaInputMethod(code)) return
         val n = focused()
         when {
             ctrl && code == 0x1E -> n?.let { // Ctrl+A

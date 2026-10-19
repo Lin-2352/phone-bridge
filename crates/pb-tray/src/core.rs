@@ -340,7 +340,7 @@ pub async fn run(
                         if !h.is_finished() {
                             h.abort();
                             log.line("CONTROL request cancelled");
-                            ui(UiEvent::Info("Control request cancelled".into()));
+                            ui(UiEvent::Info("You cancelled the control request".into()));
                             continue;
                         }
                     }
@@ -351,7 +351,7 @@ pub async fn run(
                         continue;
                     };
                     ui(UiEvent::Info(format!(
-                        "Asking {name}\u{2026} Press Ctrl+Alt+P again to cancel"
+                        "Asking {name}\u{2026} Ctrl+Alt+P cancels"
                     )));
                     let task = tokio::spawn(async move {
                         match node.open_input(&id).await {
@@ -363,12 +363,12 @@ pub async fn run(
                                 log.line(&format!("CONTROL phone \"{name}\" refused: {e}"));
                                 let why = match e {
                                     pb_transport::Error::Declined => format!(
-                                        "{name} did not allow control. On the phone, allow it in Phone Bridge, or turn on \u{201c}Phone Bridge control\u{201d} in Accessibility settings."
+                                        "{name} declined your request to control it"
                                     ),
                                     pb_transport::Error::Timeout => {
-                                        format!("{name} did not answer. Is Phone Bridge on and on the same network?")
+                                        format!("{name} didn't answer your control request")
                                     }
-                                    _ => format!("Could not reach {name}: {e}"),
+                                    _ => format!("Couldn't reach {name} to control it"),
                                 };
                                 ui(UiEvent::Info(why));
                             }

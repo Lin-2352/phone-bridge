@@ -205,6 +205,18 @@ Tool: `tools/pb-bench` (QUIC bulk with transport knobs, plus raw paced UDP), wit
 
 **Memory:** the realme rebooted again at 23:41 (hang watchdog, swap 91%) while UI automation (uiautomator dumps, screenshots, log streams) ran on it, with PayZapp crash-looping since boot. On-device checks are now kept light while memory is tight.
 
+## Phase 3.10 (2026-10-20): what really froze the realme
+- **Cause, measured A/B:** Android Studio's device mirroring ("Running Devices") of the realme, plus its Logcat streaming.
+  - Mirroring on: kernel CPU 41-62%, kswapd 73-93%, swap 25k in / 33k out pages/s, 26k major faults/s, free memory down to 0.77 GB. That is the same signature as the four hangs and reboots (hang-watchdog panics).
+  - Studio quit: kernel 7%, swap 62/24 pages/s, free memory 3.0-3.3 GB within seconds.
+  - The mirror agent (166 MB) and the MediaTek video encoder push this memory-tight phone into a swap storm. Unplugging USB ended it, which is why the phone calmed down at once.
+- **Phone Bridge was not running during the last hang** and was not a factor. PayZapp's crash loop (killed by its tamper check while USB debugging is on) added load earlier; it has been uninstalled.
+- **Rule:** no Studio mirroring or Logcat on the realme during device tests; keep test tooling light (verify skill notes, project memory).
+- **Keyboard (PC → phone):** typing now goes through the accessibility input method (Android 13+): text is committed at the cursor and keys are real key events. It replaces whole-field rewrites from a stale snapshot, which jumbled text and took WhatsApp's "Message" placeholder for text. Confirmed working on the realme.
+- **PC feedback:** answers to the user's own actions show in a status pill that Do Not Disturb cannot hide.
+  - Shell balloons were dropped and never reached the notification centre under Do Not Disturb.
+  - Next: real Windows notifications with an app identity, so the notification centre keeps a history.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
