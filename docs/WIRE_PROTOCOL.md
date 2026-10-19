@@ -60,6 +60,36 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 
 Further messages (camera session) are added with their features.
 
+### Phone notifications
+Control messages, tags 10 to 16 of the `Control` envelope:
+
+| Message | Direction | Content |
+|---|---|---|
+| `Notification` (10) | phone → PC | key, package, app name, title, text, time (Unix ms), conversation, up to 5 lines, flags (quiet, private, call), one-time code, actions (label, takes a reply), icon hash, picture (JPEG) |
+| `NotifyIcon` (11) | phone → PC | SHA-256 and PNG of an app icon; sent once per session before the first notification that uses it |
+| `NotifyRemoved` (12) | phone → PC | key |
+| `NotifySync` (13) | phone → PC | every key active on the phone; the PC removes toasts for the others |
+| `NotifySyncRequest` (14) | PC → phone | none |
+| `NotifyAction` (15) | PC → phone | id, key, kind (dismiss, button, reply, open, silence), index, text |
+| `NotifyActionResult` (16) | phone → PC | id, ok, reason |
+
+**Sessions:**
+- **Notify session** (phone → PC):
+  1. The phone opens a session when it has something to send.
+  2. `NotifySync`, then quiet re-sends of notifications that failed to reach this PC earlier (at most 50).
+  3. Live `NotifyIcon` / `Notification` / `NotifyRemoved`.
+  4. The phone finishes the session after 15 s with nothing to send.
+  
+  Several updates of one key waiting in the queue are sent as the last one only.
+- **Tray start** (PC → phone): `NotifySyncRequest`. The phone answers on the same session with quiet copies of up to 50 active notifications (newest first, no pictures), then `NotifySync`, then finishes.
+- **Action** (PC → phone): `NotifyAction`, answered by `NotifyActionResult` with the same id (the PC waits up to 10 s).
+
+**Limits:**
+- Strings: key 256 B, title 512 B, text 4096 B, 5 lines of 512 B each, reply text 4096 B. They are truncated on a character boundary.
+- Picture 48 KiB; icon 16 KiB; `NotifySync` 200 keys.
+- The PC closes a session carrying more than 50 notify records per second. The phone closes one carrying more than 10 actions per second.
+- Older peers ignore the unknown messages.
+
 ## Input datagram (fixed 8 bytes, little-endian)
 ```
 offset 0  kind   u8    0 MouseMove, 1 MouseButton, 2 Wheel, 3 Key

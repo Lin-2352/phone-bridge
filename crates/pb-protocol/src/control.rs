@@ -12,7 +12,10 @@ pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 /// Envelope for every message on a session control stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Control {
-    #[prost(oneof = "ControlMsg", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(
+        oneof = "ControlMsg",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
+    )]
     pub msg: Option<ControlMsg>,
 }
 
@@ -41,6 +44,158 @@ pub enum ControlMsg {
     /// that stream ends.
     #[prost(message, tag = "9")]
     InputStart(InputStart),
+    /// Phone -> PC: a notification was posted or updated on the phone.
+    #[prost(message, tag = "10")]
+    Notification(Notification),
+    /// Phone -> PC: an app icon, sent once per session before the first
+    /// notification that names its hash.
+    #[prost(message, tag = "11")]
+    NotifyIcon(NotifyIcon),
+    /// Phone -> PC: the notification is gone on the phone.
+    #[prost(message, tag = "12")]
+    NotifyRemoved(NotifyRemoved),
+    /// Phone -> PC: every key active on the phone; the PC removes the rest.
+    /// First message of every notify session.
+    #[prost(message, tag = "13")]
+    NotifySync(NotifySync),
+    /// PC -> phone, once at tray start: answer with quiet copies of what is
+    /// active, then `NotifySync`.
+    #[prost(message, tag = "14")]
+    NotifySyncRequest(NotifySyncRequest),
+    /// PC -> phone: act on a notification; answered by `NotifyActionResult`.
+    #[prost(message, tag = "15")]
+    NotifyAction(NotifyAction),
+    #[prost(message, tag = "16")]
+    NotifyActionResult(NotifyActionResult),
+}
+
+/// Limits for notification messages; the sender trims to them so a whole
+/// notification always fits one control frame.
+pub const MAX_NOTIFY_KEY: usize = 256;
+pub const MAX_NOTIFY_TITLE: usize = 512;
+pub const MAX_NOTIFY_TEXT: usize = 4096;
+pub const MAX_NOTIFY_LINES: usize = 5;
+pub const MAX_NOTIFY_LINE: usize = 512;
+pub const MAX_NOTIFY_PICTURE: usize = 48 * 1024;
+pub const MAX_NOTIFY_ICON: usize = 16 * 1024;
+pub const MAX_NOTIFY_SYNC_KEYS: usize = 200;
+pub const MAX_REPLY_TEXT: usize = 4096;
+
+/// A phone notification as the PC shows it.
+#[derive(Clone, PartialEq, Message)]
+pub struct Notification {
+    /// The phone's stable key for this notification.
+    #[prost(string, tag = "1")]
+    pub key: String,
+    #[prost(string, tag = "2")]
+    pub package: String,
+    #[prost(string, tag = "3")]
+    pub app_name: String,
+    /// Sender or title.
+    #[prost(string, tag = "4")]
+    pub title: String,
+    #[prost(string, tag = "5")]
+    pub text: String,
+    /// When it was posted on the phone (Unix milliseconds).
+    #[prost(int64, tag = "6")]
+    pub when_ms: i64,
+    /// Messages from one chat share this; the PC keeps one toast per chat.
+    #[prost(string, tag = "7")]
+    pub conversation: String,
+    /// Latest messages of the conversation ("sender: text"), oldest first.
+    #[prost(string, repeated, tag = "8")]
+    pub lines: Vec<String>,
+    /// Silent on the phone, arrived during its Do Not Disturb, or a re-send.
+    #[prost(bool, tag = "9")]
+    pub quiet: bool,
+    /// The app hides it on the lock screen; only its public version is sent.
+    #[prost(bool, tag = "10")]
+    pub private: bool,
+    #[prost(bool, tag = "11")]
+    pub call: bool,
+    /// A one-time code found in the text, else empty.
+    #[prost(string, tag = "12")]
+    pub otp: String,
+    #[prost(message, repeated, tag = "13")]
+    pub actions: Vec<NotifyActionDesc>,
+    /// SHA-256 of the app icon PNG (see `NotifyIcon`), or empty.
+    #[prost(bytes = "vec", tag = "14")]
+    pub icon_hash: Vec<u8>,
+    /// Avatar or photo preview: JPEG, at most `MAX_NOTIFY_PICTURE`.
+    #[prost(bytes = "vec", tag = "15")]
+    pub picture: Vec<u8>,
+}
+
+/// A button the app offers on its notification.
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifyActionDesc {
+    #[prost(string, tag = "1")]
+    pub label: String,
+    /// Takes typed text (an inline reply).
+    #[prost(bool, tag = "2")]
+    pub reply: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifyIcon {
+    #[prost(bytes = "vec", tag = "1")]
+    pub hash: Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub png: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifyRemoved {
+    #[prost(string, tag = "1")]
+    pub key: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifySync {
+    #[prost(string, repeated, tag = "1")]
+    pub keys: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifySyncRequest {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+#[repr(i32)]
+pub enum NotifyActionKind {
+    Dismiss = 0,
+    /// The app's button at `index`.
+    Button = 1,
+    /// Send `text` through the reply button at `index`.
+    Reply = 2,
+    /// Open the notification on the phone.
+    Open = 3,
+    /// Silence the ringing phone without declining the call.
+    Silence = 4,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifyAction {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(string, tag = "2")]
+    pub key: String,
+    #[prost(enumeration = "NotifyActionKind", tag = "3")]
+    pub kind: i32,
+    #[prost(uint32, tag = "4")]
+    pub index: u32,
+    #[prost(string, tag = "5")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct NotifyActionResult {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(bool, tag = "2")]
+    pub ok: bool,
+    /// Why it failed, for the user ("That notification was cleared on the phone").
+    #[prost(string, tag = "3")]
+    pub reason: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -323,12 +478,82 @@ mod tests {
                 hash: vec![1; 32],
                 sensitive: true,
             }),
+            ControlMsg::Notification(sample_notification()),
+            ControlMsg::NotifyIcon(NotifyIcon {
+                hash: vec![3; 32],
+                png: vec![1, 2, 3],
+            }),
+            ControlMsg::NotifyRemoved(NotifyRemoved { key: "k1".into() }),
+            ControlMsg::NotifySync(NotifySync {
+                keys: vec!["k1".into(), "k2".into()],
+            }),
+            ControlMsg::NotifySyncRequest(NotifySyncRequest {}),
+            ControlMsg::NotifyAction(NotifyAction {
+                id: 4,
+                key: "k1".into(),
+                kind: NotifyActionKind::Reply as i32,
+                index: 1,
+                text: "on my way".into(),
+            }),
+            ControlMsg::NotifyActionResult(NotifyActionResult {
+                id: 4,
+                ok: false,
+                reason: "gone".into(),
+            }),
         ];
         for m in msgs {
             let bytes = encode_frame(&Control::from(m.clone())).unwrap();
             let (got, _): (Control, usize) = decode_frame(&bytes).unwrap().unwrap();
             assert_eq!(got.msg, Some(m));
         }
+    }
+
+    fn sample_notification() -> Notification {
+        Notification {
+            key: "0|com.whatsapp|1|null|10123".into(),
+            package: "com.whatsapp".into(),
+            app_name: "WhatsApp".into(),
+            title: "Mom".into(),
+            text: "Dinner at 8?".into(),
+            when_ms: 1_792_000_000_000,
+            conversation: "Mom".into(),
+            lines: vec!["Mom: Dinner at 8?".into()],
+            quiet: true,
+            private: false,
+            call: false,
+            otp: String::new(),
+            actions: vec![NotifyActionDesc {
+                label: "Reply".into(),
+                reply: true,
+            }],
+            icon_hash: vec![3; 32],
+            picture: vec![9; 10],
+        }
+    }
+
+    #[test]
+    fn notification_with_max_picture_fits_one_frame() {
+        let n = Notification {
+            key: "k".repeat(MAX_NOTIFY_KEY),
+            package: "p".repeat(MAX_NOTIFY_TITLE),
+            app_name: "a".repeat(MAX_NOTIFY_TITLE),
+            title: "t".repeat(MAX_NOTIFY_TITLE),
+            text: "x".repeat(MAX_NOTIFY_TEXT),
+            conversation: "c".repeat(MAX_NOTIFY_TITLE),
+            lines: vec!["l".repeat(MAX_NOTIFY_LINE); MAX_NOTIFY_LINES],
+            otp: "12345678".into(),
+            actions: (0..5)
+                .map(|_| NotifyActionDesc {
+                    label: "b".repeat(64),
+                    reply: false,
+                })
+                .collect(),
+            picture: vec![0xAB; MAX_NOTIFY_PICTURE],
+            ..sample_notification()
+        };
+        let bytes = encode_frame(&Control::from(ControlMsg::Notification(n.clone()))).unwrap();
+        let (got, _): (Control, usize) = decode_frame(&bytes).unwrap().unwrap();
+        assert_eq!(got.msg, Some(ControlMsg::Notification(n)));
     }
 
     #[test]
