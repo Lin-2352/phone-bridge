@@ -120,6 +120,25 @@ Real phone (RMX3561, Compose app 0.0.2) and Windows tray over the USB-tether lin
 - Transfers under that pressure: 300 MB PC->phone in the background at 7.3 MB/s and 2 x 100 MB phone->PC, all MD5 OK; 0 thrashing reports during the transfers, 0 Phone Bridge kills, no freeze or reboot (phone up 3 h).
 - Next: speed is bound by the 2.4 GHz hotspot double hop (~9 MB/s); Wi-Fi Direct + BLE presence (both devices support it) proposed as a feasibility spike.
 
+## Phase 3.7 (2026-10-19): transfer speed, measured and tuned
+Tool: `tools/pb-bench` (QUIC bulk with transport knobs, plus raw paced UDP), with the phone side cross-built and run from `/data/local/tmp` over adb. The phone listens and the PC connects out, so no firewall change is needed. Path: phone and PC both on a third phone's hotspot (Xiaomi 11 Lite NE), 5 GHz channel 36, 80 MHz; phone link 720-1201 Mbps, PC link 600-1201 Mbps; every byte crosses the air twice.
+- **Ceilings without any congestion control:** raw UDP phone -> PC about 220-310 Mbit/s (28-39 MB/s); PC -> phone limited by the PC's Wi-Fi send queue at about 165-215 Mbit/s (20-27 MB/s). Plain TCP: 14-16 MB/s PC -> phone, 19-20 MB/s phone -> PC.
+- **Sweep (medians of 3 runs, MB/s up / down):**
+  - default 16.4 / 14.8
+  - **4 MiB stream window 21.9 / 23.5**
+  - 8 MiB 19.8 / 22.1; 16 MiB 21.3 / 21.6 (more queueing and loss)
+  - BBRv3 1.6 / 5.0 (broken in noq 1.3 here)
+  - GSO on the phone (down only) 19.9
+  - MTU 1472 14.1 / 15.4 (no gain)
+  - 2 streams 21.3 / 20.6; 4 streams 19.7 / 22.4 (same effect as the window)
+  - EcoQoS on the PC 18.3 / 16.3 (no effect)
+  - 4 MiB + phone GSO 20.6-22.5 / 27-33.5
+- **Cause:** one file is one QUIC stream, and the library's per-stream receive window (1.25 MB) bounds it to window / RTT. Round trips under load on this path are 40-110 ms. STREAM_DATA_BLOCKED frames are not emitted by noq, so the evidence is the window sweep itself.
+- **Adopted:** `Tuning::default().stream_window` = 4 MiB (`crates/pb-transport/src/tuning.rs`). The real apps on the same path: PC -> phone 300 MB at **21.5 MB/s** (was 16.1), phone -> PC 2 x 100 MB at **32.9 / 36.8 MB/s** (was 17.5), MD5 OK, no crash. Phone -> PC is now at the path's UDP ceiling, and PC -> phone at the PC's send ceiling.
+- **Not adopted yet:** GSO on Android (+~30% on the phone's sending side in the bench) until it is re-tested on USB tethering with iroh 1.3 (finding 1 was recorded on an earlier version). Rejected: BBRv3, larger windows, a larger MTU, parallel streams.
+- **Hardware notes (Intel AX211):** one 2x2 radio, so one channel at a time; no Soft AP (Mobile Hotspot is a Wi-Fi Direct GO, 5 GHz capable); a single GO port, so the Wi-Fi Direct spike and Mobile Hotspot cannot run together; no TDLS, so two clients of the same router cannot link directly.
+- **Next:** the direct path (PC Mobile Hotspot, one hop) to lift the PC -> phone ceiling.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

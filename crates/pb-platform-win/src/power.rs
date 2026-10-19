@@ -11,6 +11,32 @@ use windows::Win32::System::Threading::{
     THREAD_PRIORITY_ABOVE_NORMAL,
 };
 
+/// CPU time this process has used (user + kernel), in seconds.
+pub fn process_cpu_seconds() -> f64 {
+    use windows::Win32::{Foundation::FILETIME, System::Threading::GetProcessTimes};
+    let (mut created, mut exited, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    // SAFETY: pseudo-handle and valid out-pointers.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok.is_err() {
+        return 0.0;
+    }
+    let ticks = |f: FILETIME| (u64::from(f.dwHighDateTime) << 32) | u64::from(f.dwLowDateTime);
+    (ticks(kernel) + ticks(user)) as f64 / 1e7
+}
+
 /// Exempt the calling thread from EcoQoS and raise its priority: for the
 /// input hook thread, which every key and mouse move on the PC waits for.
 pub fn make_thread_responsive() -> windows::core::Result<()> {

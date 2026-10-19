@@ -12,6 +12,7 @@ members = [
     "spikes/ffi-smoke",
     "spikes/wifidirect-win",
     "tools/uniffi-bindgen",
+    "tools/pb-bench",
 ]
 
 [workspace.package]

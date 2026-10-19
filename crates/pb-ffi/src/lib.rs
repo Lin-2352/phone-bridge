@@ -226,6 +226,7 @@ pub async fn start_node(
         device_name,
         port: (port != 0).then_some(port),
         discovery_port: Some(pb_transport::discovery::DISCOVERY_PORT),
+        tuning: Default::default(),
     };
     // Anything still in incoming/ was left by a process the system killed
     // mid-transfer or mid-save; it would otherwise use storage forever.

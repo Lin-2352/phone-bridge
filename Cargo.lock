@@ -2318,6 +2318,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pb-bench"
+version = "0.0.1"
+dependencies = [
+ "getrandom 0.3.4",
+ "iroh",
+ "pb-platform-win",
+ "pb-transport",
+ "socket2",
+ "tokio",
+]
+
+[[package]]
 name = "pb-cli"
 version = "0.0.1"
 dependencies = [
@@ -2374,6 +2386,7 @@ dependencies = [
  "fs4",
  "getrandom 0.3.4",
  "iroh",
+ "noq-proto",
  "pb-identity",
  "pb-protocol",
  "prost",

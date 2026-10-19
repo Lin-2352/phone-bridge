@@ -16,6 +16,7 @@ async fn node(seed: u8, name: &str) -> (Node, NodeEvents, SharedStore) {
             device_name: name.into(),
             port: None,
             discovery_port: None,
+            tuning: Default::default(),
         },
     )
     .await
@@ -614,6 +615,7 @@ mod rediscovery {
                 device_name: "PC".into(),
                 port: None,
                 discovery_port: Some(probe_port),
+                tuning: Default::default(),
             },
         )
         .await

@@ -12,4 +12,4 @@ publish = false
 workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Devices_WiFiDirect", "Foundation", "Security_Credentials"] }
+windows = { version = "0.62", features = ["Devices_WiFiDirect", "Devices_Enumeration", "Foundation", "Security_Credentials"] }

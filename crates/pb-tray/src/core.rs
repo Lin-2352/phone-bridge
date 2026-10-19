@@ -193,6 +193,7 @@ pub async fn run(
             device_name: opts.name.clone(),
             port: Some(opts.port),
             discovery_port: Some(pb_transport::discovery::DISCOVERY_PORT),
+            tuning: Default::default(),
         },
     )
     .await?;

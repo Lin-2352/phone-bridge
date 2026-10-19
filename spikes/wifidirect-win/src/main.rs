@@ -3,6 +3,11 @@
 //! Wi-Fi connection. Used to measure what a direct phone <-> PC link gives on
 //! real hardware before building the feature. Runs until Enter (or exit);
 //! the group disappears with the process.
+//!
+//!   wifidirect-win [--ssid DIRECT-PB-test] [--pass phonebridge]
+//!
+//! Without options the name and passphrase are random. Fixed ones are for
+//! testing only (easy to type on the phone).
 
 #[cfg(not(windows))]
 fn main() {
@@ -20,7 +25,8 @@ fn main() -> windows::core::Result<()> {
         core::HSTRING,
         Devices::WiFiDirect::{
             WiFiDirectAdvertisementListenStateDiscoverability, WiFiDirectAdvertisementPublisher,
-            WiFiDirectAdvertisementPublisherStatusChangedEventArgs,
+            WiFiDirectAdvertisementPublisherStatusChangedEventArgs, WiFiDirectConnectionListener,
+            WiFiDirectConnectionRequestedEventArgs, WiFiDirectDevice,
         },
         Foundation::TypedEventHandler,
         Security::Credentials::PasswordCredential,
@@ -34,8 +40,18 @@ fn main() -> windows::core::Result<()> {
             .map(|_| alphabet[(rand() % alphabet.len() as u64) as usize] as char)
             .collect()
     };
-    let ssid = format!("DIRECT-PB-{}", word(4));
-    let pass = word(12);
+    let args: Vec<String> = std::env::args().collect();
+    let opt = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let ssid = opt("--ssid").unwrap_or_else(|| format!("DIRECT-PB-{}", word(4)));
+    let pass = opt("--pass").unwrap_or_else(|| word(12));
+    if pass.len() < 8 {
+        eprintln!("--pass needs at least 8 characters (WPA2)");
+        std::process::exit(2);
+    }
 
     let publisher = WiFiDirectAdvertisementPublisher::new()?;
     let adv = publisher.Advertisement()?;
@@ -61,6 +77,33 @@ fn main() -> windows::core::Result<()> {
         Ok(())
     }))?;
 
+    // Like Microsoft's legacy-AP sample: a connection listener registered
+    // before Start, accepting what asks (Wi-Fi Direct peers; legacy clients
+    // join with the passphrase). Accepted devices are kept alive here.
+    let accepted: std::sync::Arc<std::sync::Mutex<Vec<WiFiDirectDevice>>> = Default::default();
+    let listener = WiFiDirectConnectionListener::new()?;
+    let keep = accepted.clone();
+    listener.ConnectionRequested(&TypedEventHandler::<
+        WiFiDirectConnectionListener,
+        WiFiDirectConnectionRequestedEventArgs,
+    >::new(move |_, args| {
+        if let Some(a) = args.as_ref() {
+            let req = a.GetConnectionRequest()?;
+            let id = req.DeviceInformation()?.Id()?;
+            println!("REQUEST from {id}");
+            match WiFiDirectDevice::FromIdAsync(&id).and_then(|op| op.join()) {
+                Ok(dev) => {
+                    println!("ACCEPTED {id}");
+                    if let Ok(mut k) = keep.lock() {
+                        k.push(dev);
+                    }
+                }
+                Err(e) => println!("ACCEPT failed: {e}"),
+            }
+        }
+        Ok(())
+    }))?;
+
     publisher.Start()?;
     println!("SSID {ssid}");
     println!("PASSWORD {pass}");
@@ -74,6 +117,7 @@ fn main() -> windows::core::Result<()> {
         }
     }
     publisher.Stop()?;
+    drop(listener);
     println!("stopped");
     Ok(())
 }

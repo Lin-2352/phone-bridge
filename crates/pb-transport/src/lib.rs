@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod files;
 pub mod input;
 pub mod pairing;
+pub mod tuning;
 
 use std::{
     fmt,
@@ -18,7 +19,7 @@ use std::{
 };
 
 use iroh::{
-    endpoint::{presets, Connection, ConnectionError, QuicTransportConfig, RecvStream, SendStream},
+    endpoint::{presets, Connection, ConnectionError, RecvStream, SendStream},
     Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr,
 };
 use pairing::{HostPairing, JoinPairing, PairError, Ticket};
@@ -108,6 +109,8 @@ pub struct NodeConfig {
     /// UDP port for finding paired devices again after a network change
     /// (`discovery::DISCOVERY_PORT` in the apps); `None` disables it.
     pub discovery_port: Option<u16>,
+    /// QUIC transport settings; the default is what the apps use.
+    pub tuning: tuning::Tuning,
 }
 
 /// A pairing request waiting for the local user's decision.
@@ -206,10 +209,7 @@ impl Node {
         store: SharedStore,
         config: NodeConfig,
     ) -> Result<(Self, NodeEvents), Error> {
-        let transport = QuicTransportConfig::builder()
-            .enable_segmentation_offload(!cfg!(target_os = "android"))
-            .keep_alive_interval(HEARTBEAT)
-            .build();
+        let transport = config.tuning.transport_config();
         let mut builder = Endpoint::builder(presets::Minimal)
             .secret_key(SecretKey::from_bytes(&identity.seed()))
             .alpns(vec![SESSION_ALPN.to_vec(), PAIR_ALPN.to_vec()])
