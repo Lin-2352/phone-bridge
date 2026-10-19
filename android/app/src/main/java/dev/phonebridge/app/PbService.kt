@@ -45,6 +45,8 @@ private const val ONGOING_ID = 1
 private const val CH_PROGRESS = "progress"
 private const val PROGRESS_IN_ID = 2
 private const val PROGRESS_OUT_ID = 3
+private const val CH_CONTROL = "control"
+const val CONTROL_ASK_ID = 4
 
 /** One line in the Home screen's Recent list. */
 data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
@@ -67,6 +69,19 @@ object Bridge {
     /** Pairing code check in progress (survives screen rotation). */
     val sas = mutableStateOf<String?>(null)
     val pairMessage = mutableStateOf<String?>(null)
+    /** Name of the PC controlling this phone right now, or null. */
+    val controlledBy = mutableStateOf<String?>(null)
+    /** Mirrors [Prefs.allowControl] for the UI. */
+    val allowControl = mutableStateOf(false)
+
+    /** Allow PC control without asking, or ask each time; off also ends a running session. */
+    fun setAllowControl(ctx: Context, on: Boolean) {
+        Prefs(ctx).allowControl = on
+        allowControl.value = on
+        node?.setAllowControl(on)
+        if (!on) node?.stopControl()
+    }
+
     /** The previous node's shutdown; a new node waits for it so the ports are free. */
     @Volatile var stopping: kotlinx.coroutines.Job? = null
 
@@ -161,6 +176,7 @@ class PbService : Service() {
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(CH_PROGRESS, "Transfer progress", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CH_CONTROL, "Control requests", NotificationManager.IMPORTANCE_HIGH))
         try {
             startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } catch (t: Throwable) {
@@ -259,6 +275,8 @@ class PbService : Service() {
             val prefs = Prefs(this)
             n.setClipboardSync(prefs.clipboardSync)
             n.setAutoAccept(prefs.autoAccept)
+            n.setAllowControl(prefs.allowControl)
+            Bridge.allowControl.value = prefs.allowControl
             ControlService.instance?.let { n.setInputListener(it) }
             // Published under the same lock onDestroy takes, so a stop racing
             // this start either sees the node or makes us drop it.
@@ -286,7 +304,7 @@ class PbService : Service() {
         // Late events from a node that is shutting down: no progress bar or
         // offer that nothing can update or answer any more. A file that
         // already arrived is still saved.
-        if (destroyed && (e is PbEvent.TransferProgress || e is PbEvent.IncomingOffer)) return
+        if (destroyed && (e is PbEvent.TransferProgress || e is PbEvent.IncomingOffer || e is PbEvent.ControlRequest)) return
         when (e) {
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
@@ -306,6 +324,7 @@ class PbService : Service() {
                 Bridge.addRecent(RecentItem(e.text.take(80), if (e.isLink) "Link from ${e.peerName}" else "Text from ${e.peerName}", if (e.isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
             }
             is PbEvent.IncomingOffer -> notifyOffer(e)
+            is PbEvent.ControlRequest -> askControl(e)
             is PbEvent.TransferFailed -> {
                 cancelProgress(true)
                 notifySimple("Transfer from ${e.peerName} failed", e.reason)
@@ -462,6 +481,38 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(id, n)
     }
 
+    /**
+     * The PC asks to control this phone and "Let my PC control this phone" is
+     * off: show the question (the app's accessibility service lets it open a
+     * window from the background) and a notification as the fallback. The
+     * request times out after 30 s on the Rust side.
+     */
+    private fun askControl(e: PbEvent.ControlRequest) {
+        fun answer(accept: Boolean) = PendingIntent.getBroadcast(
+            this, if (accept) 41 else 40,
+            Intent(this, OfferReceiver::class.java).putExtra("offer", e.id.toLong()).putExtra("accept", accept).putExtra("nid", CONTROL_ASK_ID),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val ask = Intent(this, ControlRequestActivity::class.java)
+            .putExtra("id", e.id.toLong())
+            .putExtra("peer", e.peerName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val n = Notification.Builder(this, CH_CONTROL)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle("${e.peerName} wants to control this phone")
+            .setContentText("Its mouse and keyboard would work here until you stop it")
+            .setContentIntent(PendingIntent.getActivity(this, 42, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+            .addAction(Notification.Action.Builder(null, "Deny", answer(false)).build())
+            .addAction(Notification.Action.Builder(null, "Allow", answer(true)).build())
+            .setCategory(Notification.CATEGORY_CALL)
+            .setTimeoutAfter(30_000)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(CONTROL_ASK_ID, n)
+        runCatching { startActivity(ask) }.onFailure { Log.i(TAG, "CONTROL ask window not allowed: $it") }
+        Log.i(TAG, "CONTROL request from ${e.peerName}")
+    }
+
     /** Quiet progress for a file on its way (one per direction). */
     private fun notifyProgress(e: PbEvent.TransferProgress) {
         val id = if (e.incoming) PROGRESS_IN_ID else PROGRESS_OUT_ID
@@ -503,9 +554,16 @@ class PbService : Service() {
     private fun statusNotification(): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val peer = Bridge.linked.value
+        val controller = Bridge.controlledBy.value
         return Notification.Builder(this, CH_STATUS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
-            .setContentTitle(if (peer != null) "Linked with $peer" else "Not paired yet")
+            .setContentTitle(
+                when {
+                    controller != null -> "$controller is controlling this phone"
+                    peer != null -> "Linked with $peer"
+                    else -> "Not paired yet"
+                },
+            )
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(open)

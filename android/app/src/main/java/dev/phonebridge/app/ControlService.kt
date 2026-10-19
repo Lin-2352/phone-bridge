@@ -11,10 +11,14 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.net.wifi.WifiManager
+import android.view.Choreographer
 import android.view.Gravity
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
 import uniffi.pb_ffi.InputListener
@@ -27,13 +31,27 @@ private const val TAG = "PhoneBridge"
  * paired PC can drive the phone: an on-screen cursor follows the PC mouse,
  * clicks become taps and swipes, the wheel scrolls, and typing goes into the
  * focused text field. Nothing happens unless the PC starts a session.
+ *
+ * Smooth pointer: the cursor lives in one full-screen overlay created for
+ * the session and moves by translation (render thread only, no window
+ * relayout), once per display frame (120 Hz on this phone), easing towards
+ * the true position so moves that arrive in bursts still look continuous.
+ * Taps always use the true position. A Wi-Fi lock is held during control so
+ * power save does not batch the pointer packets.
  */
 class ControlService : AccessibilityService(), InputListener {
     private val main = Handler(Looper.getMainLooper())
+    private var overlay: FrameLayout? = null
     private var cursor: ImageView? = null
-    private var params: WindowManager.LayoutParams? = null
+    /** True pointer position (taps go here) and the drawn one (eases towards it). */
     private var x = 0f
     private var y = 0f
+    private var shownX = 0f
+    private var shownY = 0f
+    private var frameQueued = false
+    private val frame = Choreographer.FrameCallback { onFrame() }
+    private var wifiLocks: List<WifiManager.WifiLock> = emptyList()
+    private val stats = MoveStats()
     private var w = 1080
     private var h = 2400
     private var pressX = 0f
@@ -63,6 +81,8 @@ class ControlService : AccessibilityService(), InputListener {
         if (instance === this) instance = null
         Bridge.node?.setInputListener(null)
         hideCursor()
+        holdWifi(false)
+        Bridge.controlledBy.value = null
         super.onDestroy()
     }
 
@@ -77,11 +97,17 @@ class ControlService : AccessibilityService(), InputListener {
                 x = w / 2f
                 y = h / 2f
                 showCursor()
+                holdWifi(true)
+                stats.reset()
+                Bridge.controlledBy.value = peerName
                 Toast.makeText(this, "$peerName is controlling this phone", Toast.LENGTH_SHORT).show()
             } else {
                 hideCursor()
+                holdWifi(false)
+                Bridge.controlledBy.value = null
                 Toast.makeText(this, "$peerName stopped controlling this phone", Toast.LENGTH_SHORT).show()
             }
+            PbService.refresh(this)
             Log.i(TAG, "CONTROL ${if (active) "started" else "ended"} by $peerName")
         }
     }
@@ -96,6 +122,7 @@ class ControlService : AccessibilityService(), InputListener {
             // Pointer moves arrive up to 1000/s; merge them and touch the
             // window manager at most once per main-loop turn.
             synchronized(moveLock) {
+                stats.arrived(SystemClock.uptimeMillis())
                 pendingDx += a
                 pendingDy += b
                 if (moveQueued) return
@@ -121,38 +148,84 @@ class ControlService : AccessibilityService(), InputListener {
     }
 
     private fun showCursor() {
-        if (cursor != null) return
+        if (overlay != null) return
         val size = (22 * resources.displayMetrics.density).toInt()
-        val v = ImageView(this).apply { setImageResource(R.drawable.ic_cursor) }
+        val c = ImageView(this).apply {
+            setImageResource(R.drawable.ic_cursor)
+            layoutParams = FrameLayout.LayoutParams(size, size)
+        }
+        val root = FrameLayout(this).apply { addView(c) }
         val p = WindowManager.LayoutParams(
-            size, size,
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            this.x = this@ControlService.x.toInt()
-            this.y = this@ControlService.y.toInt()
+            // Screen coordinates, including the cutout area, so the drawn
+            // cursor sits exactly where taps land.
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
-        getSystemService(WindowManager::class.java).addView(v, p)
-        cursor = v
-        params = p
+        getSystemService(WindowManager::class.java).addView(root, p)
+        overlay = root
+        cursor = c
+        shownX = x
+        shownY = y
+        c.translationX = x
+        c.translationY = y
     }
 
     private fun hideCursor() {
-        cursor?.let { runCatching { getSystemService(WindowManager::class.java).removeView(it) } }
+        if (frameQueued) Choreographer.getInstance().removeFrameCallback(frame)
+        frameQueued = false
+        overlay?.let { runCatching { getSystemService(WindowManager::class.java).removeView(it) } }
+        overlay = null
         cursor = null
-        params = null
     }
 
     private fun move(dx: Int, dy: Int) {
         x = (x + dx * 1.4f).coerceIn(0f, w - 1f)
         y = (y + dy * 1.4f).coerceIn(0f, h - 1f)
-        val p = params ?: return
-        p.x = x.toInt()
-        p.y = y.toInt()
-        cursor?.let { getSystemService(WindowManager::class.java).updateViewLayout(it, p) }
+        if (cursor != null && !frameQueued) {
+            frameQueued = true
+            Choreographer.getInstance().postFrameCallback(frame)
+        }
+    }
+
+    /** One display frame: ease the drawn cursor towards the true position. */
+    private fun onFrame() {
+        frameQueued = false
+        val c = cursor ?: return
+        val ex = x - shownX
+        val ey = y - shownY
+        // Most of the way each frame (about 2 frames to catch up at 120 Hz).
+        if (abs(ex) < 0.75f && abs(ey) < 0.75f) {
+            shownX = x
+            shownY = y
+        } else {
+            shownX += ex * 0.6f
+            shownY += ey * 0.6f
+        }
+        c.translationX = shownX
+        c.translationY = shownY
+        stats.frame(SystemClock.uptimeMillis())
+        if (shownX != x || shownY != y) {
+            frameQueued = true
+            Choreographer.getInstance().postFrameCallback(frame)
+        }
+    }
+
+    /** Keep Wi-Fi out of power save while controlled (pointer packets in time). */
+    private fun holdWifi(on: Boolean) {
+        wifiLocks.forEach { runCatching { if (it.isHeld) it.release() } }
+        wifiLocks = emptyList()
+        if (!on) return
+        val wm = applicationContext.getSystemService(WifiManager::class.java) ?: return
+        @Suppress("DEPRECATION")
+        wifiLocks = listOf(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, WifiManager.WIFI_MODE_FULL_HIGH_PERF).mapNotNull { mode ->
+            runCatching { wm.createWifiLock(mode, "PhoneBridge:control").apply { setReferenceCounted(false); acquire() } }.getOrNull()
+        }
     }
 
     private fun stroke(path: Path, duration: Long) {
@@ -304,6 +377,47 @@ class ControlService : AccessibilityService(), InputListener {
                 if (code == 0xE030) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
                 AudioManager.FLAG_SHOW_UI,
             )
+        }
+    }
+
+    /**
+     * Pointer timing during a session, logged every 2 s: move packets per
+     * second, gaps between them (p50 / p95 / max, ms) and frames drawn per
+     * second. Shows whether jank comes from the network or from drawing.
+     */
+    private class MoveStats {
+        private val gaps = IntArray(1024)
+        private var n = 0
+        private var last = 0L
+        private var frames = 0
+        private var since = 0L
+
+        @Synchronized fun reset() {
+            n = 0; last = 0L; frames = 0; since = SystemClock.uptimeMillis()
+        }
+
+        @Synchronized fun arrived(now: Long) {
+            if (last != 0L && n < gaps.size) gaps[n++] = (now - last).toInt()
+            last = now
+            report(now)
+        }
+
+        @Synchronized fun frame(now: Long) {
+            frames++
+            report(now)
+        }
+
+        private fun report(now: Long) {
+            val span = now - since
+            if (span < 2000) return
+            if (n > 0) {
+                val g = gaps.copyOf(n).sorted()
+                Log.i(
+                    TAG,
+                    "CONTROL timing moves/s=${n * 1000 / span} gap_ms p50=${g[n / 2]} p95=${g[(n * 95) / 100]} max=${g[n - 1]} frames/s=${frames * 1000 / span}",
+                )
+            }
+            n = 0; frames = 0; since = now
         }
     }
 

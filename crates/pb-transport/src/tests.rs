@@ -557,6 +557,45 @@ mod input {
     }
 
     #[tokio::test]
+    async fn the_receiver_can_end_a_running_control_session() {
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let (closer_tx, closer_rx) = tokio::sync::oneshot::channel();
+        let rx = tokio::spawn(async move {
+            let mut s = pc_ev.sessions.recv().await.unwrap();
+            loop {
+                if let Ok(Some(ControlMsg::InputStart(start))) = s.recv().await {
+                    let _ = closer_tx.send(s.closer());
+                    let mut got = 0usize;
+                    let r = receive_input(&mut s, start, true, |_| got += 1).await;
+                    return (r, got);
+                }
+            }
+        });
+        let input = phone.open_input(&pc.peer_id()).await.unwrap();
+        input.send(InputEvent::MouseMove { dx: 3, dy: 4 });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The user turns control off on the receiving device.
+        closer_rx.await.unwrap().close(b"stopped");
+        let (r, got) = tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .expect("receiver loop ends")
+            .unwrap();
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(got, 1);
+        // The controller notices within a moment.
+        let mut closed = false;
+        for _ in 0..50 {
+            if !input.is_open() {
+                closed = true;
+                break;
+            }
+            input.send(InputEvent::MouseMove { dx: 1, dy: 0 });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(closed, "the controller sees the session end");
+    }
+
+    #[tokio::test]
     async fn declined_input_reports_declined() {
         let (pc, mut pc_ev, phone, _) = paired().await;
         let rx = tokio::spawn(async move { receive(&mut pc_ev, false).await });

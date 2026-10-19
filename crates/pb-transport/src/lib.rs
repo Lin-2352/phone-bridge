@@ -800,6 +800,26 @@ impl Session {
     }
 }
 
+/// Ends a session from elsewhere, e.g. the user stops PC control while the
+/// input loop owns the [`Session`]. Weak: it does not keep the connection open.
+#[derive(Clone)]
+pub struct SessionCloser(iroh::endpoint::WeakConnectionHandle);
+
+impl SessionCloser {
+    pub fn close(&self, reason: &[u8]) {
+        if let Some(c) = self.0.upgrade() {
+            c.close(0u32.into(), reason);
+        }
+    }
+}
+
+impl Session {
+    /// A handle that can end this session from another task.
+    pub fn closer(&self) -> SessionCloser {
+        SessionCloser(self.conn.weak_handle())
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         self.heartbeat.abort();

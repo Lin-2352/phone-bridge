@@ -147,6 +147,20 @@ Tool: `tools/pb-bench` (QUIC bulk with transport knobs, plus raw paced UDP), wit
 - **Seen twice:** the first bench run after the phone had been dozing ran at 0.2 MB/s with round trips of 0.5-0.7 s for minutes, then recovered. Likely realme power saving with the screen off (Wi-Fi power save and CPU limits). To be measured with the screen off; the user turns it off.
 - **Next:** GSO on Android, re-tested on USB tethering; the screen-off transfer test; MediaStore copy overlap.
 
+## Phase 3.8 (2026-10-19): PC -> phone control, ask first, smooth cursor
+- **Ask-first control.** The phone's "Let my PC control this phone" switch (default off) decides how a request is handled. On: accepted at once. Off: a popup plus a high-priority notification (Allow / Always allow / Deny), and no answer within 30 s counts as Deny.
+  - The phone can end a session at any time: Stop on the main page, or turning the switch off. It closes the connection through a `SessionCloser`, and the PC returns its mouse and keyboard.
+  - The main page shows "<PC> is controlling this phone".
+- **Cursor.** Before, pointer moves were applied with one `WindowManager.updateViewLayout` per main-loop turn: a relayout through system_server, not tied to display frames. Now one full-screen, non-touchable accessibility overlay exists for the session, and the cursor moves by translation once per display frame (`Choreographer`), easing towards the true position (about 2 frames to catch up). Taps use the true position.
+  - A Wi-Fi lock (low latency + high performance) is held only during control, so power save cannot batch pointer packets.
+- **Tested on the AVD over loopback** (pairing via `Bridge.join`, a test controller from `pb control`): all paths pass — ask, deny, allow, always allow, switch on with no prompt, Stop, switch off mid-session, the 30 s timeout, and Wi-Fi locks held only while controlled.
+  - Timing: 175 moves/s arriving, gaps p50 6 ms / p95 7 ms; the cursor redrawn every display frame (57-59/s on the AVD's 60 Hz screen).
+  - The 120 Hz feel on the realme is still to be checked by the user.
+- **Phone freeze and reboot at 21:14.** realme hang-watchdog kernel panic again: kswapd at 97%, system_server with 310k major faults.
+  - Trigger: HDFC PayZapp crash-looping (247 crashes; its tamper check fails while USB debugging is on), plus heavy background apps. Phone Bridge was not involved (PSS about 12 MB).
+  - With PayZapp force-stopped, the next 10 minutes had 0 kills, 0 ANRs and 0 crashes.
+  - The phone-watch sampler (which forces a GC in every app) was stopped.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
         ThemeChoice.mode.intValue = prefs.theme
+        Bridge.allowControl.value = prefs.allowControl
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -192,6 +193,58 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * "Let my PC control this phone": on = the PC takes over without asking;
+     * off = each request asks on the phone, and turning it off during a
+     * session ends control. Shows who is in control, with a Stop button.
+     */
+    @Composable
+    private fun ControlFromPc(modifier: Modifier = Modifier) {
+        val serviceOn = remember(resumed.intValue) { ControlService.instance != null }
+        val allow = Bridge.allowControl.value
+        val controller = Bridge.controlledBy.value
+        Column(modifier.fillMaxWidth()) {
+            if (controller != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "$controller is controlling this phone",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = { Bridge.node?.stopControl() }) { Text("Stop") }
+                }
+            }
+            ListItem(
+                headlineContent = { Text("Let my PC control this phone") },
+                supportingContent = {
+                    Text(
+                        when {
+                            !serviceOn -> "Needs \u201cPhone Bridge control\u201d in Accessibility settings. Tap to turn it on"
+                            allow -> "On. Ctrl+Alt+P on your PC uses its mouse and keyboard here, and again to return"
+                            else -> "Off. When your PC asks, this phone asks you first"
+                        },
+                    )
+                },
+                trailingContent = {
+                    Switch(allow, { on ->
+                        Bridge.setAllowControl(this@MainActivity, on)
+                        if (on && !serviceOn) startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    })
+                },
+                modifier = Modifier.clickable(enabled = !serviceOn) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+            )
+        }
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun HomeScreen(onSettings: () -> Unit) {
@@ -232,6 +285,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                item { ControlFromPc(Modifier.padding(top = 8.dp)) }
                 if (!notificationsOn) {
                     item {
                         ListItem(
@@ -381,16 +435,12 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 item { Section("Control from PC") }
+                item { ControlFromPc() }
                 item {
                     val on = remember(resumed.intValue) { ControlService.instance != null }
                     ListItem(
-                        headlineContent = { Text("Let my PC control this phone") },
-                        supportingContent = {
-                            Text(
-                                if (on) "On. Press Ctrl+Alt+P on your PC to use its mouse and keyboard here, and again to return"
-                                else "Off. Turn on \u201cPhone Bridge control\u201d in Accessibility settings",
-                            )
-                        },
+                        headlineContent = { Text("Accessibility permission") },
+                        supportingContent = { Text("\u201cPhone Bridge control\u201d lets your PC tap and type here. Without it your PC cannot control this phone") },
                         trailingContent = { Text(if (on) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
                         modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     )

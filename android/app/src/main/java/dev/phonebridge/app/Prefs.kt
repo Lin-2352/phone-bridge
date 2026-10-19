@@ -27,6 +27,11 @@ class Prefs(context: Context) {
         get() = sp.getInt("last_clip", 0)
         set(v) = sp.edit().putInt("last_clip", v).apply()
 
+    /** PC control starts without asking. Off: each request asks on the phone. */
+    var allowControl: Boolean
+        get() = sp.getBoolean("allow_control", false)
+        set(v) = sp.edit().putBoolean("allow_control", v).apply()
+
     var autoAccept: Boolean
         get() = sp.getBoolean("auto_accept", true)
         set(v) = sp.edit().putBoolean("auto_accept", v).apply()

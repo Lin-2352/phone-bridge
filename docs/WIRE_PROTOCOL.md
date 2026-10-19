@@ -52,10 +52,11 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 `pb-tray --send <files>` / `--pair` / `--send-clipboard` reach the running tray over the named pipe `\\.\pipe\PhoneBridgeTray-<user>` (remote clients rejected; ACL: this user by SID and SYSTEM only). Lines: verb, then one path per line.
 
 ### Shared mouse and keyboard
-1. controller -> `InputStart { id }` (control tag 9); receiver -> `OfferReply { id, accept }`. The PC accepts only if "Let my phone control this PC" is on; the phone only while its accessibility service ("Phone Bridge control") is enabled.
+1. controller -> `InputStart { id }` (control tag 9); receiver -> `OfferReply { id, accept }`. The PC accepts only if "Let my phone control this PC" is on. The phone needs its accessibility service ("Phone Bridge control") enabled, and then accepts at once if "Let my PC control this phone" is on; otherwise it asks the user (popup plus notification) and declines after 30 s without an answer.
 2. Controller opens one unidirectional stream and writes a no-op move (0, 0) at once, so the stream exists for the receiver even if the user is idle (receivers wait 10 s for it); then fixed 8-byte records: `kind u8 | flags u8 | seq u16 | a i16 | b i16` (little-endian). Kinds: 0 move (dx, dy), 1 button (button, flags&1 = pressed), 2 wheel (dx, dy in 1/120 notches), 3 key (PC set-1 scan code, 0xE0xx extended), 4 character (one UTF-16 unit).
 3. Reliable and ordered (not datagrams): a lost key-up or click would be worse than any latency on a local link. Moves queued faster than the link drains are summed into one record. The sender paces itself to stay inside the receiver's limits (receiver: 1000 moves/s dropped beyond, 400 other events/s and 2000 records/s end the session): token buckets of 800 moves/s and 250 other events/s with bursts of 100, so excess moves merge and a long paste is typed out over a few seconds.
 4. The session ends when the stream ends; the receiver closes. Whatever is still pressed is released on the receiver.
+5. The receiver can end a session at any time (the user taps Stop or turns control off): it closes the connection, and the controller sees the session end and returns its mouse and keyboard to the PC.
 
 Further messages (camera session) are added with their features.
 

@@ -57,6 +57,7 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 - Unauthenticated LAN hosts could hold pairing connections open indefinitely: pairing ALPN refused unless a code is shown; handshake steps time-boxed (incoming QUIC handshake 5 s); at most 16 incoming connections in flight, and a paired peer's slot is released as soon as it is authenticated.
 - Unpairing only blocked new connections: a removed device kept any session it had open (control, transfer). Now `unpair` closes its live connections at once.
 - Discovery: a forged or stale candidate address no longer delays connects (candidates and saved addresses are dialled together) and is dropped after a failed dial; only the address the authenticated connection actually uses is saved. Dial-triggered probes at most every 30 s.
+- PC -> phone control needs the accessibility service, plus either "Let my PC control this phone" or an approval on the phone for each request (30 s, no answer = deny). The phone shows who is in control and can end it at once (Stop, or turning the switch off).
 - Android: allowBackup=false did not cover Android 12+ device-to-device transfer; data extraction rules now exclude everything.
 - Tray pipe used the default DACL (other local accounts could connect): now this user (by SID, so an elevated tray still admits the user's unelevated "Send to") + SYSTEM only.
 - Clipboard text no longer written to logs (tray.log, logcat).

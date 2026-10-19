@@ -103,6 +103,12 @@ pub enum PbEvent {
         peer_name: String,
         reason: String,
     },
+    /// A paired PC asks to control this phone and "allow control" is off:
+    /// ask the user, then answer with `PbNode::answer_offer(id, ..)`.
+    ControlRequest {
+        id: u64,
+        peer_name: String,
+    },
     /// A file transfer is under way (at most every 0.7 s, and once at the end).
     TransferProgress {
         peer_name: String,
@@ -177,6 +183,9 @@ pub trait InputListener: Send + Sync {
     fn on_control(&self, active: bool, peer_name: String) -> Result<(), PbError>;
 }
 
+/// How long a control request waits for the user on the phone.
+const CONTROL_ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn push(events: &Events, e: PbEvent) {
     // A failing listener must never take the node down.
     let _ = events.on_event(e);
@@ -199,6 +208,10 @@ struct Shared {
     pending: Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<bool>>>,
     last_remote_clip: Mutex<[u8; 32]>,
     input: Mutex<Option<Arc<dyn InputListener>>>,
+    /// Accept PC control without asking (otherwise each request asks).
+    allow_control: std::sync::atomic::AtomicBool,
+    /// Ends the running control session, if any.
+    control: Mutex<Option<pb_transport::SessionCloser>>,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -244,6 +257,8 @@ pub async fn start_node(
         pending: Mutex::default(),
         last_remote_clip: Mutex::new([0; 32]),
         input: Mutex::new(None),
+        allow_control: std::sync::atomic::AtomicBool::new(false),
+        control: Mutex::new(None),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -307,40 +322,67 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 }
             }
             Ok(Some(ControlMsg::InputStart(start))) => {
-                // Accept only while the accessibility service is running.
+                // Possible only while the accessibility service is running;
+                // then automatic if the user allows control, else ask.
                 let listener = sh.input.lock().ok().and_then(|g| g.clone());
+                let accept = match &listener {
+                    None => false,
+                    Some(_) if sh.allow_control.load(std::sync::atomic::Ordering::Relaxed) => true,
+                    Some(_) => {
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        sh.pending
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .insert(start.id, tx);
+                        push(
+                            &sh.events,
+                            PbEvent::ControlRequest {
+                                id: start.id,
+                                peer_name: name.clone(),
+                            },
+                        );
+                        let answer = tokio::time::timeout(CONTROL_ASK_TIMEOUT, rx)
+                            .await
+                            .ok()
+                            .and_then(|r| r.ok())
+                            .unwrap_or(false);
+                        sh.pending
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(&start.id);
+                        answer
+                    }
+                };
+                let listener = listener.filter(|_| accept);
                 if let Some(l) = &listener {
+                    *sh.control.lock().unwrap_or_else(|p| p.into_inner()) = Some(s.closer());
                     let _ = l.on_control(true, name.clone());
                 }
                 let l2 = listener.clone();
-                let _ = pb_transport::input::receive_input(
-                    &mut s,
-                    start,
-                    listener.is_some(),
-                    move |e| {
-                        use pb_protocol::InputEvent as E;
-                        let Some(l) = &l2 else { return };
-                        match e {
-                            E::MouseMove { dx, dy } => {
-                                let _ = l.on_input(0, dx.into(), dy.into(), false);
-                            }
-                            E::MouseButton { button, pressed } => {
-                                let _ = l.on_input(1, button.into(), 0, pressed);
-                            }
-                            E::Wheel { dx, dy } => {
-                                let _ = l.on_input(2, dx.into(), dy.into(), false);
-                            }
-                            E::Key { scancode, pressed } => {
-                                let _ = l.on_input(3, scancode.into(), 0, pressed);
-                            }
-                            E::Char { unit } => {
-                                let _ = l.on_input(4, unit.into(), 0, false);
-                            }
+                let _ = pb_transport::input::receive_input(&mut s, start, accept, move |e| {
+                    use pb_protocol::InputEvent as E;
+                    let Some(l) = &l2 else { return };
+                    match e {
+                        E::MouseMove { dx, dy } => {
+                            let _ = l.on_input(0, dx.into(), dy.into(), false);
                         }
-                    },
-                )
+                        E::MouseButton { button, pressed } => {
+                            let _ = l.on_input(1, button.into(), 0, pressed);
+                        }
+                        E::Wheel { dx, dy } => {
+                            let _ = l.on_input(2, dx.into(), dy.into(), false);
+                        }
+                        E::Key { scancode, pressed } => {
+                            let _ = l.on_input(3, scancode.into(), 0, pressed);
+                        }
+                        E::Char { unit } => {
+                            let _ = l.on_input(4, unit.into(), 0, false);
+                        }
+                    }
+                })
                 .await;
                 if let Some(l) = &listener {
+                    sh.control.lock().unwrap_or_else(|p| p.into_inner()).take();
                     let _ = l.on_control(false, name.clone());
                 }
                 break "input done".to_owned();
@@ -644,6 +686,26 @@ impl PbNode {
     pub fn set_input_listener(&self, listener: Option<Arc<dyn InputListener>>) {
         if let Ok(mut g) = self.shared.input.lock() {
             *g = listener;
+        }
+    }
+
+    /// Accept PC control requests without asking.
+    pub fn set_allow_control(&self, on: bool) {
+        self.shared
+            .allow_control
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// End the running PC control session now (the user turned control off).
+    pub fn stop_control(&self) {
+        if let Some(c) = self
+            .shared
+            .control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            c.close(b"stopped on the phone");
         }
     }
 

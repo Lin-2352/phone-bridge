@@ -197,6 +197,61 @@ async fn run(o: Opts) -> Res<()> {
             let peer = pending.decide(ok).await?;
             println!("PAIRED {} \"{}\" {}", peer.id, peer.name, peer.addrs.join(","));
         }
+        ["pair-host-with", extra] => {
+            // Test harness: also offer an address the joiner can reach (an
+            // emulator reaches the host at 10.0.2.2).
+            let mut addrs = node.addrs();
+            addrs.push((*extra).to_owned());
+            let code = node.open_pairing(addrs)?;
+            println!("CODE={code}");
+            let pending = tokio::time::timeout(pb_transport::pairing::PAIRING_TTL, ev.pairings.recv())
+                .await
+                .map_err(|_| "pairing code expired")?
+                .ok_or("node stopped")?;
+            let ok = confirm(&pending.sas, &pending.peer_name, o.auto_accept).await?;
+            let peer = pending.decide(ok).await?;
+            println!("PAIRED {} \"{}\"", peer.id, peer.name);
+        }
+        ["set-addr", prefix, addr] => {
+            // Test harness: where to reach a peer (e.g. an emulator port forward).
+            let mut p = find_peer(&store, Some(prefix))?;
+            p.addrs = vec![(*addr).to_owned()];
+            store.lock().map_err(|_| "store")?.pin(p.clone());
+            println!("ADDR {} {}", p.id, addr);
+        }
+        ["control", secs] => {
+            // Test harness: take control and draw circles like a 250 Hz mouse.
+            let secs: f64 = secs.parse()?;
+            let peer = find_peer(&store, o.to.as_deref())?;
+            let t0 = std::time::Instant::now();
+            let input = node.open_input(&peer.id).await?;
+            println!("CONTROL accepted after {:.1}s", t0.elapsed().as_secs_f64());
+            let start = std::time::Instant::now();
+            let (mut px, mut py) = (0i32, 0i32);
+            let mut sent = 0u64;
+            let mut ended = None;
+            while start.elapsed().as_secs_f64() < secs {
+                let t = start.elapsed().as_secs_f64();
+                let (x, y) = ((t * 3.0).cos() * 300.0, (t * 3.0).sin() * 300.0);
+                let (nx, ny) = (x as i32, y as i32);
+                if !input.send(pb_protocol::InputEvent::MouseMove {
+                    dx: (nx - px) as i16,
+                    dy: (ny - py) as i16,
+                }) || !input.is_open()
+                {
+                    ended = Some(t);
+                    break;
+                }
+                (px, py) = (nx, ny);
+                sent += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+            }
+            match ended {
+                Some(t) => println!("CONTROL ended by the phone after {t:.1}s ({sent} moves sent)"),
+                None => println!("CONTROL done ({sent} moves in {secs}s)"),
+            }
+            input.stop();
+        }
         ["join", code] => {
             let code: PairingCode = code.parse()?;
             let joining = node.join(&code).await?;
