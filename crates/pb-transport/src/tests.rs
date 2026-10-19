@@ -832,3 +832,269 @@ mod rediscovery {
         );
     }
 }
+
+mod notify {
+    use std::time::Duration;
+
+    use pb_protocol::control::{
+        Notification, NotifyAction, NotifyActionKind, NotifyActionResult, MAX_NOTIFY_LINES,
+        MAX_NOTIFY_TEXT,
+    };
+
+    use super::*;
+    use crate::notify::NotifyOutbox;
+
+    const LINGER: Duration = Duration::from_millis(300);
+
+    async fn paired() -> (Node, NodeEvents, SharedStore, Node, NodeEvents, SharedStore) {
+        let (pc, mut pc_ev, pc_store) = node(21, "PC").await;
+        let (phone, phone_ev, phone_store) = node(22, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        // The PC dials the phone on loopback (LAN addresses may be firewalled).
+        let mut p = lock(&pc_store).get(&phone.peer_id()).unwrap();
+        p.addrs = loopback(&phone);
+        lock(&pc_store).pin(p);
+        (pc, pc_ev, pc_store, phone, phone_ev, phone_store)
+    }
+
+    fn note(key: &str, text: &str) -> Notification {
+        Notification {
+            key: key.into(),
+            package: "com.example.chat".into(),
+            app_name: "Chat".into(),
+            title: "Mom".into(),
+            text: text.into(),
+            when_ms: 1_000,
+            ..Default::default()
+        }
+    }
+
+    /// PC side: everything the next incoming session carries.
+    async fn collect(ev: &mut NodeEvents) -> Vec<ControlMsg> {
+        let mut s = ev.sessions.recv().await.unwrap();
+        let mut got = Vec::new();
+        while let Ok(Some(m)) = s.recv().await {
+            got.push(m);
+        }
+        got
+    }
+
+    fn posted(msgs: &[ControlMsg]) -> Vec<&Notification> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                ControlMsg::Notification(n) => Some(n),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const PNG: [u8; 4] = [0x89, 0x50, 0x4E, 0x47];
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn notify_session_starts_with_sync_then_posts() {
+        let (_pc, mut pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        out.seed(vec![note("a", "old")]);
+        out.post(note("b", "new"), Some(PNG.to_vec()));
+        let got = collect(&mut pc_ev).await;
+        match &got[0] {
+            ControlMsg::NotifySync(s) => {
+                let mut keys = s.keys.clone();
+                keys.sort();
+                assert_eq!(keys, ["a", "b"]);
+            }
+            other => panic!("expected NotifySync first, got {other:?}"),
+        }
+        assert!(matches!(&got[1], ControlMsg::NotifyIcon(i) if i.png == PNG));
+        match &got[2] {
+            ControlMsg::Notification(n) => {
+                assert_eq!(n.key, "b");
+                assert_eq!(n.icon_hash.len(), 32);
+            }
+            other => panic!("expected the notification, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn outbox_coalesces_updates_to_one_key() {
+        let (_pc, mut pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        for i in 0..30 {
+            out.post(note("k", &format!("m{i}")), None);
+        }
+        let got = collect(&mut pc_ev).await;
+        let ks: Vec<_> = posted(&got).into_iter().filter(|n| n.key == "k").collect();
+        assert!(!ks.is_empty() && ks.len() <= 3, "got {} posts", ks.len());
+        assert_eq!(ks.last().unwrap().text, "m29");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn remove_before_send_cancels_the_post() {
+        let (_pc, mut pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        out.post(note("x", "gone soon"), None);
+        out.remove("x");
+        out.post(note("y", "stays"), None);
+        let got = collect(&mut pc_ev).await;
+        assert!(posted(&got).iter().all(|n| n.key != "x"));
+        assert!(got
+            .iter()
+            .all(|m| !matches!(m, ControlMsg::NotifySync(s) if s.keys.iter().any(|k| k == "x"))));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missed_posts_are_resent_quietly() {
+        let (pc, pc_ev, pc_store, phone, _, _) = paired().await;
+        // The PC is down at first.
+        let port = pc.port();
+        pc.shutdown().await;
+        drop((pc, pc_ev));
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        out.post(note("m", "while away"), None);
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while out.busy() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the failed delivery should end");
+        // Back on the same port with the same identity and pairings (the
+        // old socket may take a moment to be released).
+        let mut again = None;
+        for _ in 0..50 {
+            let bound = Node::bind(
+                &Identity::from_seed([21; 32]),
+                pc_store.clone(),
+                NodeConfig {
+                    device_name: "PC".into(),
+                    port: Some(port),
+                    discovery_port: None,
+                    tuning: Default::default(),
+                },
+            )
+            .await;
+            if let Ok(b) = bound {
+                again = Some(b);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let (_pc, mut pc_ev) = again.expect("the PC port should be free again");
+        out.post(note("n", "back"), None);
+        let got = collect(&mut pc_ev).await;
+        let p = posted(&got);
+        assert_eq!(p.len(), 2, "{got:?}");
+        assert!(p[0].key == "m" && p[0].quiet);
+        assert!(p[1].key == "n" && !p[1].quiet);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn oversized_notification_is_trimmed_to_fit_a_frame() {
+        let (_pc, mut pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        let mut n = note("big", &"😀".repeat(10_000));
+        n.picture = vec![7; 200 * 1024];
+        n.lines = (0..9).map(|i| format!("line {i}")).collect();
+        out.post(n, None);
+        let got = collect(&mut pc_ev).await;
+        let n = posted(&got)[0];
+        assert!(n.text.len() <= MAX_NOTIFY_TEXT);
+        assert!(n.picture.is_empty());
+        assert_eq!(n.lines.len(), MAX_NOTIFY_LINES);
+        assert_eq!(n.lines.last().unwrap(), "line 8");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sync_request_answers_with_quiet_snapshot() {
+        let (pc, _pc_ev, _, phone, mut phone_ev, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        out.seed(
+            (0..60)
+                .map(|i| Notification {
+                    when_ms: i,
+                    ..note(&format!("k{i}"), "x")
+                })
+                .collect(),
+        );
+        let answer = tokio::spawn(async move {
+            let mut s = phone_ev.sessions.recv().await.unwrap();
+            while let Ok(Some(m)) = s.recv().await {
+                if matches!(m, ControlMsg::NotifySyncRequest(_)) {
+                    out.answer_sync_request(&s).await.unwrap();
+                    s.finish().await;
+                    return;
+                }
+            }
+        });
+        let mut s = pc.notify_sync_request(&phone.peer_id()).await.unwrap();
+        let mut got = Vec::new();
+        while let Ok(Some(m)) = s.recv().await {
+            got.push(m);
+        }
+        answer.await.unwrap();
+        let p = posted(&got);
+        assert_eq!(p.len(), 50);
+        assert!(p.iter().all(|n| n.quiet));
+        assert!(p.iter().any(|n| n.key == "k59"), "newest first");
+        assert!(matches!(got.last(), Some(ControlMsg::NotifySync(s)) if s.keys.len() == 60));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn action_round_trip() {
+        let (pc, _pc_ev, _, phone, mut phone_ev, _) = paired().await;
+        let answer = tokio::spawn(async move {
+            let mut s = phone_ev.sessions.recv().await.unwrap();
+            while let Ok(Some(m)) = s.recv().await {
+                if let ControlMsg::NotifyAction(a) = m {
+                    assert_eq!(a.text, "ok");
+                    s.send(ControlMsg::NotifyActionResult(NotifyActionResult {
+                        id: a.id,
+                        ok: true,
+                        reason: String::new(),
+                    }))
+                    .await
+                    .unwrap();
+                }
+            }
+        });
+        let r = pc
+            .notify_action(
+                &phone.peer_id(),
+                NotifyAction {
+                    id: 0,
+                    key: "k".into(),
+                    kind: NotifyActionKind::Reply as i32,
+                    index: 0,
+                    text: "ok".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(r.ok);
+        answer.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn action_to_unreachable_peer_reports_failure() {
+        let (pc, _pc_ev, _, phone, _phone_ev, _) = paired().await;
+        let id = phone.peer_id();
+        phone.shutdown().await;
+        let r = tokio::time::timeout(
+            Duration::from_secs(40),
+            pc.notify_action(
+                &id,
+                NotifyAction {
+                    id: 0,
+                    key: "k".into(),
+                    kind: NotifyActionKind::Dismiss as i32,
+                    index: 0,
+                    text: String::new(),
+                },
+            ),
+        )
+        .await
+        .expect("must not hang");
+        assert!(r.is_err());
+    }
+}
