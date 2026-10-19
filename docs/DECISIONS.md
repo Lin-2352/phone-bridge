@@ -137,7 +137,15 @@ Tool: `tools/pb-bench` (QUIC bulk with transport knobs, plus raw paced UDP), wit
 - **Adopted:** `Tuning::default().stream_window` = 4 MiB (`crates/pb-transport/src/tuning.rs`). The real apps on the same path: PC -> phone 300 MB at **21.5 MB/s** (was 16.1), phone -> PC 2 x 100 MB at **32.9 / 36.8 MB/s** (was 17.5), MD5 OK, no crash. Phone -> PC is now at the path's UDP ceiling, and PC -> phone at the PC's send ceiling.
 - **Not adopted yet:** GSO on Android (+~30% on the phone's sending side in the bench) until it is re-tested on USB tethering with iroh 1.3 (finding 1 was recorded on an earlier version). Rejected: BBRv3, larger windows, a larger MTU, parallel streams.
 - **Hardware notes (Intel AX211):** one 2x2 radio, so one channel at a time; no Soft AP (Mobile Hotspot is a Wi-Fi Direct GO, 5 GHz capable); a single GO port, so the Wi-Fi Direct spike and Mobile Hotspot cannot run together; no TDLS, so two clients of the same router cannot link directly.
-- **Next:** the direct path (PC Mobile Hotspot, one hop) to lift the PC -> phone ceiling.
+- **Direct path (PC Mobile Hotspot, 5 GHz channel 157; phone link 1201 Mbps).** The PC's own Wi-Fi stayed on the Xiaomi network at 2.4 GHz channel 1, so its single radio hops between the two channels.
+  - Raw UDP: PC -> phone about 360 Mbit/s (45 MB/s); phone -> PC about 450-460 Mbit/s (57 MB/s).
+  - Bench, PC -> phone: about 48 MB/s, with any window.
+  - Bench, phone -> PC: 16-23 MB/s default; 26-34 with 4 MiB; **61-64 MB/s with 4 MiB plus phone GSO**. Without GSO the phone is limited by one system call per packet.
+- **Receive pipeline.** The real app's PC -> phone was 26.7 MB/s against the bench's 48, and the same in the foreground, so not throttling. Every few-KB piece QUIC handed over was hashed and written through `tokio::fs` (one thread hop and one small write each), strictly in sequence with the network reads.
+  - Now network reads are batched to 1 MiB and hashed and written on a blocking thread, overlapped with the network (`receive_bytes` in `files.rs`).
+  - Real app PC -> phone 300 MB: **33.8 / 36.2 / 38.1 MB/s** with gaps between runs. Back-to-back runs vary (27-46) because the phone is still copying the previous file into MediaStore.
+- **Seen twice:** the first bench run after the phone had been dozing ran at 0.2 MB/s with round trips of 0.5-0.7 s for minutes, then recovered. Likely realme power saving with the screen off (Wi-Fi power save and CPU limits). To be measured with the screen off; the user turns it off.
+- **Next:** GSO on Android, re-tested on USB tethering; the screen-off transfer test; MediaStore copy overlap.
 
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.

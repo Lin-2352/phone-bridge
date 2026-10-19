@@ -308,6 +308,31 @@ mod transfers {
         assert!(no_partials(&dir));
     }
 
+    /// Throughput of the whole file path (read, hash, QUIC, hash, disk) on
+    /// loopback. Run by hand: `cargo test -p pb-transport --release
+    /// file_throughput -- --ignored --nocapture`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn file_throughput() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("throughput");
+        let size = 512usize << 20;
+        let data = pattern(size);
+        for run in 0..3 {
+            let t0 = std::time::Instant::now();
+            let send = phone.send_file(&pcid, "t.bin", size as u64, "", &data[..], None);
+            let (sent, got) =
+                tokio::join!(send, receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE));
+            sent.unwrap();
+            let secs = t0.elapsed().as_secs_f64();
+            if let Received::File { path, .. } = got.unwrap() {
+                let _ = std::fs::remove_file(path);
+            }
+            println!("run {run}: {:.0} MB/s", size as f64 / 1048576.0 / secs);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn text_and_links_are_delivered_inline() {
         let (pc, mut pc_ev, phone, _pev) = paired().await;

@@ -15,7 +15,7 @@ use std::{
 use pb_identity::PeerId;
 use pb_protocol::control::{ControlMsg, FileHeader, Offer, OfferKind, OfferReply, TransferDone};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{tx, write_frame, Error, FrameReader, Node, Session};
 
@@ -24,6 +24,8 @@ pub const DEFAULT_MAX_FILE: u64 = 4 << 30;
 /// How long a sender waits for the receiver's accept/decline.
 pub const OFFER_TIMEOUT: Duration = Duration::from_secs(120);
 const CHUNK: usize = 256 * 1024;
+/// Received bytes are hashed and written in batches of this size.
+const BATCH: usize = 1024 * 1024;
 /// Bytes, not characters: file systems limit names to 255 bytes (ext4) and
 /// the partial file adds 26 more.
 const MAX_NAME_BYTES: usize = 200;
@@ -400,47 +402,72 @@ async fn receive_bytes(
     if header.id != id {
         return Err(Error::Protocol("file stream for a different offer".into()));
     }
-    let mut file = tokio::fs::File::create(partial)
-        .await
-        .map_err(|e| Error::Io(e.to_string()))?;
-    let mut hasher = Sha256::new();
+    // Hashing and disk writes run on a blocking thread, overlapped with the
+    // network reads, in batches of about 1 MiB: QUIC hands over a few KB at a
+    // time, and one hash + write + thread hop per piece capped receives at
+    // ~27 MB/s on the phone.
+    let (chunks, mut queue) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+    let path = partial.to_owned();
+    let writer = tokio::task::spawn_blocking(move || -> std::io::Result<[u8; 32]> {
+        use std::io::Write;
+        let mut file = std::io::BufWriter::with_capacity(BATCH, std::fs::File::create(&path)?);
+        let mut hasher = Sha256::new();
+        while let Some(chunk) = queue.blocking_recv() {
+            hasher.update(&chunk);
+            file.write_all(&chunk)?;
+        }
+        file.flush()?;
+        Ok(hasher.finalize().into())
+    });
     let mut done = 0u64;
     // Bytes that arrived in the same packet as the header.
-    let leftover = std::mem::take(&mut reader.buf);
+    let mut batch = std::mem::take(&mut reader.buf);
     let mut buf = vec![0u8; CHUNK];
-    let mut pending = leftover;
-    loop {
-        if !pending.is_empty() {
-            if done + pending.len() as u64 > size {
+    let read: Result<(), Error> = async {
+        loop {
+            if done + batch.len() as u64 > size {
                 return Err(Error::Protocol(
                     "sender sent more bytes than offered".into(),
                 ));
             }
-            hasher.update(&pending);
-            file.write_all(&pending)
+            if batch.len() >= BATCH {
+                done += batch.len() as u64;
+                let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH + CHUNK));
+                if chunks.send(full).await.is_err() {
+                    // The writer stopped (disk error): its result says why.
+                    return Ok(());
+                }
+                if let Some(p) = &progress {
+                    p(done, size);
+                }
+            }
+            // A sender that stops sending must not hold the partial file forever.
+            let chunk = tokio::time::timeout(Duration::from_secs(30), reader.recv.read(&mut buf))
                 .await
-                .map_err(|e| Error::Io(e.to_string()))?;
-            done += pending.len() as u64;
+                .map_err(|_| Error::Timeout)?;
+            match chunk.map_err(tx)? {
+                Some(n) => batch.extend_from_slice(&buf[..n]),
+                None => break,
+            }
+        }
+        if !batch.is_empty() {
+            done += batch.len() as u64;
+            let _ = chunks.send(std::mem::take(&mut batch)).await;
             if let Some(p) = &progress {
                 p(done, size);
             }
-            pending.clear();
         }
-        // A sender that stops sending must not hold the partial file forever.
-        let chunk = tokio::time::timeout(Duration::from_secs(30), reader.recv.read(&mut buf))
-            .await
-            .map_err(|_| Error::Timeout)?;
-        match chunk.map_err(tx)? {
-            Some(n) => pending.extend_from_slice(&buf[..n]),
-            None => break,
-        }
+        Ok(())
     }
-    file.flush().await.map_err(|e| Error::Io(e.to_string()))?;
-    drop(file);
+    .await;
+    drop(chunks);
+    // Always wait for the writer, so the file is closed before any cleanup.
+    let written = writer.await.map_err(|e| Error::Io(e.to_string()))?;
+    read?;
+    let ours = written.map_err(|e| Error::Io(e.to_string()))?;
     if done != size {
         return Err(Error::Protocol(format!("received {done} of {size} bytes")));
     }
-    let ours: [u8; 32] = hasher.finalize().into();
     let theirs = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match session.recv().await? {
