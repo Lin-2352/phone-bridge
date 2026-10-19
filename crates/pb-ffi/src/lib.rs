@@ -183,6 +183,85 @@ pub trait InputListener: Send + Sync {
     fn on_control(&self, active: bool, peer_name: String) -> Result<(), PbError>;
 }
 
+/// A phone notification handed over by the Android listener.
+#[derive(uniffi::Record)]
+pub struct PbNotification {
+    pub key: String,
+    pub package: String,
+    pub app_name: String,
+    pub title: String,
+    pub text: String,
+    pub when_ms: i64,
+    pub conversation: String,
+    pub lines: Vec<String>,
+    pub quiet: bool,
+    pub private: bool,
+    pub call: bool,
+    pub actions: Vec<PbNotifyActionDesc>,
+    /// The app icon as PNG; only needed the first time per app.
+    pub icon_png: Option<Vec<u8>>,
+    pub picture_jpeg: Option<Vec<u8>>,
+}
+
+#[derive(uniffi::Record)]
+pub struct PbNotifyActionDesc {
+    pub label: String,
+    pub reply: bool,
+}
+
+#[derive(uniffi::Enum)]
+pub enum PbNotifyActionKind {
+    Dismiss,
+    Button,
+    Reply,
+    Open,
+    Silence,
+}
+
+/// Runs what a PC asked for on a notification (Kotlin). An error's reason
+/// is shown to the user on the PC.
+#[uniffi::export(with_foreign)]
+pub trait NotifyHandler: Send + Sync {
+    fn on_action(
+        &self,
+        key: String,
+        kind: PbNotifyActionKind,
+        index: u32,
+        text: String,
+    ) -> Result<(), PbError>;
+}
+
+/// The wire form of a notification (one-time code filled in) and its icon.
+fn to_wire(n: PbNotification) -> (pb_protocol::control::Notification, Option<Vec<u8>>) {
+    let otp =
+        pb_transport::notify::find_otp(&format!("{} {}", n.title, n.text)).unwrap_or_default();
+    let wire = pb_protocol::control::Notification {
+        key: n.key,
+        package: n.package,
+        app_name: n.app_name,
+        title: n.title,
+        text: n.text,
+        when_ms: n.when_ms,
+        conversation: n.conversation,
+        lines: n.lines,
+        quiet: n.quiet,
+        private: n.private,
+        call: n.call,
+        otp,
+        actions: n
+            .actions
+            .into_iter()
+            .map(|a| pb_protocol::control::NotifyActionDesc {
+                label: a.label,
+                reply: a.reply,
+            })
+            .collect(),
+        icon_hash: Vec::new(),
+        picture: n.picture_jpeg.unwrap_or_default(),
+    };
+    (wire, n.icon_png)
+}
+
 /// How long a control request waits for the user on the phone.
 const CONTROL_ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -218,6 +297,12 @@ struct Shared {
     /// Ids for questions to the user (offers, control requests), chosen here:
     /// the peer's own ids may repeat.
     next_ask: std::sync::atomic::AtomicU64,
+    /// Phone notifications to paired PCs ("Notifications on PC").
+    notify: pb_transport::notify::NotifyOutbox,
+    notify_enabled: std::sync::atomic::AtomicBool,
+    notify_handler: Mutex<Option<Arc<dyn NotifyHandler>>>,
+    /// Kotlin calls in from its own threads; the outbox spawns tasks here.
+    rt: tokio::runtime::Handle,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -267,6 +352,10 @@ pub async fn start_node(
         control: Mutex::new(None),
         control_busy: std::sync::atomic::AtomicBool::new(false),
         next_ask: std::sync::atomic::AtomicU64::new(1),
+        notify: pb_transport::notify::NotifyOutbox::new(node.clone()),
+        notify_enabled: std::sync::atomic::AtomicBool::new(false),
+        notify_handler: Mutex::new(None),
+        rt: tokio::runtime::Handle::current(),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -304,8 +393,38 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             peer_name: name.clone(),
         },
     );
+    let mut actions =
+        pb_transport::notify::RateWindow::new(pb_transport::notify::MAX_ACTIONS_PER_SEC);
     let reason = loop {
         match s.recv().await {
+            Ok(Some(ControlMsg::NotifySyncRequest(_))) => {
+                // Off: an empty list, so the PC clears what it still shows.
+                let answered = if sh.notify_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                    sh.notify.answer_sync_request(&s).await
+                } else {
+                    s.send(ControlMsg::NotifySync(Default::default())).await
+                };
+                if let Err(e) = answered {
+                    break e.to_string();
+                }
+                s.finish().await;
+                break "notifications synced".to_owned();
+            }
+            Ok(Some(ControlMsg::NotifyAction(a))) => {
+                if !actions.hit() {
+                    s.closer().close(b"action flood");
+                    break "action flood".to_owned();
+                }
+                let id = a.id;
+                let (ok, reason) = match run_notify_action(&sh, a).await {
+                    Ok(()) => (true, String::new()),
+                    Err(e) => (false, e.to_string()),
+                };
+                let result = pb_protocol::control::NotifyActionResult { id, ok, reason };
+                if let Err(e) = s.send(ControlMsg::NotifyActionResult(result)).await {
+                    break e.to_string();
+                }
+            }
             Ok(Some(ControlMsg::ClipboardText(c))) => push(
                 &sh.events,
                 PbEvent::Clipboard {
@@ -508,6 +627,37 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             reason,
         },
     );
+}
+
+/// Hand a PC's notification action to Kotlin (off the async threads: it
+/// sends Android intents).
+async fn run_notify_action(
+    sh: &Shared,
+    a: pb_protocol::control::NotifyAction,
+) -> Result<(), PbError> {
+    use pb_protocol::control::{NotifyActionKind as K, MAX_REPLY_TEXT};
+    let off = || fail("Notifications on PC is off on the phone");
+    if !sh.notify_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(off());
+    }
+    let handler = sh
+        .notify_handler
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .ok_or_else(off)?;
+    let kind = match K::try_from(a.kind) {
+        Ok(K::Dismiss) => PbNotifyActionKind::Dismiss,
+        Ok(K::Button) => PbNotifyActionKind::Button,
+        Ok(K::Reply) => PbNotifyActionKind::Reply,
+        Ok(K::Open) => PbNotifyActionKind::Open,
+        Ok(K::Silence) => PbNotifyActionKind::Silence,
+        Err(_) => return Err(fail("Unknown action")),
+    };
+    let text = pb_transport::notify::truncate_utf8(&a.text, MAX_REPLY_TEXT).to_owned();
+    tokio::task::spawn_blocking(move || handler.on_action(a.key, kind, a.index, text))
+        .await
+        .map_err(fail)?
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -740,6 +890,55 @@ impl PbNode {
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// A notification was posted or updated (no-op while "Notifications on
+    /// PC" is off).
+    pub fn notify_posted(&self, n: PbNotification) {
+        if !self
+            .shared
+            .notify_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let (wire, icon) = to_wire(n);
+        let _rt = self.shared.rt.enter();
+        self.shared.notify.post(wire, icon);
+    }
+
+    pub fn notify_removed(&self, key: String) {
+        if !self
+            .shared
+            .notify_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let _rt = self.shared.rt.enter();
+        self.shared.notify.remove(&key);
+    }
+
+    /// What is on the phone already when the listener connects (not sent).
+    pub fn notify_seed(&self, list: Vec<PbNotification>) {
+        self.shared
+            .notify
+            .seed(list.into_iter().map(|n| to_wire(n).0).collect());
+    }
+
+    pub fn set_notify_enabled(&self, on: bool) {
+        self.shared
+            .notify_enabled
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Register (listener connected) or clear the notification action handler.
+    pub fn set_notify_handler(&self, handler: Option<Arc<dyn NotifyHandler>>) {
+        *self
+            .shared
+            .notify_handler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = handler;
+    }
+
     pub fn set_clipboard_sync(&self, on: bool) {
         self.shared
             .clipboard_sync
@@ -904,5 +1103,53 @@ mod android_init {
         INSTALLED.call_once(|| unsafe {
             iroh::dns::install_android_jni_context(vm.get_java_vm_pointer().cast(), context_ptr);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(text: &str) -> PbNotification {
+        PbNotification {
+            key: "0|bank|1|null|1".into(),
+            package: "com.bank".into(),
+            app_name: "Bank".into(),
+            title: "Bank".into(),
+            text: text.into(),
+            when_ms: 5,
+            conversation: String::new(),
+            lines: vec!["l1".into()],
+            quiet: true,
+            private: false,
+            call: false,
+            actions: vec![PbNotifyActionDesc {
+                label: "Copy".into(),
+                reply: false,
+            }],
+            icon_png: Some(vec![1, 2]),
+            picture_jpeg: Some(vec![3]),
+        }
+    }
+
+    #[test]
+    fn to_wire_fills_otp_and_maps_fields() {
+        let (n, icon) = to_wire(sample("Your OTP is 482913"));
+        assert_eq!(n.otp, "482913");
+        assert_eq!(n.key, "0|bank|1|null|1");
+        assert_eq!(n.package, "com.bank");
+        assert_eq!(n.app_name, "Bank");
+        assert_eq!(n.when_ms, 5);
+        assert_eq!(n.lines, ["l1"]);
+        assert!(n.quiet);
+        assert_eq!(n.actions[0].label, "Copy");
+        assert_eq!(n.picture, [3]);
+        assert_eq!(icon, Some(vec![1, 2]));
+    }
+
+    #[test]
+    fn to_wire_without_code_leaves_otp_empty() {
+        let (n, _) = to_wire(sample("Dinner at 8?"));
+        assert!(n.otp.is_empty());
     }
 }
