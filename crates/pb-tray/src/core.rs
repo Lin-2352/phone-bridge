@@ -351,10 +351,18 @@ pub async fn run(
                         continue;
                     };
                     ui(UiEvent::Info(format!(
-                        "Asking {name}\u{2026} Ctrl+Alt+P cancels"
+                        "Connecting to {name}\u{2026} Ctrl+Alt+P cancels"
                     )));
                     let task = tokio::spawn(async move {
-                        match node.open_input(&id).await {
+                        let asked = {
+                            let (ui, name) = (ui.clone(), name.clone());
+                            move || {
+                                ui(UiEvent::Info(format!(
+                                    "Asking {name} to allow control\u{2026} Ctrl+Alt+P cancels"
+                                )))
+                            }
+                        };
+                        match node.open_input_with(&id, asked).await {
                             Ok(sender) => {
                                 log.line(&format!("CONTROL phone \"{name}\" started"));
                                 ui(UiEvent::ControlReady { name, sender });

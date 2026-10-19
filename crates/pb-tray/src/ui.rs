@@ -574,7 +574,11 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             }
             // Answers to the user's own actions: shown in the pill (Do Not
             // Disturb hides balloons), and as a balloon for the history.
-            let secs = if msg.starts_with("Asking ") { 35 } else { 6 };
+            let secs = if msg.starts_with("Asking ") || msg.starts_with("Connecting ") {
+                35
+            } else {
+                6
+            };
             crate::status::show(&msg, secs);
             balloon(hwnd, "Phone Bridge", &msg)
         }

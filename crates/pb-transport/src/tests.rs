@@ -636,6 +636,22 @@ mod input {
     }
 
     #[tokio::test]
+    async fn on_asked_runs_once_the_request_reached_the_peer() {
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, false).await });
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let a = asked.clone();
+        let r = phone
+            .open_input_with(&pc.peer_id(), move || {
+                a.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+            .await;
+        assert!(matches!(r, Err(Error::Declined)));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let _ = rx.await;
+    }
+
+    #[tokio::test]
     async fn declined_input_reports_declined() {
         let (pc, mut pc_ev, phone, _) = paired().await;
         let rx = tokio::spawn(async move { receive(&mut pc_ev, false).await });

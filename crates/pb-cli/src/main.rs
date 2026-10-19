@@ -11,7 +11,7 @@
 //!   clip-update <text> [--to <id-prefix>]     Universal Clipboard update
 //!   pair-host-with <addr>       pair-host, also offering <addr> (emulator: 10.0.2.2:PORT)
 //!   set-addr <id-prefix> <addr> where to reach a peer (e.g. an emulator port forward)
-//!   control <secs> [--to <id>]  take control of a phone and draw circles (test)
+//!   control <secs> [drag] [--to <id>]  take control and draw circles (drag: button held, then a wheel burst)
 //!
 //! `--auto-accept` skips the SAS question and exists only for automated tests.
 
@@ -231,13 +231,20 @@ async fn run(o: Opts) -> Res<()> {
             store.lock().map_err(|_| "store")?.pin(p.clone());
             println!("ADDR {} {}", p.id, addr);
         }
-        ["control", secs] => {
+        ["control", secs] | ["control", secs, "drag"] => {
+            let drag = cmd.len() == 3;
             // Test harness: take control and draw circles like a 250 Hz mouse.
             let secs: f64 = secs.parse()?;
             let peer = find_peer(&store, o.to.as_deref())?;
             let t0 = std::time::Instant::now();
             let input = node.open_input(&peer.id).await?;
             println!("CONTROL accepted after {:.1}s", t0.elapsed().as_secs_f64());
+            if drag {
+                input.send(pb_protocol::InputEvent::MouseButton {
+                    button: 0,
+                    pressed: true,
+                });
+            }
             let start = std::time::Instant::now();
             let (mut px, mut py) = (0i32, 0i32);
             let mut sent = 0u64;
@@ -257,6 +264,18 @@ async fn run(o: Opts) -> Res<()> {
                 (px, py) = (nx, ny);
                 sent += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+            }
+            if drag {
+                input.send(pb_protocol::InputEvent::MouseButton {
+                    button: 0,
+                    pressed: false,
+                });
+                // A burst of wheel notches: one continuous scroll on the phone.
+                for _ in 0..6 {
+                    input.send(pb_protocol::InputEvent::Wheel { dx: 0, dy: -120 });
+                    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
             }
             match ended {
                 Some(t) => println!("CONTROL ended by the phone after {t:.1}s ({sent} moves sent)"),

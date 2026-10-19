@@ -53,9 +53,21 @@ impl Node {
     /// Ask `peer` to accept our input; on success events flow until the
     /// returned sender is dropped or the peer goes away.
     pub async fn open_input(&self, peer: &PeerId) -> Result<InputSender, Error> {
+        self.open_input_with(peer, || {}).await
+    }
+
+    /// Like [`Self::open_input`]; `on_asked` runs once the request has
+    /// reached the peer (connected and sent), so a UI can tell "connecting"
+    /// from "waiting for the other device to allow".
+    pub async fn open_input_with(
+        &self,
+        peer: &PeerId,
+        on_asked: impl FnOnce(),
+    ) -> Result<InputSender, Error> {
         let mut s = self.connect(peer).await?;
         let id = new_id();
         s.send(ControlMsg::InputStart(InputStart { id })).await?;
+        on_asked();
         if !crate::files::await_reply(&mut s, id).await? {
             s.conn.close(0u32.into(), b"declined");
             return Err(Error::Declined);

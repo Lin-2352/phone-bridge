@@ -60,9 +60,6 @@ class ControlService : AccessibilityService(), InputListener {
     private val stats = MoveStats()
     private var w = 1080
     private var h = 2400
-    private var pressX = 0f
-    private var pressY = 0f
-    private var pressAt = 0L
     private var ctrl = false
     private var highSurrogate: Char? = null
 
@@ -71,6 +68,9 @@ class ControlService : AccessibilityService(), InputListener {
         Bridge.node?.setInputListener(this)
         readBounds()
         Log.i(TAG, "CONTROL service on (${w}x$h)")
+        // Android may have stopped Phone Bridge (low memory); try to bring it
+        // back. If refused, the "not running" notice tells the user.
+        ensureRunning(this, "control")
     }
 
     /** Screen size now (it changes with rotation). */
@@ -126,6 +126,8 @@ class ControlService : AccessibilityService(), InputListener {
                 Bridge.controlledBy.value = peerName
                 Toast.makeText(this, "$peerName is controlling this phone", Toast.LENGTH_SHORT).show()
             } else {
+                stopWheel()
+                finger.release()
                 hideCursor()
                 holdWifi(false)
                 Bridge.controlledBy.value = null
@@ -211,6 +213,7 @@ class ControlService : AccessibilityService(), InputListener {
     private fun move(dx: Int, dy: Int) {
         x = (x + dx * 1.4f).coerceIn(0f, w - 1f)
         y = (y + dy * 1.4f).coerceIn(0f, h - 1f)
+        if (finger.down && !wheeling) finger.moveTo(x, y)
         if (cursor != null && !frameQueued) {
             frameQueued = true
             Choreographer.getInstance().postFrameCallback(frame)
@@ -252,29 +255,131 @@ class ControlService : AccessibilityService(), InputListener {
         }
     }
 
-    private fun stroke(path: Path, duration: Long) {
-        val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, duration.coerceIn(1, 3000)))
-            .build()
-        dispatchGesture(g, null, null)
+    /**
+     * One synthetic finger, streamed as continued strokes (API 26+): each
+     * segment goes out only when the previous one has finished, so segments
+     * never cancel each other, and each lasts as long as the hand took, so
+     * the app sees real velocity (a quick drag flings like a finger). While
+     * the pointer rests nothing is sent and the finger stays down, so
+     * press-and-hold is a long press. Main thread only.
+     */
+    private inner class Finger {
+        private var stroke: GestureDescription.StrokeDescription? = null
+        private var inFlight = false
+        var down = false
+            private set
+        private var lifting = false
+        private var lastX = 0f
+        private var lastY = 0f
+        private var lastSentAt = 0L
+        private val points = ArrayList<android.graphics.PointF>()
+        private var generation = 0
+
+        fun press(px: Float, py: Float) {
+            reset()
+            down = true
+            lastX = px
+            lastY = py
+            lastSentAt = SystemClock.uptimeMillis()
+            // A tiny first segment puts the finger down.
+            send(Path().apply { moveTo(px, py); lineTo(px + 0.5f, py) }, 10, true)
+            lastX = px + 0.5f
+        }
+
+        fun moveTo(px: Float, py: Float) {
+            if (!down || lifting) return
+            points.add(android.graphics.PointF(px, py))
+            pump()
+        }
+
+        fun release() {
+            if (!down) return
+            lifting = true
+            pump()
+        }
+
+        private fun pump() {
+            if (inFlight || !down) return
+            if (points.isEmpty() && !lifting) return
+            val path = Path().apply {
+                moveTo(lastX, lastY)
+                if (points.isEmpty()) {
+                    lineTo(lastX + 0.5f, lastY) // a path needs some length
+                    lastX += 0.5f
+                } else {
+                    points.forEach { lineTo(it.x, it.y) }
+                    lastX = points.last().x
+                    lastY = points.last().y
+                }
+            }
+            points.clear()
+            val now = SystemClock.uptimeMillis()
+            val dur = (now - lastSentAt).coerceIn(8, 50)
+            lastSentAt = now
+            val lift = lifting
+            send(path, dur, !lift)
+            if (lift) {
+                down = false
+                lifting = false
+            }
+        }
+
+        private fun send(path: Path, dur: Long, willContinue: Boolean) {
+            val prev = stroke
+            val next = prev?.continueStroke(path, 0, dur, willContinue)
+                ?: GestureDescription.StrokeDescription(path, 0, dur, willContinue)
+            stroke = if (willContinue) next else null
+            inFlight = true
+            stats.segment()
+            val gen = generation
+            val sent = dispatchGesture(
+                GestureDescription.Builder().addStroke(next).build(),
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (gen != generation) return
+                        inFlight = false
+                        pump()
+                    }
+
+                    // The system interrupted it (another gesture, a touch):
+                    // start fresh, never leave a finger "down".
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (gen == generation) reset()
+                    }
+                },
+                main,
+            )
+            if (!sent) reset()
+        }
+
+        fun reset() {
+            generation++
+            stroke = null
+            inFlight = false
+            down = false
+            lifting = false
+            points.clear()
+        }
     }
+
+    private val finger = Finger()
+
+    /** Wheel scrolling streamed through the same finger, eased per frame. */
+    private var wheeling = false
+    private var wheelX = 0f
+    private var wheelY = 0f
+    private var wheelToX = 0f
+    private var wheelToY = 0f
+    private var wheelLastNotch = 0L
+    private val wheelFrame = Choreographer.FrameCallback { onWheelFrame() }
 
     private fun button(b: Int, pressed: Boolean) {
         when (b) {
             0 -> if (pressed) {
-                pressX = x
-                pressY = y
-                pressAt = SystemClock.uptimeMillis()
+                stopWheel()
+                finger.press(x, y)
             } else {
-                val held = SystemClock.uptimeMillis() - pressAt
-                val path = Path().apply { moveTo(pressX, pressY) }
-                if (abs(x - pressX) < 12 && abs(y - pressY) < 12) {
-                    // Click = tap; a long press stays a long press.
-                    stroke(path, if (held > 500) held else 40)
-                } else {
-                    path.lineTo(x, y)
-                    stroke(path, held.coerceIn(80, 1500))
-                }
+                finger.release()
             }
             1 -> if (pressed) performGlobalAction(GLOBAL_ACTION_BACK)
             2 -> if (pressed) performGlobalAction(GLOBAL_ACTION_HOME)
@@ -283,16 +388,51 @@ class ControlService : AccessibilityService(), InputListener {
         }
     }
 
-    /** One wheel notch (120) scrolls about a fifth of the screen. */
+    /**
+     * One wheel notch (120) scrolls about a fifth of the screen. Notches that
+     * arrive during a scroll extend it instead of starting a new gesture.
+     */
     private fun wheel(dx: Int, dy: Int) {
-        val dist = h / 5f * (dy / 120f)
-        val distX = w / 5f * (dx / 120f)
-        val path = Path().apply {
-            moveTo(x, y)
-            // Wheel up shows content above: the finger moves down.
-            lineTo((x - distX).coerceIn(0f, w - 1f), (y + dist).coerceIn(0f, h - 1f))
+        if (finger.down && !wheeling) return // dragging with the button held
+        if (!wheeling) {
+            wheeling = true
+            wheelX = x
+            wheelY = y
+            wheelToX = x
+            wheelToY = y
+            finger.press(x, y)
+            Choreographer.getInstance().postFrameCallback(wheelFrame)
         }
-        stroke(path, 120)
+        // Wheel up shows content above: the finger moves down.
+        wheelToY = (wheelToY + h / 5f * (dy / 120f)).coerceIn(1f, h - 2f)
+        wheelToX = (wheelToX - w / 5f * (dx / 120f)).coerceIn(1f, w - 2f)
+        wheelLastNotch = SystemClock.uptimeMillis()
+    }
+
+    private fun onWheelFrame() {
+        if (!wheeling) return
+        val ex = wheelToX - wheelX
+        val ey = wheelToY - wheelY
+        if (abs(ex) < 1f && abs(ey) < 1f) {
+            // Arrived; lift once no new notch came for a moment.
+            if (SystemClock.uptimeMillis() - wheelLastNotch > 60) {
+                stopWheel()
+                return
+            }
+        } else {
+            // Ease: most of the remaining distance each frame (about 120 ms).
+            wheelX += ex * 0.3f
+            wheelY += ey * 0.3f
+            finger.moveTo(wheelX, wheelY)
+        }
+        Choreographer.getInstance().postFrameCallback(wheelFrame)
+    }
+
+    private fun stopWheel() {
+        if (!wheeling) return
+        wheeling = false
+        Choreographer.getInstance().removeFrameCallback(wheelFrame)
+        finger.release()
     }
 
     private fun focused(): AccessibilityNodeInfo? =
@@ -492,10 +632,15 @@ class ControlService : AccessibilityService(), InputListener {
         private var n = 0
         private var last = 0L
         private var frames = 0
+        private var segments = 0
         private var since = 0L
 
+        @Synchronized fun segment() {
+            segments++
+        }
+
         @Synchronized fun reset() {
-            n = 0; last = 0L; frames = 0; since = SystemClock.uptimeMillis()
+            n = 0; last = 0L; frames = 0; segments = 0; since = SystemClock.uptimeMillis()
         }
 
         @Synchronized fun arrived(now: Long) {
@@ -516,10 +661,10 @@ class ControlService : AccessibilityService(), InputListener {
                 val g = gaps.copyOf(n).sorted()
                 Log.i(
                     TAG,
-                    "CONTROL timing moves/s=${n * 1000 / span} gap_ms p50=${g[n / 2]} p95=${g[(n * 95) / 100]} max=${g[n - 1]} frames/s=${frames * 1000 / span}",
+                    "CONTROL timing moves/s=${n * 1000 / span} gap_ms p50=${g[n / 2]} p95=${g[(n * 95) / 100]} max=${g[n - 1]} frames/s=${frames * 1000 / span} touch_segments/s=${segments * 1000 / span}",
                 )
             }
-            n = 0; frames = 0; since = now
+            n = 0; frames = 0; segments = 0; since = now
         }
     }
 
