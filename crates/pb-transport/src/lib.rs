@@ -8,6 +8,7 @@
 pub mod discovery;
 pub mod files;
 pub mod input;
+pub mod notify;
 pub mod pairing;
 pub mod tuning;
 
