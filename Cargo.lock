@@ -2344,6 +2344,7 @@ dependencies = [
 name = "pb-ffi"
 version = "0.0.1"
 dependencies = [
+ "async-compat",
  "iroh",
  "jni 0.21.1",
  "pb-identity",

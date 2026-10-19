@@ -21,6 +21,8 @@ use crate::{files::new_id, tx, Error, Node, PeerId, Session};
 pub struct InputSender {
     tx: UnboundedSender<InputEvent>,
     done: tokio::task::JoinHandle<()>,
+    /// Set by `stop`: whatever is still queued (a long paste) is dropped.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl InputSender {
@@ -33,7 +35,16 @@ impl InputSender {
         !self.tx.is_closed() && !self.done.is_finished()
     }
 
+    /// End the session after what is already queued (e.g. key releases).
     pub fn stop(self) {
+        drop(self.tx);
+    }
+
+    /// End the session now, dropping what is still queued (a long paste
+    /// must not keep typing after the user stopped).
+    pub fn cancel(self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Release);
         drop(self.tx);
     }
 }
@@ -58,6 +69,8 @@ impl Node {
         };
         out.write_all(&hello.encode()).await.map_err(tx)?;
         let (tx, mut rx) = mpsc::unbounded_channel::<InputEvent>();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = cancel.clone();
         let done = tokio::spawn(async move {
             let mut seq: u16 = 0;
             let mut buf = Vec::with_capacity(64 * INPUT_DATAGRAM_LEN);
@@ -73,6 +86,9 @@ impl Node {
             let mut pending: Option<(i32, i32)> = None;
             let mut open = true;
             'run: while open || pending.is_some() {
+                if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
                 let mut batch = Vec::new();
                 let first = if pending.is_some() {
                     // A merged move is held back: wake when it may go.
@@ -107,6 +123,9 @@ impl Node {
                                 push_move(x, y, &mut push, &mut buf);
                             }
                             while !others.try_take() {
+                                if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                                    break 'run;
+                                }
                                 if out.write_all(&buf).await.is_err() {
                                     break 'run;
                                 }
@@ -128,7 +147,7 @@ impl Node {
             let _ = out.finish();
             crate::files::await_peer_close(&mut s).await;
         });
-        Ok(InputSender { tx, done })
+        Ok(InputSender { tx, done, cancel })
     }
 }
 
@@ -210,9 +229,12 @@ impl Bucket {
     }
 }
 
-const MAX_MOVES_PER_SEC: u32 = 1000;
-const MAX_OTHER_PER_SEC: u32 = 400;
-const MAX_RECORDS_PER_SEC: u32 = 2000;
+// Receiver limits, judged on arrival time: a Wi-Fi stall can bunch a few
+// hundred paced events into one second, so they sit well above the sender's
+// pacing (250 other events/s) and far below a flood.
+const MAX_MOVES_PER_SEC: u32 = 2000;
+const MAX_OTHER_PER_SEC: u32 = 1000;
+const MAX_RECORDS_PER_SEC: u32 = 4000;
 
 /// Receiver side, called when `InputStart` arrives on a session. Answers,
 /// then feeds every event to `on_event` until the controller stops.

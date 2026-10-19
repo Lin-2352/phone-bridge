@@ -31,6 +31,10 @@ const BATCH: usize = 1024 * 1024;
 const MAX_NAME_BYTES: usize = 200;
 /// Receiver close code: the file did not arrive intact or could not be saved.
 pub(crate) const CLOSE_TRANSFER_FAILED: u32 = 400;
+/// Receiver close code: the file is saved under its final name. Not 0: the
+/// QUIC stack also closes with 0 when a connection is dropped or the
+/// endpoint shuts down, which must not read as success.
+pub(crate) const CLOSE_SAVED: u32 = 200;
 
 /// Progress callback: `(bytes_done, bytes_total)`.
 pub type Progress = Arc<dyn Fn(u64, u64) + Send + Sync>;
@@ -225,10 +229,10 @@ impl Node {
         }))
         .await?;
         await_peer_close(&mut s).await;
-        // The receiver closes with 0 only once the file is saved under its name.
+        // The receiver closes with CLOSE_SAVED only once the file is saved.
         match s.conn.close_reason() {
             Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
-                if c.error_code == 0u32.into() =>
+                if c.error_code == CLOSE_SAVED.into() =>
             {
                 Ok(sha)
             }
@@ -347,7 +351,8 @@ pub async fn receive_offer(
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| Error::Io(e.to_string()))?;
-    let partial = dir.join(format!(".{name}.partial-{id:016x}"));
+    // A local random suffix: the offer id is the peer's choice and may repeat.
+    let partial = dir.join(format!(".{name}.partial-{:016x}", new_id()));
     let result = async {
         receive_bytes(session, id, offer.size, &partial, progress).await?;
         let dir = dir.to_owned();
@@ -367,7 +372,7 @@ pub async fn receive_offer(
     match result {
         Ok(dest) => {
             // We read the sender's TransferDone; closing now discards nothing.
-            session.conn.close(0u32.into(), b"received");
+            session.conn.close(CLOSE_SAVED.into(), b"saved");
             Ok(Received::File {
                 path: dest,
                 size: offer.size,

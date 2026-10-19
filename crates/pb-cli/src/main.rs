@@ -7,6 +7,11 @@
 //!   unpair <id-prefix>          revoke a device
 //!   listen                      accept sessions and print received clipboard text
 //!   send-clip <text> [--to <id-prefix>] [--sensitive]
+//!   send-file <path> [--to <id-prefix>]
+//!   clip-update <text> [--to <id-prefix>]     Universal Clipboard update
+//!   pair-host-with <addr>       pair-host, also offering <addr> (emulator: 10.0.2.2:PORT)
+//!   set-addr <id-prefix> <addr> where to reach a peer (e.g. an emulator port forward)
+//!   control <secs> [--to <id>]  take control of a phone and draw circles (test)
 //!
 //! `--auto-accept` skips the SAS question and exists only for automated tests.
 
@@ -189,13 +194,19 @@ async fn run(o: Opts) -> Res<()> {
             let code = node.open_pairing(node.addrs())?;
             println!("CODE={code}");
             println!("Waiting up to 2 minutes for the other device to join...");
-            let pending = tokio::time::timeout(pb_transport::pairing::PAIRING_TTL, ev.pairings.recv())
-                .await
-                .map_err(|_| "pairing code expired")?
-                .ok_or("node stopped")?;
+            let pending =
+                tokio::time::timeout(pb_transport::pairing::PAIRING_TTL, ev.pairings.recv())
+                    .await
+                    .map_err(|_| "pairing code expired")?
+                    .ok_or("node stopped")?;
             let ok = confirm(&pending.sas, &pending.peer_name, o.auto_accept).await?;
             let peer = pending.decide(ok).await?;
-            println!("PAIRED {} \"{}\" {}", peer.id, peer.name, peer.addrs.join(","));
+            println!(
+                "PAIRED {} \"{}\" {}",
+                peer.id,
+                peer.name,
+                peer.addrs.join(",")
+            );
         }
         ["pair-host-with", extra] => {
             // Test harness: also offer an address the joiner can reach (an
@@ -204,10 +215,11 @@ async fn run(o: Opts) -> Res<()> {
             addrs.push((*extra).to_owned());
             let code = node.open_pairing(addrs)?;
             println!("CODE={code}");
-            let pending = tokio::time::timeout(pb_transport::pairing::PAIRING_TTL, ev.pairings.recv())
-                .await
-                .map_err(|_| "pairing code expired")?
-                .ok_or("node stopped")?;
+            let pending =
+                tokio::time::timeout(pb_transport::pairing::PAIRING_TTL, ev.pairings.recv())
+                    .await
+                    .map_err(|_| "pairing code expired")?
+                    .ok_or("node stopped")?;
             let ok = confirm(&pending.sas, &pending.peer_name, o.auto_accept).await?;
             let peer = pending.decide(ok).await?;
             println!("PAIRED {} \"{}\"", peer.id, peer.name);
@@ -269,16 +281,30 @@ async fn run(o: Opts) -> Res<()> {
             let peer = find_peer(&store, o.to.as_deref())?;
             let f = tokio::fs::File::open(path).await?;
             let size = f.metadata().await?.len();
-            let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".into());
             let started = std::time::Instant::now();
             let sha = node.send_file(&peer.id, &name, size, "", f, None).await?;
             let secs = started.elapsed().as_secs_f64();
-            println!("SENT FILE {name} {size} bytes in {secs:.2}s ({:.1} MB/s) sha256={}", size as f64 / 1e6 / secs.max(1e-3), sha.iter().map(|b| format!("{b:02x}")).collect::<String>());
+            println!(
+                "SENT FILE {name} {size} bytes in {secs:.2}s ({:.1} MB/s) sha256={}",
+                size as f64 / 1e6 / secs.max(1e-3),
+                sha.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
         }
         ["clip-update", text] => {
             let peer = find_peer(&store, o.to.as_deref())?;
             let s = node.connect(&peer.id).await?;
-            s.send(ControlMsg::ClipboardUpdate(pb_protocol::control::ClipboardUpdate { text: (*text).to_owned(), hash: vec![], sensitive: false })).await?;
+            s.send(ControlMsg::ClipboardUpdate(
+                pb_protocol::control::ClipboardUpdate {
+                    text: (*text).to_owned(),
+                    hash: vec![],
+                    sensitive: false,
+                },
+            ))
+            .await?;
             s.finish().await;
             println!("SENT CLIPSYNC");
         }
@@ -297,9 +323,7 @@ async fn run(o: Opts) -> Res<()> {
             println!("SENT {} bytes to \"{}\"", text.len(), peer.name);
             s.finish().await;
         }
-        _ => {
-            return Err("usage: pb [--dir D] [--port N] [--name N] pair-host|join <code>|peers|unpair <id>|listen|send-clip <text> [--to id] [--sensitive]".into())
-        }
+        _ => return Err("usage: see the top of crates/pb-cli/src/main.rs".into()),
     }
     node.shutdown().await;
     Ok(())

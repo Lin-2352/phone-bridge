@@ -161,6 +161,50 @@ Tool: `tools/pb-bench` (QUIC bulk with transport knobs, plus raw paced UDP), wit
   - With PayZapp force-stopped, the next 10 minutes had 0 kills, 0 ANRs and 0 crashes.
   - The phone-watch sampler (which forces a GC in every app) was stopped.
 
+## Phase 3.9 (2026-10-19): state-mismatch bugs and a full bug hunt
+**Reported by the user and confirmed on the realme:**
+- **The Quick Settings tile showed the opposite state.**
+  - Cause: `onClick` repainted from the pre-toggle `running` value. realme SystemUI also ignores later `requestListeningState` calls (`Couldn't find tile`), so the wrong paint stuck.
+  - Fix: the tile paints the target state at once (with "Starting…"), repaints while still bound, and paints from the real state on every listen.
+  - Result: on-device state matrix 0 of 6 mismatches (old build: 3 of 4).
+- **The recovery job's background restart was refused silently** (no battery exemption). It now posts one "Phone Bridge is not running. Tap to turn it on".
+- **realme Active apps → Stop** (exit reason USER_REQUESTED, "by user request") now counts as turning Phone Bridge off, so the tile, the app and recovery agree.
+- **The accessibility service was stuck "crashed"** after a kill. The card now says so and shows how to fix it.
+
+**Review agents found more** (Android lifecycle, Rust core, Windows tray), all fixed with tests where possible:
+- one control session or request at a time (stops a second session hijacking Stop and the cursor);
+- turning accessibility off mid-session ends control;
+- the popup times from the request, follows new requests, and closes when answered from the notification;
+- "saved" uses its own close code (200), because QUIC also closes with 0 on drop or shutdown;
+- `InputSender::cancel` drops a queued paste (`stop` still flushes key releases);
+- stream and connection windows capped;
+- the Android runtime really multi-threaded (async-compat `multi-thread`; it had been a single thread);
+- unpair racing a connect;
+- pending ids local, partial file names local;
+- prompts end when the sender leaves;
+- stall-tolerant input limits;
+- honest touchpad, share-failure and pairing messages;
+- clipboard retried after a failed sync (phone and PC);
+- rotation-aware control;
+- service shutdown waits for queued events before the next start empties `incoming/`;
+- orphan node cleanup survives cancellation;
+- tray:
+  - control request "Asking…" with cancel and accurate refusal messages;
+  - turning "Let my phone control this PC" off ends the session;
+  - all held keys and buttons released;
+  - foreground keyboard layout;
+  - "Paired", not "Linked";
+  - real save folder;
+  - stale partial files removed at start.
+
+**Still open:**
+- the tray does not track reachability, so it shows "Paired" instead;
+- several devices: actions go to the first peer;
+- keys stuck if the tray is killed mid phone→PC control;
+- a dead tray core shows no fatal state.
+
+**Memory:** the realme rebooted again at 23:41 (hang watchdog, swap 91%) while UI automation (uiautomator dumps, screenshots, log streams) ran on it, with PayZapp crash-looping since boot. On-device checks are now kept light while memory is tight.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

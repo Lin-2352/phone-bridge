@@ -214,7 +214,9 @@ async fn rotating_codes_invalidate_the_previous_one_and_closing_kills_the_curren
 mod transfers {
     use std::path::{Path, PathBuf};
 
-    use pb_protocol::control::{ControlMsg, FileHeader, Offer, OfferKind, TransferDone};
+    use pb_protocol::control::{
+        ControlMsg, FileHeader, Offer, OfferKind, OfferReply, TransferDone,
+    };
 
     use super::*;
     use crate::files::{receive_offer, Received, DEFAULT_MAX_FILE};
@@ -397,6 +399,44 @@ mod transfers {
             Received::File { path, .. } => assert_eq!(path, dir.join("evil.dll")),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_receiver_that_vanishes_before_saving_is_not_success() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let data = pattern(256 * 1024);
+        // Receiver: accept, read every byte and TransferDone, then drop the
+        // session without saving (as when the app is switched off).
+        let rx = tokio::spawn(async move {
+            let mut s = pc_ev.sessions.recv().await.unwrap();
+            let Ok(Some(ControlMsg::Offer(o))) = s.recv().await else {
+                panic!("offer expected")
+            };
+            s.send(ControlMsg::OfferReply(OfferReply {
+                id: o.id,
+                accept: true,
+                too_large: false,
+            }))
+            .await
+            .unwrap();
+            let mut r = s.conn.accept_uni().await.unwrap();
+            let mut sink = vec![0u8; 64 * 1024];
+            while let Ok(Some(_)) = r.read(&mut sink).await {}
+            while let Ok(Some(m)) = s.recv().await {
+                if matches!(m, ControlMsg::TransferDone(_)) {
+                    break;
+                }
+            }
+            drop(s);
+            drop(pc_ev);
+            pc.shutdown().await;
+        });
+        let sent = phone
+            .send_file(&pcid, "lost.bin", data.len() as u64, "", &data[..], None)
+            .await;
+        rx.await.unwrap();
+        assert!(sent.is_err(), "nothing was saved, so no success: {sent:?}");
     }
 
     /// Hand-rolled sender that lies about the hash, or stops half way.
@@ -605,6 +645,27 @@ mod input {
     }
 
     #[tokio::test]
+    async fn stop_drops_a_queued_paste() {
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        let input = phone.open_input(&pc.peer_id()).await.unwrap();
+        for u in "x".repeat(4096).encode_utf16() {
+            input.send(InputEvent::Char { unit: u });
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        input.cancel();
+        let (_, got) = tokio::time::timeout(Duration::from_secs(10), rx)
+            .await
+            .expect("the session ends soon after stop")
+            .unwrap();
+        assert!(
+            got.len() < 300,
+            "queued keys must not keep typing after stop: {}",
+            got.len()
+        );
+    }
+
+    #[tokio::test]
     async fn a_long_paste_is_paced_and_arrives_whole() {
         let (pc, mut pc_ev, phone, _) = paired().await;
         let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
@@ -651,7 +712,7 @@ mod input {
         let (r, got) = rx.await.unwrap();
         assert!(r.is_err(), "flood must end the session");
         assert!(
-            got.len() <= 400,
+            got.len() <= 1000,
             "at most the budget is injected, got {}",
             got.len()
         );

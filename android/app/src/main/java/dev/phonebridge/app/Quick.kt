@@ -52,11 +52,13 @@ private const val TAG = "PhoneBridge"
 /** Turn Phone Bridge on (service up, phone reachable) or off (service and notification gone). */
 fun setBridgeEnabled(ctx: Context, on: Boolean) {
     Prefs(ctx).enabled = on
+    Bridge.startingSince = if (on && !Bridge.running.value) android.os.SystemClock.uptimeMillis() else 0L
     if (on) {
         ctx.startForegroundService(Intent(ctx, PbService::class.java))
     } else {
         ctx.stopService(Intent(ctx, PbService::class.java))
         cancelRecovery(ctx)
+        ctx.getSystemService(android.app.NotificationManager::class.java).cancel(STOPPED_ID)
     }
     refreshTile(ctx)
 }
@@ -80,15 +82,28 @@ fun readClipboard(ctx: Context): Pair<String, Boolean>? {
  * Long-press opens [QuickPanelActivity] (QS_TILE_PREFERENCES).
  */
 class BridgeTileService : TileService() {
-    override fun onStartListening() {
-        // What is actually running, not just the saved wish (after a crash
-        // reboot those differ, and a tap must do what the tile shows).
-        val on = Bridge.running.value
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+    override fun onStartListening() = paint()
+
+    override fun onStopListening() {
+        main.removeCallbacksAndMessages(null)
+    }
+
+    /**
+     * What is running (or starting), not the saved wish: a tap must do what
+     * the tile shows. The service starts and stops asynchronously, and some
+     * systems (realme) ignore later refresh requests, so the tile is painted
+     * from the real state on every listen and again shortly after a tap.
+     */
+    private fun paint() {
+        val on = Bridge.shownOn()
         qsTile?.apply {
             state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             if (Build.VERSION.SDK_INT >= 29) {
                 subtitle = when {
                     !on -> "Off"
+                    !Bridge.running.value -> "Starting\u2026"
                     Bridge.linked.value != null -> Bridge.linked.value
                     else -> "On"
                 }
@@ -98,7 +113,7 @@ class BridgeTileService : TileService() {
     }
 
     override fun onClick() {
-        val on = !Bridge.running.value
+        val on = !Bridge.shownOn()
         if (!on) {
             setBridgeEnabled(this, false)
         } else {
@@ -117,7 +132,9 @@ class BridgeTileService : TileService() {
             }
         }
         Log.i(TAG, "TILE Phone Bridge ${if (on) "on" else "off"}")
-        onStartListening()
+        paint()
+        // While the panel keeps us bound, catch the service coming up or down.
+        for (d in longArrayOf(500, 1500, 3000)) main.postDelayed({ paint() }, d)
     }
 }
 
@@ -173,8 +190,8 @@ class QuickPanelActivity : ComponentActivity() {
 
     @Composable
     private fun Panel() {
-        // What is running, not the saved wish (they differ after a failed start).
-        var on by remember { mutableStateOf(Bridge.running.value) }
+        // What is running (or starting), not the saved wish; follows the service.
+        var on by remember(Bridge.running.value) { mutableStateOf(Bridge.shownOn()) }
         var clip by remember { mutableStateOf(prefs.clipboardSync) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
         var auto by remember { mutableStateOf(prefs.autoAccept) }
@@ -248,10 +265,15 @@ fun shareClipboardIfChanged(ctx: Context, prefs: Prefs) {
     if (sensitive && !prefs.sendSensitive) return
     // Only when it changed since the last sync in either direction.
     if (text.hashCode() == prefs.lastClip) return
-    val node = Bridge.node ?: return
-    prefs.lastClip = text.hashCode()
+    if (!Bridge.shownOn()) return
     Bridge.scope.launch {
+        // Opened cold: the node may still be starting.
+        val node = Bridge.awaitNode() ?: return@launch
         runCatching { node.syncClipboard(text, sensitive) }
-            .onSuccess { Log.i(TAG, "CLIPSYNC sent ${text.length} chars") }
+            .onSuccess {
+                // Only now: a copy made while the PC was away is sent next time.
+                prefs.lastClip = text.hashCode()
+                Log.i(TAG, "CLIPSYNC sent ${text.length} chars")
+            }
     }
 }

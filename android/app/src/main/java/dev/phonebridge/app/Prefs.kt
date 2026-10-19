@@ -32,6 +32,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("allow_control", false)
         set(v) = sp.edit().putBoolean("allow_control", v).apply()
 
+    /** "Phone Bridge stopped" was shown and not yet resolved (shown once, not every 15 min). */
+    var stoppedNotified: Boolean
+        get() = sp.getBoolean("stopped_notified", false)
+        set(v) = sp.edit().putBoolean("stopped_notified", v).apply()
+
+    /** Newest process-exit timestamp already looked at (user stops are detected once). */
+    var lastExitSeen: Long
+        get() = sp.getLong("last_exit_seen", 0L)
+        set(v) = sp.edit().putLong("last_exit_seen", v).apply()
+
     var autoAccept: Boolean
         get() = sp.getBoolean("auto_accept", true)
         set(v) = sp.edit().putBoolean("auto_accept", v).apply()

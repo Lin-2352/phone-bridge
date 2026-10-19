@@ -62,6 +62,13 @@ object Bridge {
     val linked = mutableStateOf<String?>(null)
     /** True while the service (and node) runs. */
     val running = mutableStateOf(false)
+    /** When a start was requested (uptime ms), 0 if none is pending. The
+     *  service starts asynchronously; until it is up, the UI shows "starting". */
+    @Volatile var startingSince = 0L
+
+    /** What the UI should show: running, or a start requested in the last 10 s. */
+    fun shownOn(): Boolean =
+        running.value || (startingSince != 0L && android.os.SystemClock.uptimeMillis() - startingSince < 10_000)
     /** Long-lived scope for sends started from share/tile entry points. */
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     /** Clips waiting for "Copy", oldest first (notification ids wrap, so order is by insertion). */
@@ -69,6 +76,8 @@ object Bridge {
     /** Pairing code check in progress (survives screen rotation). */
     val sas = mutableStateOf<String?>(null)
     val pairMessage = mutableStateOf<String?>(null)
+    /** The node is up (until then the UI says "Starting", not "Not paired"). */
+    val nodeReady = mutableStateOf(false)
     /** Name of the PC controlling this phone right now, or null. */
     val controlledBy = mutableStateOf<String?>(null)
     /** Mirrors [Prefs.allowControl] for the UI. */
@@ -119,7 +128,7 @@ object Bridge {
     /** Pairing, step 2: the user compared the codes. */
     suspend fun confirm(ctx: Context, accept: Boolean) {
         sas.value = null
-        val n = node ?: return
+        val n = node ?: run { pairMessage.value = "Phone Bridge stopped. Turn it on and pair again"; return }
         try {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
@@ -177,17 +186,24 @@ class PbService : Service() {
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(CH_PROGRESS, "Transfer progress", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CH_CONTROL, "Control requests", NotificationManager.IMPORTANCE_HIGH))
+        // Bars from a process that was killed mid-transfer never end by themselves.
+        nm.cancel(PROGRESS_IN_ID)
+        nm.cancel(PROGRESS_OUT_ID)
         try {
             startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } catch (t: Throwable) {
             // A background restart (after a low-memory kill) may be refused on
             // Android 12+. Stop cleanly instead of crash-looping; RecoveryJob retries.
             Log.e(TAG, "SERVICE could not go foreground: $t")
+            Bridge.startingSince = 0L
             destroyed = true
             stopSelf()
             return
         }
         Bridge.running.value = true
+        Bridge.startingSince = 0L
+        Prefs(this).stoppedNotified = false
+        getSystemService(NotificationManager::class.java).cancel(STOPPED_ID)
         refreshTile(this)
         scheduleRecovery(this)
         scope.launch { start() }
@@ -227,19 +243,26 @@ class PbService : Service() {
         }
         // Never block the main thread on the network: close in the background,
         // bounded so a stuck peer cannot keep the node alive.
-        if (n != null) {
-            Bridge.stopping = Bridge.scope.launch {
+        val previous = Bridge.stopping
+        Bridge.stopping = Bridge.scope.launch {
+            previous?.join()
+            if (n != null) {
                 withTimeoutOrNull(3000) { n.shutdown() }
                 n.destroy()
             }
+            // Events still queued (a file that just arrived) are handled; the
+            // next start (which empties incoming/) waits for this.
+            events.shutdown()
+            runCatching { kotlinx.coroutines.runInterruptible { events.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS) } }
         }
+        Bridge.nodeReady.value = false
         cancelProgress(true)
         cancelProgress(false)
         netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
         netCallback = null
         scope.cancel()
-        events.shutdown()
         Bridge.running.value = false
+        Bridge.startingSince = 0L
         refreshTile(this)
         super.onDestroy()
     }
@@ -284,11 +307,20 @@ class PbService : Service() {
                 if (destroyed) true else { Bridge.node = n; false }
             }
             if (orphan) {
-                withTimeoutOrNull(3000) { n.shutdown() }
-                n.destroy()
+                // Our scope is being cancelled: close on the long-lived one, and
+                // let the next start wait for it (the ports must be free).
+                val previous = Bridge.stopping
+                Bridge.stopping = Bridge.scope.launch {
+                    previous?.join()
+                    withTimeoutOrNull(3000) { n.shutdown() }
+                    n.destroy()
+                }
                 return
             }
+            // The accessibility service may have connected while we started.
+            ControlService.instance?.let { n.setInputListener(it) }
             Bridge.linked.value = n.peers().firstOrNull()?.name
+            Bridge.nodeReady.value = true
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
             rediscoverSoon()
@@ -451,6 +483,8 @@ class PbService : Service() {
             .setContentText("%.1f MB".format(mb))
             .addAction(Notification.Action.Builder(null, "Decline", action(false)).build())
             .addAction(Notification.Action.Builder(null, "Accept", action(true)).build())
+            // The sender gives up after 2 minutes; so does the question.
+            .setTimeoutAfter(120_000)
             .setAutoCancel(true)
             .build()
         getSystemService(NotificationManager::class.java).notify(id, n)
@@ -496,6 +530,7 @@ class PbService : Service() {
         val ask = Intent(this, ControlRequestActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
+            .putExtra("at", android.os.SystemClock.elapsedRealtime())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val n = Notification.Builder(this, CH_CONTROL)
             .setSmallIcon(R.drawable.ic_stat_bridge)
@@ -560,7 +595,7 @@ class PbService : Service() {
             .setContentTitle(
                 when {
                     controller != null -> "$controller is controlling this phone"
-                    peer != null -> "Linked with $peer"
+                    peer != null -> "Paired with $peer"
                     else -> "Not paired yet"
                 },
             )
@@ -597,7 +632,12 @@ class PbService : Service() {
 class CopyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getIntExtra("id", -1)
-        val (text, sensitive) = synchronized(Bridge.pendingClips) { Bridge.pendingClips.remove(id) } ?: return
+        val (text, sensitive) = synchronized(Bridge.pendingClips) { Bridge.pendingClips.remove(id) } ?: run {
+            // Phone Bridge restarted since this notification was posted.
+            context.getSystemService(NotificationManager::class.java).cancel(id)
+            android.widget.Toast.makeText(context, "That clip is no longer available", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         val clip = ClipData.newPlainText("Phone Bridge", text)
         if (sensitive) {
             clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
@@ -615,6 +655,8 @@ class OfferReceiver : BroadcastReceiver() {
         val accept = intent.getBooleanExtra("accept", false)
         Bridge.node?.answerOffer(offer.toULong(), accept)
         context.getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra("nid", 0))
+        // Answered from the notification: close the popup asking the same thing.
+        ControlRequestActivity.answeredElsewhere(offer)
         Log.i(TAG, "OFFER $offer answered accept=$accept")
     }
 }

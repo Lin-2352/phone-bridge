@@ -42,6 +42,22 @@ pub const ROTATE: std::time::Duration = std::time::Duration::from_secs(30);
 const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(35);
 const ROUNDS: u32 = 4;
 
+/// A PC -> phone control request still waiting for the phone's answer.
+static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
+/// The phone -> PC control session running now, so turning the setting off ends it.
+static PHONE_CONTROL: Mutex<Option<pb_transport::SessionCloser>> = Mutex::new(None);
+
+/// End phone -> PC control now (the user turned "Let my phone control this PC" off).
+pub fn stop_phone_control() {
+    if let Some(c) = PHONE_CONTROL
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    {
+        c.close(b"stopped on the PC");
+    }
+}
+
 pub enum Cmd {
     Pair,
     /// The user closed the QR window: kill the current code now.
@@ -184,6 +200,15 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ui = Arc::new(ui);
     std::fs::create_dir_all(&opts.dir)?;
+    // Partial files left by a tray that was killed mid-transfer.
+    if let Ok(dir) = settings.lock().map(|s| s.save_dir.clone()) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') && name.contains(".partial-") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     let identity = pb_identity::vault::open_identity(&opts.dir, &pb_platform_win_wrapper())?;
     let store: SharedStore = Arc::new(Mutex::new(FilePeerStore::open(opts.dir.join("peers.txt"))?));
     let (node, mut ev) = Node::bind(
@@ -284,7 +309,7 @@ pub async fn run(
                         c.last_sent = h;
                     }
                     let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
-                    let (node, log) = (node.clone(), log.clone());
+                    let (node, log, clip) = (node.clone(), log.clone(), clip.clone());
                     tokio::spawn(async move {
                         for (id, name) in targets {
                             let r = async {
@@ -297,19 +322,38 @@ pub async fn run(
                             match r {
                                 Ok(()) if sensitive => log.line(&format!("CLIPSYNC sent a sensitive clip to \"{name}\"")),
                                 Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
-                                Err(e) => log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}")),
+                                Err(e) => {
+                                    log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}"));
+                                    // Not delivered: copying the same text again must retry.
+                                    let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
+                                    if c.last_sent == h {
+                                        c.last_sent = [0; 32];
+                                    }
+                                }
                             }
                         }
                     });
                 }
                 Some(Cmd::ControlPhone) => {
+                    // A second press while the phone is still asking cancels the request.
+                    if let Some(h) = CONTROL_REQUEST.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                        if !h.is_finished() {
+                            h.abort();
+                            log.line("CONTROL request cancelled");
+                            ui(UiEvent::Info("Control request cancelled".into()));
+                            continue;
+                        }
+                    }
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
-                    tokio::spawn(async move {
-                        let Some((id, name)) = target else {
-                            ui(UiEvent::Info("Pair a phone first".into()));
-                            return;
-                        };
+                    let Some((id, name)) = target else {
+                        ui(UiEvent::Info("Pair a phone first".into()));
+                        continue;
+                    };
+                    ui(UiEvent::Info(format!(
+                        "Asking {name}\u{2026} Press Ctrl+Alt+P again to cancel"
+                    )));
+                    let task = tokio::spawn(async move {
                         match node.open_input(&id).await {
                             Ok(sender) => {
                                 log.line(&format!("CONTROL phone \"{name}\" started"));
@@ -317,12 +361,20 @@ pub async fn run(
                             }
                             Err(e) => {
                                 log.line(&format!("CONTROL phone \"{name}\" refused: {e}"));
-                                ui(UiEvent::Info(format!(
-                                    "{name} did not allow control. On the phone, turn on Phone Bridge control in Settings, Accessibility."
-                                )));
+                                let why = match e {
+                                    pb_transport::Error::Declined => format!(
+                                        "{name} did not allow control. On the phone, allow it in Phone Bridge, or turn on \u{201c}Phone Bridge control\u{201d} in Accessibility settings."
+                                    ),
+                                    pb_transport::Error::Timeout => {
+                                        format!("{name} did not answer. Is Phone Bridge on and on the same network?")
+                                    }
+                                    _ => format!("Could not reach {name}: {e}"),
+                                };
+                                ui(UiEvent::Info(why));
                             }
                         }
                     });
+                    *CONTROL_REQUEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(task.abort_handle());
                 }
                 Some(Cmd::SendText { text, link }) => {
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
@@ -535,6 +587,9 @@ async fn pump(
                 if allow {
                     ui(UiEvent::Info(format!("{from} is controlling this PC")));
                 }
+                if allow {
+                    *PHONE_CONTROL.lock().unwrap_or_else(|p| p.into_inner()) = Some(s.closer());
+                }
                 let mut injector = pb_platform_win::input::Injector::default();
                 let started = Instant::now();
                 let mut n = 0u64;
@@ -544,6 +599,10 @@ async fn pump(
                 })
                 .await;
                 drop(injector); // releases anything still held
+                PHONE_CONTROL
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
                 if allow {
                     log.line(&format!(
                         "INPUT from \"{from}\" ended after {:.1}s, {n} events: {r:?}",
@@ -568,7 +627,11 @@ async fn pump(
                         size: offer.size,
                         reply: tx,
                     });
-                    rx.await.unwrap_or(false)
+                    tokio::time::timeout(pb_transport::files::OFFER_TIMEOUT, rx)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(false)
                 };
                 let from = s.peer_name.clone();
                 let started = Instant::now();

@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        honourUserStop(this)
         if (prefs.enabled) startForegroundService(Intent(this, PbService::class.java))
         setContent {
             PbTheme {
@@ -201,6 +202,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ControlFromPc(modifier: Modifier = Modifier) {
         val serviceOn = remember(resumed.intValue) { ControlService.instance != null }
+        val serviceStuck = remember(resumed.intValue) { !serviceOn && ControlService.enabledInSettings(this@MainActivity) }
         val allow = Bridge.allowControl.value
         val controller = Bridge.controlledBy.value
         Column(modifier.fillMaxWidth()) {
@@ -228,6 +230,7 @@ class MainActivity : ComponentActivity() {
                 supportingContent = {
                     Text(
                         when {
+                            serviceStuck -> "Android stopped “Phone Bridge control”. Tap, then turn it off and on again"
                             !serviceOn -> "Needs \u201cPhone Bridge control\u201d in Accessibility settings. Tap to turn it on"
                             allow -> "On. Ctrl+Alt+P on your PC uses its mouse and keyboard here, and again to return"
                             else -> "Off. When your PC asks, this phone asks you first"
@@ -248,7 +251,7 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun HomeScreen(onSettings: () -> Unit) {
-        var clipOn by remember { mutableStateOf(prefs.clipboardSync) }
+        var clipOn by remember(resumed.intValue) { mutableStateOf(prefs.clipboardSync) }
         val pc = Bridge.linked.value
         val running = Bridge.running.value
         val notificationsOn = remember(resumed.intValue) { getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled() }
@@ -270,7 +273,8 @@ class MainActivity : ComponentActivity() {
                         Text(
                             when {
                                 !running -> "Phone Bridge is off. Your PC cannot reach this phone."
-                                pc != null -> "Linked. Anything you share to Phone Bridge arrives on your PC."
+                                !Bridge.nodeReady.value -> "Starting\u2026"
+                                pc != null -> "Paired with $pc. Anything you share to Phone Bridge goes to your PC."
                                 else -> "Not paired yet. On your PC, open Phone Bridge and choose Pair new device, then tap Pair below."
                             },
                             style = MaterialTheme.typography.bodyMedium,
@@ -278,6 +282,8 @@ class MainActivity : ComponentActivity() {
                         )
                         if (!running) {
                             Button(onClick = { setBridgeEnabled(this@MainActivity, true) }) { Text("Turn on") }
+                        } else if (!Bridge.nodeReady.value) {
+                            // Starting: nothing to tap yet.
                         } else if (pc == null) {
                             Button(onClick = { startActivity(Intent(this@MainActivity, ScanActivity::class.java)) }) { Text("Pair: scan QR from PC") }
                         } else {
@@ -335,11 +341,11 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun SettingsScreen(onBack: () -> Unit) {
-        var clipOn by remember { mutableStateOf(prefs.clipboardSync) }
-        var sens by remember { mutableStateOf(prefs.sendSensitive) }
-        var auto by remember { mutableStateOf(prefs.autoAccept) }
+        var clipOn by remember(resumed.intValue) { mutableStateOf(prefs.clipboardSync) }
+        var sens by remember(resumed.intValue) { mutableStateOf(prefs.sendSensitive) }
+        var auto by remember(resumed.intValue) { mutableStateOf(prefs.autoAccept) }
         var tree by remember { mutableStateOf(prefs.saveTree) }
-        val peers = remember { Bridge.node?.peers().orEmpty() }
+        val peers = remember(resumed.intValue, Bridge.linked.value, Bridge.nodeReady.value) { Bridge.node?.peers().orEmpty() }
         var removing by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
         removing?.let { p ->
             AlertDialog(
@@ -438,10 +444,11 @@ class MainActivity : ComponentActivity() {
                 item { ControlFromPc() }
                 item {
                     val on = remember(resumed.intValue) { ControlService.instance != null }
+                    val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
                     ListItem(
                         headlineContent = { Text("Accessibility permission") },
                         supportingContent = { Text("\u201cPhone Bridge control\u201d lets your PC tap and type here. Without it your PC cannot control this phone") },
-                        trailingContent = { Text(if (on) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
+                        trailingContent = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary) },
                         modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     )
                 }

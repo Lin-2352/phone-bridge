@@ -18,13 +18,37 @@ private const val TAG = "PhoneBridge"
 class ControlRequestActivity : Activity() {
     private var answered = false
     private var id = -1L
+    private var dialog: AlertDialog? = null
     private val main = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        current = this
+        show(intent)
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        // Only one request can be pending; a new id means the old one ended.
+        main.removeCallbacksAndMessages(null)
+        dialog?.setOnDismissListener(null)
+        dialog?.dismiss()
+        answered = false
+        show(intent)
+    }
+
+    private fun show(intent: android.content.Intent) {
         id = intent.getLongExtra("id", -1)
         val peer = intent.getStringExtra("peer") ?: "Your PC"
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+        // The phone stops waiting 30 s after the request arrived, not after
+        // this window opened (it may be opened late from the notification).
+        val left = 30_000 - (android.os.SystemClock.elapsedRealtime() - intent.getLongExtra("at", android.os.SystemClock.elapsedRealtime()))
+        if (left <= 0) {
+            android.widget.Toast.makeText(this, "That request has expired", android.widget.Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+        dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Let $peer control this phone?")
             .setMessage("Its mouse and keyboard will work here. Stop any time from Phone Bridge or with Ctrl+Alt+P on the PC.")
             .setPositiveButton("Allow") { _, _ -> answer(true, always = false) }
@@ -32,8 +56,7 @@ class ControlRequestActivity : Activity() {
             .setNegativeButton("Deny") { _, _ -> answer(false, always = false) }
             .setOnDismissListener { if (!answered) answer(false, always = false) }
             .show()
-        // The PC stops waiting after 30 s.
-        main.postDelayed({ if (!answered) answer(false, always = false) }, 30_000)
+        main.postDelayed({ if (!answered) answer(false, always = false) }, left)
     }
 
     private fun answer(accept: Boolean, always: Boolean) {
@@ -48,6 +71,22 @@ class ControlRequestActivity : Activity() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        if (current === this) current = null
         super.onDestroy()
+    }
+
+    companion object {
+        @Volatile private var current: ControlRequestActivity? = null
+
+        /** The same request was answered from the notification. */
+        fun answeredElsewhere(id: Long) {
+            val a = current ?: return
+            a.main.post {
+                if (a.id == id && !a.answered) {
+                    a.answered = true
+                    a.finish()
+                }
+            }
+        }
     }
 }

@@ -105,13 +105,18 @@ class TouchpadActivity : ComponentActivity() {
         super.onStart()
         visible = true
         val gen = generation.incrementAndGet()
-        val node = Bridge.node
-        val peer = Bridge.firstPeer()
-        if (node == null || peer == null) {
-            status.value = "Pair with your PC first"
+        status.value = "Connecting\u2026"
+        if (!Bridge.shownOn()) {
+            status.value = "Phone Bridge is off. Turn it on first"
             return
         }
         Bridge.scope.launch {
+            val node = Bridge.awaitNode()
+            val peer = node?.peers()?.firstOrNull()
+            if (node == null || peer == null) {
+                status.value = if (node == null) "Phone Bridge did not start. Try again" else "Pair with your PC first"
+                return@launch
+            }
             try {
                 val session = node.startInput(peer.id)
                 synchronized(generation) {
@@ -125,7 +130,12 @@ class TouchpadActivity : ComponentActivity() {
                 status.value = "Controlling ${peer.name}"
                 Log.i(TAG, "INPUT started to ${peer.name}")
             } catch (t: Throwable) {
-                status.value = "${peer.name} did not allow control. Turn on “Let my phone control this PC” in Phone Bridge settings on the PC."
+                val declined = t.message?.contains("declined") == true
+                status.value = if (declined) {
+                    "${peer.name} did not allow control. Turn on \u201cLet my phone control this PC\u201d in Phone Bridge settings on the PC."
+                } else {
+                    "Could not reach ${peer.name}. Is Phone Bridge running there?"
+                }
                 Log.i(TAG, "INPUT refused: $t")
             }
         }

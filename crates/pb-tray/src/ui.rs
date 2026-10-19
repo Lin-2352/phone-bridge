@@ -486,6 +486,13 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                     &format!("Controlling {name}"),
                     "Your mouse and keyboard now drive the phone. Press Ctrl+Alt+P to return.",
                 );
+            } else {
+                // The session ends (sender dropped) and the phone hides its cursor.
+                balloon(
+                    hwnd,
+                    "Phone Bridge",
+                    "Could not take over this PC's mouse and keyboard. Try again.",
+                );
             }
         }
         UiEvent::Link { from, url } => {
@@ -516,7 +523,12 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             balloon(
                 hwnd,
                 &format!("{from} sent {name}"),
-                &format!("{mb:.1} MB, saved to Downloads\\Phone Bridge. Click to show."),
+                &format!(
+                    "{mb:.1} MB, saved to {}. Click to show.",
+                    path.parent()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default()
+                ),
             );
         }
         UiEvent::AskControl { from, reply } => {
@@ -668,11 +680,18 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
         Action::Toggle(Key::Auto) => command(hwnd, st, ID_TOGGLE_AUTO),
         Action::Toggle(Key::SendTo) => command(hwnd, st, ID_SENDTO),
         Action::Toggle(Key::Control) => {
-            let _ = st
+            let now_on = st
                 .settings
                 .lock()
-                .map(|mut s| s.allow_control = !s.allow_control);
+                .map(|mut s| {
+                    s.allow_control = !s.allow_control;
+                    s.allow_control
+                })
+                .unwrap_or(false);
             save_settings(st);
+            if !now_on {
+                crate::core::stop_phone_control();
+            }
         }
         Action::Toggle(Key::Keep) => {
             let _ = st

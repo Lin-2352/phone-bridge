@@ -63,6 +63,12 @@ class ControlService : AccessibilityService(), InputListener {
     override fun onServiceConnected() {
         instance = this
         Bridge.node?.setInputListener(this)
+        readBounds()
+        Log.i(TAG, "CONTROL service on (${w}x$h)")
+    }
+
+    /** Screen size now (it changes with rotation). */
+    private fun readBounds() {
         if (Build.VERSION.SDK_INT >= 30) {
             val b = getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
             w = b.width()
@@ -74,15 +80,26 @@ class ControlService : AccessibilityService(), InputListener {
             w = m.widthPixels
             h = m.heightPixels
         }
-        Log.i(TAG, "CONTROL service on (${w}x$h)")
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        readBounds()
+        x = x.coerceIn(0f, w - 1f)
+        y = y.coerceIn(0f, h - 1f)
     }
 
     override fun onDestroy() {
-        if (instance === this) instance = null
-        Bridge.node?.setInputListener(null)
+        if (instance === this) {
+            instance = null
+            Bridge.node?.setInputListener(null)
+            // Turned off mid-session: end it, or the PC keeps "controlling" nothing.
+            if (Bridge.controlledBy.value != null) Bridge.node?.stopControl()
+        }
         hideCursor()
         holdWifi(false)
         Bridge.controlledBy.value = null
+        PbService.refresh(this)
         super.onDestroy()
     }
 
@@ -94,6 +111,7 @@ class ControlService : AccessibilityService(), InputListener {
     override fun onControl(active: Boolean, peerName: String) {
         main.post {
             if (active) {
+                readBounds()
                 x = w / 2f
                 y = h / 2f
                 showCursor()
@@ -424,5 +442,11 @@ class ControlService : AccessibilityService(), InputListener {
     companion object {
         /** The running service, so a node started later can register it. */
         @Volatile var instance: ControlService? = null
+
+        /** Turned on in Accessibility settings (it may still not be running:
+         *  after its process is killed Android can leave it stopped). */
+        fun enabledInSettings(ctx: android.content.Context): Boolean =
+            android.provider.Settings.Secure.getString(ctx.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                ?.split(':')?.any { it.startsWith("${ctx.packageName}/") } == true
     }
 }

@@ -20,6 +20,7 @@ private const val TAG = "PhoneBridge"
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        honourUserStop(this)
         if (!Prefs(this).enabled) {
             Toast.makeText(this, "Phone Bridge is off. Turn it on from its Quick Settings tile", Toast.LENGTH_LONG).show()
             finish()
@@ -51,6 +52,14 @@ class ShareActivity : Activity() {
         // URI grant (it ends with finish() below); only the sending is async.
         data class Opened(val name: String, val size: Long, val mime: String, val fd: Int)
         val opened = uris.mapNotNull { uri ->
+            // Only content shared by another app: never our own files, raw
+            // paths, or the save folder we hold access to.
+            if (uri.scheme != "content" || uri.authority?.startsWith(packageName) == true ||
+                contentResolver.persistedUriPermissions.any { uri.toString().startsWith(it.uri.toString()) }
+            ) {
+                Log.e(TAG, "SHARE refused $uri")
+                return@mapNotNull null
+            }
             try {
                 var name = "file"
                 var size = -1L
@@ -97,6 +106,7 @@ class ShareActivity : Activity() {
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE failed: $t")
                     PbService.cancelOutgoingProgress(app)
+                    notifyInfo(app, "Could not send ${f.name}", "${peer.name} did not receive it. Is Phone Bridge running there?")
                 }
             }
             if (uris.isEmpty() && !text.isNullOrBlank()) {
@@ -107,10 +117,26 @@ class ShareActivity : Activity() {
                     Bridge.addRecent(RecentItem(text.take(80), "Sent to ${peer.name}", if (isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
+                    notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
                 }
             }
         }
         Toast.makeText(this, if (known != null) "Sending to ${known.name}" else "Sending to your PC", Toast.LENGTH_SHORT).show()
         finish()
     }
+}
+
+/** A plain one-off notification (e.g. a send that failed after its toast). */
+fun notifyInfo(ctx: android.content.Context, title: String, text: String) {
+    val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+    nm.createNotificationChannel(
+        android.app.NotificationChannel("events", "Files and clipboard", android.app.NotificationManager.IMPORTANCE_DEFAULT),
+    )
+    val n = android.app.Notification.Builder(ctx, "events")
+        .setSmallIcon(R.drawable.ic_stat_bridge)
+        .setContentTitle(title)
+        .setContentText(text)
+        .setAutoCancel(true)
+        .build()
+    nm.notify(200 + (System.nanoTime() % 50).toInt(), n)
 }

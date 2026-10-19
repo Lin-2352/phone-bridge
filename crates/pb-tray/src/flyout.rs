@@ -143,7 +143,7 @@ fn paint(hwnd: HWND) {
         fluent::round_rect(hdc, &l.badge, p.card, Some(p.stroke), px(s, 10), false);
         fluent::icon(hdc, f.icon_big, glyph::PHONE, l.badge, p.accent);
         let (title, sub) = match &st.model.peer {
-            Some(n) => (n.clone(), "Linked".to_owned()),
+            Some(n) => (n.clone(), "Paired".to_owned()),
             None => (
                 "No device paired".to_owned(),
                 "Pair a phone to start".to_owned(),

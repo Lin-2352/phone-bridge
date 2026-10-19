@@ -52,9 +52,15 @@ fn size(v: &str) -> u64 {
 fn tuning(args: &[String]) -> Tuning {
     let d = Tuning::default();
     Tuning {
-        stream_window: flag(args, "--stream-window").map(|v| size(&v)),
-        conn_window: flag(args, "--conn-window").map(|v| size(&v)),
-        send_window: flag(args, "--send-window").map(|v| size(&v)),
+        stream_window: flag(args, "--stream-window")
+            .map(|v| size(&v))
+            .or(d.stream_window),
+        conn_window: flag(args, "--conn-window")
+            .map(|v| size(&v))
+            .or(d.conn_window),
+        send_window: flag(args, "--send-window")
+            .map(|v| size(&v))
+            .or(d.send_window),
         congestion: flag(args, "--cc")
             .and_then(|v| v.parse().ok())
             .unwrap_or(d.congestion),

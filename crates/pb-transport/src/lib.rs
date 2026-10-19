@@ -390,6 +390,11 @@ impl Node {
             .ok_or(Error::UnknownPeer)?;
         let conn = self.dial_known(*peer, &known.addrs).await?;
         self.track(*peer, &conn);
+        // Unpaired while we were dialling: do not use the new connection.
+        if lock(&self.inner.store).get(peer).is_none() {
+            conn.close(CLOSE_NOT_PAIRED.into(), b"unpaired");
+            return Err(Error::UnknownPeer);
+        }
         let started = async {
             let (send, recv) = conn.open_bi().await.map_err(tx)?;
             Session::start(
@@ -814,6 +819,11 @@ impl SessionCloser {
 }
 
 impl Session {
+    /// Resolves when the connection closes (either side, or timeout).
+    pub async fn closed(&self) {
+        let _ = self.conn.closed().await;
+    }
+
     /// A handle that can end this session from another task.
     pub fn closer(&self) -> SessionCloser {
         SessionCloser(self.conn.weak_handle())

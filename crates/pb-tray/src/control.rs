@@ -46,6 +46,9 @@ struct Active {
     hook_thread: u32,
     /// Our own view of key state (the real one never sees suppressed keys).
     keys: [u8; 256],
+    /// Scan codes and mouse buttons the phone currently holds down (released at the end).
+    held_keys: std::collections::HashSet<u16>,
+    held_buttons: u8,
     caps_on: bool,
 }
 
@@ -89,6 +92,8 @@ pub fn start(owner: HWND, sender: InputSender) -> bool {
             owner: owner.0 as isize,
             hook_thread: 0,
             keys: [0; 256],
+            held_keys: std::collections::HashSet::new(),
+            held_buttons: 0,
             caps_on,
         });
     }
@@ -152,18 +157,25 @@ pub fn start(owner: HWND, sender: InputSender) -> bool {
 pub fn stop() {
     let old = ACTIVE.lock().ok().and_then(|mut g| g.take());
     if let Some(a) = old {
-        // Release modifiers and buttons the phone may think are held.
-        for sc in [0x1Du16, 0x38, 0x2A, 0x36, 0xE01D, 0xE038] {
+        // Release everything the phone may think is still held.
+        for sc in a
+            .held_keys
+            .iter()
+            .copied()
+            .chain([0x1Du16, 0x38, 0x2A, 0x36, 0xE01D, 0xE038])
+        {
             a.sender.send(InputEvent::Key {
                 scancode: sc,
                 pressed: false,
             });
         }
-        for button in 0..3 {
-            a.sender.send(InputEvent::MouseButton {
-                button,
-                pressed: false,
-            });
+        for button in 0..5 {
+            if a.held_buttons & (1 << button) != 0 || button < 3 {
+                a.sender.send(InputEvent::MouseButton {
+                    button,
+                    pressed: false,
+                });
+            }
         }
         a.sender.stop();
         if a.hook_thread != 0 {
@@ -190,11 +202,11 @@ extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRES
         return pass(code, wparam, lparam);
     }
     let hi = (info.mouseData >> 16) as u16 as i16;
-    let Ok(g) = ACTIVE.lock() else {
+    let Ok(mut g) = ACTIVE.lock() else {
         return pass(code, wparam, lparam);
     };
     // No session (or it is ending): never swallow the user's mouse.
-    let Some(a) = g.as_ref() else {
+    let Some(a) = g.as_mut() else {
         return pass(code, wparam, lparam);
     };
     let ev = match wparam.0 as u32 {
@@ -235,10 +247,24 @@ extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRES
         _ => None,
     };
     if let Some(e) = ev {
+        if let InputEvent::MouseButton { button, pressed } = e {
+            if pressed {
+                a.held_buttons |= 1 << button;
+            } else {
+                a.held_buttons &= !(1 << button);
+            }
+        }
         a.sender.send(e);
     }
     // Suppressed locally: the PC cursor stays where it was.
     LRESULT(1)
+}
+
+/// Thread of the window the user is typing into (its keyboard layout applies).
+fn foreground_thread() -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    // SAFETY: plain queries; 0 (the calling thread) if there is no foreground window.
+    unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) }
 }
 
 const VK_SHIFT: usize = 0x10;
@@ -298,6 +324,11 @@ extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
         if !up && ctrl && alt && k.vkCode == VK_P {
             exit_to = Some(a.owner);
         } else {
+            if up {
+                a.held_keys.remove(&scancode);
+            } else {
+                a.held_keys.insert(scancode);
+            }
             a.sender.send(InputEvent::Key {
                 scancode,
                 pressed: !up,
@@ -314,7 +345,7 @@ extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> L
                         &a.keys,
                         &mut buf,
                         0x4,
-                        Some(GetKeyboardLayout(0)),
+                        Some(GetKeyboardLayout(foreground_thread())),
                     )
                 };
                 if n > 0 {

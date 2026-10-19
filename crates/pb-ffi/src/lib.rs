@@ -212,6 +212,12 @@ struct Shared {
     allow_control: std::sync::atomic::AtomicBool,
     /// Ends the running control session, if any.
     control: Mutex<Option<pb_transport::SessionCloser>>,
+    /// A control request is being asked or a session runs: further requests
+    /// are declined (one cursor, one Stop button, one closer).
+    control_busy: std::sync::atomic::AtomicBool,
+    /// Ids for questions to the user (offers, control requests), chosen here:
+    /// the peer's own ids may repeat.
+    next_ask: std::sync::atomic::AtomicU64,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -259,6 +265,8 @@ pub async fn start_node(
         input: Mutex::new(None),
         allow_control: std::sync::atomic::AtomicBool::new(false),
         control: Mutex::new(None),
+        control_busy: std::sync::atomic::AtomicBool::new(false),
+        next_ask: std::sync::atomic::AtomicU64::new(1),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -325,31 +333,40 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 // Possible only while the accessibility service is running;
                 // then automatic if the user allows control, else ask.
                 let listener = sh.input.lock().ok().and_then(|g| g.clone());
+                let busy = sh
+                    .control_busy
+                    .swap(true, std::sync::atomic::Ordering::AcqRel);
                 let accept = match &listener {
+                    _ if busy => false,
                     None => false,
                     Some(_) if sh.allow_control.load(std::sync::atomic::Ordering::Relaxed) => true,
                     Some(_) => {
+                        let ask = sh
+                            .next_ask
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         sh.pending
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .insert(start.id, tx);
+                            .insert(ask, tx);
                         push(
                             &sh.events,
                             PbEvent::ControlRequest {
-                                id: start.id,
+                                id: ask,
                                 peer_name: name.clone(),
                             },
                         );
-                        let answer = tokio::time::timeout(CONTROL_ASK_TIMEOUT, rx)
-                            .await
-                            .ok()
-                            .and_then(|r| r.ok())
-                            .unwrap_or(false);
+                        // No answer in time, or the PC gave up: no.
+                        let answer = tokio::select! {
+                            r = tokio::time::timeout(CONTROL_ASK_TIMEOUT, rx) => {
+                                r.ok().and_then(|r| r.ok()).unwrap_or(false)
+                            }
+                            () = s.closed() => false,
+                        };
                         sh.pending
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .remove(&start.id);
+                            .remove(&ask);
                         answer
                     }
                 };
@@ -385,35 +402,43 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     sh.control.lock().unwrap_or_else(|p| p.into_inner()).take();
                     let _ = l.on_control(false, name.clone());
                 }
+                if !busy {
+                    sh.control_busy
+                        .store(false, std::sync::atomic::Ordering::Release);
+                }
                 break "input done".to_owned();
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
                 let accept = if sh.auto_accept.load(std::sync::atomic::Ordering::Relaxed) {
                     true
                 } else {
+                    let ask = sh
+                        .next_ask
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     sh.pending
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .insert(offer.id, tx);
+                        .insert(ask, tx);
                     push(
                         &sh.events,
                         PbEvent::IncomingOffer {
-                            id: offer.id,
+                            id: ask,
                             peer_name: name.clone(),
                             name: offer.name.clone(),
                             size: offer.size,
                         },
                     );
-                    let answer = tokio::time::timeout(pb_transport::files::OFFER_TIMEOUT, rx)
-                        .await
-                        .ok()
-                        .and_then(|r| r.ok())
-                        .unwrap_or(false);
+                    let answer = tokio::select! {
+                        r = tokio::time::timeout(pb_transport::files::OFFER_TIMEOUT, rx) => {
+                            r.ok().and_then(|r| r.ok()).unwrap_or(false)
+                        }
+                        () = s.closed() => false,
+                    };
                     sh.pending
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .remove(&offer.id);
+                        .remove(&ask);
                     answer
                 };
                 let file_name = offer.name.clone();
@@ -815,9 +840,11 @@ impl PbInput {
             .is_some_and(|g| g.as_ref().is_some_and(|s| s.is_open()))
     }
 
+    /// End the session now; queued typing is dropped (the PC releases any
+    /// keys still held when the session ends).
     pub fn stop(&self) {
         if let Some(s) = self.sender.lock().ok().and_then(|mut g| g.take()) {
-            s.stop();
+            s.cancel();
         }
     }
 }

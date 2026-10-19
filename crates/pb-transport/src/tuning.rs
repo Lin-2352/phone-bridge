@@ -57,7 +57,8 @@ impl Default for Tuning {
     fn default() -> Self {
         Self {
             stream_window: Some(STREAM_WINDOW),
-            conn_window: None,
+            // Bounds what one peer can make us buffer (streams x window).
+            conn_window: Some(4 * STREAM_WINDOW),
             send_window: None,
             congestion: Congestion::Cubic,
             gso: !cfg!(target_os = "android"),
@@ -72,9 +73,13 @@ fn varint(v: u64) -> VarInt {
 
 impl Tuning {
     pub fn transport_config(&self) -> QuicTransportConfig {
+        // A session uses one bidirectional stream plus one file or input
+        // stream; a few more allow the bench's parallel streams.
         let mut b = QuicTransportConfig::builder()
             .enable_segmentation_offload(self.gso)
-            .keep_alive_interval(HEARTBEAT);
+            .keep_alive_interval(HEARTBEAT)
+            .max_concurrent_bidi_streams(4u32.into())
+            .max_concurrent_uni_streams(4u32.into());
         if let Some(w) = self.stream_window {
             b = b.stream_receive_window(varint(w));
         }
