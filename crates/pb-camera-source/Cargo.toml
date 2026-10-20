@@ -18,6 +18,8 @@ all = "warn"
 
 [dependencies]
 pb-camera-frames = { path = "../pb-camera-frames" }
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Media_KernelStreaming",
