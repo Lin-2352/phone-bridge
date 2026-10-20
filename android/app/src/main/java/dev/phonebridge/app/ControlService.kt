@@ -173,6 +173,86 @@ class ControlService : AccessibilityService(), InputListener {
         }
     }
 
+    /**
+     * The phone-screen window: a finger at an absolute spot (x, y in
+     * 0..65535 across the screen). Hover only places the pointer (the next
+     * wheel scrolls there). Main thread.
+     */
+    fun touchAt(phase: Int, ax: Int, ay: Int) {
+        x = ax / 65535f * (w - 1)
+        y = ay / 65535f * (h - 1)
+        when (phase) {
+            1 -> {
+                stopWheel()
+                finger.press(x, y)
+            }
+            2 -> if (finger.down && !wheeling) finger.moveTo(x, y)
+            3 -> finger.release()
+        }
+        if (cursor != null && !frameQueued) {
+            frameQueued = true
+            Choreographer.getInstance().postFrameCallback(frame)
+        }
+    }
+
+    /** Two fingers pinching out (zoom in) or in, around (x, y). Main thread. */
+    fun pinchAt(out: Boolean, ax: Int, ay: Int) {
+        val cx = ax / 65535f * (w - 1)
+        val cy = ay / 65535f * (h - 1)
+        val near = 60f * resources.displayMetrics.density / 2.75f
+        val far = 210f * resources.displayMetrics.density / 2.75f
+        val (from, to) = if (out) near to far else far to near
+        fun stroke(sign: Int) = GestureDescription.StrokeDescription(
+            Path().apply {
+                moveTo((cx + sign * from).coerceIn(0f, w - 1f), cy)
+                lineTo((cx + sign * to).coerceIn(0f, w - 1f), cy)
+            },
+            0, 300,
+        )
+        dispatchGesture(GestureDescription.Builder().addStroke(stroke(-1)).addStroke(stroke(1)).build(), null, null)
+    }
+
+    /** 1×1 window holding the screen awake and, when dimming, the backlight down. */
+    private var dimView: android.view.View? = null
+    private val screenOff = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+            // The power button: brightness comes back.
+            endDim()
+        }
+    }
+
+    /** While mirroring: keep the phone awake; `on` also dims the backlight. Main thread. */
+    fun setDim(on: Boolean) {
+        val wm = getSystemService(WindowManager::class.java)
+        val p = (dimView?.layoutParams as? WindowManager.LayoutParams) ?: WindowManager.LayoutParams(
+            1, 1,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        p.screenBrightness = if (on) 0f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        val v = dimView
+        if (v == null) {
+            val nv = android.view.View(this)
+            runCatching { wm.addView(nv, p) }.onSuccess {
+                dimView = nv
+                registerReceiver(screenOff, android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF))
+            }
+        } else {
+            runCatching { wm.updateViewLayout(v, p) }
+        }
+        Log.i(TAG, "SCREEN dim=$on")
+    }
+
+    /** Mirroring ended or the power button was pressed. */
+    fun endDim() {
+        val v = dimView ?: return
+        dimView = null
+        runCatching { getSystemService(WindowManager::class.java).removeView(v) }
+        runCatching { unregisterReceiver(screenOff) }
+    }
+
     private fun showCursor() {
         if (overlay != null) return
         val size = (22 * resources.displayMetrics.density).toInt()

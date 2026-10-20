@@ -61,6 +61,11 @@ class Prefs(context: Context) {
         get() = sp.getInt("saved_ringer", -1)
         set(v) = sp.edit().putInt("saved_ringer", v).apply()
 
+    /** Screen sharing to the PC starts without asking (Android's prompt still shows). */
+    var allowScreen: Boolean
+        get() = sp.getBoolean("allow_screen", false)
+        set(v) = sp.edit().putBoolean("allow_screen", v).apply()
+
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?
         get() = sp.getString("save_tree", null)?.let(Uri::parse)

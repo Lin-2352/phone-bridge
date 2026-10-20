@@ -47,6 +47,7 @@ private const val PROGRESS_IN_ID = 2
 private const val PROGRESS_OUT_ID = 3
 private const val CH_CONTROL = "control"
 const val CONTROL_ASK_ID = 4
+const val SCREEN_ASK_ID = 6
 
 /** One line in the Home screen's Recent list. */
 data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
@@ -181,6 +182,7 @@ class PbService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
@@ -227,6 +229,8 @@ class PbService : Service() {
 
     /** Low memory: keep the bare minimum and leave a trace for diagnosis. */
     override fun onTrimMemory(level: Int) {
+        // Memory is short: screen sharing steps down (720-class, 15 fps).
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) ScreenShare.capture?.stepDown()
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
             android.os.Handler(mainLooper).post {
@@ -237,6 +241,8 @@ class PbService : Service() {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
+        ScreenShare.stop(userStopped = true)
         val n = synchronized(Bridge) {
             destroyed = true
             Bridge.node.also { Bridge.node = null }
@@ -349,8 +355,7 @@ class PbService : Service() {
         // already arrived is still saved.
         if (destroyed && (e is PbEvent.TransferProgress || e is PbEvent.IncomingOffer || e is PbEvent.ControlRequest)) return
         when (e) {
-            // Screen sharing arrives with the capture code; until then, decline.
-            is PbEvent.ScreenRequest -> Bridge.node?.answerScreen(e.id, null)
+            is PbEvent.ScreenRequest -> askScreen(e)
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
                 // Share clipboard: writing the clipboard is allowed in the background.
@@ -534,6 +539,50 @@ class PbService : Service() {
      * window from the background) and a notification as the fallback. The
      * request times out after 30 s on the Rust side.
      */
+    /** A PC asks to see this screen: resume within the grace, else ask. */
+    private fun askScreen(e: PbEvent.ScreenRequest) {
+        if (e.resume && ScreenShare.resume(e.id)) return
+        val ask = Intent(this, ScreenConsentActivity::class.java)
+            .putExtra("id", e.id.toLong())
+            .putExtra("peer", e.peerName)
+            .putExtra("at", android.os.SystemClock.elapsedRealtime())
+            .putExtra("maxLong", e.maxLongSide.toInt())
+            .putExtra("sharp", e.sharp)
+            .putExtra("dim", e.dim)
+            .putExtra("codecs", IntArray(e.codecs.size) { e.codecs[it].toInt() and 0xff })
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val locked = getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+        if (locked) {
+            val n = Notification.Builder(this, CH_CONTROL)
+                .setSmallIcon(R.drawable.ic_stat_bridge)
+                .setContentTitle("Unlock to share your screen with ${e.peerName}")
+                .setContentText("Then tap here to allow it")
+                .setContentIntent(PendingIntent.getActivity(this, 43, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                .setTimeoutAfter(30_000)
+                .setAutoCancel(true)
+                .build()
+            getSystemService(NotificationManager::class.java).notify(SCREEN_ASK_ID, n)
+        }
+        runCatching { startActivity(ask) }.onFailure { Log.i(TAG, "SCREEN ask window not allowed: $it") }
+        Log.i(TAG, "SCREEN request from ${e.peerName} resume=${e.resume}")
+    }
+
+    /** While sharing the screen the service also runs as mediaProjection (Android 14+ rule). */
+    fun enterProjection(): Boolean = try {
+        startForeground(
+            ONGOING_ID, statusNotification(),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+        )
+        true
+    } catch (t: Throwable) {
+        Log.e(TAG, "SERVICE mediaProjection type refused: $t")
+        false
+    }
+
+    fun leaveProjection() {
+        runCatching { startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) }
+    }
+
     private fun askControl(e: PbEvent.ControlRequest) {
         fun answer(accept: Boolean) = PendingIntent.getBroadcast(
             this, if (accept) 41 else 40,
@@ -626,6 +675,9 @@ class PbService : Service() {
     }
 
     companion object {
+        /** The running service (screen sharing changes its foreground type). */
+        @Volatile var instance: PbService? = null
+
         const val ACTION_STOP = "dev.phonebridge.app.STOP"
         private const val ACTION_REFRESH = "dev.phonebridge.app.REFRESH"
 
