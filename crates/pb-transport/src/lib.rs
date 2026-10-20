@@ -5,6 +5,7 @@
 //! so nothing leaves the local network unless a relay is configured later.
 //! GSO is disabled on Android (see docs/DECISIONS.md, finding 1).
 
+pub mod camera;
 pub mod discovery;
 pub mod files;
 pub mod input;

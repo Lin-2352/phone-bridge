@@ -28,11 +28,11 @@ use crate::{
 };
 
 /// The phone may take this long: our ask, then Android's capture prompt.
-const ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
+pub(crate) const ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
 /// Opening the streams after accepting.
-const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// Records waiting for the PC's decoder.
-const RECORDS_CHANNEL: usize = 16;
+pub(crate) const RECORDS_CHANNEL: usize = 16;
 /// The phone keeps capturing (paused) this long after a dropped link, so a
 /// new request from the same PC resumes without Android's prompt.
 pub const RESUME_GRACE: Duration = Duration::from_secs(30);
@@ -345,6 +345,20 @@ pub struct ScreenSink {
 }
 
 impl ScreenSink {
+    pub(crate) fn new(
+        video: mpsc::UnboundedSender<Vec<u8>>,
+        queue: ByteQueue,
+        ctl: mpsc::UnboundedSender<ControlMsg>,
+        closer: SessionCloser,
+    ) -> Self {
+        Self {
+            video,
+            queue,
+            ctl,
+            closer,
+        }
+    }
+
     pub fn send(&self, r: Record) -> SendOutcome {
         let mut bytes = Vec::with_capacity(13 + r.payload.len());
         record::encode(&r, &mut bytes);
