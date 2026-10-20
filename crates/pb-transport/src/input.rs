@@ -8,9 +8,10 @@
 
 use std::time::Duration;
 
+use iroh::endpoint::{RecvStream, SendStream};
 use pb_protocol::{
     control::{ControlMsg, InputStart, OfferReply},
-    InputDatagram, InputEvent, INPUT_DATAGRAM_LEN,
+    InputDatagram, InputEvent, TouchPhase, INPUT_DATAGRAM_LEN,
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -80,6 +81,30 @@ impl Node {
             event: InputEvent::MouseMove { dx: 0, dy: 0 },
         };
         out.write_all(&hello.encode()).await.map_err(tx)?;
+        Ok(sender_on(out, async move {
+            crate::files::await_peer_close(&mut s).await;
+        }))
+    }
+}
+
+/// A pointer or finger move that may merge with the next one.
+fn mergeable_touch(e: &InputEvent) -> bool {
+    matches!(
+        e,
+        InputEvent::Touch {
+            phase: TouchPhase::Hover | TouchPhase::Move,
+            ..
+        }
+    )
+}
+
+/// The paced sender on an open input stream; `after` runs once the stream
+/// is finished (the input session waits there for the peer to close).
+pub(crate) fn sender_on(
+    mut out: SendStream,
+    after: impl std::future::Future<Output = ()> + Send + 'static,
+) -> InputSender {
+    {
         let (tx, mut rx) = mpsc::unbounded_channel::<InputEvent>();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = cancel.clone();
@@ -96,13 +121,15 @@ impl Node {
             let mut moves = Bucket::new(SEND_MOVES_PER_SEC, BURST);
             let mut others = Bucket::new(SEND_OTHER_PER_SEC, BURST);
             let mut pending: Option<(i32, i32)> = None;
+            // The latest absolute hover/move: only the newest position matters.
+            let mut pending_touch: Option<InputEvent> = None;
             let mut open = true;
-            'run: while open || pending.is_some() {
+            'run: while open || pending.is_some() || pending_touch.is_some() {
                 if stopped.load(std::sync::atomic::Ordering::Acquire) {
                     break;
                 }
                 let mut batch = Vec::new();
-                let first = if pending.is_some() {
+                let first = if pending.is_some() || pending_touch.is_some() {
                     // A merged move is held back: wake when it may go.
                     tokio::select! {
                         e = rx.recv(), if open => Some(e),
@@ -128,11 +155,16 @@ impl Node {
                             let (x, y) = pending.unwrap_or((0, 0));
                             pending = Some((x + i32::from(dx), y + i32::from(dy)));
                         }
+                        e if mergeable_touch(&e) => pending_touch = Some(e),
                         other => {
                             // Order matters: the movement before a click goes first.
                             if let Some((x, y)) = pending.take() {
                                 moves.take_anyway();
                                 push_move(x, y, &mut push, &mut buf);
+                            }
+                            if let Some(t) = pending_touch.take() {
+                                moves.take_anyway();
+                                push(t, &mut buf);
                             }
                             while !others.try_take() {
                                 if stopped.load(std::sync::atomic::Ordering::Acquire) {
@@ -152,14 +184,19 @@ impl Node {
                     let (x, y) = pending.take().unwrap_or_default();
                     push_move(x, y, &mut push, &mut buf);
                 }
+                if pending_touch.is_some() && (!open || moves.try_take()) {
+                    if let Some(t) = pending_touch.take() {
+                        push(t, &mut buf);
+                    }
+                }
                 if !buf.is_empty() && out.write_all(&buf).await.is_err() {
                     break;
                 }
             }
             let _ = out.finish();
-            crate::files::await_peer_close(&mut s).await;
+            after.await;
         });
-        Ok(InputSender { tx, done, cancel })
+        InputSender { tx, done, cancel }
     }
 }
 
@@ -254,7 +291,7 @@ pub async fn receive_input(
     session: &mut Session,
     start: InputStart,
     accept: bool,
-    mut on_event: impl FnMut(InputEvent),
+    on_event: impl FnMut(InputEvent),
 ) -> Result<(), Error> {
     session
         .send(ControlMsg::OfferReply(OfferReply {
@@ -267,10 +304,25 @@ pub async fn receive_input(
         crate::files::wait_for_close(session).await;
         return Err(Error::Declined);
     }
-    let mut stream = tokio::time::timeout(Duration::from_secs(10), session.conn.accept_uni())
+    let stream = tokio::time::timeout(Duration::from_secs(10), session.conn.accept_uni())
         .await
         .map_err(|_| Error::Io("controller did not open the input stream".into()))?
         .map_err(tx)?;
+    if let Err(e) = read_input(stream, on_event).await {
+        session.conn.close(1u32.into(), b"input flood");
+        return Err(e);
+    }
+    // Stream ended: we read last, so we close.
+    session.conn.close(0u32.into(), b"input done");
+    Ok(())
+}
+
+/// Read input records until the stream ends, within the limits above; a
+/// flood is an error (the caller closes the connection).
+pub(crate) async fn read_input(
+    mut stream: RecvStream,
+    mut on_event: impl FnMut(InputEvent),
+) -> Result<(), Error> {
     let mut rec = [0u8; INPUT_DATAGRAM_LEN];
     // A real mouse and keyboard produce at most a few hundred events per
     // second. Beyond the budget, moves are dropped; a peer flooding clicks or
@@ -287,17 +339,18 @@ pub async fn receive_input(
         // Every record counts, even ones we drop or cannot decode.
         total += 1;
         if total > MAX_RECORDS_PER_SEC {
-            session.conn.close(1u32.into(), b"input flood");
             return Err(Error::Io("input flood".into()));
         }
         let Ok(d) = InputDatagram::decode(&rec) else {
             continue;
         };
-        if let InputEvent::MouseMove { dx, dy } = d.event {
-            if dx == 0 && dy == 0 {
-                // The controller's opening no-op.
-                continue;
-            }
+        let is_move = match d.event {
+            // The controller's opening no-op.
+            InputEvent::MouseMove { dx: 0, dy: 0 } => continue,
+            InputEvent::MouseMove { .. } => true,
+            ref e => mergeable_touch(e),
+        };
+        if is_move {
             moves += 1;
             if moves > MAX_MOVES_PER_SEC {
                 continue;
@@ -305,14 +358,11 @@ pub async fn receive_input(
         } else {
             others += 1;
             if others > MAX_OTHER_PER_SEC {
-                session.conn.close(1u32.into(), b"input flood");
                 return Err(Error::Io("input flood".into()));
             }
         }
         on_event(d.event);
     }
-    // Stream ended: we read last, so we close.
-    session.conn.close(0u32.into(), b"input done");
     Ok(())
 }
 

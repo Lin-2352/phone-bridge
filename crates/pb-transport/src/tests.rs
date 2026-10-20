@@ -705,6 +705,94 @@ mod input {
     }
 
     #[tokio::test]
+    async fn touch_moves_merge_but_down_and_up_keep_order() {
+        use pb_protocol::TouchPhase::*;
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        let input = phone.open_input(&pc.peer_id()).await.unwrap();
+        input.send(InputEvent::Touch {
+            phase: Down,
+            x: 10,
+            y: 10,
+        });
+        for i in 0..50u16 {
+            input.send(InputEvent::Touch {
+                phase: Move,
+                x: 100 + i,
+                y: 200,
+            });
+        }
+        input.send(InputEvent::Touch {
+            phase: Up,
+            x: 149,
+            y: 200,
+        });
+        input.stop();
+        let (r, got) = rx.await.unwrap();
+        assert!(r.is_ok());
+        assert_eq!(
+            got.first(),
+            Some(&InputEvent::Touch {
+                phase: Down,
+                x: 10,
+                y: 10
+            })
+        );
+        assert_eq!(
+            got.last(),
+            Some(&InputEvent::Touch {
+                phase: Up,
+                x: 149,
+                y: 200
+            })
+        );
+        let moves: Vec<_> = got
+            .iter()
+            .filter(|e| matches!(e, InputEvent::Touch { phase: Move, .. }))
+            .collect();
+        assert!(
+            !moves.is_empty() && moves.len() <= 10,
+            "{} moves",
+            moves.len()
+        );
+        assert_eq!(
+            moves.last(),
+            Some(&&InputEvent::Touch {
+                phase: Move,
+                x: 149,
+                y: 200
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn touch_flood_is_limited_like_mouse_moves() {
+        use pb_protocol::{control::InputStart, InputDatagram, TouchPhase::Move};
+        let (pc, mut pc_ev, phone, _) = paired().await;
+        let rx = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        let mut s = phone.connect(&pc.peer_id()).await.unwrap();
+        s.send(ControlMsg::InputStart(InputStart { id: 8 }))
+            .await
+            .unwrap();
+        assert!(crate::files::await_reply(&mut s, 8).await.unwrap());
+        let mut out = s.conn.open_uni().await.unwrap();
+        let mut buf = Vec::new();
+        for i in 0..3000u16 {
+            let event = InputEvent::Touch {
+                phase: Move,
+                x: i,
+                y: i,
+            };
+            buf.extend_from_slice(&InputDatagram { seq: i, event }.encode());
+        }
+        let _ = out.write_all(&buf).await;
+        let _ = out.finish();
+        let (r, got) = rx.await.unwrap();
+        assert!(r.is_ok(), "moves over the budget are dropped, not fatal");
+        assert!(got.len() <= 2000, "got {}", got.len());
+    }
+
+    #[tokio::test]
     async fn click_floods_end_the_session_and_excess_moves_are_dropped() {
         use pb_protocol::{control::InputStart, InputDatagram};
         let (pc, mut pc_ev, phone, _) = paired().await;
