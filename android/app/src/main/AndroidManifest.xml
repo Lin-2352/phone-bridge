@@ -156,5 +156,6 @@
         </receiver>
         <receiver android:name=".CopyReceiver" android:exported="false" />
         <receiver android:name=".OfferReceiver" android:exported="false" />
+        <receiver android:name=".ScreenReceiver" android:exported="false" />
     </application>
 </manifest>

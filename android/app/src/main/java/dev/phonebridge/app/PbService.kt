@@ -48,6 +48,7 @@ private const val PROGRESS_OUT_ID = 3
 private const val CH_CONTROL = "control"
 const val CONTROL_ASK_ID = 4
 const val SCREEN_ASK_ID = 6
+const val SCREEN_SHARE_ID = 7
 
 /** One line in the Home screen's Recent list. */
 data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
@@ -714,6 +715,38 @@ class CopyReceiver : BroadcastReceiver() {
 }
 
 /** Accept/Decline buttons on an incoming-file notification. */
+/** "Stop" and "Restore brightness" on the screen-sharing notification. */
+class ScreenReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.getStringExtra("do")) {
+            "stop" -> ScreenShare.stop(userStopped = true)
+            "bright" -> ControlService.instance?.setDim(false)
+        }
+    }
+}
+
+/** Shown while a PC sees this screen. */
+fun notifySharing(ctx: Context, peer: String?) {
+    val nm = ctx.getSystemService(NotificationManager::class.java)
+    if (peer == null) {
+        nm.cancel(SCREEN_SHARE_ID)
+        return
+    }
+    fun action(what: String, code: Int) = PendingIntent.getBroadcast(
+        ctx, code, Intent(ctx, ScreenReceiver::class.java).putExtra("do", what),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    val n = Notification.Builder(ctx, "control")
+        .setSmallIcon(R.drawable.ic_stat_bridge)
+        .setContentTitle("Sharing screen with $peer")
+        .setContentText("Your PC can see and use this screen")
+        .setOngoing(true)
+        .addAction(Notification.Action.Builder(null, "Stop", action("stop", 50)).build())
+        .addAction(Notification.Action.Builder(null, "Restore brightness", action("bright", 51)).build())
+        .build()
+    nm.notify(SCREEN_SHARE_ID, n)
+}
+
 class OfferReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val offer = intent.getLongExtra("offer", -1)

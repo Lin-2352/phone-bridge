@@ -329,6 +329,7 @@ object ScreenShare : ScreenListener {
         ask = a
         c.attach(s)
         sharingWith.value = a.peer
+        notifySharing(ctx, a.peer)
         Log.i(TAG, "SCREEN sharing with ${a.peer}")
         return true
     }
@@ -354,6 +355,7 @@ object ScreenShare : ScreenListener {
         capture = null
         screen = null
         sharingWith.value = null
+        PbService.instance?.let { notifySharing(it, null) }
         PbService.instance?.leaveProjection()
         ControlService.instance?.endDim()
     }

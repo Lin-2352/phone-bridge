@@ -249,6 +249,50 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * "Screen to PC": who sees this screen right now (with Stop), and whether
+     * a PC's request needs a yes first (Android's own prompt always shows).
+     */
+    @Composable
+    private fun ScreenToPc(modifier: Modifier = Modifier) {
+        val prefs = remember { Prefs(this@MainActivity) }
+        var always by remember { mutableStateOf(prefs.allowScreen) }
+        val viewer = ScreenShare.sharingWith.value
+        Column(modifier.fillMaxWidth()) {
+            if (viewer != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "$viewer can see this screen",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = { ScreenShare.stop(userStopped = true) }) { Text("Stop") }
+                }
+            }
+            ListItem(
+                headlineContent = { Text("Show my screen on my PC without asking") },
+                supportingContent = {
+                    Text(if (always) "On. Android still asks before each share" else "Off. This phone asks you first")
+                },
+                trailingContent = {
+                    Switch(always, { v ->
+                        always = v
+                        prefs.allowScreen = v
+                    })
+                },
+            )
+        }
+    }
+
+    /**
      * "Notifications on PC": phone notifications appear in the PC's
      * notification centre. Needs Notification access, granted in Settings.
      */
@@ -341,6 +385,7 @@ class MainActivity : ComponentActivity() {
                 }
                 item { ControlFromPc(Modifier.padding(top = 8.dp)) }
                 item { NotificationsOnPc() }
+                item { ScreenToPc() }
                 if (!notificationsOn) {
                     item {
                         ListItem(
@@ -492,6 +537,7 @@ class MainActivity : ComponentActivity() {
                 item { Section("Control from PC") }
                 item { ControlFromPc() }
                 item { NotificationsOnPc() }
+                item { ScreenToPc() }
                 item {
                     val on = remember(resumed.intValue) { ControlService.instance != null }
                     val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
