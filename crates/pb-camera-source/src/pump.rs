@@ -25,6 +25,10 @@ pub struct Sample<T> {
     pub duration_100ns: i64,
 }
 
+/// A media type the stream does not offer, or a change after the start.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TypeRefused;
+
 /// The chosen type: fixed once the stream started.
 #[derive(Default)]
 pub struct TypeState {
@@ -35,12 +39,12 @@ pub struct TypeState {
 impl TypeState {
     /// Choose a type (only the advertised ones); refused once started and
     /// different: a type change mid-call breaks apps.
-    pub fn set_current(&mut self, w: u32, h: u32) -> Result<(), ()> {
+    pub fn set_current(&mut self, w: u32, h: u32) -> Result<(), TypeRefused> {
         if !TYPES.contains(&(w, h)) {
-            return Err(());
+            return Err(TypeRefused);
         }
         if self.started && self.current != Some((w, h)) {
-            return Err(());
+            return Err(TypeRefused);
         }
         self.current = Some((w, h));
         Ok(())
@@ -81,6 +85,17 @@ impl<T> Pump<T> {
 
     pub fn waiting(&self) -> usize {
         self.queue.len()
+    }
+
+    /// No readable ring at all (no frames file): answer one request with black.
+    pub fn black_sample(&mut self, now_100ns: i64) -> Option<Sample<T>> {
+        let token = self.queue.pop_front()?;
+        Some(Sample {
+            token,
+            data: black(self.size.0, self.size.1),
+            pts_100ns: self.hb.next_pts(now_100ns),
+            duration_100ns: FRAME_100NS,
+        })
     }
 
     /// One 33 ms tick: look at the ring, answer at most ONE request.
@@ -128,6 +143,17 @@ mod tests {
 
     fn put(r: &mut Ring, w: u32, h: u32, v: u8) {
         r.write_frame(w, h, 1, |s| s[..(w * h * 3 / 2) as usize].fill(v));
+    }
+
+    #[test]
+    fn without_a_ring_requests_still_get_black() {
+        let mut p = Pump::new((1920, 1080));
+        p.request(1);
+        p.request(2);
+        let s = p.black_sample(1_000_000).unwrap();
+        assert_eq!((s.token, s.data[0]), (1, 16));
+        assert_eq!(s.data.len(), 1920 * 1080 * 3 / 2);
+        assert_eq!(p.waiting(), 1);
     }
 
     #[test]
