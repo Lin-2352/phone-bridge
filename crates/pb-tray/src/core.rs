@@ -82,6 +82,14 @@ pub enum Cmd {
         accept: bool,
     },
     Unpair(PeerId),
+    /// Act on a phone notification (from a toast).
+    NotifyAction {
+        peer: PeerId,
+        key: String,
+        kind: pb_protocol::control::NotifyActionKind,
+        index: u32,
+        text: String,
+    },
 }
 
 pub enum UiEvent {
@@ -140,6 +148,28 @@ pub enum UiEvent {
         reply: oneshot::Sender<bool>,
     },
     Info(String),
+    /// A phone notification arrived (or was re-sent quietly).
+    Notify {
+        peer: PeerId,
+        n: Box<pb_protocol::control::Notification>,
+        logo: Option<PathBuf>,
+        picture: Option<PathBuf>,
+    },
+    NotifyRemoved {
+        peer: PeerId,
+        key: String,
+    },
+    /// The keys active on that phone; toasts for any others go.
+    NotifySync {
+        peer: PeerId,
+        keys: Vec<String>,
+    },
+    /// An action on a toast did not work on the phone.
+    NotifyActionFailed {
+        reason: String,
+        /// The reply text, so the user does not lose it.
+        reply: Option<String>,
+    },
 }
 
 pub struct Options {
@@ -209,6 +239,8 @@ pub async fn run(
             }
         }
     }
+    // Toast images of a previous run are dropped here.
+    let images = Arc::new(ToastImages::new(opts.dir.join("toast-images")));
     let identity = pb_identity::vault::open_identity(&opts.dir, &pb_platform_win_wrapper())?;
     let store: SharedStore = Arc::new(Mutex::new(FilePeerStore::open(opts.dir.join("peers.txt"))?));
     let (node, mut ev) = Node::bind(
@@ -232,8 +264,26 @@ pub async fn run(
     ui(UiEvent::Ready {
         fingerprint: node.peer_id().fingerprint(),
     });
-
     let clip: Arc<Mutex<ClipSync>> = Arc::default();
+    // Ask each phone once what notifications it has (quiet copies and the
+    // active keys), so toasts left from before match the phone again.
+    for p in node.paired_peers() {
+        let (node, log, ui, settings, clip, images) = (
+            node.clone(),
+            log.clone(),
+            ui.clone(),
+            settings.clone(),
+            clip.clone(),
+            images.clone(),
+        );
+        tokio::spawn(async move {
+            match node.notify_sync_request(&p.id).await {
+                Ok(s) => pump(s, log, ui, settings, clip, images).await,
+                Err(e) => log.line(&format!("NOTIFY sync with \"{}\" skipped: {e}", p.name)),
+            }
+        });
+    }
+
     let mut pending: HashMap<u64, PendingPairing> = HashMap::new();
     let mut next_id = 0u64;
     let mut rotation: Option<tokio::task::JoinHandle<()>> = None;
@@ -279,7 +329,43 @@ pub async fn run(
                     node.unpair(&id);
                     log.line(&format!("UNPAIRED {id}"));
                     refresh(&node, &peers);
+                    // Its toasts go with it.
+                    ui(UiEvent::NotifySync { peer: id, keys: Vec::new() });
                     ui(UiEvent::Info("Device removed".into()));
+                }
+                Some(Cmd::NotifyAction { peer, key, kind, index, text }) => {
+                    let name = peers
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.iter().find(|(id, _)| *id == peer).map(|(_, n)| n.clone()))
+                        .unwrap_or_else(|| "your phone".into());
+                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    tokio::spawn(async move {
+                        let reply = (kind == pb_protocol::control::NotifyActionKind::Reply).then(|| text.clone());
+                        let action = pb_protocol::control::NotifyAction {
+                            id: 0,
+                            key: key.clone(),
+                            kind: kind as i32,
+                            index,
+                            text,
+                        };
+                        let r = node.notify_action(&peer, action).await;
+                        let hash = pb_transport::notify::key_hash(&key);
+                        match r {
+                            Ok(res) if res.ok => log.line(&format!("NOTIFY action {kind:?} key={hash} ok=true")),
+                            Ok(res) => {
+                                log.line(&format!("NOTIFY action {kind:?} key={hash} ok=false"));
+                                ui(UiEvent::NotifyActionFailed { reason: res.reason, reply });
+                            }
+                            Err(e) => {
+                                log.line(&format!("NOTIFY action {kind:?} key={hash} failed: {e}"));
+                                ui(UiEvent::NotifyActionFailed {
+                                    reason: format!("Couldn't reach {name}"),
+                                    reply,
+                                });
+                            }
+                        }
+                    });
                 }
                 Some(Cmd::SendFiles(paths)) => {
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
@@ -448,7 +534,7 @@ pub async fn run(
                 pending.insert(next_id, p);
             }
             Some(s) = ev.sessions.recv() => {
-                tokio::spawn(pump(s, log.clone(), ui.clone(), settings.clone(), clip.clone()));
+                tokio::spawn(pump(s, log.clone(), ui.clone(), settings.clone(), clip.clone(), images.clone()));
             }
         }
     }
@@ -534,10 +620,60 @@ async fn pump(
     ui: Arc<impl Fn(UiEvent) + Send + Sync + 'static>,
     settings: SharedSettings,
     clip: Arc<Mutex<ClipSync>>,
+    images: Arc<ToastImages>,
 ) {
     log.line(&format!("SESSION \"{}\"", s.peer_name));
+    let mut notify_rate =
+        pb_transport::notify::RateWindow::new(pb_transport::notify::MAX_NOTIFY_PER_SEC);
     loop {
-        match s.recv().await {
+        let msg = s.recv().await;
+        if matches!(
+            msg,
+            Ok(Some(
+                ControlMsg::Notification(_)
+                    | ControlMsg::NotifyIcon(_)
+                    | ControlMsg::NotifyRemoved(_)
+                    | ControlMsg::NotifySync(_)
+            ))
+        ) && !notify_rate.hit()
+        {
+            log.line(&format!(
+                "NOTIFY flood from \"{}\": session closed",
+                s.peer_name
+            ));
+            s.closer().close(b"notify flood");
+            break;
+        }
+        match msg {
+            Ok(Some(ControlMsg::NotifyIcon(i))) => {
+                images.icon(&i.hash, &i.png);
+            }
+            Ok(Some(ControlMsg::Notification(n))) => {
+                let tag = crate::notify::tag(&s.peer, &n.key);
+                let logo = images.icon_path(&n.icon_hash);
+                let picture = (!n.picture.is_empty())
+                    .then(|| images.picture(&tag, &n.picture))
+                    .flatten();
+                log.line(&format!(
+                    "NOTIFY posted pkg={} key={}",
+                    n.package,
+                    pb_transport::notify::key_hash(&n.key)
+                ));
+                ui(UiEvent::Notify {
+                    peer: s.peer,
+                    n: Box::new(n),
+                    logo,
+                    picture,
+                });
+            }
+            Ok(Some(ControlMsg::NotifyRemoved(r))) => ui(UiEvent::NotifyRemoved {
+                peer: s.peer,
+                key: r.key,
+            }),
+            Ok(Some(ControlMsg::NotifySync(x))) => ui(UiEvent::NotifySync {
+                peer: s.peer,
+                keys: x.keys,
+            }),
             Ok(Some(ControlMsg::ClipboardText(c))) => {
                 if c.sensitive {
                     log.line(&format!("CLIP from \"{}\" (sensitive)", s.peer_name));
@@ -674,6 +810,8 @@ async fn pump(
         }
     }
 }
+
+use crate::toast_images::ToastImages;
 
 #[cfg(windows)]
 fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {

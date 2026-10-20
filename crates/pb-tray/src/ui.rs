@@ -72,6 +72,49 @@ const NIN_BALLOONUSERCLICK: u32 = 0x0405;
 const NIN_SELECT: u32 = 0x0400;
 const NIN_KEYSELECT: u32 = 0x0401;
 const TIMER_CLIP: usize = 7;
+/// Checks whether mirrored toasts were cleared in the notification centre.
+const TIMER_NOTIFY: usize = 9;
+/// Clears a copied one-time code after 60 s.
+const TIMER_OTP: usize = 10;
+const WM_TOAST: u32 = WM_APP + 7;
+const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
+const WTS_SESSION_LOCK: usize = 7;
+const WTS_SESSION_UNLOCK: usize = 8;
+
+/// A click, button, reply or dismissal on one of our toasts.
+enum ToastEvent {
+    Activated(crate::toast_xml::ToastArgs, Option<String>),
+    Dismissed(String),
+}
+static TOAST_EVENTS: Mutex<VecDeque<ToastEvent>> = Mutex::new(VecDeque::new());
+
+/// Toasts for phone notifications and Phone Bridge's own messages.
+#[derive(Default)]
+struct NotifyUi {
+    mirror: crate::notify::Mirror,
+    /// tag -> (group, index of the reply action, picture file)
+    meta: std::collections::HashMap<String, (String, Option<u32>, Option<std::path::PathBuf>)>,
+    locked: bool,
+    /// (clipboard sequence right after copying, the code)
+    otp_pending: Option<(u32, String)>,
+    /// Real toasts work; otherwise the old balloons are used.
+    toasts_ok: bool,
+    own_counter: u64,
+    /// The own toast a click acts on (latest file or link).
+    last_own_tag: String,
+}
+static NOTIFY: std::sync::LazyLock<Mutex<NotifyUi>> = std::sync::LazyLock::new(Mutex::default);
+
+fn notify_ui() -> std::sync::MutexGuard<'static, NotifyUi> {
+    NOTIFY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// Clipboard sequence number right after our own write, so the listener
 /// does not send back what we just received.
@@ -287,7 +330,38 @@ fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     }
 }
 
+/// A message from Phone Bridge itself: a toast (it stays in the notification
+/// centre), or a tray balloon when toasts are not available.
 fn balloon(hwnd: HWND, title: &str, text: &str) {
+    use crate::toast_xml::{args, ToastArgs, ToastSpec};
+    let tag = {
+        let mut n = notify_ui();
+        n.toasts_ok.then(|| {
+            n.own_counter += 1;
+            let t = format!("pb-{}", n.own_counter);
+            n.last_own_tag = t.clone();
+            t
+        })
+    };
+    if let Some(tag) = tag {
+        let spec = ToastSpec {
+            group: "pb".into(),
+            title: title.into(),
+            lines: vec![text.into()],
+            when_ms: now_ms(),
+            launch: args(&ToastArgs::Open { tag: tag.clone() }),
+            tag,
+            popup: true,
+            ..Default::default()
+        };
+        if crate::toast::show(&spec).is_ok() {
+            return;
+        }
+    }
+    shell_balloon(hwnd, title, text);
+}
+
+fn shell_balloon(hwnd: HWND, title: &str, text: &str) {
     let mut nid = icon_data(hwnd);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
@@ -369,7 +443,14 @@ pub fn post_event(hwnd_raw: isize, e: UiEvent) {
 fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     // A balloon click acts on the latest file or link only if that balloon
     // is the one showing; any other balloon clears the targets.
-    if !matches!(e, UiEvent::FileReceived { .. } | UiEvent::Link { .. }) {
+    if !matches!(
+        e,
+        UiEvent::FileReceived { .. }
+            | UiEvent::Link { .. }
+            | UiEvent::Notify { .. }
+            | UiEvent::NotifyRemoved { .. }
+            | UiEvent::NotifySync { .. }
+    ) {
         if let Ok(mut l) = LAST_LINK.lock() {
             *l = None;
         }
@@ -581,6 +662,341 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             };
             crate::status::show(&msg, secs);
             balloon(hwnd, "Phone Bridge", &msg)
+        }
+        UiEvent::Notify {
+            peer,
+            n,
+            logo,
+            picture,
+        } => show_phone_notification(hwnd, st, peer, *n, logo, picture),
+        UiEvent::NotifyRemoved { peer, key } => {
+            let mut ns = notify_ui();
+            if let Some(tag) = ns.mirror.remove_key(&peer, &key) {
+                forget(&mut ns, vec![tag]);
+            }
+        }
+        UiEvent::NotifySync { peer, keys } => {
+            let mut ns = notify_ui();
+            let gone = if keys.is_empty() {
+                ns.mirror.remove_peer(&peer)
+            } else {
+                ns.mirror.retain_live(&peer, &keys)
+            };
+            forget(&mut ns, gone);
+        }
+        UiEvent::NotifyActionFailed { reason, reply } => {
+            crate::status::show(&reason, 6);
+            let text = match reply {
+                Some(r) => format!("{reason}\nYour reply: {r}"),
+                None => reason,
+            };
+            balloon(hwnd, "Phone Bridge", &text);
+        }
+    }
+}
+
+/// Remove these toasts and their picture files.
+fn forget(ns: &mut NotifyUi, tags: Vec<String>) {
+    for tag in tags {
+        if let Some((group, _, picture)) = ns.meta.remove(&tag) {
+            crate::toast::remove(&tag, &group);
+            if let Some(p) = picture {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+}
+
+fn arm_timer(hwnd: HWND, id: usize, ms: u32) {
+    // SAFETY: timer on our own window.
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), id, ms, None);
+    }
+}
+
+fn kill_timer(hwnd: HWND, id: usize) {
+    // SAFETY: timer on our own window.
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), id) };
+}
+
+/// Copy a one-time code, kept out of clipboard history; cleared after 60 s
+/// if nothing else was copied meanwhile.
+fn copy_otp(hwnd: HWND, ns: &mut NotifyUi, code: &str) {
+    if code.is_empty() {
+        return;
+    }
+    if set_clipboard_own(hwnd, code, true).is_ok() {
+        ns.otp_pending = Some((clipboard_seq(), code.to_owned()));
+        arm_timer(hwnd, TIMER_OTP, 60_000);
+    }
+}
+
+fn show_phone_notification(
+    hwnd: HWND,
+    st: &State,
+    peer: pb_identity::PeerId,
+    n: pb_protocol::control::Notification,
+    logo: Option<std::path::PathBuf>,
+    picture: Option<std::path::PathBuf>,
+) {
+    use crate::{
+        notify::{present, Ctx, Entry},
+        toast_xml::{args, ToastArgs, ToastSpec},
+    };
+    let app = if n.app_name.is_empty() {
+        n.package.clone()
+    } else {
+        n.app_name.clone()
+    };
+    // Remember the app for the per-app switches in Settings.
+    let new_app = st
+        .settings
+        .lock()
+        .map(|mut s| {
+            let known = s.notify_apps.iter().any(|(p, _, _)| *p == n.package);
+            if !known && !n.package.is_empty() {
+                s.notify_apps.push((n.package.clone(), app.clone(), false));
+            }
+            !known
+        })
+        .unwrap_or(false);
+    if new_app {
+        save_settings(st);
+    }
+    let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
+    let mut ns = notify_ui();
+    let ctx = Ctx {
+        locked: ns.locked,
+        mirroring_focused: false,
+    };
+    let Some(p) = present(&n, &settings, &ctx) else {
+        return;
+    };
+    let tag = crate::notify::tag(&peer, &n.key);
+    let group = crate::notify::group(&peer, &n);
+    let mut buttons = Vec::new();
+    if let Some(label) = &p.otp_label {
+        buttons.push((
+            label.clone(),
+            args(&ToastArgs::CopyOtp { tag: tag.clone() }),
+        ));
+    }
+    let mut reply_index = None;
+    for (i, a) in n.actions.iter().enumerate() {
+        if a.reply {
+            reply_index.get_or_insert(i as u32);
+        } else if !a.label.is_empty() {
+            buttons.push((
+                a.label.clone(),
+                args(&ToastArgs::Button {
+                    tag: tag.clone(),
+                    index: i as u32,
+                }),
+            ));
+        }
+    }
+    if n.call {
+        // Answer and Decline are the dialer's own buttons, above.
+        buttons.push((
+            "Silence".into(),
+            args(&ToastArgs::Silence { tag: tag.clone() }),
+        ));
+    }
+    let spec = ToastSpec {
+        tag: tag.clone(),
+        group: group.clone(),
+        attribution: app.clone(),
+        title: p.title.clone(),
+        lines: p.lines.clone(),
+        logo,
+        picture: picture.clone().filter(|_| p.show_picture),
+        when_ms: n.when_ms,
+        launch: args(&ToastArgs::Open { tag: tag.clone() }),
+        buttons,
+        reply: reply_index.map(|_| {
+            (
+                format!("Reply to {}", p.title),
+                args(&ToastArgs::Reply { tag: tag.clone() }),
+            )
+        }),
+        menu: vec![(
+            format!("Stop showing from {app}"),
+            args(&ToastArgs::Mute { tag: tag.clone() }),
+        )],
+        popup: p.popup,
+        silent: p.silent,
+        call: n.call,
+    };
+    match crate::toast::show(&spec) {
+        Ok(()) => {
+            ns.mirror.insert(
+                tag.clone(),
+                Entry {
+                    peer,
+                    key: n.key.clone(),
+                    package: n.package.clone(),
+                    otp: n.otp.clone(),
+                },
+            );
+            if let Some((_, _, Some(old))) =
+                ns.meta.insert(tag, (group, reply_index, picture.clone()))
+            {
+                if Some(&old) != picture.as_ref() {
+                    let _ = std::fs::remove_file(old);
+                }
+            }
+            if settings.notify_clear_on_phone {
+                arm_timer(hwnd, TIMER_NOTIFY, 5000);
+            }
+        }
+        Err(e) => st.log.line(&format!(
+            "NOTIFY toast failed key={}: {e}",
+            pb_transport::notify::key_hash(&n.key)
+        )),
+    }
+    // A quiet copy (re-send, sync at start) is old news: never auto-copy it.
+    if settings.notify_otp_autocopy && !ns.locked && !n.quiet && !n.otp.is_empty() {
+        copy_otp(hwnd, &mut ns, &n.otp);
+    }
+}
+
+/// A click, button, reply or dismissal on one of our toasts.
+fn on_toast(hwnd: HWND, st: &State, ev: ToastEvent) {
+    use crate::toast_xml::ToastArgs;
+    use pb_protocol::control::NotifyActionKind as K;
+    let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
+    match ev {
+        ToastEvent::Activated(a, reply) => {
+            let tag = match &a {
+                ToastArgs::Open { tag }
+                | ToastArgs::Button { tag, .. }
+                | ToastArgs::Reply { tag }
+                | ToastArgs::CopyOtp { tag }
+                | ToastArgs::Mute { tag }
+                | ToastArgs::Silence { tag } => tag.clone(),
+            };
+            if tag.starts_with("pb-") {
+                // Phone Bridge's own message: like a balloon click.
+                if notify_ui().last_own_tag == tag {
+                    if let Some(u) = LAST_LINK.lock().ok().and_then(|mut g| g.take()) {
+                        open_link(&u);
+                    } else if let Some(p) = LAST_FILE.lock().ok().and_then(|g| g.clone()) {
+                        reveal(&p);
+                    }
+                }
+                return;
+            }
+            let (entry, reply_index) = {
+                let ns = notify_ui();
+                (
+                    ns.mirror.get(&tag).cloned(),
+                    ns.meta.get(&tag).and_then(|m| m.1),
+                )
+            };
+            // Unknown (an old toast, or the phone was removed): nothing to do.
+            let Some(e) = entry else { return };
+            let send = |kind: K, index: u32, text: String| {
+                let _ = st.cmds.send(Cmd::NotifyAction {
+                    peer: e.peer,
+                    key: e.key.clone(),
+                    kind,
+                    index,
+                    text,
+                });
+            };
+            match a {
+                ToastArgs::Open { .. } => {
+                    if settings.notify_open_on_phone {
+                        send(K::Open, 0, String::new());
+                    }
+                }
+                ToastArgs::Button { index, .. } => send(K::Button, index, String::new()),
+                ToastArgs::Reply { .. } => {
+                    if let (Some(i), Some(text)) =
+                        (reply_index, reply.filter(|t| !t.trim().is_empty()))
+                    {
+                        send(K::Reply, i, text);
+                    }
+                }
+                ToastArgs::Silence { .. } => send(K::Silence, 0, String::new()),
+                ToastArgs::CopyOtp { .. } => copy_otp(hwnd, &mut notify_ui(), &e.otp),
+                ToastArgs::Mute { .. } => {
+                    let _ = st.settings.lock().map(|mut s| {
+                        match s.notify_apps.iter_mut().find(|(p, _, _)| *p == e.package) {
+                            Some(app) => app.2 = true,
+                            None => {
+                                s.notify_apps
+                                    .push((e.package.clone(), e.package.clone(), true))
+                            }
+                        }
+                    });
+                    save_settings(st);
+                    let mut ns = notify_ui();
+                    let gone = ns.mirror.remove_package(&e.package);
+                    forget(&mut ns, gone);
+                }
+            }
+        }
+        ToastEvent::Dismissed(tag) => {
+            if tag.starts_with("pb-") {
+                return;
+            }
+            let entry = {
+                let mut ns = notify_ui();
+                let e = ns.mirror.get(&tag).cloned();
+                if let Some(e) = &e {
+                    ns.mirror.remove_key(&e.peer, &e.key);
+                    if let Some((_, _, Some(p))) = ns.meta.remove(&tag) {
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+                e
+            };
+            if let (Some(e), true) = (entry, settings.notify_clear_on_phone) {
+                let _ = st.cmds.send(Cmd::NotifyAction {
+                    peer: e.peer,
+                    key: e.key,
+                    kind: K::Dismiss,
+                    index: 0,
+                    text: String::new(),
+                });
+            }
+        }
+    }
+}
+
+/// Toasts the user cleared from the notification centre: clear them on the
+/// phone too (when that setting is on).
+fn check_cleared(hwnd: HWND, st: &State) {
+    let clear = st
+        .settings
+        .lock()
+        .map(|s| s.notify_clear_on_phone)
+        .unwrap_or(false);
+    let mut ns = notify_ui();
+    if ns.mirror.is_empty() || !clear {
+        kill_timer(hwnd, TIMER_NOTIFY);
+        return;
+    }
+    let Ok(history) = crate::toast::history_tags() else {
+        return;
+    };
+    // Windows keeps at most 20 toasts per app: at the cap, a missing toast
+    // may have been pushed out rather than cleared by the user.
+    let at_cap = history.len() >= 20;
+    for e in ns.mirror.vanished(&history) {
+        let tag = crate::notify::tag(&e.peer, &e.key);
+        if let Some((_, _, Some(p))) = ns.meta.remove(&tag) {
+            let _ = std::fs::remove_file(p);
+        }
+        if !at_cap {
+            let _ = st.cmds.send(Cmd::NotifyAction {
+                peer: e.peer,
+                key: e.key,
+                kind: pb_protocol::control::NotifyActionKind::Dismiss,
+                index: 0,
+                text: String::new(),
+            });
         }
     }
 }
@@ -991,6 +1407,46 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
+        WM_TOAST => {
+            let drained: Vec<ToastEvent> = TOAST_EVENTS
+                .lock()
+                .map(|mut q| q.drain(..).collect())
+                .unwrap_or_default();
+            for ev in drained {
+                on_toast(hwnd, st, ev);
+            }
+            if crate::settings_window::is_open() {
+                crate::settings_window::update(settings_model(st));
+            }
+            LRESULT(0)
+        }
+        WM_WTSSESSION_CHANGE => {
+            match wparam.0 {
+                WTS_SESSION_LOCK => notify_ui().locked = true,
+                WTS_SESSION_UNLOCK => notify_ui().locked = false,
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_NOTIFY => {
+            check_cleared(hwnd, st);
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_OTP => {
+            kill_timer(hwnd, TIMER_OTP);
+            if let Some((seq, code)) = notify_ui().otp_pending.take() {
+                let now = match clipboard::get_text_marked(Some(hwnd)) {
+                    Ok((ClipText::Text(t), _)) => Some(t),
+                    _ => None,
+                };
+                if crate::notify::otp_should_clear(seq, clipboard_seq(), now.as_deref(), &code)
+                    && clipboard::clear(Some(hwnd)).is_ok()
+                {
+                    OWN_SEQ.store(clipboard_seq(), std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            LRESULT(0)
+        }
         WM_CLIPBOARDUPDATE => {
             // Ignore our own writes; debounce bursts from apps that set the
             // clipboard several times in a row.
@@ -1131,6 +1587,34 @@ pub fn create(
             std::sync::atomic::Ordering::Relaxed,
         );
         add_icon(hwnd, "Phone Bridge (starting)");
+        // Real toasts with Phone Bridge's identity; balloons if that fails.
+        let raw = hwnd.0 as isize;
+        let push = move |ev: ToastEvent| {
+            if let Ok(mut q) = TOAST_EVENTS.lock() {
+                q.push_back(ev);
+            }
+            // SAFETY: posting to our own window.
+            let _ = PostMessageW(Some(HWND(raw as *mut _)), WM_TOAST, WPARAM(0), LPARAM(0));
+        };
+        let on_dismiss = push;
+        let registered = crate::toast::register(
+            Box::new(move |a, reply| push(ToastEvent::Activated(a, reply))),
+            Box::new(move |tag| on_dismiss(ToastEvent::Dismissed(tag))),
+        );
+        if let Some(st) = STATE.get() {
+            match &registered {
+                Ok(()) => st.log.line("TOAST identity registered"),
+                Err(e) => st
+                    .log
+                    .line(&format!("TOAST setup failed, using balloons: {e}")),
+            }
+        }
+        notify_ui().toasts_ok = registered.is_ok();
+        // Session lock and unlock (content hidden while locked).
+        let _ = windows::Win32::System::RemoteDesktop::WTSRegisterSessionNotification(
+            hwnd,
+            windows::Win32::System::RemoteDesktop::NOTIFY_FOR_THIS_SESSION,
+        );
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.
         let _ = windows::Win32::System::DataExchange::AddClipboardFormatListener(hwnd);
         // Ctrl+Alt+P: drive the phone with this PC's mouse and keyboard.

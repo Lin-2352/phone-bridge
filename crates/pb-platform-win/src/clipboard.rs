@@ -119,6 +119,13 @@ pub fn set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<
     Ok(())
 }
 
+/// Empty the clipboard (a copied one-time code that is no longer needed).
+pub fn clear(owner: Option<HWND>) -> io::Result<()> {
+    let _open = Open::new(owner)?;
+    // SAFETY: the clipboard is open (guard above).
+    unsafe { EmptyClipboard() }.map_err(io::Error::other)
+}
+
 /// Read clipboard text, refusing content other apps marked as private.
 pub fn get_text(owner: Option<HWND>) -> io::Result<ClipText> {
     Ok(match get_text_marked(owner)? {
@@ -191,5 +198,8 @@ mod tests {
         );
         set_text("", false, None).unwrap();
         assert_eq!(get_text(None).unwrap(), ClipText::Empty);
+        set_text("482913", true, None).unwrap();
+        clear(None).unwrap();
+        assert_eq!(get_text_marked(None).unwrap(), (ClipText::Empty, false));
     }
 }

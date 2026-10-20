@@ -276,9 +276,3 @@ pub fn history_tags() -> Result<HashSet<String>, String> {
     }
     Ok(tags)
 }
-
-pub fn clear_all() {
-    if let Ok(h) = ToastNotificationManager::History() {
-        let _ = h.ClearWithId(&HSTRING::from(AUMID));
-    }
-}
