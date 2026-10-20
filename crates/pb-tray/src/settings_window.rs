@@ -30,130 +30,21 @@ use windows::{
 };
 
 use crate::fluent::{self, px};
+use crate::settings_rows::{rows, Row};
+pub use crate::settings_rows::{Action, ChoiceKey, Key, Model};
 
 const CLASS: PCWSTR = w!("PhoneBridgeSettings");
 const W: i32 = 560;
 const H: i32 = 640;
 const MARGIN: i32 = 24;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Key {
-    Share,
-    Passwords,
-    Keep,
-    Auto,
-    SendTo,
-    Startup,
-    Control,
-}
-
-#[derive(Clone, Default)]
-pub struct Model {
-    /// 0 system, 1 light, 2 dark.
-    pub theme: u8,
-    pub share: bool,
-    pub passwords: bool,
-    pub keep: bool,
-    pub auto: bool,
-    pub save_dir: String,
-    pub sendto: bool,
-    pub startup: bool,
-    pub control: bool,
-    /// (name, fingerprint)
-    pub devices: Vec<(String, String)>,
-    pub my_fingerprint: String,
-}
-
-impl Model {
-    fn get(&self, k: Key) -> bool {
-        match k {
-            Key::Share => self.share,
-            Key::Passwords => self.passwords,
-            Key::Keep => self.keep,
-            Key::Auto => self.auto,
-            Key::SendTo => self.sendto,
-            Key::Startup => self.startup,
-            Key::Control => self.control,
-        }
-    }
-}
-
-pub enum Action {
-    Theme(u8),
-    Toggle(Key),
-    ChangeFolder,
-    OpenFolder,
-    Remove(usize),
-    Pair,
-}
-
-enum Row {
-    Header(&'static str),
-    Theme,
-    Toggle(Key, &'static str, &'static str),
-    Folder,
-    Device(usize),
-    Pair,
-    About,
-}
-
-fn rows(m: &Model) -> Vec<Row> {
-    let mut v = vec![
-        Row::Header("Appearance"),
-        Row::Theme,
-        Row::Header("Clipboard"),
-        Row::Toggle(
-            Key::Share,
-            "Share clipboard",
-            "Copy on one device, paste on the other",
-        ),
-        Row::Toggle(
-            Key::Passwords,
-            "Passwords and codes",
-            "Also share text a password manager marks private",
-        ),
-        Row::Toggle(
-            Key::Keep,
-            "Keep received text in clipboard history",
-            "Show it in Win+V history (never for passwords)",
-        ),
-        Row::Header("Files"),
-        Row::Toggle(
-            Key::Auto,
-            "Accept files automatically",
-            "From your paired devices only",
-        ),
-        Row::Folder,
-        Row::Toggle(
-            Key::SendTo,
-            "Show in Explorer \u{201c}Send to\u{201d}",
-            "Right-click files, Send to, Phone Bridge",
-        ),
-        Row::Header("General"),
-        Row::Toggle(
-            Key::Startup,
-            "Start with Windows",
-            "Phone Bridge waits quietly in the tray",
-        ),
-        Row::Toggle(
-            Key::Control,
-            "Let my phone control this PC",
-            "Use the phone as a touchpad and keyboard",
-        ),
-        Row::Header("Devices"),
-    ];
-    v.extend((0..m.devices.len()).map(Row::Device));
-    v.push(Row::Pair);
-    v.push(Row::Header("About"));
-    v.push(Row::About);
-    v
-}
-
 fn row_height(r: &Row) -> i32 {
     match r {
         Row::Header(_) => 40,
         Row::Theme => 64,
         Row::Toggle(..) => 68,
+        Row::Choice(..) => 100,
+        Row::App(_) => 56,
         Row::Folder => 76,
         Row::Device(_) => 64,
         Row::Pair => 60,
@@ -170,6 +61,8 @@ enum Target {
     Open,
     Remove(usize),
     Pair,
+    Choice(ChoiceKey, u8),
+    Mute(usize),
 }
 
 struct State {
@@ -268,7 +161,15 @@ fn paint(hwnd: HWND) {
                 }
                 Row::Toggle(k, title, sub) => {
                     fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
-                    let enabled = k != Key::Passwords || m.share;
+                    let enabled = match k {
+                        Key::Passwords => m.share,
+                        Key::NotifyLock
+                        | Key::NotifyClear
+                        | Key::NotifyOpen
+                        | Key::NotifyOtp
+                        | Key::NotifyQuietMirror => m.notify,
+                        _ => true,
+                    };
                     let tr = RECT {
                         left: inner_l,
                         top: y + px(s, 13),
@@ -299,6 +200,60 @@ fn paint(hwnd: HWND) {
                     fluent::toggle(hdc, s, &p, inner_r, y + h / 2, m.get(k), enabled);
                     if enabled {
                         targets.push((card, Target::Toggle(k)));
+                    }
+                }
+                Row::Choice(k, title, labels) => {
+                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    let tr = RECT {
+                        left: inner_l,
+                        top: y + px(s, 12),
+                        right: inner_r,
+                        bottom: y + px(s, 38),
+                    };
+                    fluent::text(
+                        hdc,
+                        f.body,
+                        title,
+                        tr,
+                        if m.notify { p.text } else { p.text2 },
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+                    );
+                    let seg_w = (inner_r - inner_l) / 3;
+                    let mut x = inner_l;
+                    let sy = y + px(s, 50);
+                    for (i, label) in labels.iter().enumerate() {
+                        let br = RECT {
+                            left: x,
+                            top: sy,
+                            right: x + seg_w - px(s, 6),
+                            bottom: sy + px(s, 34),
+                        };
+                        fluent::button(hdc, &f, &p, br, label, m.choice(k) == i as u8, s);
+                        if m.notify {
+                            targets.push((br, Target::Choice(k, i as u8)));
+                        }
+                        x += seg_w;
+                    }
+                }
+                Row::App(i) => {
+                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    let (name, shown) = &m.apps[i];
+                    let tr = RECT {
+                        left: inner_l,
+                        right: inner_r - px(s, 56),
+                        ..card
+                    };
+                    fluent::text(
+                        hdc,
+                        f.body,
+                        name,
+                        tr,
+                        if m.notify { p.text } else { p.text2 },
+                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                    );
+                    fluent::toggle(hdc, s, &p, inner_r, y + h / 2, *shown, m.notify);
+                    if m.notify {
+                        targets.push((card, Target::Mute(i)));
                     }
                 }
                 Row::Folder => {
@@ -528,6 +483,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 Some(Target::Open) => act(Action::OpenFolder),
                 Some(Target::Remove(i)) => act(Action::Remove(i)),
                 Some(Target::Pair) => act(Action::Pair),
+                Some(Target::Choice(k, i)) => act(Action::Choice(k, i)),
+                Some(Target::Mute(i)) => act(Action::Mute(i)),
                 None => {}
             }
             LRESULT(0)

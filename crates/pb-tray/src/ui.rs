@@ -1036,6 +1036,7 @@ fn show_menu(hwnd: HWND) {
 
 /// Snapshot of everything the settings window shows.
 fn settings_model(st: &State) -> crate::settings_window::Model {
+    let n = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
     let (theme, share, passwords, keep, auto, save_dir, control) = st
         .settings
         .lock()
@@ -1071,6 +1072,19 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
             })
             .unwrap_or_default(),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
+        notify: n.notify_enabled,
+        notify_lock: n.notify_lock_screen,
+        notify_clear: n.notify_clear_on_phone,
+        notify_open: n.notify_open_on_phone,
+        notify_otp: n.notify_otp_autocopy,
+        notify_quiet_mirror: n.notify_quiet_mirroring,
+        content: n.notify_content,
+        sound: n.notify_sound,
+        apps: n
+            .notify_apps
+            .iter()
+            .map(|(_, name, muted)| (name.clone(), !muted))
+            .collect(),
     }
 }
 
@@ -1121,6 +1135,54 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
             save_settings(st);
             if !now_on {
                 crate::core::stop_phone_control();
+            }
+        }
+        Action::Toggle(
+            k @ (Key::Notify
+            | Key::NotifyLock
+            | Key::NotifyClear
+            | Key::NotifyOpen
+            | Key::NotifyOtp
+            | Key::NotifyQuietMirror),
+        ) => {
+            let _ = st.settings.lock().map(|mut s| {
+                let field = match k {
+                    Key::Notify => &mut s.notify_enabled,
+                    Key::NotifyLock => &mut s.notify_lock_screen,
+                    Key::NotifyClear => &mut s.notify_clear_on_phone,
+                    Key::NotifyOpen => &mut s.notify_open_on_phone,
+                    Key::NotifyOtp => &mut s.notify_otp_autocopy,
+                    _ => &mut s.notify_quiet_mirroring,
+                };
+                *field = !*field;
+            });
+            save_settings(st);
+        }
+        Action::Choice(k, i) => {
+            let _ = st.settings.lock().map(|mut s| match k {
+                crate::settings_window::ChoiceKey::Content => s.notify_content = i.min(2),
+                crate::settings_window::ChoiceKey::Sound => s.notify_sound = i.min(2),
+            });
+            save_settings(st);
+        }
+        Action::Mute(i) => {
+            let muted_now = st
+                .settings
+                .lock()
+                .ok()
+                .and_then(|mut s| {
+                    s.notify_apps.get_mut(i).map(|app| {
+                        app.2 = !app.2;
+                        app.2.then(|| app.0.clone())
+                    })
+                })
+                .flatten();
+            save_settings(st);
+            // Muting takes the app's toasts away now.
+            if let Some(package) = muted_now {
+                let mut ns = notify_ui();
+                let gone = ns.mirror.remove_package(&package);
+                forget(&mut ns, gone);
             }
         }
         Action::Toggle(Key::Keep) => {
