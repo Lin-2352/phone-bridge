@@ -346,6 +346,8 @@ class PbService : Service() {
         // already arrived is still saved.
         if (destroyed && (e is PbEvent.TransferProgress || e is PbEvent.IncomingOffer || e is PbEvent.ControlRequest)) return
         when (e) {
+            // Screen sharing arrives with the capture code; until then, decline.
+            is PbEvent.ScreenRequest -> Bridge.node?.answerScreen(e.id, null)
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
                 // Share clipboard: writing the clipboard is allowed in the background.

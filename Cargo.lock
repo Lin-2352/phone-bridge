@@ -2350,6 +2350,7 @@ dependencies = [
  "pb-identity",
  "pb-protocol",
  "pb-transport",
+ "pb-video",
  "sha2 0.10.9",
  "tokio",
  "uniffi",

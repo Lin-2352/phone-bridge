@@ -109,6 +109,20 @@ pub enum PbEvent {
         id: u64,
         peer_name: String,
     },
+    /// A paired PC asks to see this screen. Ask the user (unless `resume`:
+    /// the capture from the same PC is still alive, answer at once), run
+    /// Android's capture prompt, then call `PbNode::answer_screen(id, ..)`.
+    ScreenRequest {
+        id: u64,
+        peer_name: String,
+        /// Long side of the video; 0 = native.
+        max_long_side: u32,
+        sharp: bool,
+        dim: bool,
+        /// Codecs the PC decodes, best first (1 H.265 Main10, 2 H.265, 3 H.264).
+        codecs: Vec<u8>,
+        resume: bool,
+    },
     /// A file transfer is under way (at most every 0.7 s, and once at the end).
     TransferProgress {
         peer_name: String,
@@ -262,6 +276,199 @@ fn to_wire(n: PbNotification) -> (pb_protocol::control::Notification, Option<Vec
     (wire, n.icon_png)
 }
 
+/// The phone's answer to a screen request.
+#[derive(uniffi::Record)]
+pub struct PbScreenAccept {
+    pub codec: u8,
+    pub width: u32,
+    pub height: u32,
+    pub rotation: u16,
+}
+
+/// What the encoder should do after a frame.
+#[derive(uniffi::Record)]
+pub struct PbAdvice {
+    pub sent: bool,
+    /// Ask the encoder for a key frame now.
+    pub request_key: bool,
+    /// New encoder bitrate (bits/s); 0 = unchanged.
+    pub new_bitrate: u32,
+}
+
+fn advice(d: pb_video::Decision) -> PbAdvice {
+    PbAdvice {
+        sent: d.send,
+        request_key: d.request_key,
+        new_bitrate: d.new_bitrate.unwrap_or(0),
+    }
+}
+
+/// The PC window's state and input during a screen session (Kotlin).
+#[uniffi::export(with_foreign)]
+pub trait ScreenListener: Send + Sync {
+    fn on_state(&self, active: bool, dim: bool) -> Result<(), PbError>;
+    /// The PC could not decode: switch to its next codec (`next_codec`).
+    fn on_codec_failed(&self) -> Result<(), PbError>;
+    /// phase: 0 hover, 1 down, 2 move, 3 up; x, y: 0..=65535.
+    fn on_touch(&self, phase: u8, x: u16, y: u16) -> Result<(), PbError>;
+    fn on_pinch(&self, out: bool, x: u16, y: u16) -> Result<(), PbError>;
+    fn on_key(&self, scancode: u16, pressed: bool) -> Result<(), PbError>;
+    fn on_char(&self, unit: u16) -> Result<(), PbError>;
+    /// 1 back, 2 home, 4 recents.
+    fn on_button(&self, button: u8) -> Result<(), PbError>;
+    fn on_wheel(&self, dx: i16, dy: i16) -> Result<(), PbError>;
+    /// The session ended. `resumable`: the link dropped; keep capturing
+    /// (paused) for 30 s in case the same PC asks again.
+    fn on_stopped(&self, resumable: bool) -> Result<(), PbError>;
+}
+
+/// After a dropped link, a new request from the same PC within the grace
+/// resumes without asking.
+struct Grace {
+    peer: pb_identity::PeerId,
+    until: std::time::Instant,
+}
+
+impl Grace {
+    fn new(peer: pb_identity::PeerId, now: std::time::Instant) -> Self {
+        Self {
+            peer,
+            until: now + pb_transport::screen::RESUME_GRACE,
+        }
+    }
+
+    fn admits(&self, peer: &pb_identity::PeerId, now: std::time::Instant) -> bool {
+        self.peer == *peer && now < self.until
+    }
+}
+
+/// Records kept while the session's streams open (config, first key frame).
+const SCREEN_PENDING: usize = 32;
+
+/// One screen session, phone side: encoded frames go in here.
+#[derive(uniffi::Object)]
+pub struct PbScreen {
+    sink: std::sync::OnceLock<pb_transport::screen::ScreenSink>,
+    pending: Mutex<Vec<pb_video::Record>>,
+    pacer: Mutex<pb_video::Pacer>,
+    stopped: std::sync::atomic::AtomicBool,
+}
+
+impl PbScreen {
+    fn new(codec: u8) -> Self {
+        let target = if codec == pb_video::Codec::H264 as u8 {
+            16_000_000
+        } else {
+            12_000_000
+        };
+        Self {
+            sink: std::sync::OnceLock::new(),
+            pending: Mutex::new(Vec::new()),
+            pacer: Mutex::new(pb_video::Pacer::new(target)),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The streams are open: send what waited.
+    fn ready(&self, sink: pb_transport::screen::ScreenSink) {
+        let waiting = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()));
+        for r in waiting {
+            sink.send(r);
+        }
+        let _ = self.sink.set(sink);
+    }
+}
+
+#[uniffi::export]
+impl PbScreen {
+    /// An encoded unit (flags: 1 key, 2 codec config, 4 repeat).
+    pub fn send_frame(&self, data: Vec<u8>, pts_us: i64, flags: u8) -> PbAdvice {
+        let queued = self.sink.get().map_or(0, |s| s.queued_bytes());
+        let d = self
+            .pacer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .on_frame(std::time::Instant::now(), pts_us, flags, queued);
+        if d.send {
+            let r = pb_video::Record {
+                pts_us,
+                flags,
+                payload: data,
+            };
+            match self.sink.get() {
+                Some(sink) => {
+                    if sink.send(r) == pb_transport::screen::SendOutcome::Full {
+                        return PbAdvice {
+                            sent: false,
+                            request_key: true,
+                            new_bitrate: 0,
+                        };
+                    }
+                }
+                None => {
+                    let mut p = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+                    if p.len() < SCREEN_PENDING {
+                        p.push(r);
+                    }
+                }
+            }
+        }
+        advice(d)
+    }
+
+    /// Something for the PC window to say ("Lower quality to save memory").
+    pub fn notice(&self, text: String) {
+        if let Some(s) = self.sink.get() {
+            s.notice(&text);
+        }
+    }
+
+    /// The user stopped sharing on the phone.
+    pub fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(s) = self.sink.get() {
+            s.close();
+        }
+    }
+}
+
+/// Encoder size for the phone screen (see `pb_video::size::fit_size`):
+/// returns [width, height].
+#[uniffi::export]
+pub fn fit_size(width: u32, height: u32, max_long: u32, align_w: u32, align_h: u32) -> Vec<u32> {
+    let max_long = if max_long == 0 {
+        width.max(height)
+    } else {
+        max_long
+    };
+    let (w, h) = pb_video::size::fit_size((width, height), max_long, (align_w, align_h));
+    vec![w, h]
+}
+
+/// The first of the PC's codecs (best first) the phone can encode.
+#[uniffi::export]
+pub fn choose_codec(pc: Vec<u8>, phone: Vec<u8>) -> Option<u8> {
+    let list = |v: Vec<u8>| -> Vec<pb_video::Codec> {
+        v.into_iter()
+            .filter_map(|c| pb_video::Codec::from_u32(c.into()))
+            .collect()
+    };
+    pb_video::codec::choose(&list(pc), &list(phone)).map(|c| c as u8)
+}
+
+/// The PC's next codec after `failed`, if any.
+#[uniffi::export]
+pub fn next_codec(failed: u8, pc: Vec<u8>) -> Option<u8> {
+    let pc: Vec<pb_video::Codec> = pc
+        .into_iter()
+        .filter_map(|c| pb_video::Codec::from_u32(c.into()))
+        .collect();
+    pb_video::codec::next_after(pb_video::Codec::from_u32(failed.into())?, &pc).map(|c| c as u8)
+}
+
+type ScreenAnswer = Option<(PbScreenAccept, Arc<PbScreen>)>;
+
 /// How long a control request waits for the user on the phone.
 const CONTROL_ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -303,6 +510,12 @@ struct Shared {
     notify_handler: Mutex<Option<Arc<dyn NotifyHandler>>>,
     /// Kotlin calls in from its own threads; the outbox spawns tasks here.
     rt: tokio::runtime::Handle,
+    screen_listener: Mutex<Option<Arc<dyn ScreenListener>>>,
+    /// A screen request is being asked or a session runs.
+    screen_busy: std::sync::atomic::AtomicBool,
+    screen_pending:
+        Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<ScreenAnswer>>>,
+    screen_grace: Mutex<Option<Grace>>,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -356,6 +569,10 @@ pub async fn start_node(
         notify_enabled: std::sync::atomic::AtomicBool::new(false),
         notify_handler: Mutex::new(None),
         rt: tokio::runtime::Handle::current(),
+        screen_listener: Mutex::new(None),
+        screen_busy: std::sync::atomic::AtomicBool::new(false),
+        screen_pending: Mutex::default(),
+        screen_grace: Mutex::new(None),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -397,6 +614,9 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
         pb_transport::notify::RateWindow::new(pb_transport::notify::MAX_ACTIONS_PER_SEC);
     let reason = loop {
         match s.recv().await {
+            Ok(Some(ControlMsg::ScreenStart(start))) => {
+                break screen_session(s, start, sh.clone(), name.clone()).await;
+            }
             Ok(Some(ControlMsg::NotifySyncRequest(_))) => {
                 // Off: an empty list, so the PC clears what it still shows.
                 let answered = if sh.notify_enabled.load(std::sync::atomic::Ordering::Relaxed) {
@@ -629,6 +849,141 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             reason,
         },
     );
+}
+
+/// A PC asked to see this screen: ask (or resume), then run the session.
+async fn screen_session(
+    s: Session,
+    start: pb_protocol::control::ScreenStart,
+    sh: Arc<Shared>,
+    name: String,
+) -> String {
+    use std::sync::atomic::Ordering;
+    let peer = s.peer;
+    if sh.screen_busy.swap(true, Ordering::AcqRel) {
+        let _ = pb_transport::screen::serve_screen(s, start, None).await;
+        return "screen busy".into();
+    }
+    let now = std::time::Instant::now();
+    let resume = sh
+        .screen_grace
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .is_some_and(|g| g.admits(&peer, now));
+    let ask = sh.next_ask.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    sh.screen_pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(ask, tx);
+    push(
+        &sh.events,
+        PbEvent::ScreenRequest {
+            id: ask,
+            peer_name: name,
+            max_long_side: start.max_long_side,
+            sharp: start.sharp,
+            dim: start.dim,
+            codecs: start.codecs.iter().map(|c| *c as u8).collect(),
+            resume,
+        },
+    );
+    // Our ask, then Android's capture prompt.
+    let answer = tokio::select! {
+        r = tokio::time::timeout(std::time::Duration::from_secs(40), rx) => {
+            r.ok().and_then(|r| r.ok()).flatten()
+        }
+        () = s.closed() => None,
+    };
+    sh.screen_pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&ask);
+    let Some((acc, screen)) = answer else {
+        let _ = pb_transport::screen::serve_screen(s, start, None).await;
+        sh.screen_busy.store(false, Ordering::Release);
+        return "screen declined".into();
+    };
+    let accept = pb_protocol::control::ScreenAccept {
+        id: 0,
+        codec: acc.codec.into(),
+        width: acc.width,
+        height: acc.height,
+        rotation: acc.rotation.into(),
+    };
+    let server = match pb_transport::screen::serve_screen(s, start, Some(accept)).await {
+        Ok(server) => server,
+        Err(e) => {
+            sh.screen_busy.store(false, Ordering::Release);
+            if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
+                let _ = l.on_stopped(false);
+            }
+            return e.to_string();
+        }
+    };
+    let (sink, mut events) = server.into_parts();
+    screen.ready(sink);
+    while let Some(ev) = events.recv().await {
+        use pb_transport::screen::ScreenEvent as E;
+        let listener = sh.screen_listener.lock().ok().and_then(|g| g.clone());
+        match ev {
+            E::Feedback(pts) => screen
+                .pacer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .on_feedback(std::time::Instant::now(), pts),
+            E::State(st) => {
+                if let Some(l) = listener {
+                    let _ = if st.codec_failed {
+                        l.on_codec_failed()
+                    } else {
+                        l.on_state(st.active, st.dim)
+                    };
+                }
+            }
+            E::Input(e) => {
+                if let Some(l) = listener {
+                    forward_screen_input(&*l, e);
+                }
+            }
+            E::Closed => break,
+        }
+    }
+    let by_user = screen.stopped.load(Ordering::Acquire);
+    if !by_user {
+        *sh.screen_grace.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(Grace::new(peer, std::time::Instant::now()));
+    }
+    sh.screen_busy.store(false, Ordering::Release);
+    if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
+        let _ = l.on_stopped(!by_user);
+    }
+    "screen ended".into()
+}
+
+fn forward_screen_input(l: &dyn ScreenListener, e: pb_protocol::InputEvent) {
+    use pb_protocol::{InputEvent as E, TouchPhase};
+    let _ = match e {
+        E::Touch { phase, x, y } => {
+            let p = match phase {
+                TouchPhase::Hover => 0,
+                TouchPhase::Down => 1,
+                TouchPhase::Move => 2,
+                TouchPhase::Up => 3,
+            };
+            l.on_touch(p, x, y)
+        }
+        E::Pinch { out, x, y } => l.on_pinch(out, x, y),
+        E::Key { scancode, pressed } => l.on_key(scancode, pressed),
+        E::Char { unit } => l.on_char(unit),
+        E::MouseButton {
+            button,
+            pressed: true,
+        } => l.on_button(button),
+        E::Wheel { dx, dy } => l.on_wheel(dx, dy),
+        E::MouseButton { .. } | E::MouseMove { .. } => Ok(()),
+    };
 }
 
 /// Hand a PC's notification action to Kotlin (off the async threads: it
@@ -935,6 +1290,37 @@ impl PbNode {
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Answer a `ScreenRequest`: `None` declines. Accepting returns the
+    /// session to feed encoded frames into.
+    pub fn answer_screen(&self, id: u64, accept: Option<PbScreenAccept>) -> Option<Arc<PbScreen>> {
+        let tx = self
+            .shared
+            .screen_pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id)?;
+        match accept {
+            Some(a) => {
+                let screen = Arc::new(PbScreen::new(a.codec));
+                tx.send(Some((a, screen.clone()))).ok()?;
+                Some(screen)
+            }
+            None => {
+                let _ = tx.send(None);
+                None
+            }
+        }
+    }
+
+    /// Register (screen capture ready) or clear the screen session handler.
+    pub fn set_screen_listener(&self, listener: Option<Arc<dyn ScreenListener>>) {
+        *self
+            .shared
+            .screen_listener
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = listener;
+    }
+
     /// Register (listener connected) or clear the notification action handler.
     pub fn set_notify_handler(&self, handler: Option<Arc<dyn NotifyHandler>>) {
         *self
@@ -1156,5 +1542,41 @@ mod tests {
     fn to_wire_without_code_leaves_otp_empty() {
         let (n, _) = to_wire(sample("Dinner at 8?"));
         assert!(n.otp.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use std::time::{Duration, Instant};
+
+    use pb_identity::Identity;
+
+    use super::*;
+
+    #[test]
+    fn grace_admits_same_peer_within_30s() {
+        let a = Identity::from_seed([1; 32]).peer_id();
+        let b = Identity::from_seed([2; 32]).peer_id();
+        let t0 = Instant::now();
+        let g = Grace::new(a, t0);
+        assert!(g.admits(&a, t0 + Duration::from_secs(29)));
+        assert!(!g.admits(&a, t0 + Duration::from_secs(31)));
+        assert!(!g.admits(&b, t0 + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn advice_maps_pacer_decisions() {
+        let sent = advice(pb_video::Decision {
+            send: true,
+            request_key: false,
+            new_bitrate: None,
+        });
+        assert!(sent.sent && !sent.request_key && sent.new_bitrate == 0);
+        let drop = advice(pb_video::Decision {
+            send: false,
+            request_key: true,
+            new_bitrate: Some(8_400_000),
+        });
+        assert!(!drop.sent && drop.request_key && drop.new_bitrate == 8_400_000);
     }
 }

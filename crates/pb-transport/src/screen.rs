@@ -239,13 +239,42 @@ pub enum ScreenEvent {
 /// Phone side of a running screen session.
 pub struct ScreenServer {
     pub events: mpsc::UnboundedReceiver<ScreenEvent>,
+    sink: ScreenSink,
+}
+
+impl ScreenServer {
+    /// The sending half (shareable across threads) and the events.
+    pub fn into_parts(self) -> (ScreenSink, mpsc::UnboundedReceiver<ScreenEvent>) {
+        (self.sink, self.events)
+    }
+
+    pub fn send(&self, r: Record) -> SendOutcome {
+        self.sink.send(r)
+    }
+
+    pub fn queued_bytes(&self) -> usize {
+        self.sink.queued_bytes()
+    }
+
+    pub fn notice(&self, text: &str) {
+        self.sink.notice(text);
+    }
+
+    pub fn close(&self) {
+        self.sink.close();
+    }
+}
+
+/// Sends video and notices on a running screen session.
+#[derive(Clone)]
+pub struct ScreenSink {
     video: mpsc::UnboundedSender<Vec<u8>>,
     queue: ByteQueue,
     ctl: mpsc::UnboundedSender<ControlMsg>,
     closer: SessionCloser,
 }
 
-impl ScreenServer {
+impl ScreenSink {
     pub fn send(&self, r: Record) -> SendOutcome {
         let mut bytes = Vec::with_capacity(13 + r.payload.len());
         record::encode(&r, &mut bytes);
@@ -365,10 +394,12 @@ pub async fn serve_screen(
     });
     Ok(ScreenServer {
         events,
-        video,
-        queue,
-        ctl,
-        closer,
+        sink: ScreenSink {
+            video,
+            queue,
+            ctl,
+            closer,
+        },
     })
 }
 
