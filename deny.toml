@@ -12,6 +12,7 @@ ignore = [
     # `paste` is unmaintained (not vulnerable); a compile-time macro pulled in by
     # iroh -> netwatch. Re-check whenever iroh is updated.
     { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro via iroh/netwatch, no runtime code" },
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml unmaintained: build-time macro dependency of iroh's n0-error-macros, no runtime code. Re-check whenever iroh is updated." },
 ]
 
 [licenses]
