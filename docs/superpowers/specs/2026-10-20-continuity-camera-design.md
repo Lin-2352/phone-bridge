@@ -64,6 +64,7 @@ New `ControlMsg` variants (`crates/pb-protocol/src/control.rs`, next free tags):
 
 **Orientation**
 - The phone sends the sensor image as captured, plus a `rotation` (0/90/180/270) from the sensor orientation and the device rotation.
+- The rotation uses the standard Camera2 formula, so the front camera is not upside-down in portrait: back lens `(sensorOrientation - deviceRotation + 360) % 360`, front lens `(sensorOrientation + deviceRotation) % 360`.
 - The PC fits it into the fixed 16:9 frame (section 3).
 - A rotation change sends a new config record with the new `rotation`. The size on the wire stays the same.
 
@@ -126,10 +127,12 @@ New `ControlMsg` variants (`crates/pb-protocol/src/control.rs`, next free tags):
   - the newest complete frame in the file, if its sequence is newer; else
   - the last delivered frame again; or
   - black NV12 (Y = 16, UV = 128) before the first frame.
+- **Request queue:** Media Foundation often calls `RequestSample` in bursts. The tokens go into a thread-safe FIFO, and each heartbeat tick answers at most ONE queued request with `MEMediaSample`.
 - Each sample gets a fresh timestamp (`MFGetSystemTime`) and a 333,333 × 100 ns duration.
 - Apps never see a stall: not during a lens switch, a Wi-Fi hiccup, or a phone step-down.
 
 **Frames file:** `%ProgramData%\PhoneBridge\camera\frames`, created at registration (section 5) and opened by both sides through a file handle and `CreateFileMappingW` with no name.
+- **Sharing flags:** both the tray and the source open the file with `FILE_SHARE_READ | FILE_SHARE_WRITE`, so neither gets `ERROR_SHARING_VIOLATION`.
 - Named `Local\` objects don't cross from the tray's session (1) into Frame Server's (0).
 - A normal user can't create `Global\` objects (no `SeCreateGlobalPrivilege`).
 - A file in ProgramData needs neither.
@@ -151,9 +154,10 @@ New `ControlMsg` variants (`crates/pb-protocol/src/control.rs`, next free tags):
 
 **Reader rule:**
 1. Read `newest`, then `s1 = seq[newest]`; skip if it's odd.
-2. Copy the slot.
-3. Read `s2 = seq[newest]`; keep the copy only if `s1 == s2`.
-4. A torn read is dropped and the last frame is repeated.
+2. Read the header's `width`/`height`; if they differ from `wanted_w`/`wanted_h`, deliver the last valid frame (or black): the tray hasn't resized its output yet, and a 720p buffer is never copied into a 1080p sample (or the reverse).
+3. Copy the slot.
+4. Read `s2 = seq[newest]`; keep the copy only if `s1 == s2`.
+5. A torn or mismatched read is dropped and the last frame is repeated.
 
 The writer writes into the slot that isn't `newest`, then flips `newest`.
 

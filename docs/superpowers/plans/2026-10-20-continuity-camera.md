@@ -100,7 +100,7 @@
   - `Ring::init(buf: &mut [u8])`;
   - `Ring::open(buf) -> Option<Ring>` (checks the magic and version);
   - `fn write_frame(&self, w: u32, h: u32, pts_us: u64, fill: impl FnOnce(&mut [u8]))`;
-  - `fn read_newest(&self, last_seq: u64, out: &mut Vec<u8>) -> Read` (`enum Read { New { seq: u64, w: u32, h: u32, pts_us: u64 }, Same, Torn, Empty }`);
+  - `fn read_newest(&self, last_seq: u64, wanted: (u32, u32), out: &mut Vec<u8>) -> Read` (`enum Read { New { seq: u64, w: u32, h: u32, pts_us: u64 }, Same, Torn, Mismatch, Empty }`; `Mismatch` when the slot's width/height differ from `wanted`, checked inside the seqlock);
   - `fn set_wanted(&self, w: u32, h: u32)`, `fn wanted(&self) -> (u32, u32)`;
   - `fn beat(&self, now_ms: u64)`, `fn tray_alive(&self, now_ms: u64) -> bool` (5 s rule);
   - `fn zero(&self)`.
@@ -118,6 +118,7 @@
 
 - [ ] **Step 1: Failing tests.**
   - `header_round_trips`: init, open, magic and version checked; `set_wanted(1280, 720)` → `wanted() == (1280, 720)`.
+  - `mismatched_size_frame_is_not_delivered`: write a 1280×720 frame, read with wanted (1920, 1080) → `Mismatch` and `out` untouched; read with wanted (1280, 720) → `New`.
   - `newest_complete_slot_wins`: write A (seq 2), write B (seq 2 in the other slot) → `read_newest` returns B's bytes and `New`.
   - `torn_read_is_rejected`: start a write with the seq left odd (a test hook `begin_write_for_test`) → `read_newest` returns `Torn` or the previous frame, never the half-written bytes.
   - `same_frame_reads_same`: reading twice with the returned seq → `Same`.
@@ -127,7 +128,7 @@
   - `fit_landscape_fills`: `fit((1920, 1080), 0, (1280, 720)) == Rect { x: 0, y: 0, w: 1280, h: 720 }`.
   - `fit_rotation_90_swaps`: `fit((1920, 1080), 90, (1920, 1080))` equals the portrait case.
   - `heartbeat_black_before_first_frame`: `tick(Empty) == Black`.
-  - `heartbeat_repeats_last_frame`: after `New`, `tick(Same) == Repeat`, `tick(Torn) == Repeat`.
+  - `heartbeat_repeats_last_frame`: after `New`, `tick(Same) == Repeat`, `tick(Torn) == Repeat`, `tick(Mismatch) == Repeat`.
   - `heartbeat_timestamps_increase`: 100 calls to `next_pts` with the same `now` are strictly increasing, by ≥ 333,333 each.
 - [ ] **Step 2:** Run `cargo test -p pb-camera-frames`. Expected: FAIL to compile (the crate is empty).
 - [ ] **Step 3:** Implement.
@@ -204,6 +205,8 @@
   - `media_types_are_fixed_16_9_nv12`: two types; NV12 subtype; frame rate 30/1; sizes as above.
   - `media_type_never_changes_after_start`: create the source in-process (`CoCreateInstance` is not needed: construct it directly), `Start` with 1280×720, then attempt `SetCurrentMediaType(1920×1080)` → `MF_E_INVALIDREQUEST`.
   - `samples_flow_at_30fps_from_an_empty_ring`: in-process with a temp-file ring; request 10 samples → 10 `MEMediaSample` events within 400 ms, all black (Y = 16), timestamps increasing.
+  - `burst_of_requests_is_answered_one_per_tick`: queue 5 `RequestSample` tokens at once → 5 `MEMediaSample` events spread over about 167 ms (33 ms apart), never two in one tick, in FIFO order.
+  - `two_handles_open_the_frames_file_at_once`: one read-write handle (the tray's open) and one read handle (the source's) on the same file, both opened with `FILE_SHARE_READ | FILE_SHARE_WRITE`: no `ERROR_SHARING_VIOLATION`.
   - `samples_show_the_newest_ring_frame`: write a frame of Y = 200 into the ring → the next sample's first byte is 200.
 - [ ] **Step 2:** Run `cargo test -p pb-camera-source`. Expected: FAIL.
 - [ ] **Step 3:** Implement:
@@ -212,7 +215,8 @@
   - the stream descriptor attributes (spec section 4);
   - `IKsControl` returns `HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND)`;
   - the heartbeat on an `MFPutWaitingWorkItem` or timer-queue timer at 33 ms answering queued `RequestSample` tokens;
-  - the ring opened with `CreateFileW` + `CreateFileMappingW` (no name) + `MapViewOfFile`;
+  - the ring opened with `CreateFileW` (share flags `FILE_SHARE_READ | FILE_SHARE_WRITE`) + `CreateFileMappingW` (no name) + `MapViewOfFile`;
+  - `RequestSample` pushes its token into a `Mutex<VecDeque>`; each tick pops at most one;
   - on `SetCurrentMediaType` → `ring.set_wanted`;
   - no call to any `AddDeviceSourceInfo`.
 - [ ] **Step 4:** Run `cargo test -p pb-camera-source && cargo build --release -p pb-camera-source`. Expected: PASS; `target\release\pb_camera_source.dll` exists.
@@ -284,6 +288,7 @@
 
 **Interfaces:**
 - Consumes: `screen_decode::{Decoder, Frame, supported_codecs}`, `screen_render::device_for_window` (or a windowless adapter choice: the default adapter), Task 3 (`Ring`, `copy_nv12`, `fit`), Task 4 `open_camera`, Task 7 `is_registered`/`request_register`, Task 8 `CameraDevice`.
+- Both the tray and the source open the frames file with `FILE_SHARE_READ | FILE_SHARE_WRITE` (no `ERROR_SHARING_VIOLATION`).
 - Produces:
   - `pub struct CameraPipe` (decode thread, GPU fit, two staging textures, ring writer);
   - `pub fn remove_camera(hwnd)`: stops streaming, sweeps, then `request_unregister`.
@@ -325,6 +330,7 @@
 
 - [ ] **Step 1:** Implement capture per the Global Constraints:
   - choose the camera by `LENS_FACING`;
+  - the rotation helper `rotationDegrees(sensorOrientation: Int, deviceRotation: Int, front: Boolean): Int`: back `(sensor - device + 360) % 360`, front `(sensor + device) % 360`; unit tests in `app/src/test`: back 90/0 → 90, back 90/90 → 0, front 270/0 → 270, front 270/90 → 0;
   - pick the AE range from `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` (a pure helper `pickFpsRange(ranges): Range<Int>`, unit-tested in `app/src/test`: `[[15, 30], [30, 30], [24, 24]] → [30, 30]`; `[[15, 30], [24, 24]] → [24, 24]`);
   - stabilization keys;
   - a 16:9 size helper (`pickSize(sizes)` tested: prefers 1920×1080, then 1280×720);
