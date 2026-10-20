@@ -2406,6 +2406,7 @@ dependencies = [
  "pb-platform-win",
  "pb-protocol",
  "pb-transport",
+ "pb-video",
  "qrcode",
  "rqrr",
  "sha2 0.10.9",

@@ -26,6 +26,9 @@ mod notify;
 mod qr;
 #[cfg(windows)]
 mod qr_window;
+#[cfg(windows)]
+#[allow(dead_code)] // wired in by the screen window
+mod screen_decode;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings;
 #[cfg_attr(not(windows), allow(dead_code))]
