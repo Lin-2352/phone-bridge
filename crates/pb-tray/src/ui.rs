@@ -776,14 +776,17 @@ fn copy_otp(hwnd: HWND, code: &str) {
 
 /// Rebuild the list of phone toasts from the notification centre (after a
 /// restart), so their buttons work and the phone's sync can remove them.
-fn restore_from_history() {
+fn restore_from_history() -> (usize, usize) {
     use crate::{notify::Entry, toast_xml::parse_ctx};
+    let history = crate::toast::history();
     let mut ns = notify_ui();
-    for (tag, group, launch) in crate::toast::history() {
+    let mut restored = 0;
+    for (tag, group, launch) in &history {
+        let (tag, group) = (tag.clone(), group.clone());
         if tag.starts_with("pb-") {
             continue;
         }
-        let Some(ctx) = parse_ctx(&launch) else {
+        let Some(ctx) = parse_ctx(launch) else {
             continue;
         };
         let Ok(peer) = pb_identity::PeerId::from_hex(&ctx.peer) else {
@@ -799,7 +802,9 @@ fn restore_from_history() {
             },
         );
         ns.meta.insert(tag, (group, ctx.reply, None));
+        restored += 1;
     }
+    (restored, history.len())
 }
 
 fn show_phone_notification(
@@ -1797,7 +1802,12 @@ pub fn create(
         }
         notify_ui().toasts_ok = registered.is_ok();
         if registered.is_ok() {
-            restore_from_history();
+            let (restored, total) = restore_from_history();
+            if let Some(st) = STATE.get() {
+                st.log.line(&format!(
+                    "TOAST restored {restored} of {total} toasts from the notification centre"
+                ));
+            }
             arm_timer(hwnd, TIMER_NOTIFY, 5000);
         }
         // Session lock and unlock (content hidden while locked).
