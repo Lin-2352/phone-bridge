@@ -1064,7 +1064,9 @@ fn show_camera(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
     Box::pin(async move {
         use crate::camera_register::RegisterError;
-        if !again && !crate::camera_register::is_registered() {
+        if !again
+            && (!crate::camera_register::is_registered() || crate::camera_register::needs_install())
+        {
             ui(UiEvent::Info(
                 "Setting up the phone camera: Windows will ask once for permission".into(),
             ));

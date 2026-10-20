@@ -26,8 +26,9 @@ use windows::{
         Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT},
         System::{
             Registry::{
-                RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegSetValueExW, HKEY,
-                HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ,
+                RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegQueryValueExW,
+                RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE,
+                REG_OPTION_NON_VOLATILE, REG_SZ,
             },
             Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE},
         },
@@ -58,13 +59,45 @@ pub fn dll_dir() -> PathBuf {
     PathBuf::from(base).join("PhoneBridge").join("camera")
 }
 
-/// The installed DLL: a versioned name, so an update can register while
-/// Frame Server still has the older one loaded.
-pub fn dll_path() -> PathBuf {
-    dll_dir().join(format!(
-        "pb-camera-source-{}.dll",
-        env!("CARGO_PKG_VERSION")
-    ))
+/// The installed DLL's file name: the version and a hash of its bytes, so
+/// an update installs next to a DLL that Frame Server still holds, and the
+/// same bytes always land on the same name.
+pub fn dll_file_name(bytes: &[u8]) -> String {
+    // FNV-1a, 32 bit: a name, not a security check.
+    let mut h: u32 = 0x811c_9dc5;
+    for b in bytes {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("pb-camera-source-{}-{h:08x}.dll", env!("CARGO_PKG_VERSION"))
+}
+
+/// The DLL path the class key names, if the key exists.
+fn registered_dll() -> Option<PathBuf> {
+    // SAFETY: a read-only registry query; the key is closed again.
+    unsafe {
+        let mut key = HKEY::default();
+        let sub = HSTRING::from(format!("{}\\InprocServer32", clsid_key()));
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, &sub, None, KEY_READ, &mut key)
+            .ok()
+            .ok()?;
+        let mut buf = vec![0u16; 520];
+        let mut bytes = (buf.len() * 2) as u32;
+        let r = RegQueryValueExW(
+            key,
+            PCWSTR::null(),
+            None,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        );
+        let _ = RegCloseKey(key);
+        if r != WIN32_ERROR(0) {
+            return None;
+        }
+        let len = (bytes as usize / 2).saturating_sub(1).min(buf.len());
+        Some(PathBuf::from(String::from_utf16_lossy(&buf[..len])))
+    }
 }
 
 pub fn frames_path() -> PathBuf {
@@ -90,19 +123,26 @@ pub fn frames_sddl(user_sid: &str) -> String {
     format!("D:PAI(A;;FA;;;SY)(A;;FRFW;;;LS)(A;;FRFW;;;{user_sid})")
 }
 
+/// Installed, but not the DLL that ships with this tray (an update): the
+/// next start of the camera installs the new one (one UAC prompt).
+pub fn needs_install() -> bool {
+    let shipped = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(DLL_SOURCE_NAME)))
+        .and_then(|p| std::fs::read(p).ok());
+    let Some(bytes) = shipped else {
+        return false; // nothing to install from
+    };
+    let want = dll_file_name(&bytes);
+    !registered_dll()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .is_some_and(|n| n == want)
+}
+
 /// Whether the camera source is installed: the class key names a DLL that
 /// exists.
 pub fn is_registered() -> bool {
-    // SAFETY: a read-only registry query; the key is closed again.
-    unsafe {
-        let mut key = HKEY::default();
-        let sub = HSTRING::from(format!("{}\\InprocServer32", clsid_key()));
-        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, &sub, None, KEY_READ, &mut key).is_err() {
-            return false;
-        }
-        let _ = RegCloseKey(key);
-    }
-    dll_path().is_file() && frames_path().is_file()
+    registered_dll().is_some_and(|p| p.is_file()) && frames_path().is_file()
 }
 
 fn set_dacl(path: &std::path::Path, sddl: &str) -> Result<(), ()> {
@@ -168,8 +208,22 @@ pub fn register_elevated(user_sid: &str) -> i32 {
     let Some(source) = source else {
         return EXIT_COPY_FAILED;
     };
-    if std::fs::copy(&source, dll_path()).is_err() {
+    let Ok(bytes) = std::fs::read(&source) else {
         return EXIT_COPY_FAILED;
+    };
+    let installed = dir.join(dll_file_name(&bytes));
+    if !installed.is_file() && std::fs::write(&installed, &bytes).is_err() {
+        return EXIT_COPY_FAILED;
+    }
+    // Older copies go if Frame Server does not hold them (else they stay
+    // until the next install or the removal).
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p != installed && p.extension().is_some_and(|x| x == "dll") {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
     }
     // The frames file: full size, header formatted, then its own ACL.
     let frames = frames_path();
@@ -204,7 +258,7 @@ pub fn register_elevated(user_sid: &str) -> i32 {
         {
             return EXIT_REGISTRY_FAILED;
         }
-        let ok = set_reg_string(key, None, &dll_path().display().to_string())
+        let ok = set_reg_string(key, None, &installed.display().to_string())
             && set_reg_string(key, Some("ThreadingModel"), "Both");
         let _ = RegCloseKey(key);
         if !ok {
@@ -309,13 +363,19 @@ mod tests {
     fn paths_are_under_programdata() {
         let d = dll_dir();
         assert!(d.ends_with("PhoneBridge\\camera"), "{d:?}");
-        let name = dll_path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let name = dll_file_name(b"some dll bytes");
         assert!(name.contains(env!("CARGO_PKG_VERSION")), "{name}");
         assert!(name.starts_with("pb-camera-source-") && name.ends_with(".dll"));
+        assert_eq!(
+            name,
+            dll_file_name(b"some dll bytes"),
+            "same bytes, same name"
+        );
+        assert_ne!(
+            name,
+            dll_file_name(b"other dll bytes"),
+            "new bytes, new name"
+        );
         assert!(frames_path().starts_with(&d));
     }
 

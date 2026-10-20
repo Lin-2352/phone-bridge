@@ -100,6 +100,57 @@ impl Mapped {
     }
 }
 
+/// Where the source's small diagnostic text goes: unused header bytes of
+/// the frames file (Frame Server's log is out of reach; LocalService can
+/// write this file). A circular text area with a byte counter in word 12.
+const LOG_START: usize = 128;
+const LOG_END: usize = 4096;
+const LOG_COUNTER_WORD: usize = 12;
+
+impl Mapped {
+    /// Append one line to the diagnostic text (never fails the caller).
+    pub fn append_log(&mut self, msg: &str) {
+        let words = self.words();
+        let counter = words[LOG_COUNTER_WORD] as usize;
+        let span = LOG_END - LOG_START;
+        // SAFETY: the log area lies inside the mapped header; only this
+        // diagnostic writes there.
+        let base = unsafe { (words.as_mut_ptr() as *mut u8).add(LOG_START) };
+        let line = format!("{msg}\n");
+        for (i, b) in line.bytes().enumerate() {
+            // SAFETY: (counter + i) % span stays inside the log area.
+            unsafe { *base.add((counter + i) % span) = b };
+        }
+        words[LOG_COUNTER_WORD] = (counter + line.len()) as u64;
+    }
+
+    /// The diagnostic text in order (oldest first).
+    pub fn read_log(&mut self) -> String {
+        let words = self.words();
+        let counter = words[LOG_COUNTER_WORD] as usize;
+        let span = LOG_END - LOG_START;
+        // SAFETY: reading the log area inside the mapped header.
+        let base = unsafe { (words.as_ptr() as *const u8).add(LOG_START) };
+        let (start, len) = if counter > span {
+            (counter % span, span)
+        } else {
+            (0, counter)
+        };
+        let bytes: Vec<u8> = (0..len)
+            // SAFETY: (start + i) % span stays inside the log area.
+            .map(|i| unsafe { *base.add((start + i) % span) })
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+/// One diagnostic line from anywhere in the source (opens the file briefly).
+pub fn diag(path: &Path, msg: &str) {
+    if let Ok(mut m) = Mapped::open(path, true) {
+        m.append_log(msg);
+    }
+}
+
 impl Drop for Mapped {
     fn drop(&mut self) {
         // SAFETY: unmapping and closing what `open` created.

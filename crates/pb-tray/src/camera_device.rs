@@ -350,6 +350,53 @@ mod tests {
         assert_eq!(*calls.borrow(), ["start", "remove", "shutdown"]);
     }
 
+    /// Needs the camera source registered on this PC. Activates the installed
+    /// class through COM the way Frame Server does and asks for the
+    /// interfaces it uses.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    #[allow(unsafe_code)]
+    fn the_installed_source_activates_through_com() {
+        use pb_camera_source::com::CLSID_PHONE_BRIDGE_CAMERA_SOURCE;
+        use windows::{
+            core::Interface,
+            Win32::{
+                Media::{
+                    KernelStreaming::IKsControl,
+                    MediaFoundation::{
+                        IMFGetService, IMFMediaEventGenerator, IMFMediaSource, IMFMediaSourceEx,
+                        MFStartup, MFSTARTUP_FULL, MF_VERSION,
+                    },
+                },
+                System::Com::{
+                    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+                },
+            },
+        };
+        // SAFETY: COM activation of our own installed class in this process.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_FULL).unwrap();
+            let src: IMFMediaSourceEx = CoCreateInstance(
+                &CLSID_PHONE_BRIDGE_CAMERA_SOURCE,
+                None,
+                CLSCTX_INPROC_SERVER,
+            )
+            .expect("CoCreateInstance(IMFMediaSourceEx)");
+            src.cast::<IMFMediaSource>().expect("IMFMediaSource");
+            src.cast::<IMFMediaEventGenerator>()
+                .expect("IMFMediaEventGenerator");
+            src.cast::<IMFGetService>().expect("IMFGetService");
+            src.cast::<IKsControl>().expect("IKsControl");
+            let pd = src
+                .CreatePresentationDescriptor()
+                .expect("presentation descriptor");
+            assert_eq!(pd.GetStreamDescriptorCount().unwrap(), 1);
+            src.Shutdown().unwrap();
+        }
+    }
+
     /// Needs the camera source registered (admin) on this PC: run by hand
     /// after `--register-camera`, with `cargo test -p pb-tray camera_device -- --ignored`.
     #[cfg(windows)]

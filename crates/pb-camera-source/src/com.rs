@@ -29,7 +29,7 @@ use windows::{
         implement, AgileReference, Error, IUnknown, Interface, Ref, Result, BOOL, GUID, HRESULT,
     },
     Win32::{
-        Foundation::{E_NOINTERFACE, E_POINTER, S_FALSE, S_OK},
+        Foundation::{E_POINTER, S_FALSE, S_OK},
         Media::{
             KernelStreaming::{IKsControl, IKsControl_Impl, KSIDENTIFIER},
             MediaFoundation::*,
@@ -39,7 +39,7 @@ use windows::{
 };
 
 use crate::{
-    file::Mapped,
+    file::{diag, Mapped},
     pump::{Pump, TypeState, TYPES},
 };
 
@@ -100,6 +100,11 @@ struct Inner {
     /// The stream (set once created); cleared at shutdown to break the cycle.
     stream: Mutex<Option<IMFMediaStream2>>,
     source: Mutex<Option<AgileReference<IMFMediaSource>>>,
+}
+
+/// A diagnostic line (see `file::diag`): what Frame Server asked, for debugging.
+pub(crate) fn log(msg: &str) {
+    diag(&frames_path(), &format!("[{}] {msg}", now_ms() % 1_000_000));
 }
 
 fn media_type(w: u32, h: u32) -> Result<IMFMediaType> {
@@ -333,6 +338,7 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
     }
 
     fn CreatePresentationDescriptor(&self) -> Result<IMFPresentationDescriptor> {
+        log("CreatePresentationDescriptor");
         if self.inner.lock().shutdown {
             return Err(MF_E_SHUTDOWN.into());
         }
@@ -346,6 +352,7 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
         _time_format: *const GUID,
         _start: *const PROPVARIANT,
     ) -> Result<()> {
+        log("Start");
         let pd = pd.ok()?;
         // The type the app picked: it stays for the whole call.
         // SAFETY: reading the app's presentation descriptor.
@@ -410,6 +417,7 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
     }
 
     fn Stop(&self) -> Result<()> {
+        log("Stop");
         self.inner.stop_timer();
         self.inner.lock().started = false;
         // SAFETY: queueing events on our own queues.
@@ -435,6 +443,7 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
     }
 
     fn Shutdown(&self) -> Result<()> {
+        log("Shutdown");
         self.inner.stop_timer();
         {
             let mut g = self.inner.lock();
@@ -456,6 +465,7 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
 
 impl IMFMediaSourceEx_Impl for PbCameraSource_Impl {
     fn GetSourceAttributes(&self) -> Result<IMFAttributes> {
+        log("GetSourceAttributes");
         let mut a = None;
         // SAFETY: creating an empty attribute store.
         unsafe { MFCreateAttributes(&mut a, 0)? };
@@ -463,6 +473,7 @@ impl IMFMediaSourceEx_Impl for PbCameraSource_Impl {
     }
 
     fn GetStreamAttributes(&self, id: u32) -> Result<IMFAttributes> {
+        log(&format!("GetStreamAttributes {id}"));
         if id != 0 {
             return Err(MF_E_INVALIDREQUEST.into());
         }
@@ -470,6 +481,7 @@ impl IMFMediaSourceEx_Impl for PbCameraSource_Impl {
     }
 
     fn SetD3DManager(&self, _manager: Ref<IUnknown>) -> Result<()> {
+        log("SetD3DManager");
         // Software frames only.
         Ok(())
     }
@@ -478,11 +490,15 @@ impl IMFMediaSourceEx_Impl for PbCameraSource_Impl {
 impl IMFGetService_Impl for PbCameraSource_Impl {
     fn GetService(
         &self,
-        _service: *const GUID,
-        _riid: *const GUID,
+        service: *const GUID,
+        riid: *const GUID,
         _object: *mut *mut c_void,
     ) -> Result<()> {
-        Err(Error::from(E_NOINTERFACE))
+        // SAFETY: COM passes valid GUID pointers.
+        let (s, r) = unsafe { (service.as_ref().copied(), riid.as_ref().copied()) };
+        log(&format!("GetService service={s:?} riid={r:?}"));
+        // The documented answer for a service this source does not offer.
+        Err(Error::from(MF_E_UNSUPPORTED_SERVICE))
     }
 }
 
@@ -602,6 +618,10 @@ impl IClassFactory_Impl for Factory_Impl {
         riid: *const GUID,
         object: *mut *mut c_void,
     ) -> Result<()> {
+        // SAFETY: COM passes a valid IID pointer.
+        log(&format!("CreateInstance riid={:?}", unsafe {
+            riid.as_ref().copied()
+        }));
         if outer.is_some() {
             return Err(Error::from(
                 windows::Win32::Foundation::CLASS_E_NOAGGREGATION,
@@ -610,9 +630,18 @@ impl IClassFactory_Impl for Factory_Impl {
         if object.is_null() {
             return Err(E_POINTER.into());
         }
-        let source = PbCameraSource::create()?;
+        // Frame Server asks for the activator (IMFActivate); anything else
+        // (tests, other hosts) gets the media source itself.
         // SAFETY: `object` and `riid` are the caller's valid out-pointers.
-        unsafe { source.query(riid, object).ok() }
+        unsafe {
+            if *riid == IMFActivate::IID {
+                crate::activate::PbCameraActivate::create()?
+                    .query(riid, object)
+                    .ok()
+            } else {
+                PbCameraSource::create()?.query(riid, object).ok()
+            }
+        }
     }
 
     fn LockServer(&self, _lock: BOOL) -> Result<()> {
@@ -635,6 +664,10 @@ pub unsafe extern "system" fn DllGetClassObject(
     }
     // SAFETY: the pointers were checked above.
     unsafe {
+        log(&format!(
+            "DllGetClassObject clsid={:?} riid={:?}",
+            *rclsid, *riid
+        ));
         if *rclsid != CLSID_PHONE_BRIDGE_CAMERA_SOURCE {
             return windows::Win32::Foundation::CLASS_E_CLASSNOTAVAILABLE;
         }
