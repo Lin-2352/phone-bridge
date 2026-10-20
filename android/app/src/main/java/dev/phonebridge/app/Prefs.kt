@@ -51,6 +51,16 @@ class Prefs(context: Context) {
         get() = sp.getInt("theme", 0)
         set(v) = sp.edit().putInt("theme", v).apply()
 
+    /** Phone notifications are shown on paired PCs (once access is granted). */
+    var notifyToPc: Boolean
+        get() = sp.getBoolean("notify_to_pc", true)
+        set(v) = sp.edit().putBoolean("notify_to_pc", v).apply()
+
+    /** Ringer mode before a PC silenced a call, or -1: restored after the call. */
+    var savedRinger: Int
+        get() = sp.getInt("saved_ringer", -1)
+        set(v) = sp.edit().putInt("saved_ringer", v).apply()
+
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?
         get() = sp.getString("save_tree", null)?.let(Uri::parse)
