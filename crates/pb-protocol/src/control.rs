@@ -14,7 +14,7 @@ pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 pub struct Control {
     #[prost(
         oneof = "ControlMsg",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
     )]
     pub msg: Option<ControlMsg>,
 }
@@ -81,6 +81,57 @@ pub enum ControlMsg {
     /// Window and session state, both ways (see the fields).
     #[prost(message, tag = "20")]
     ScreenState(ScreenState),
+    /// PC -> phone: use your camera as a webcam.
+    #[prost(message, tag = "21")]
+    CameraStart(CameraStart),
+    /// Phone -> PC: the camera session's codec and size.
+    #[prost(message, tag = "22")]
+    CameraAccept(CameraAccept),
+    /// PC -> phone, mid-stream: switch lens.
+    #[prost(message, tag = "23")]
+    CameraControl(CameraControl),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct CameraStart {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Codecs the PC decodes (`pb_video::Codec` values), best first.
+    #[prost(uint32, repeated, tag = "2")]
+    pub codecs: Vec<u32>,
+    /// 0 back, 1 front.
+    #[prost(uint32, tag = "3")]
+    pub lens: u32,
+    /// The 16:9 size wanted (1920x1080 or 1280x720).
+    #[prost(uint32, tag = "4")]
+    pub width: u32,
+    #[prost(uint32, tag = "5")]
+    pub height: u32,
+    #[prost(uint32, tag = "6")]
+    pub fps: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct CameraAccept {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(uint32, tag = "2")]
+    pub codec: u32,
+    #[prost(uint32, tag = "3")]
+    pub width: u32,
+    #[prost(uint32, tag = "4")]
+    pub height: u32,
+    /// 0, 90, 180 or 270.
+    #[prost(uint32, tag = "5")]
+    pub rotation: u32,
+    #[prost(uint32, tag = "6")]
+    pub lens: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct CameraControl {
+    #[prost(uint32, tag = "1")]
+    pub lens: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -593,6 +644,23 @@ mod tests {
                 notice: "Lower quality to save memory".into(),
                 codec_failed: true,
             }),
+            ControlMsg::CameraStart(CameraStart {
+                id: 6,
+                codecs: vec![2, 3],
+                lens: 1,
+                width: 1920,
+                height: 1080,
+                fps: 30,
+            }),
+            ControlMsg::CameraAccept(CameraAccept {
+                id: 6,
+                codec: 2,
+                width: 1920,
+                height: 1080,
+                rotation: 270,
+                lens: 1,
+            }),
+            ControlMsg::CameraControl(CameraControl { lens: 0 }),
         ];
         for m in msgs {
             let bytes = encode_frame(&Control::from(m.clone())).unwrap();
@@ -704,5 +772,16 @@ mod tests {
         ] {
             assert_eq!(bad.parse::<PairingCode>(), Err(BadPairingCode), "{bad:.40}");
         }
+    }
+
+    #[test]
+    fn camera_start_uses_field_21() {
+        let c = Control::from(ControlMsg::CameraStart(CameraStart {
+            id: 1,
+            ..Default::default()
+        }));
+        let bytes = c.encode_to_vec();
+        // Field 21, wire type 2: tag byte 0xAA 0x01.
+        assert_eq!(&bytes[..2], &[0xAA, 0x01]);
     }
 }
