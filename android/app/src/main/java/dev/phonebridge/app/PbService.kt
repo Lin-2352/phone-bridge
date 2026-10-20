@@ -331,6 +331,9 @@ class PbService : Service() {
             Bridge.nodeReady.value = true
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
+            runCatching { EncoderCaps.get() }.onSuccess { c ->
+                Log.i(TAG, "SCREEN encoder caps ${c.encoderName} codecs=${c.codecs} vbr=${c.vbr} qpMax=${c.qpMax} align=${c.alignW}x${c.alignH}")
+            }
             rediscoverSoon()
         } catch (e: Throwable) {
             // Keystore not ready, port busy...: do not sit in the foreground

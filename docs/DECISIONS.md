@@ -249,6 +249,13 @@ Spec: `docs/superpowers/specs/2026-10-20-phone-notifications-on-pc-design.md`; p
   - **Several chats:** WhatsApp's several-chats notification is InboxStyle; its lines are now sent.
   - **Phone off Wi-Fi:** the realme dropped off Wi-Fi twice (mobile data only); nothing can arrive until it is back, by design (local network only).
 
+## Phase 4.1 (2026-10-20): phone screen on the PC
+Plan: `docs/superpowers/plans/2026-10-20-phone-screen-on-pc.md`.
+- **The realme's encoder, probed:** `c2.mtk.hevc.encoder`, codecs H.265 Main and H.264, **no HEVC Main10** with surface input, VBR supported, QP ceiling available (API 33), alignment 16×16.
+  - So the stream is 8-bit HEVC Main with VBR and a QP ceiling.
+  - The spec's 10-bit wish cannot be met by this phone's hardware. Android composes the screen in 8-bit anyway, so Main10 would only have avoided added encoder banding; the QP ceiling and generous VBR keep that low.
+  - The PC still offers Main10 first, so a phone whose encoder has it uses it.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 
