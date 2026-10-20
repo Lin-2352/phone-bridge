@@ -124,6 +124,8 @@ impl Injector {
                     key(unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
                 ]);
             }
+            // Absolute touches only go PC -> phone (the phone-screen window).
+            InputEvent::Touch { .. } | InputEvent::Pinch { .. } => {}
         }
     }
 }

@@ -91,6 +91,22 @@ Control messages, tags 10 to 16 of the `Control` envelope:
 - The phone sends at most 40 notify records per second. The PC closes a session carrying more than 200 per second on arrival (a Wi-Fi stall can bunch paced records). The phone closes one carrying more than 10 actions per second.
 - Older peers ignore the unknown messages.
 
+### Phone screen
+Control messages, tags 17 to 20:
+
+| Message | Direction | Content |
+|---|---|---|
+| `ScreenStart` (17) | PC → phone | id, max long side (0 = native), fps, codecs the PC decodes (best first: 1 H.265 Main10, 2 H.265, 3 H.264), dim, sharp |
+| `ScreenAccept` (18) | phone → PC | id, codec, width, height, rotation; declined with `OfferReply{accept: false}` |
+| `ScreenFeedback` (19) | PC → phone | newest presented pts (µs), every 100 ms |
+| `ScreenState` (20) | both | PC → phone: `active` (window visible), `dim`, `codec_failed`; phone → PC: `notice` |
+
+**Session:**
+1. After `ScreenAccept`, the phone opens a uni stream of video records: the header `PBV1`, then `u32 len | i64 pts_us | u8 flags | payload` (flags: 1 key, 2 codec config, 4 repeat). A record over 4 MiB ends the session.
+2. A config record (`u16 rotation | u16 width | u16 height | codec headers`) comes first, after every rotation or encoder reset, and is always followed by a key frame.
+3. The PC opens a uni stream of 8-byte input records (below) for the window's mouse and keyboard; one consent covers both.
+4. After a dropped link the phone keeps capturing (paused) for 30 s; a new `ScreenStart` from the same PC within that time resumes without asking again.
+
 ## Input datagram (fixed 8 bytes, little-endian)
 ```
 offset 0  kind   u8    0 MouseMove, 1 MouseButton, 2 Wheel, 3 Key
@@ -98,6 +114,8 @@ offset 1  flags  u8    bit 0 = pressed (Button, Key)
 offset 2  seq    u16   wraps; receiver drops stale or duplicate events
 offset 4  a      i16   MouseMove dx | button id | Wheel dx | scancode (as u16)
 offset 6  b      i16   MouseMove dy | 0           | Wheel dy | 0
+kind 5 Touch: flags = phase (0 hover, 1 down, 2 move, 3 up); a, b = x, y as u16 (0..=65535 across the screen)
+kind 6 Pinch: flags bit 0 = out (zoom in); a, b = centre x, y as u16
 ```
 - Wheel units are 1/120 of a notch.
 - Keys are hardware scan codes so layouts do not matter; text entry will use a separate reliable path.

@@ -118,6 +118,19 @@ pub enum InputEvent {
     Key { scancode: u16, pressed: bool },
     /// One UTF-16 code unit of typed text (surrogate pairs are two events).
     Char { unit: u16 },
+    /// A finger at an absolute spot (the phone-screen window): x and y are
+    /// 0..=65535 across the screen. Hover only moves the pointer.
+    Touch { phase: TouchPhase, x: u16, y: u16 },
+    /// Two fingers pinching out (zoom in) or in, centred on (x, y).
+    Pinch { out: bool, x: u16, y: u16 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchPhase {
+    Hover,
+    Down,
+    Move,
+    Up,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,6 +171,8 @@ impl InputDatagram {
             InputEvent::Wheel { dx, dy } => (2, 0, dx, dy),
             InputEvent::Key { scancode, pressed } => (3, u8::from(pressed), scancode as i16, 0),
             InputEvent::Char { unit } => (4, 0, unit as i16, 0),
+            InputEvent::Touch { phase, x, y } => (5, phase as u8, x as i16, y as i16),
+            InputEvent::Pinch { out, x, y } => (6, u8::from(out), x as i16, y as i16),
         };
         let mut out = [0u8; INPUT_DATAGRAM_LEN];
         out[0] = kind;
@@ -188,6 +203,22 @@ impl InputDatagram {
                 pressed,
             },
             4 => InputEvent::Char { unit: a as u16 },
+            5 => InputEvent::Touch {
+                phase: match b[1] {
+                    0 => TouchPhase::Hover,
+                    1 => TouchPhase::Down,
+                    2 => TouchPhase::Move,
+                    3 => TouchPhase::Up,
+                    _ => return Err(DatagramError::UnknownKind(5)),
+                },
+                x: a as u16,
+                y: c as u16,
+            },
+            6 => InputEvent::Pinch {
+                out: pressed,
+                x: a as u16,
+                y: c as u16,
+            },
             k => return Err(DatagramError::UnknownKind(k)),
         };
         Ok(Self { seq, event })
@@ -197,6 +228,64 @@ impl InputDatagram {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touch_and_pinch_records_round_trip() {
+        let events = [
+            InputEvent::Touch {
+                phase: TouchPhase::Hover,
+                x: 0,
+                y: 65535,
+            },
+            InputEvent::Touch {
+                phase: TouchPhase::Down,
+                x: 12,
+                y: 34,
+            },
+            InputEvent::Touch {
+                phase: TouchPhase::Move,
+                x: 65535,
+                y: 0,
+            },
+            InputEvent::Touch {
+                phase: TouchPhase::Up,
+                x: 32767,
+                y: 32768,
+            },
+            InputEvent::Pinch {
+                out: true,
+                x: 100,
+                y: 200,
+            },
+            InputEvent::Pinch {
+                out: false,
+                x: 65535,
+                y: 65535,
+            },
+        ];
+        for event in events {
+            let d = InputDatagram { seq: 9, event };
+            assert_eq!(InputDatagram::decode(&d.encode()), Ok(d));
+        }
+    }
+
+    #[test]
+    fn unknown_touch_phase_is_rejected() {
+        let mut b = InputDatagram {
+            seq: 1,
+            event: InputEvent::Touch {
+                phase: TouchPhase::Down,
+                x: 1,
+                y: 1,
+            },
+        }
+        .encode();
+        b[1] = 7;
+        assert_eq!(
+            InputDatagram::decode(&b),
+            Err(DatagramError::UnknownKind(5))
+        );
+    }
 
     #[test]
     fn protocol_version_starts_at_zero() {

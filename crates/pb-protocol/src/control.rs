@@ -14,7 +14,7 @@ pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 pub struct Control {
     #[prost(
         oneof = "ControlMsg",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
     )]
     pub msg: Option<ControlMsg>,
 }
@@ -67,6 +67,75 @@ pub enum ControlMsg {
     NotifyAction(NotifyAction),
     #[prost(message, tag = "16")]
     NotifyActionResult(NotifyActionResult),
+    /// PC -> phone: show me your screen. Answered by `ScreenAccept`, or by
+    /// `OfferReply { accept: false }`. Accepting also lets the PC's window
+    /// drive the phone for this session (input on its own uni stream).
+    #[prost(message, tag = "17")]
+    ScreenStart(ScreenStart),
+    /// Phone -> PC: accepted; video records follow on a uni stream.
+    #[prost(message, tag = "18")]
+    ScreenAccept(ScreenAccept),
+    /// PC -> phone, every 100 ms: the newest frame presented.
+    #[prost(message, tag = "19")]
+    ScreenFeedback(ScreenFeedback),
+    /// Window and session state, both ways (see the fields).
+    #[prost(message, tag = "20")]
+    ScreenState(ScreenState),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ScreenStart {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Long side of the video; 0 = native ("Sharp").
+    #[prost(uint32, tag = "2")]
+    pub max_long_side: u32,
+    #[prost(uint32, tag = "3")]
+    pub fps: u32,
+    /// Codecs the PC decodes (`pb_video::Codec` values), best first.
+    #[prost(uint32, repeated, tag = "4")]
+    pub codecs: Vec<u32>,
+    /// Dim the phone's backlight while mirroring.
+    #[prost(bool, tag = "5")]
+    pub dim: bool,
+    #[prost(bool, tag = "6")]
+    pub sharp: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ScreenAccept {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(uint32, tag = "2")]
+    pub codec: u32,
+    #[prost(uint32, tag = "3")]
+    pub width: u32,
+    #[prost(uint32, tag = "4")]
+    pub height: u32,
+    #[prost(uint32, tag = "5")]
+    pub rotation: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ScreenFeedback {
+    #[prost(int64, tag = "1")]
+    pub presented_pts_us: i64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ScreenState {
+    /// PC -> phone: the window is visible (minimised = false: pause capture).
+    #[prost(bool, tag = "1")]
+    pub active: bool,
+    /// PC -> phone: dim the phone's backlight.
+    #[prost(bool, tag = "2")]
+    pub dim: bool,
+    /// Phone -> PC: something for the window to say ("Lower quality to save memory").
+    #[prost(string, tag = "3")]
+    pub notice: String,
+    /// PC -> phone: decoding failed; switch to the PC's next codec.
+    #[prost(bool, tag = "4")]
+    pub codec_failed: bool,
 }
 
 /// Limits for notification messages; the sender trims to them so a whole
@@ -499,6 +568,30 @@ mod tests {
                 id: 4,
                 ok: false,
                 reason: "gone".into(),
+            }),
+            ControlMsg::ScreenStart(ScreenStart {
+                id: 5,
+                max_long_side: 1920,
+                fps: 30,
+                codecs: vec![1, 2, 3],
+                dim: true,
+                sharp: false,
+            }),
+            ControlMsg::ScreenAccept(ScreenAccept {
+                id: 5,
+                codec: 2,
+                width: 864,
+                height: 1920,
+                rotation: 0,
+            }),
+            ControlMsg::ScreenFeedback(ScreenFeedback {
+                presented_pts_us: 33_333,
+            }),
+            ControlMsg::ScreenState(ScreenState {
+                active: false,
+                dim: true,
+                notice: "Lower quality to save memory".into(),
+                codec_failed: true,
             }),
         ];
         for m in msgs {

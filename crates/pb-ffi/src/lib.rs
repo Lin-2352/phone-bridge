@@ -514,6 +514,8 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         E::Char { unit } => {
                             let _ = l.on_input(4, unit.into(), 0, false);
                         }
+                        // Absolute input belongs to screen sessions only.
+                        E::Touch { .. } | E::Pinch { .. } => {}
                     }
                 })
                 .await;
