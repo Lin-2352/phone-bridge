@@ -10,6 +10,7 @@ members = [
     "crates/pb-tray",
     "crates/pb-video",
     "crates/pb-camera-frames",
+    "crates/pb-camera-source",
     "spikes/iroh-spike",
     "spikes/ffi-smoke",
     "spikes/wifidirect-win",

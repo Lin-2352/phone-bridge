@@ -2334,6 +2334,15 @@ name = "pb-camera-frames"
 version = "0.0.1"
 
 [[package]]
+name = "pb-camera-source"
+version = "0.0.1"
+dependencies = [
+ "pb-camera-frames",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "pb-cli"
 version = "0.0.1"
 dependencies = [
