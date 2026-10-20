@@ -84,13 +84,11 @@ pub fn tag(peer: &PeerId, key: &str) -> String {
     key_hash(&format!("{peer}|{key}"))
 }
 
-/// Toasts of one conversation share a group; other notifications get their own.
+/// The toast group: stable for a key, so an update whose title or
+/// conversation changed still replaces the same toast (Windows identifies a
+/// toast by tag and group together).
 pub fn group(peer: &PeerId, n: &Notification) -> String {
-    if n.conversation.is_empty() {
-        key_hash(&format!("{peer}|key|{}", n.key))
-    } else {
-        key_hash(&format!("{peer}|chat|{}", n.conversation))
-    }
+    key_hash(&format!("{peer}|group|{}", n.key))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,19 +99,60 @@ pub struct Entry {
     pub otp: String,
 }
 
+/// Checks a toast may be missing from Windows' history before it is given
+/// up as never kept (notifications off for the app, or not kept in the
+/// notification centre).
+const MAX_MISSES: u8 = 3;
+
+struct Shown {
+    entry: Entry,
+    /// Seen in Windows' history: only then does its absence mean the user
+    /// cleared it.
+    seen: bool,
+    misses: u8,
+}
+
 /// Toasts currently shown for phone notifications, by tag.
 #[derive(Default)]
 pub struct Mirror {
-    by_tag: HashMap<String, Entry>,
+    by_tag: HashMap<String, Shown>,
 }
 
 impl Mirror {
     pub fn insert(&mut self, tag: String, e: Entry) {
-        self.by_tag.insert(tag, e);
+        let seen = self.by_tag.get(&tag).is_some_and(|s| s.seen);
+        self.by_tag.insert(
+            tag,
+            Shown {
+                entry: e,
+                seen,
+                misses: 0,
+            },
+        );
+    }
+
+    /// An entry rebuilt from the notification centre at start.
+    pub fn restore(&mut self, tag: String, e: Entry) {
+        self.by_tag.insert(
+            tag,
+            Shown {
+                entry: e,
+                seen: true,
+                misses: 0,
+            },
+        );
     }
 
     pub fn get(&self, tag: &str) -> Option<&Entry> {
-        self.by_tag.get(tag)
+        self.by_tag.get(tag).map(|s| &s.entry)
+    }
+
+    /// The toast was clicked: Windows removes it, which is not a clear.
+    pub fn unsee(&mut self, tag: &str) {
+        if let Some(s) = self.by_tag.get_mut(tag) {
+            s.seen = false;
+            s.misses = 0;
+        }
     }
 
     pub fn remove_key(&mut self, peer: &PeerId, key: &str) -> Option<String> {
@@ -135,27 +174,47 @@ impl Mirror {
         self.take(|e| e.package == package)
     }
 
-    /// Entries whose toast is no longer in Windows' history (the user
-    /// cleared it there); each is reported once.
+    /// Entries the user cleared from the notification centre: seen in
+    /// Windows' history before and missing now. Each is reported once.
+    /// Entries never seen there are dropped quietly after a few checks.
     pub fn vanished(&mut self, history: &HashSet<String>) -> Vec<Entry> {
-        let gone: Vec<String> = self
-            .by_tag
-            .keys()
-            .filter(|t| !history.contains(*t))
-            .cloned()
-            .collect();
-        gone.iter().filter_map(|t| self.by_tag.remove(t)).collect()
+        let mut gone = Vec::new();
+        let mut drop = Vec::new();
+        for (t, s) in &mut self.by_tag {
+            if history.contains(t) {
+                s.seen = true;
+            } else if s.seen {
+                gone.push(t.clone());
+            } else {
+                s.misses += 1;
+                if s.misses >= MAX_MISSES {
+                    drop.push(t.clone());
+                }
+            }
+        }
+        for t in drop {
+            self.by_tag.remove(&t);
+        }
+        gone.iter()
+            .filter_map(|t| self.by_tag.remove(t).map(|s| s.entry))
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
         self.by_tag.is_empty()
     }
 
+    /// Each phone that has toasts here, once.
+    pub fn peers(&self) -> Vec<PeerId> {
+        let set: HashSet<PeerId> = self.by_tag.values().map(|s| s.entry.peer).collect();
+        set.into_iter().collect()
+    }
+
     fn take(&mut self, drop: impl Fn(&Entry) -> bool) -> Vec<String> {
         let tags: Vec<String> = self
             .by_tag
             .iter()
-            .filter(|(_, e)| drop(e))
+            .filter(|(_, s)| drop(&s.entry))
             .map(|(t, _)| t.clone())
             .collect();
         for t in &tags {
@@ -357,20 +416,22 @@ mod tests {
     }
 
     #[test]
-    fn same_conversation_shares_a_group() {
+    fn group_is_stable_for_a_key() {
+        // Windows identifies a toast by tag and group: an update whose title
+        // or conversation changed must still replace the same toast.
         let a = note();
         let b = Notification {
-            key: "k2".into(),
+            title: "Family (2 messages)".into(),
+            conversation: "Family (2 messages)".into(),
             ..note()
         };
         assert_eq!(group(&peer(1), &a), group(&peer(1), &b));
-        let c = Notification {
-            key: "k3".into(),
-            conversation: String::new(),
+        let other = Notification {
+            key: "k2".into(),
             ..note()
         };
-        assert_ne!(group(&peer(1), &a), group(&peer(1), &c));
-        assert_eq!(group(&peer(1), &c).len(), 16);
+        assert_ne!(group(&peer(1), &a), group(&peer(1), &other));
+        assert_eq!(group(&peer(1), &a).len(), 16);
     }
 
     fn entry(p: PeerId, key: &str, package: &str) -> Entry {
@@ -429,14 +490,73 @@ mod tests {
         assert!(m.get(&tag(&peer(1), "b")).is_some());
     }
 
+    fn hist(tags: &[String]) -> HashSet<String> {
+        tags.iter().cloned().collect()
+    }
+
     #[test]
     fn vanished_reports_cleared_toasts_once() {
         let mut m = Mirror::default();
+        let (a, b) = (tag(&peer(1), "a"), tag(&peer(1), "b"));
+        m.insert(a.clone(), entry(peer(1), "a", "p"));
+        m.insert(b.clone(), entry(peer(1), "b", "p"));
+        // Both were in the notification centre...
+        assert!(m.vanished(&hist(&[a.clone(), b.clone()])).is_empty());
+        // ...then the user cleared one.
+        assert_eq!(
+            m.vanished(&hist(std::slice::from_ref(&b))),
+            vec![entry(peer(1), "a", "p")]
+        );
+        assert!(m.vanished(&hist(&[b])).is_empty());
+    }
+
+    #[test]
+    fn never_seen_toasts_are_dropped_without_dismissing() {
+        // Windows never kept it (notifications off for the app, or not in
+        // the notification centre): never clear it on the phone.
+        let mut m = Mirror::default();
+        m.insert(tag(&peer(1), "a"), entry(peer(1), "a", "p"));
+        for _ in 0..3 {
+            assert!(m.vanished(&HashSet::new()).is_empty());
+        }
+        assert!(m.is_empty(), "given up after a few checks");
+    }
+
+    #[test]
+    fn an_activated_toast_is_not_reported_as_cleared() {
+        // Windows removes a toast when it is clicked; that is not a clear.
+        let mut m = Mirror::default();
+        let a = tag(&peer(1), "a");
+        m.insert(a.clone(), entry(peer(1), "a", "p"));
+        assert!(m.vanished(&hist(std::slice::from_ref(&a))).is_empty());
+        m.unsee(&a);
+        assert!(m.vanished(&HashSet::new()).is_empty());
+        assert!(
+            m.get(&a).is_some(),
+            "still known, so the phone can remove it"
+        );
+    }
+
+    #[test]
+    fn peers_lists_each_phone_once() {
+        let mut m = Mirror::default();
         m.insert(tag(&peer(1), "a"), entry(peer(1), "a", "p"));
         m.insert(tag(&peer(1), "b"), entry(peer(1), "b", "p"));
-        let history: HashSet<String> = [tag(&peer(1), "b")].into_iter().collect();
-        assert_eq!(m.vanished(&history), vec![entry(peer(1), "a", "p")]);
-        assert!(m.vanished(&history).is_empty());
+        m.insert(tag(&peer(2), "a"), entry(peer(2), "a", "p"));
+        let mut ps = m.peers();
+        ps.sort();
+        let mut want = vec![peer(1), peer(2)];
+        want.sort();
+        assert_eq!(ps, want);
+    }
+
+    #[test]
+    fn restored_entries_count_as_seen() {
+        // Rebuilt from the notification centre at start: already there.
+        let mut m = Mirror::default();
+        let a = tag(&peer(1), "a");
+        m.restore(a.clone(), entry(peer(1), "a", "p"));
+        assert_eq!(m.vanished(&HashSet::new()), vec![entry(peer(1), "a", "p")]);
     }
 
     #[test]

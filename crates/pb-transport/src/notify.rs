@@ -35,12 +35,12 @@ const OTP_WORDS: [&str; 8] = [
 /// numbers are not codes.
 pub fn find_otp(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
+    // Whole words only: "pinned" or "codes" do not count.
     let mentions_code = OTP_WORDS.iter().any(|w| {
         lower.match_indices(w).any(|(i, _)| {
-            !lower[..i]
-                .chars()
-                .next_back()
-                .is_some_and(char::is_alphabetic)
+            let before = lower[..i].chars().next_back();
+            let after = lower[i + w.len()..].chars().next();
+            !before.is_some_and(char::is_alphabetic) && !after.is_some_and(char::is_alphabetic)
         })
     });
     if !mentions_code {
@@ -112,6 +112,37 @@ pub fn key_hash(key: &str) -> String {
         .collect()
 }
 
+/// Sender pacing: at most `per_sec` ticks in any one-second window.
+pub struct Pace {
+    per_sec: u32,
+    count: u32,
+    since: Instant,
+}
+
+impl Pace {
+    pub fn new(per_sec: u32) -> Self {
+        Self {
+            per_sec,
+            count: 0,
+            since: Instant::now(),
+        }
+    }
+
+    /// Wait, if needed, until one more send fits.
+    pub async fn tick(&mut self) {
+        if self.since.elapsed() >= Duration::from_secs(1) {
+            self.since = Instant::now();
+            self.count = 0;
+        }
+        if self.count >= self.per_sec {
+            tokio::time::sleep(Duration::from_secs(1).saturating_sub(self.since.elapsed())).await;
+            self.since = Instant::now();
+            self.count = 0;
+        }
+        self.count += 1;
+    }
+}
+
 /// Counts events in one-second windows; `hit` is false once more than
 /// `limit` events fell inside the current window.
 pub struct RateWindow {
@@ -144,8 +175,11 @@ pub const OUTBOX_LINGER: Duration = Duration::from_secs(15);
 /// Notifications re-sent (quietly) to a PC that missed them, and in the
 /// answer to a sync request.
 pub const MAX_RESEND: usize = 50;
-/// Receiver limits: notify records per second (PC) and actions per second (phone).
-pub const MAX_NOTIFY_PER_SEC: u32 = 50;
+/// The phone sends at most this many notify records per second.
+pub const SEND_NOTIFY_PER_SEC: u32 = 40;
+/// Receiver limits, judged on arrival (a Wi-Fi stall can bunch paced
+/// records): notify records per second (PC) and actions per second (phone).
+pub const MAX_NOTIFY_PER_SEC: u32 = 200;
 pub const MAX_ACTIONS_PER_SEC: u32 = 10;
 /// App icons kept for sending.
 const MAX_ICONS: usize = 64;
@@ -268,14 +302,35 @@ impl NotifyOutbox {
         lock(&self.0.peers).values().any(|p| p.tx.is_some())
     }
 
-    /// What is already on the phone when it starts: known for sync, not sent.
+    /// Everything on the phone now (listener connected, sharing turned on):
+    /// replaces what was known, for sync; nothing is sent.
     pub fn seed(&self, list: Vec<Notification>) {
         let mut active = lock(&self.0.active);
+        active.clear();
         for mut n in list {
             trim(&mut n);
             n.picture.clear();
             active.insert(n.key.clone(), n);
         }
+    }
+
+    /// Keep track of a notification without sending it (sharing is off).
+    pub fn note(&self, mut n: Notification) {
+        trim(&mut n);
+        n.picture.clear();
+        lock(&self.0.active).insert(n.key.clone(), n);
+    }
+
+    /// A notification is gone; tracked only, nothing is sent.
+    pub fn forget(&self, key: &str) {
+        lock(&self.0.active).remove(truncate_utf8(key, MAX_NOTIFY_KEY));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = lock(&self.0.active).keys().cloned().collect();
+        keys.sort();
+        keys
     }
 
     pub fn post(&self, mut n: Notification, icon_png: Option<Vec<u8>>) {
@@ -301,6 +356,8 @@ impl NotifyOutbox {
     }
 
     pub fn remove(&self, key: &str) {
+        // Keys are trimmed like on post, so over-long keys still match.
+        let key = truncate_utf8(key, MAX_NOTIFY_KEY);
         lock(&self.0.active).remove(key);
         self.queue(|| Out::Remove(key.to_owned()));
     }
@@ -326,10 +383,12 @@ impl NotifyOutbox {
     pub async fn answer_sync_request(&self, s: &Session) -> Result<(), Error> {
         let newest = self.0.newest(MAX_RESEND);
         let mut sent_icons = HashSet::new();
+        let mut pace = Pace::new(SEND_NOTIFY_PER_SEC);
         for mut n in newest {
             n.quiet = true;
-            self.0.send_post(s, n, &mut sent_icons).await?;
+            self.0.send_post(s, n, &mut sent_icons, &mut pace).await?;
         }
+        pace.tick().await;
         s.send(ControlMsg::NotifySync(self.0.sync())).await
     }
 }
@@ -359,6 +418,7 @@ impl Outbox {
         s: &Session,
         n: Notification,
         sent_icons: &mut HashSet<Vec<u8>>,
+        pace: &mut Pace,
     ) -> Result<(), Error> {
         if !n.icon_hash.is_empty() && !sent_icons.contains(&n.icon_hash) {
             let png = lock(&self.icons)
@@ -366,6 +426,7 @@ impl Outbox {
                 .filter(|(h, _)| *h == n.icon_hash)
                 .map(|(_, p)| p.clone());
             if let Some(png) = png {
+                pace.tick().await;
                 s.send(ControlMsg::NotifyIcon(NotifyIcon {
                     hash: n.icon_hash.clone(),
                     png,
@@ -374,6 +435,7 @@ impl Outbox {
                 sent_icons.insert(n.icon_hash.clone());
             }
         }
+        pace.tick().await;
         s.send(ControlMsg::Notification(n)).await
     }
 
@@ -412,6 +474,7 @@ async fn run_peer(o: Arc<Outbox>, peer: PeerId, mut rx: mpsc::UnboundedReceiver<
         .map(|st| st.missed.drain(..).collect())
         .unwrap_or_default();
     let mut sent_icons = HashSet::new();
+    let mut pace = Pace::new(SEND_NOTIFY_PER_SEC);
     let resend: Vec<Notification> = {
         let active = lock(&o.active);
         missed
@@ -420,10 +483,11 @@ async fn run_peer(o: Arc<Outbox>, peer: PeerId, mut rx: mpsc::UnboundedReceiver<
             .collect()
     };
     let start = async {
+        pace.tick().await;
         s.send(ControlMsg::NotifySync(o.sync())).await?;
         for mut n in resend {
             n.quiet = true;
-            o.send_post(&s, n, &mut sent_icons).await?;
+            o.send_post(&s, n, &mut sent_icons, &mut pace).await?;
         }
         Ok::<_, Error>(())
     };
@@ -443,8 +507,12 @@ async fn run_peer(o: Arc<Outbox>, peer: PeerId, mut rx: mpsc::UnboundedReceiver<
         let mut batch = coalesce(std::mem::take(&mut queue)).into_iter();
         while let Some(item) = batch.next() {
             let sent = match &item {
-                Out::Post(n) => o.send_post(&s, (**n).clone(), &mut sent_icons).await,
+                Out::Post(n) => {
+                    o.send_post(&s, (**n).clone(), &mut sent_icons, &mut pace)
+                        .await
+                }
                 Out::Remove(k) => {
+                    pace.tick().await;
                     s.send(ControlMsg::NotifyRemoved(NotifyRemoved { key: k.clone() }))
                         .await
                 }
@@ -523,6 +591,7 @@ mod tests {
             ("Passcode: 09AB12", "09AB12"),
             ("123456 is your WhatsApp code", "123456"),
             ("Your login code is 904417. Do not share it.", "904417"),
+            ("Your PIN: 4410", "4410"),
         ] {
             assert_eq!(find_otp(t).as_deref(), Some(c), "{t}");
         }
@@ -537,6 +606,8 @@ mod tests {
             "Balance 45231.50",
             "See you in 2026",
             "Room 4021 is ready",
+            "Your pinned chat has 4021 new messages",
+            "Promo codes 2026 sale",
         ] {
             assert_eq!(find_otp(t), None, "{t}");
         }
@@ -556,6 +627,17 @@ mod tests {
         let mut w = RateWindow::new(50);
         assert!((0..50).all(|_| w.hit()));
         assert!(!w.hit());
+    }
+
+    #[tokio::test]
+    async fn pace_spreads_bursts() {
+        let mut p = Pace::new(10);
+        let t = std::time::Instant::now();
+        for _ in 0..25 {
+            p.tick().await;
+        }
+        let secs = t.elapsed().as_secs_f64();
+        assert!((2.0..3.5).contains(&secs), "{secs}");
     }
 
     #[test]

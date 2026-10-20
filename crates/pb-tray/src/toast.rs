@@ -35,11 +35,12 @@ use windows::{
         },
     },
     UI::Notifications::{
-        ToastDismissalReason, ToastDismissedEventArgs, ToastNotification, ToastNotificationManager,
+        NotificationSetting, ToastDismissalReason, ToastDismissedEventArgs, ToastNotification,
+        ToastNotificationManager,
     },
 };
 
-use crate::toast_xml::{parse_args, toast_xml, ToastArgs, ToastSpec};
+use crate::toast_xml::{toast_xml, ToastSpec};
 
 pub const AUMID: &str = "PhoneBridge.Tray";
 const ACTIVATOR: GUID = GUID::from_u128(0x72c4c623_ea97_46ea_8c4d_5de9e1f8582d);
@@ -52,7 +53,8 @@ const PKEY_TOAST_ACTIVATOR: PROPERTYKEY = PROPERTYKEY {
     pid: 26,
 };
 
-type OnActivate = Box<dyn Fn(ToastArgs, Option<String>) + Send + Sync>;
+/// Raw toast arguments (see `toast_xml::parse_args`) and the reply text.
+type OnActivate = Box<dyn Fn(String, Option<String>) + Send + Sync>;
 type OnDismiss = Box<dyn Fn(String) + Send + Sync>;
 static CALLBACKS: OnceLock<(OnActivate, OnDismiss)> = OnceLock::new();
 
@@ -218,8 +220,8 @@ impl INotificationActivationCallback_Impl for Activator_Impl {
             }
             (args, reply)
         };
-        if let (Some((on_activate, _)), Some(parsed)) = (CALLBACKS.get(), parse_args(&args)) {
-            on_activate(parsed, reply);
+        if let Some((on_activate, _)) = CALLBACKS.get() {
+            on_activate(args, reply);
         }
         Ok(())
     }
@@ -251,6 +253,37 @@ pub fn show(s: &ToastSpec) -> Result<(), String> {
     ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
         .and_then(|n| n.Show(&toast))
         .map_err(err)
+}
+
+/// Whether Windows will show Phone Bridge's toasts at all (the user may
+/// have turned them off for the app, or for every app).
+pub fn enabled() -> bool {
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))
+        .and_then(|n| n.Setting())
+        .is_ok_and(|s| s == NotificationSetting::Enabled)
+}
+
+/// Phone Bridge's toasts in the notification centre: (tag, group, launch
+/// arguments).
+pub fn history() -> Vec<(String, String, String)> {
+    let Ok(list) =
+        ToastNotificationManager::History().and_then(|h| h.GetHistoryWithId(&HSTRING::from(AUMID)))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for t in list {
+        let launch = t
+            .Content()
+            .and_then(|c| c.DocumentElement())
+            .and_then(|e| e.GetAttribute(&HSTRING::from("launch")))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        if let (Ok(tag), Ok(group)) = (t.Tag(), t.Group()) {
+            out.push((tag.to_string(), group.to_string(), launch));
+        }
+    }
+    out
 }
 
 pub fn remove(tag: &str, group: &str) {

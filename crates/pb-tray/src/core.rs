@@ -278,7 +278,18 @@ pub async fn run(
         );
         tokio::spawn(async move {
             match node.notify_sync_request(&p.id).await {
-                Ok(s) => pump(s, log, ui, settings, clip, images).await,
+                // An older phone app never answers: do not keep the session
+                // (and its heartbeats) open.
+                Ok(s) => {
+                    let closer = s.closer();
+                    let pumped = pump(s, log, ui, settings, clip, images);
+                    if tokio::time::timeout(std::time::Duration::from_secs(30), pumped)
+                        .await
+                        .is_err()
+                    {
+                        closer.close(b"sync timeout");
+                    }
+                }
                 Err(e) => log.line(&format!("NOTIFY sync with \"{}\" skipped: {e}", p.name)),
             }
         });
@@ -356,6 +367,10 @@ pub async fn run(
                             Ok(res) => {
                                 log.line(&format!("NOTIFY action {kind:?} key={hash} ok=false"));
                                 ui(UiEvent::NotifyActionFailed { reason: res.reason, reply });
+                            }
+                            // A clear made while the phone is away fails quietly.
+                            Err(e) if kind == pb_protocol::control::NotifyActionKind::Dismiss => {
+                                log.line(&format!("NOTIFY action {kind:?} key={hash} failed: {e}"));
                             }
                             Err(e) => {
                                 log.line(&format!("NOTIFY action {kind:?} key={hash} failed: {e}"));

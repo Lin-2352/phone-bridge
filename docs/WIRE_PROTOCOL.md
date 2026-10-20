@@ -83,11 +83,12 @@ Control messages, tags 10 to 16 of the `Control` envelope:
   Several updates of one key waiting in the queue are sent as the last one only.
 - **Tray start** (PC → phone): `NotifySyncRequest`. The phone answers on the same session with quiet copies of up to 50 active notifications (newest first, no pictures), then `NotifySync`, then finishes.
 - **Action** (PC → phone): `NotifyAction`, answered by `NotifyActionResult` with the same id (the PC waits up to 10 s).
+- **Toast arguments** on the PC carry the phone's id and the notification key (percent-encoded), so a toast still works after a tray restart; the tray rebuilds its list of phone toasts from the notification centre at start.
 
 **Limits:**
 - Strings: key 256 B, title 512 B, text 4096 B, 5 lines of 512 B each, reply text 4096 B. They are truncated on a character boundary.
 - Picture 48 KiB; icon 16 KiB; `NotifySync` 200 keys.
-- The PC closes a session carrying more than 50 notify records per second. The phone closes one carrying more than 10 actions per second.
+- The phone sends at most 40 notify records per second. The PC closes a session carrying more than 200 per second on arrival (a Wi-Fi stall can bunch paced records). The phone closes one carrying more than 10 actions per second.
 - Older peers ignore the unknown messages.
 
 ## Input datagram (fixed 8 bytes, little-endian)

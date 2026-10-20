@@ -230,6 +230,18 @@ Spec: `docs/superpowers/specs/2026-10-20-phone-notifications-on-pc-design.md`; p
 - "Quiet while the phone-screen window is focused" exists and waits for sub-project 1.
 - **Notification-centre clears** are noticed by comparing Windows' toast history every 5 s. This is skipped at Windows' 20-toasts-per-app cap, so toasts pushed out by the cap are never cleared on the phone.
 - **Auto-copy** of one-time codes skips quiet (re-sent) notifications, so a tray start never overwrites the clipboard with an old code.
+- **Fixed after the whole-branch review:**
+  - **Clears are mirrored only for toasts Windows actually kept.** A toast counts as cleared only after it was seen in Windows' history; toasts never kept (notifications off for the app, not in the notification centre, toasts unavailable) are dropped quietly and never cleared on the phone.
+  - **Restart:** toast arguments carry the phone id and key, and the tray rebuilds its list from the notification centre at start, so buttons and replies work after a restart and the phone's sync removes stale toasts.
+  - **Pacing:** the phone paces notify records at 40/s; the PC's flood limit is 200/s on arrival, so a 50-notification sync is never cut off.
+  - **Calls:** ringing calls (posted as ongoing by dialers) are mirrored; when the call is answered the toast goes and a silenced ringer comes back. Silence never changes a phone that is already on vibrate or silent.
+  - **Phone list:** the phone keeps its list of active notifications current while sharing is off, and a re-seed replaces it.
+  - **Own messages:** Phone Bridge's own messages rotate through 5 toasts, so they never crowd out phone notifications.
+  - **Clicks:** clicking a toast is not taken for a clear.
+  - **Groups:** the toast group is stable per notification key.
+  - **Locking:** WinRT calls never run under the UI's notification lock.
+  - **Errors:** a clear made while the phone is away fails quietly.
+  - **Older phones:** the start-up sync session ends after 30 s if an older phone app never answers.
 
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.

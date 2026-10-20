@@ -893,14 +893,16 @@ impl PbNode {
     /// A notification was posted or updated (no-op while "Notifications on
     /// PC" is off).
     pub fn notify_posted(&self, n: PbNotification) {
+        let (wire, icon) = to_wire(n);
         if !self
             .shared
             .notify_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
         {
+            // Kept track of, so a later sync is right; nothing is sent.
+            self.shared.notify.note(wire);
             return;
         }
-        let (wire, icon) = to_wire(n);
         let _rt = self.shared.rt.enter();
         self.shared.notify.post(wire, icon);
     }
@@ -911,6 +913,7 @@ impl PbNode {
             .notify_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
         {
+            self.shared.notify.forget(&key);
             return;
         }
         let _rt = self.shared.rt.enter();

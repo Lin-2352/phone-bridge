@@ -106,6 +106,7 @@ fn esc(s: &str) -> String {
             '\'' => out += "&apos;",
             // Characters XML 1.0 cannot carry at all.
             c if (c as u32) < 0x20 && !matches!(c, '\n' | '\r' | '\t') => {}
+            '\u{FFFE}' | '\u{FFFF}' => {}
             c => out.push(c),
         }
     }
@@ -183,6 +184,7 @@ pub fn parse_args(s: &str) -> Option<ToastArgs> {
             "a" => kind = Some(v),
             "t" => tag = Some(unpct(v)?),
             "i" => index = Some(v.parse::<u32>().ok()?),
+            "c" => {}
             _ => return None,
         }
     }
@@ -195,6 +197,52 @@ pub fn parse_args(s: &str) -> Option<ToastArgs> {
         ("mute", None) => ToastArgs::Mute { tag },
         ("silence", None) => ToastArgs::Silence { tag },
         _ => return None,
+    })
+}
+
+/// What a toast's buttons need after a tray restart, when the in-memory
+/// list of toasts is gone: which phone and notification it belongs to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToastCtx {
+    /// The phone's id (hex).
+    pub peer: String,
+    pub key: String,
+    pub package: String,
+    pub otp: String,
+    /// Index of the app's reply action, if it has one.
+    pub reply: Option<u32>,
+}
+
+/// [`args`] plus the context: `&c=<peer>.<key>.<package>.<otp>.<reply>`,
+/// each part percent-encoded.
+pub fn args_with(a: &ToastArgs, ctx: &ToastCtx) -> String {
+    format!(
+        "{}&c={}.{}.{}.{}.{}",
+        args(a),
+        pct(&ctx.peer),
+        pct(&ctx.key),
+        pct(&ctx.package),
+        pct(&ctx.otp),
+        ctx.reply.map(|r| r.to_string()).unwrap_or_default()
+    )
+}
+
+pub fn parse_ctx(s: &str) -> Option<ToastCtx> {
+    let c = s.split('&').find_map(|p| p.strip_prefix("c="))?;
+    let parts: Vec<&str> = c.split('.').collect();
+    let [peer, key, package, otp, reply] = parts[..] else {
+        return None;
+    };
+    Some(ToastCtx {
+        peer: unpct(peer)?,
+        key: unpct(key)?,
+        package: unpct(package)?,
+        otp: unpct(otp)?,
+        reply: if reply.is_empty() {
+            None
+        } else {
+            Some(reply.parse().ok()?)
+        },
     })
 }
 
@@ -373,6 +421,43 @@ mod tests {
         ] {
             assert_eq!(parse_args(&args(&a)), Some(a.clone()), "{}", args(&a));
         }
+    }
+
+    #[test]
+    fn context_round_trips() {
+        let ctx = ToastCtx {
+            peer: "ab".repeat(32),
+            key: "0|com.x|1|a&b=c d|10123".into(),
+            package: "com.x".into(),
+            otp: "482913".into(),
+            reply: Some(2),
+        };
+        let a = ToastArgs::Button {
+            tag: "0123456789abcdef".into(),
+            index: 1,
+        };
+        let s = args_with(&a, &ctx);
+        assert_eq!(parse_args(&s), Some(a));
+        assert_eq!(parse_ctx(&s), Some(ctx.clone()));
+        let none = ToastCtx {
+            reply: None,
+            otp: String::new(),
+            ..ctx
+        };
+        assert_eq!(
+            parse_ctx(&args_with(&ToastArgs::Open { tag: "t".into() }, &none)),
+            Some(none)
+        );
+        assert_eq!(parse_ctx("a=open&t=x"), None);
+    }
+
+    #[test]
+    fn toast_xml_strips_noncharacters() {
+        let s = ToastSpec {
+            title: "a\u{FFFE}b\u{FFFF}c".into(),
+            ..spec()
+        };
+        assert!(toast_xml(&s).contains("<text>abc</text>"));
     }
 
     #[test]

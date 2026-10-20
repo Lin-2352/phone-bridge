@@ -103,7 +103,16 @@ class NotifyListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
-        if (skip(sbn)) return
+        if (skip(sbn)) {
+            // An incoming call that was answered becomes an ongoing call:
+            // the call toast goes, and a silenced ringer comes back.
+            if (live.remove(sbn.key) != null) {
+                if (sbn.notification.category == Notification.CATEGORY_CALL) restoreRinger(this)
+                val node = Bridge.node ?: return
+                bg.execute { runCatching { node.notifyRemoved(sbn.key) } }
+            }
+            return
+        }
         val update = live.put(sbn.key, sbn) != null
         val node = Bridge.node ?: return
         if (!Prefs(this).notifyToPc) return
@@ -136,9 +145,16 @@ class NotifyListener : NotificationListenerService() {
         }
     }
 
+    /** A ringing incoming call (dialers post these as ongoing). */
+    private fun ringing(n: Notification): Boolean =
+        n.category == Notification.CATEGORY_CALL && (
+            n.fullScreenIntent != null ||
+                (Build.VERSION.SDK_INT >= 31 && n.extras.getInt(Notification.EXTRA_CALL_TYPE) == Notification.CallStyle.CALL_TYPE_INCOMING)
+            )
+
     private fun skip(sbn: StatusBarNotification): Boolean {
         val n = sbn.notification
-        return sbn.isOngoing ||
+        return (sbn.isOngoing && !ringing(n)) ||
             n.flags and Notification.FLAG_GROUP_SUMMARY != 0 ||
             sbn.packageName == packageName
     }
@@ -328,6 +344,8 @@ object NotifyActions : NotifyHandler {
             fail("Allow Do Not Disturb access on the phone first")
         }
         val audio = ctx.getSystemService(AudioManager::class.java)
+        // Already on vibrate or silent: nothing to do (never make it louder).
+        if (audio.ringerMode != AudioManager.RINGER_MODE_NORMAL) return
         val prefs = Prefs(ctx)
         if (prefs.savedRinger < 0) prefs.savedRinger = audio.ringerMode
         audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE

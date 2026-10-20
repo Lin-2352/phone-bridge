@@ -1041,6 +1041,26 @@ mod notify {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn seed_replaces_the_active_set() {
+        let (_pc, _pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone());
+        out.seed(vec![note("a", "x")]);
+        out.seed(vec![note("b", "x")]);
+        assert_eq!(out.active_keys(), ["b"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn note_and_forget_track_without_sending() {
+        let (_pc, _pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone());
+        out.note(note("a", "x"));
+        out.note(note("b", "x"));
+        out.forget("a");
+        assert_eq!(out.active_keys(), ["b"]);
+        assert!(!out.busy(), "nothing is sent while sharing is off");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn action_round_trip() {
         let (pc, _pc_ev, _, phone, mut phone_ev, _) = paired().await;
         let answer = tokio::spawn(async move {
