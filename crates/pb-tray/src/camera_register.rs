@@ -12,16 +12,16 @@ use std::path::PathBuf;
 use pb_camera_frames::{Ring, FILE_BYTES};
 use pb_camera_source::{com::CLSID_PHONE_BRIDGE_CAMERA_SOURCE, file::Mapped};
 use windows::{
-    core::{HSTRING, PCWSTR},
+    core::{HSTRING, PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0, WIN32_ERROR},
+        Foundation::{CloseHandle, LocalFree, HLOCAL, WAIT_OBJECT_0, WIN32_ERROR},
         Security::{
             Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
-                SDDL_REVISION_1, SE_FILE_OBJECT,
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
             },
-            GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
-            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
         },
         Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT},
         System::{
@@ -32,7 +32,10 @@ use windows::{
             },
             Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE},
         },
-        UI::Shell::{IsUserAnAdmin, ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+        UI::Shell::{
+            FOLDERID_ProgramData, IsUserAnAdmin, SHGetKnownFolderPath, ShellExecuteExW,
+            KF_FLAG_DEFAULT, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+        },
     },
 };
 
@@ -42,6 +45,9 @@ pub const EXIT_NOT_ELEVATED: i32 = 2;
 pub const EXIT_COPY_FAILED: i32 = 3;
 pub const EXIT_REGISTRY_FAILED: i32 = 4;
 pub const EXIT_ACL_FAILED: i32 = 5;
+/// The install folder is not ours and could not be replaced.
+pub const EXIT_UNSAFE_FOLDER: i32 = 6;
+pub const EXIT_BAD_SID: i32 = 7;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegisterError {
@@ -53,10 +59,100 @@ pub enum RegisterError {
 
 const DLL_SOURCE_NAME: &str = "pb_camera_source.dll";
 
-/// `%ProgramData%\PhoneBridge\camera`.
+/// `C:\ProgramData` from Windows itself: the `ProgramData` environment
+/// variable belongs to the user, and the elevated installer must not follow it.
+fn program_data() -> PathBuf {
+    // SAFETY: the returned string is copied and freed.
+    unsafe {
+        match SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_DEFAULT, None) {
+            Ok(p) => {
+                let s = p.to_string().unwrap_or_default();
+                windows::Win32::System::Com::CoTaskMemFree(Some(p.0.cast()));
+                if s.is_empty() {
+                    PathBuf::from("C:\\ProgramData")
+                } else {
+                    PathBuf::from(s)
+                }
+            }
+            Err(_) => PathBuf::from("C:\\ProgramData"),
+        }
+    }
+}
+
+/// `C:\ProgramData\PhoneBridge`.
+fn base_dir() -> PathBuf {
+    program_data().join("PhoneBridge")
+}
+
+/// `C:\ProgramData\PhoneBridge\camera`.
 pub fn dll_dir() -> PathBuf {
-    let base = std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into());
-    PathBuf::from(base).join("PhoneBridge").join("camera")
+    base_dir().join("camera")
+}
+
+/// Owners an install folder may have: SYSTEM, Administrators, a service
+/// account such as TrustedInstaller. A folder any other account created
+/// (the default for new folders in ProgramData) is not trusted.
+pub fn is_trusted_owner(sid: &str) -> bool {
+    matches!(sid, "S-1-5-18" | "S-1-5-32-544") || sid.starts_with("S-1-5-80-")
+}
+
+/// A user SID in string form: `S-1-` and digits and dashes, nothing that
+/// could change the meaning of the SDDL it is put into.
+pub fn is_valid_user_sid(sid: &str) -> bool {
+    sid.starts_with("S-1-")
+        && sid.len() <= 80
+        && sid.len() > 4
+        && sid[2..].bytes().all(|b| b.is_ascii_digit() || b == b'-')
+}
+
+fn owner_sid_string(path: &std::path::Path) -> Option<String> {
+    // SAFETY: a security descriptor query; both allocations are freed.
+    unsafe {
+        let mut owner = PSID::default();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let r = GetNamedSecurityInfoW(
+            &HSTRING::from(path.as_os_str()),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            Some(&mut owner),
+            None,
+            None,
+            None,
+            &mut sd,
+        );
+        if r != WIN32_ERROR(0) {
+            return None;
+        }
+        let mut s = PWSTR::null();
+        let out = ConvertSidToStringSidW(owner, &mut s)
+            .ok()
+            .and_then(|()| s.to_string().ok());
+        let _ = LocalFree(Some(HLOCAL(s.0.cast())));
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        out
+    }
+}
+
+fn is_reparse_point(path: &std::path::Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_attributes() & 0x400 != 0)
+}
+
+/// A folder only a trusted owner controls: created fresh, or an existing
+/// one whose owner is trusted. A junction or symbolic link is refused, and
+/// a folder some other account made is deleted and recreated (the
+/// installer is elevated; whatever was planted there goes).
+fn ensure_trusted_dir(path: &std::path::Path) -> Result<(), ()> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        if is_reparse_point(path) {
+            return Err(());
+        }
+        if owner_sid_string(path).is_some_and(|s| is_trusted_owner(&s)) {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(path).map_err(|_| ())?;
+    }
+    std::fs::create_dir(path).map_err(|_| ())
 }
 
 /// The installed DLL's file name: the version and a hash of its bytes, so
@@ -195,11 +291,16 @@ pub fn register_elevated(user_sid: &str) -> i32 {
     if !unsafe { IsUserAnAdmin() }.as_bool() {
         return EXIT_NOT_ELEVATED;
     }
-    let dir = dll_dir();
-    if std::fs::create_dir_all(&dir).is_err() {
-        return EXIT_COPY_FAILED;
+    if !is_valid_user_sid(user_sid) {
+        return EXIT_BAD_SID;
     }
-    if set_dacl(&dir, &dir_sddl()).is_err() {
+    // Both folders must be ours before anything goes in: ProgramData lets
+    // any user create folders, and DLLs here are loaded by Frame Server.
+    let dir = dll_dir();
+    if ensure_trusted_dir(&base_dir()).is_err() || ensure_trusted_dir(&dir).is_err() {
+        return EXIT_UNSAFE_FOLDER;
+    }
+    if set_dacl(&base_dir(), &dir_sddl()).is_err() || set_dacl(&dir, &dir_sddl()).is_err() {
         return EXIT_ACL_FAILED;
     }
     let source = std::env::current_exe()
@@ -212,8 +313,13 @@ pub fn register_elevated(user_sid: &str) -> i32 {
         return EXIT_COPY_FAILED;
     };
     let installed = dir.join(dll_file_name(&bytes));
-    if !installed.is_file() && std::fs::write(&installed, &bytes).is_err() {
-        return EXIT_COPY_FAILED;
+    // Never trust a file that is already there: write the shipped bytes.
+    let same = std::fs::read(&installed).is_ok_and(|b| b == bytes);
+    if !same {
+        let _ = std::fs::remove_file(&installed);
+        if std::fs::write(&installed, &bytes).is_err() {
+            return EXIT_COPY_FAILED;
+        }
     }
     // Older copies go if Frame Server does not hold them (else they stay
     // until the next install or the removal).
@@ -300,6 +406,7 @@ pub fn unregister_elevated() -> i32 {
         }
     }
     let _ = std::fs::remove_dir(dll_dir());
+    let _ = std::fs::remove_dir(base_dir());
     EXIT_OK
 }
 
@@ -403,6 +510,65 @@ mod tests {
             "no write for users or LocalService: {s}"
         );
         assert!(s.starts_with("D:P"), "protected: {s}");
+    }
+
+    #[test]
+    fn only_system_and_administrators_own_the_install_folder() {
+        assert!(is_trusted_owner("S-1-5-18"));
+        assert!(is_trusted_owner("S-1-5-32-544"));
+        assert!(is_trusted_owner(
+            "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+        ));
+        assert!(!is_trusted_owner("S-1-5-21-1-2-3-1001"), "an ordinary user");
+        assert!(!is_trusted_owner("S-1-5-32-545"), "the Users group");
+        assert!(!is_trusted_owner(""));
+    }
+
+    #[test]
+    fn user_sids_cannot_carry_sddl() {
+        assert!(is_valid_user_sid("S-1-5-21-1-2-3-1001"));
+        assert!(!is_valid_user_sid(""));
+        assert!(!is_valid_user_sid("S-1-"));
+        assert!(!is_valid_user_sid("S-1-5-21)(A;;GA;;;WD"), "SDDL injection");
+        assert!(!is_valid_user_sid("Administrators"));
+        assert!(!is_valid_user_sid(&format!("S-1-{}", "1".repeat(90))));
+    }
+
+    #[test]
+    fn a_planted_folder_is_replaced_and_a_junction_refused() {
+        let root = std::env::temp_dir().join(format!("pbcam-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // A folder made by this account (not SYSTEM or Administrators, unless
+        // the test itself runs elevated): the installer replaces it.
+        let planted = root.join("camera");
+        std::fs::create_dir(&planted).unwrap();
+        std::fs::write(planted.join("evil.dll"), b"x").unwrap();
+        let owner = owner_sid_string(&planted).unwrap_or_default();
+        assert!(ensure_trusted_dir(&planted).is_ok());
+        if !is_trusted_owner(&owner) {
+            assert!(!planted.join("evil.dll").exists(), "planted file gone");
+        }
+        // A junction is never followed.
+        let target = root.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let link = root.join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if made {
+            assert!(is_reparse_point(&link));
+            assert!(ensure_trusted_dir(&link).is_err(), "a junction is refused");
+            assert!(target.exists(), "the target is untouched");
+        }
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "rmdir"])
+            .arg(&link)
+            .output();
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -251,6 +251,7 @@ pub async fn run(
         let log = log.clone();
         std::thread::spawn(move || {
             crate::camera_device::sweep_leftovers(&|m| log.line(m));
+            crate::camera::clear_frames();
         });
     }
     // Partial files left by a tray that was killed mid-transfer.

@@ -11,6 +11,18 @@ fun rotationDegrees(sensorOrientation: Int, deviceRotation: Int, front: Boolean)
     else (sensorOrientation - deviceRotation + 360) % 360
 
 /**
+ * The device rotation the formula wants (the display-rotation convention:
+ * 0, 90 = turned counter-clockwise, ...) from `OrientationEventListener`'s
+ * degrees (the physical angle, clockwise; `ORIENTATION_UNKNOWN` = -1), or
+ * null when the sensor cannot say (flat on a table).
+ */
+fun deviceRotationFromSensor(degrees: Int): Int? {
+    if (degrees < 0) return null
+    val snapped = ((degrees + 45) / 90 * 90) % 360
+    return (360 - snapped) % 360
+}
+
+/**
  * The auto-exposure frame-rate range to lock: exactly 30 when the camera
  * offers [30, 30] (so indoor light does not drop the stream to 15 fps),
  * otherwise the highest fixed range, otherwise the one with the highest

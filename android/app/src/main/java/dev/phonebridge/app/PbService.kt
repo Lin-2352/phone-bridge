@@ -186,6 +186,8 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // A new process shares nothing yet: drop the old process's ongoing notifications.
+        clearStaleSharing()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
@@ -616,6 +618,13 @@ class PbService : Service() {
     /** The service types in force: connectedDevice always, plus mediaProjection and camera while in use. */
     private var projecting = false
     private var cameraOn = false
+
+    /** Ongoing "sharing" notifications of a process that was killed are stale: nothing is shared now. */
+    private fun clearStaleSharing() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.cancel(SCREEN_SHARE_ID)
+        nm.cancel(CAMERA_SHARE_ID)
+    }
 
     private fun applyTypes(): Boolean = try {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE

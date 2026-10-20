@@ -26,6 +26,7 @@ pub struct Mapped {
     file: HANDLE,
     mapping: HANDLE,
     view: MEMORY_MAPPED_VIEW_ADDRESS,
+    writable: bool,
 }
 
 // SAFETY: plain handles and an address; access goes through the Ring's
@@ -81,6 +82,7 @@ impl Mapped {
                 file,
                 mapping,
                 view,
+                writable: write,
             })
         }
     }
@@ -91,6 +93,11 @@ impl Mapped {
     /// # Safety note
     /// Both processes use the same atomics and seqlock (`Ring`), which is
     /// what makes the shared access sound in practice.
+    /// Opened read-write; false for the read-only fallback.
+    pub fn writable(&self) -> bool {
+        self.writable
+    }
+
     pub fn words(&mut self) -> &mut [u64] {
         // SAFETY: the view is FILE_BYTES long, page-aligned, and stays
         // mapped while `self` lives.

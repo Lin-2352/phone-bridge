@@ -59,6 +59,15 @@ fn now_ms() -> u64 {
     unix + 11_644_473_600_000
 }
 
+/// Forget any picture a killed tray left in the frames file.
+pub fn clear_frames() {
+    if let Ok(mut m) = Mapped::open(&frames_path(), true) {
+        if let Some(mut ring) = Ring::open(m.words()) {
+            ring.zero();
+        }
+    }
+}
+
 /// A session or the reconnect wait is under way (the device exists).
 pub fn is_running() -> bool {
     lock(&ACTIVE).is_some() || lock(&DEVICE).is_some()

@@ -130,7 +130,7 @@ Control messages, tags 21 to 23 (feedback reuses `ScreenFeedback`, 19):
 | 24, 32 | seqlock per slot (odd while being written) |
 | 40 | index of the newest complete slot |
 | 48, 56 | `pts_us` per slot |
-| 64 | tray heartbeat (ms since 1601); the source shows black after 5 s without one |
+| 64 | tray heartbeat (ms since 1601); the source keeps the last picture for the 30 s reconnect wait and shows black after 35 s without one |
 | 72, 80 | `u32 width`, `u32 height` per slot (a frame is delivered only if they equal the wanted size) |
 | 88 | count of completed frames |
 | 4096, 4096 + 3110400 | the two slots, tightly packed NV12 |

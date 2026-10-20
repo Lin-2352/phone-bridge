@@ -272,14 +272,15 @@ mod real {
             .iter()
             .filter(|n| n.as_str() == FRIENDLY_NAME)
             .count();
-        let mut removed = 0;
-        for _ in 0..leftover {
-            cam.remove();
-            cam.shutdown();
-            removed += 1;
-            log("CAMERA removed a leftover");
+        if leftover == 0 {
+            return 0;
         }
-        removed
+        // One handle removes the one registration by name; a second
+        // Remove on a shut-down handle would only fail.
+        cam.remove();
+        cam.shutdown();
+        log("CAMERA removed a leftover");
+        1
     }
 }
 

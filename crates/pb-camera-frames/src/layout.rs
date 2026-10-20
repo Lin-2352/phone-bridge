@@ -33,7 +33,9 @@ const W_BEAT: usize = 8;
 const W_DIMS: usize = 9; // two slots: 9, 10
 const W_FRAMES: usize = 11;
 const HEADER_WORDS: usize = 12;
-const TRAY_TIMEOUT_MS: u64 = 5_000;
+/// The tray beats while a session runs; during its 30 s reconnect wait the
+/// last picture stays, then black.
+const TRAY_TIMEOUT_MS: u64 = 35_000;
 
 /// The mapped file as 8-byte words. Both processes map the same file; every
 /// header field is an atomic word, and each slot is guarded by its seqlock.
@@ -287,13 +289,16 @@ mod tests {
     }
 
     #[test]
-    fn tray_heartbeat_times_out_after_5s() {
+    fn tray_heartbeat_times_out_after_35s() {
         let mut b = words();
         let mut r = Ring::init(&mut b);
         assert!(!r.tray_alive(1000), "never beat");
         r.beat(1000);
-        assert!(r.tray_alive(5999));
-        assert!(!r.tray_alive(6001));
+        assert!(
+            r.tray_alive(35_999),
+            "the 30 s reconnect wait still shows the picture"
+        );
+        assert!(!r.tray_alive(36_001));
     }
 
     #[test]

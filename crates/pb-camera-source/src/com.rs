@@ -377,7 +377,9 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
             g.pump = Pump::new((w, h));
             g.started = true;
             let Shared { mapped, .. } = &mut *g;
-            if let Some(m) = mapped {
+            // Only through a writable view: a store into a read-only one
+            // would fault inside Frame Server and take every camera with it.
+            if let Some(m) = mapped.as_mut().filter(|m| m.writable()) {
                 if let Some(mut ring) = Ring::open(m.words()) {
                     ring.set_wanted(w, h);
                 }
@@ -419,7 +421,11 @@ impl IMFMediaSource_Impl for PbCameraSource_Impl {
     fn Stop(&self) -> Result<()> {
         log("Stop");
         self.inner.stop_timer();
-        self.inner.lock().started = false;
+        {
+            let mut g = self.inner.lock();
+            g.started = false;
+            g.types.stop();
+        }
         // SAFETY: queueing events on our own queues.
         unsafe {
             self.inner.stream_events.QueueEventParamVar(

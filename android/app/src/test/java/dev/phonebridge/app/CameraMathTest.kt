@@ -20,6 +20,17 @@ class CameraMathTest {
     }
 
     @Test
+    fun theSensorAngleBecomesTheDisplayConvention() {
+        assertEquals(0, deviceRotationFromSensor(0))
+        assertEquals(0, deviceRotationFromSensor(20))
+        assertEquals(270, deviceRotationFromSensor(90))
+        assertEquals(180, deviceRotationFromSensor(180))
+        assertEquals(90, deviceRotationFromSensor(270))
+        assertEquals(0, deviceRotationFromSensor(350))
+        assertNull(deviceRotationFromSensor(-1))
+    }
+
+    @Test
     fun theFpsRangeIsLockedToThirtyWhenOffered() {
         assertEquals(30 to 30, pickFpsRange(listOf(15 to 30, 30 to 30, 24 to 24)))
     }

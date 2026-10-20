@@ -57,6 +57,11 @@ impl TypeState {
     pub fn start(&mut self) {
         self.started = true;
     }
+
+    /// Stopped: the next `Start` (another app, another size) may pick again.
+    pub fn stop(&mut self) {
+        self.started = false;
+    }
 }
 
 pub struct Pump<T> {
@@ -171,6 +176,9 @@ mod tests {
         assert!(t.set_current(1280, 720).is_err(), "a change mid-call");
         assert_eq!(t.current(), Some((1920, 1080)));
         assert!(TypeState::default().set_current(640, 480).is_err());
+        // The next client after a Stop may use the other size.
+        t.stop();
+        assert!(t.set_current(1280, 720).is_ok(), "free again after Stop");
     }
 
     #[test]

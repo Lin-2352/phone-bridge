@@ -23,7 +23,7 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
                 MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage,
                 IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO, MSG,
-                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WNDCLASSW,
+                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WNDCLASSW,
             },
         },
     },
@@ -1829,6 +1829,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 apply_settings_action(hwnd, st, a);
             }
             crate::settings_window::update(settings_model(st));
+            LRESULT(0)
+        }
+        // Windows sign-out or shutdown: Stop, Remove, Shutdown now (Session
+        // lifetime would also remove the device, but nothing is left to chance).
+        WM_ENDSESSION => {
+            if wparam.0 != 0 {
+                crate::camera::stop();
+            }
             LRESULT(0)
         }
         WM_DESTROY => {

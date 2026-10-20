@@ -21,6 +21,7 @@ import android.os.Looper
 import android.util.Log
 import android.util.Range
 import android.view.Display
+import android.view.OrientationEventListener
 import android.view.Surface
 import androidx.compose.runtime.mutableStateOf
 import java.nio.ByteBuffer
@@ -96,8 +97,30 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == facing(front)
     }
 
+    /**
+     * How the phone is held, from its sensor: while it is a webcam the screen
+     * is often off or on a portrait-only screen, so the display rotation
+     * would say "portrait" however the phone stands. The display is the
+     * fallback when the sensor cannot tell (flat on a table).
+     */
+    @Volatile private var sensorRotation: Int? = null
+    private val orientation = object : OrientationEventListener(ctx) {
+        override fun onOrientationChanged(degrees: Int) {
+            val r = deviceRotationFromSensor(degrees) ?: return
+            if (r == sensorRotation) return
+            sensorRotation = r
+            handler.post {
+                val next = computeRotation()
+                if (next != rotation) {
+                    rotation = next
+                    sendConfig()
+                }
+            }
+        }
+    }
+
     private fun deviceRotation(): Int =
-        (displays.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0) * 90
+        sensorRotation ?: ((displays.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0) * 90)
 
     private fun computeRotation(): Int {
         val id = cameraId(lens == 1) ?: return 0
@@ -124,6 +147,7 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         rotation = computeRotation()
         startEncoder()
         displays.registerDisplayListener(displayListener, handler)
+        if (orientation.canDetectOrientation()) orientation.enable()
         return accept()
     }
 
@@ -359,6 +383,7 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
 
     fun stop() {
         closed = true
+        runCatching { orientation.disable() }
         runCatching { displays.unregisterDisplayListener(displayListener) }
         handler.post {
             closeCamera()
@@ -375,6 +400,7 @@ object CameraShare : CameraListener {
 
     @Volatile var capture: CameraCapture? = null
         private set
+    @Volatile private var appContext: Context? = null
     @Volatile private var sender: PbScreen? = null
     @Volatile private var ask: CameraAsk? = null
     private val main = Handler(Looper.getMainLooper())
@@ -383,6 +409,7 @@ object CameraShare : CameraListener {
     /** Consent and the camera permission are done: open the camera. */
     fun start(ctx: Context, a: CameraAsk): Boolean {
         val node = Bridge.node ?: return false
+        appContext = ctx.applicationContext
         val c = CameraCapture(ctx.applicationContext, a)
         val accept = runCatching { c.prepare() }
             .onFailure { Log.e(TAG, "CAMERA prepare failed: $it") }.getOrNull()
@@ -429,7 +456,10 @@ object CameraShare : CameraListener {
 
     /** The camera could not be opened or was taken by another app. */
     fun cameraFailed() {
-        main.post { stop(userStopped = false) }
+        // The session is closed towards the PC as well (it would otherwise
+        // keep repeating the last frame for ever), and that PC is declined
+        // quietly for a moment instead of being asked again at once.
+        main.post { stop(userStopped = true) }
     }
 
     /** End the session: the camera, the encoder and the service type go. */
@@ -443,10 +473,9 @@ object CameraShare : CameraListener {
         capture = null
         sender = null
         usedBy.value = null
-        PbService.instance?.let {
-            notifyCamera(it, null)
-            it.leaveCamera()
-        }
+        // Even if the service is gone, the notification must not stay.
+        (PbService.instance ?: appContext)?.let { notifyCamera(it, null) }
+        PbService.instance?.leaveCamera()
     }
 
     override fun onLens(lens: UByte) {
