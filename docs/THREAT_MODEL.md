@@ -9,6 +9,7 @@ Status: draft. No external review yet. Update whenever a feature adds a new trus
 | Files in transit | Arbitrary private data |
 | Input control of the phone | Remote control of an unlocked phone is full account takeover |
 | Camera and microphone streams | Live surveillance if hijacked |
+| Phone notifications | Message text, senders, one-time codes; acting on them (reply, answer a call) speaks for the user |
 | Device identity keys | Whoever holds one can impersonate the device |
 | Metadata (who pairs with whom, when, from where) | Location and relationship leakage |
 
@@ -39,6 +40,7 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 | 12 | Keys at rest | Theft from disk or backup | Seed wrapped by Android Keystore / Windows DPAPI; excluded from backups (**implemented**: DPAPI on Windows, Keystore AES-GCM on Android; unseal failure is an error, never a silent new identity; Android backup disabled) |
 | 13 | Updates | Malicious update | Signed releases, reproducible builds where possible (**planned**) |
 | 14 | Resource use | Battery or CPU drain used as DoS | Rate limits per peer; idle budget tracked in DECISIONS.md |
+| 15 | Phone notifications | Content leaks, forged actions, malformed images | Only to paired peers over the session transport (row 3), and only after the user grants Android Notification access and leaves "Notifications on PC" on. Nothing is stored except toast images (a private temp folder, PNG/JPEG checked by magic bytes, hex-only names, 50 MB cap, emptied at tray start) and the app names seen (for the mute switches). Logs carry the package and a key hash, never text. The phone acts only on keys it currently shows, through the apps' own intents; actions and records are rate-limited (10/s and 50/s) and size-limited. Toast XML escapes all text. Content is hidden while the PC is locked (default) and kept off the lock screen (default). One-time codes copied on the PC are kept out of clipboard history and cloud clipboard, never synced back, and cleared after 60 s if unchanged. The Windows notification centre keeps shown toasts until they are cleared or the phone removes them (**implemented**; device tests pending) |
 
 ## Known limitations found so far
 - Relay metadata exposure (row 6) is inherent to any relay design.

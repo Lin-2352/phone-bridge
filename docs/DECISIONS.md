@@ -217,6 +217,20 @@ Tool: `tools/pb-bench` (QUIC bulk with transport knobs, plus raw paced UDP), wit
   - Shell balloons were dropped and never reached the notification centre under Do Not Disturb.
   - Next: real Windows notifications with an app identity, so the notification centre keeps a history.
 
+## Phase 4.0 (2026-10-20): phone notifications in the Windows notification centre
+Spec: `docs/superpowers/specs/2026-10-20-phone-notifications-on-pc-design.md`; plan: `docs/superpowers/plans/2026-10-20-phone-notifications-on-pc.md`.
+- **Real toasts:** WinRT `ToastNotificationManager` under the AppUserModelID `PhoneBridge.Tray`. A Start-menu shortcut carries the id and a toast-activator CLSID, and a per-user COM server (HKCU) delivers clicks, buttons and replies, also for toasts left in the notification centre after a tray restart. No admin rights. Phone Bridge's own messages use the same toasts; balloons only if toast setup fails.
+- **Short sessions, not a long-lived stream.** A stream held open forever means heartbeats every 5 s both ways, waking the phone's Wi-Fi all day.
+  - The phone opens a notify session to each PC when it has something to send, and finishes it after 15 s idle.
+  - Each session starts with `NotifySync` (the active keys) and quietly re-sends what failed to arrive earlier (at most 50).
+  - At start the tray asks each phone once (`NotifySyncRequest`).
+  - Updates of one key waiting in the queue go out as the last one only.
+- **Limits:** everything fits the existing 64 KiB control frame: pictures 48 KiB JPEG, icons 16 KiB PNG, text 4096 B, 5 lines, truncated on character boundaries.
+- **Muting is per PC** and filtered on the PC, so the phone keeps no per-PC state.
+- "Quiet while the phone-screen window is focused" exists and waits for sub-project 1.
+- **Notification-centre clears** are noticed by comparing Windows' toast history every 5 s. This is skipped at Windows' 20-toasts-per-app cap, so toasts pushed out by the cap are never cleared on the phone.
+- **Auto-copy** of one-time codes skips quiet (re-sent) notifications, so a tray start never overwrites the clipboard with an old code.
+
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
 

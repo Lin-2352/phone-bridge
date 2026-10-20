@@ -1,6 +1,11 @@
 # Phone notifications in the Windows notification centre: design
 
-Status: approved in brainstorming on 2026-10-20 (sub-project 4 of 4). Its implementation plan comes before sub-project 1's, because it is small. Next: implementation plan.
+Status: approved in brainstorming on 2026-10-20 (sub-project 4 of 4). Its implementation plan comes before sub-project 1's, because it is small. Implemented from `docs/superpowers/plans/2026-10-20-phone-notifications-on-pc.md`.
+
+**Revised in the plan** (see `docs/DECISIONS.md`, Phase 4.0):
+- **Sessions:** short sessions instead of one long-lived stream (no heartbeats all day). Each session starts with the active keys, and missed notifications are re-sent quietly; the tray asks once at start.
+- **Size limits:** the existing 64 KiB control frame with smaller picture and icon limits, instead of a 1 MiB record cap.
+- **Muting:** filtered on each PC rather than on the phone.
 
 ## Purpose and scope
 Notifications that arrive on the phone appear on the PC as real Windows toasts, and stay in the Windows notification centre. Phone Bridge's own messages move to the same toasts.
