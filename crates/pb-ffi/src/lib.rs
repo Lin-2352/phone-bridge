@@ -395,22 +395,26 @@ impl PbScreen {
                 flags,
                 payload: data,
             };
-            match self.sink.get() {
-                Some(sink) => {
-                    if sink.send(r) == pb_transport::screen::SendOutcome::Full {
-                        return PbAdvice {
-                            sent: false,
-                            request_key: true,
-                            new_bitrate: 0,
-                        };
-                    }
-                }
+            let refused = match self.sink.get() {
+                Some(sink) => sink.send(r) == pb_transport::screen::SendOutcome::Full,
                 None => {
                     let mut p = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-                    if p.len() < SCREEN_PENDING {
+                    let full = p.len() >= SCREEN_PENDING;
+                    if !full {
                         p.push(r);
                     }
+                    full
                 }
+            };
+            if refused {
+                // What follows would lack this frame as its reference:
+                // drop up to the next key frame instead.
+                return advice(
+                    self.pacer
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .queue_full(std::time::Instant::now()),
+                );
             }
         }
         advice(d)

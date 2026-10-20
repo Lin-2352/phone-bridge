@@ -262,7 +262,14 @@ Plan: `docs/superpowers/plans/2026-10-20-phone-screen-on-pc.md`.
   - **Input records:** absolute `Touch` and `Pinch` input records; the wheel is a hover then the existing wheel.
   - **The PC never drops records** (a missing P-frame would smear until the next key frame). A slow decoder slows the stream, and the phone's pacer drops cleanly to a key frame and lowers the bitrate.
   - **Reconnect:** the PC retries for 30 s; the phone resumes without a prompt within its grace, and declines quietly for 30 s after its user pressed Stop.
-  - **Still screens:** repeat frames are recognised by arrival 90 ms or more after the previous one and a size under 4 KiB; at most 3 are sent.
+- **Device tests 1–2 (2026-10-20):**
+  - **Lag 1:** the PC sent window state on every resize, and each message made the phone ask for a key frame. Now state is sent on change only.
+  - **Lag 2:** the 120 Hz virtual display fed the encoder at 120 frames/s. Now capped with `max-fps-to-encoder` at 60 (the user chose 60 fps).
+  - **Frozen, smeared picture, from four bugs:**
+    - The PC confirmed frames only every 100 ms while the pacer called 150 ms late. Now every frame is confirmed and the limit is 300 ms.
+    - Drop mode asked for a key frame only once. Now it asks every 300 ms.
+    - Dropped "repeats" and refused frames left P-frames without their reference. Now nothing is dropped except whole runs up to a key frame.
+    - The step-down fired on level 20 (UI_HIDDEN, our own UI going to the background). Now it fires only on RUNNING_LOW and RUNNING_CRITICAL.
   - **Secure screens:** noticed from fully black 16×16 samples, once a second.
   - **The v1 window** is a normal resizable window with the Fluent frame; the video is on a child window (flip swap chain), and the bars are painted on the parent.
 

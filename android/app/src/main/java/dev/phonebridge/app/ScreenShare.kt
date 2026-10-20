@@ -29,7 +29,6 @@ import uniffi.pb_ffi.nextCodec
 private const val TAG = "PhoneBridge"
 private const val FLAG_KEY: UByte = 1u
 private const val FLAG_CONFIG: UByte = 2u
-private const val FLAG_REPEAT: UByte = 4u
 /** After a dropped link the capture stays (paused) this long for a resume. */
 private const val RESUME_GRACE_MS = 30_000L
 /** Step-down size (720-class) and frame rate. */
@@ -74,7 +73,6 @@ class ScreenCapture(
     private var display: VirtualDisplay? = null
     @Volatile private var screen: PbScreen? = null
     @Volatile private var paused = false
-    private var lastOutputAt = 0L
     private var steppedDown = false
     private var startedAt = 0L
     private var firstOutput = true
@@ -279,14 +277,9 @@ class ScreenCapture(
             val config = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
             val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
             val now = android.os.SystemClock.uptimeMillis()
-            // A repeat of a still screen: arrives after the repeat delay and is
-            // tiny (only skipped blocks).
-            val repeat = !config && !key && now - lastOutputAt >= 90 && info.size < 4096
-            lastOutputAt = now
             val flags: UByte = when {
                 config -> FLAG_CONFIG
                 key -> FLAG_KEY
-                repeat -> FLAG_REPEAT
                 else -> 0u
             }
             val payload = if (config) configPayload(data) else data
@@ -316,7 +309,7 @@ class ScreenCapture(
         if (!sent) statDrops++
         if (keyAsked) statKeys++
         val span = now - statSince
-        if (span >= 1000) {
+        if (span >= 5000) {
             Log.i(
                 TAG,
                 "SCREEN stats out=${statFrames * 1000 / span}/s ${statBytes * 8 / span} kbit/s drops=$statDrops keys=$statKeys target=${bitrate / 1000} kbit/s",

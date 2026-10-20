@@ -1,24 +1,27 @@
 //! Keeps the video close to live without artefacts: when frames are in
-//! flight too long or the send queue fills, drop to the next key frame and
-//! lower the bitrate; recover gradually once things are clean again.
+//! flight too long or the send queue fills, drop everything up to the next
+//! key frame (never a lone frame: every frame is a reference for the next)
+//! and lower the bitrate; recover gradually once things are clean again.
 //!
 //! Lag counts only frames in flight: now − send time of the oldest frame the
 //! PC has not confirmed. An idle screen (nothing sent) is never lag.
 
 use std::{collections::VecDeque, time::Duration, time::Instant};
 
-use crate::record::{FLAG_KEY, FLAG_REPEAT};
+use crate::record::FLAG_KEY;
 
 const SECOND: Duration = Duration::from_secs(1);
 
-pub const MAX_LAG: Duration = Duration::from_millis(150);
+/// Frames unconfirmed this long count as late (Wi-Fi jitter, the PC's
+/// display wait and the feedback trip all fit under it).
+pub const MAX_LAG: Duration = Duration::from_millis(300);
 /// Send queue cap (bytes); full = drop.
 pub const QUEUE_CAP: usize = 1024 * 1024;
 /// Recovery only while the queue is below this.
 pub const RECOVER_QUEUE: usize = 256 * 1024;
 pub const FLOOR_BPS: u32 = 1_500_000;
-/// At most this many consecutive repeat frames are sent.
-pub const MAX_REPEATS: u32 = 3;
+/// While waiting for a key frame, ask the encoder again this often.
+pub const KEY_RETRY: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decision {
@@ -36,7 +39,7 @@ pub struct Pacer {
     dropping: bool,
     last_drop: Option<Instant>,
     last_raise: Option<Instant>,
-    repeats: u32,
+    last_key_request: Option<Instant>,
 }
 
 impl Pacer {
@@ -48,12 +51,49 @@ impl Pacer {
             dropping: false,
             last_drop: None,
             last_raise: None,
-            repeats: 0,
+            last_key_request: None,
         }
     }
 
     pub fn bitrate(&self) -> u32 {
         self.bitrate
+    }
+
+    /// Start dropping up to the next key frame: back off once, ask for a key.
+    fn enter_drop(&mut self, now: Instant) -> Decision {
+        self.last_drop = Some(now);
+        if self.dropping {
+            return self.waiting(now);
+        }
+        self.dropping = true;
+        self.in_flight.clear();
+        self.last_key_request = Some(now);
+        self.bitrate = (self.bitrate as u64 * 7 / 10).max(u64::from(FLOOR_BPS)) as u32;
+        Decision {
+            send: false,
+            request_key: true,
+            new_bitrate: Some(self.bitrate),
+        }
+    }
+
+    /// A frame dropped while waiting for the key; ask again now and then.
+    fn waiting(&mut self, now: Instant) -> Decision {
+        let again = self
+            .last_key_request
+            .is_none_or(|t| now.duration_since(t) >= KEY_RETRY);
+        if again {
+            self.last_key_request = Some(now);
+        }
+        Decision {
+            send: false,
+            request_key: again,
+            new_bitrate: None,
+        }
+    }
+
+    /// The send queue refused a frame: what follows has no reference.
+    pub fn queue_full(&mut self, now: Instant) -> Decision {
+        self.enter_drop(now)
     }
 
     /// A frame came out of the encoder: send it or drop it.
@@ -65,39 +105,15 @@ impl Pacer {
         queued_bytes: usize,
     ) -> Decision {
         let key = flags & FLAG_KEY != 0;
-        let skip = Decision {
-            send: false,
-            request_key: false,
-            new_bitrate: None,
-        };
-        // A still screen: a few sharpening repeats, then silence.
-        if flags & FLAG_REPEAT != 0 && !key {
-            if self.repeats >= MAX_REPEATS {
-                return skip;
-            }
-            self.repeats += 1;
-        } else {
-            self.repeats = 0;
-        }
         let lag = self.in_flight.front().map_or(Duration::ZERO, |(_, sent)| {
             now.saturating_duration_since(*sent)
         });
         if lag > MAX_LAG || queued_bytes >= QUEUE_CAP {
-            self.last_drop = Some(now);
-            if self.dropping {
-                return skip;
-            }
-            self.dropping = true;
-            self.bitrate = (self.bitrate as u64 * 7 / 10).max(u64::from(FLOOR_BPS)) as u32;
-            return Decision {
-                send: false,
-                request_key: true,
-                new_bitrate: Some(self.bitrate),
-            };
+            return self.enter_drop(now);
         }
         if self.dropping {
             if !key {
-                return skip;
+                return self.waiting(now);
             }
             self.dropping = false;
         }
@@ -155,14 +171,15 @@ mod tests {
     }
 
     #[test]
-    fn lag_over_150ms_drops_until_key_and_backs_off() {
+    fn lag_over_300ms_drops_until_key_and_backs_off() {
         let t0 = Instant::now();
         let mut p = Pacer::new(T);
         assert!(p.on_frame(t0, 0, FLAG_KEY, 0).send);
         assert!(p.on_frame(ms(t0, 33), 33_000, 0, 0).send);
-        assert!(p.on_frame(ms(t0, 66), 66_000, 0, 0).send);
-        // Nothing confirmed for 200 ms.
-        let d = p.on_frame(ms(t0, 200), 200_000, 0, 0);
+        // 200 ms unconfirmed is normal Wi-Fi + feedback delay: no drop.
+        assert!(p.on_frame(ms(t0, 200), 200_000, 0, 0).send);
+        // Nothing confirmed for 350 ms: drop.
+        let d = p.on_frame(ms(t0, 350), 350_000, 0, 0);
         assert_eq!(
             d,
             Decision {
@@ -172,11 +189,38 @@ mod tests {
             }
         );
         // The PC catches up, but non-key frames still wait for the key.
-        p.on_feedback(ms(t0, 210), 66_000);
-        assert!(!p.on_frame(ms(t0, 233), 233_000, 0, 0).send);
-        let k = p.on_frame(ms(t0, 266), 266_000, FLAG_KEY, 0);
+        p.on_feedback(ms(t0, 360), 200_000);
+        assert!(!p.on_frame(ms(t0, 383), 383_000, 0, 0).send);
+        let k = p.on_frame(ms(t0, 416), 416_000, FLAG_KEY, 0);
         assert!(k.send && !k.request_key && k.new_bitrate.is_none(), "{k:?}");
-        assert!(p.on_frame(ms(t0, 300), 300_000, 0, 0).send);
+        assert!(p.on_frame(ms(t0, 450), 450_000, 0, 0).send);
+    }
+
+    #[test]
+    fn drop_mode_asks_for_a_key_again_every_300ms() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(T);
+        assert!(p.on_frame(t0, 0, 0, QUEUE_CAP).request_key);
+        let d = p.on_frame(ms(t0, 100), 100_000, 0, 0);
+        assert!(!d.send && !d.request_key, "{d:?}");
+        let d = p.on_frame(ms(t0, 310), 310_000, 0, 0);
+        assert!(!d.send && d.request_key, "asked again: {d:?}");
+        let d = p.on_frame(ms(t0, 400), 400_000, 0, 0);
+        assert!(!d.send && !d.request_key, "{d:?}");
+        assert!(p.on_frame(ms(t0, 420), 420_000, FLAG_KEY, 0).send);
+    }
+
+    #[test]
+    fn queue_full_enters_drop_mode() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(T);
+        assert!(p.on_frame(t0, 0, FLAG_KEY, 0).send);
+        p.on_feedback(ms(t0, 5), 0);
+        let d = p.queue_full(ms(t0, 10));
+        assert!(d.request_key && d.new_bitrate == Some(8_400_000), "{d:?}");
+        // The P-frame after a refused one has no reference: wait for a key.
+        assert!(!p.on_frame(ms(t0, 33), 33_000, 0, 0).send);
+        assert!(p.on_frame(ms(t0, 66), 66_000, FLAG_KEY, 0).send);
     }
 
     #[test]
@@ -236,20 +280,15 @@ mod tests {
     }
 
     #[test]
-    fn only_three_repeats_are_sent() {
+    fn repeats_are_never_dropped() {
+        // Every frame is a reference for the next: dropping a "repeat"
+        // would smear the picture until the next key frame.
         let t0 = Instant::now();
         let mut p = Pacer::new(T);
-        let sent: Vec<bool> = (0..5u64)
-            .map(|i| {
-                let d = p.on_frame(ms(t0, i * 100), (i * 100_000) as i64, FLAG_REPEAT, 0);
-                p.on_feedback(ms(t0, i * 100 + 1), (i * 100_000) as i64);
-                assert!(!d.request_key && d.new_bitrate.is_none());
-                d.send
-            })
-            .collect();
-        assert_eq!(sent, [true, true, true, false, false]);
-        // A real change resets the count.
-        assert!(p.on_frame(ms(t0, 600), 600_000, 0, 0).send);
-        assert!(p.on_frame(ms(t0, 700), 700_000, FLAG_REPEAT, 0).send);
+        for i in 0..10u64 {
+            let d = p.on_frame(ms(t0, i * 100), (i * 100_000) as i64, FLAG_REPEAT, 0);
+            p.on_feedback(ms(t0, i * 100 + 1), (i * 100_000) as i64);
+            assert!(d.send && !d.request_key, "{d:?}");
+        }
     }
 }

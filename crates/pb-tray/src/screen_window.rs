@@ -373,6 +373,10 @@ fn decode_thread(
                     Ok(Some(f)) => {
                         present(&mut renderer, &f, size, video, dimmed);
                         last_pts = f.pts_us;
+                        // Confirm every frame at once: the phone's pacer
+                        // counts unconfirmed frames as lag.
+                        remote.feedback(last_pts);
+                        last_feedback = Instant::now();
                         if first_frame {
                             first_frame = false;
                             (opts.log)(&format!(

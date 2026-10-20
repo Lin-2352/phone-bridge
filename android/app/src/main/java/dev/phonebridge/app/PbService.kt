@@ -230,8 +230,13 @@ class PbService : Service() {
 
     /** Low memory: keep the bare minimum and leave a trace for diagnosis. */
     override fun onTrimMemory(level: Int) {
-        // Memory is short: screen sharing steps down (720-class, 15 fps).
-        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) ScreenShare.capture?.stepDown()
+        // Memory is really short while running (not just our own UI going to
+        // the background, level 20+): screen sharing steps down.
+        if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+            level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        ) {
+            ScreenShare.capture?.stepDown()
+        }
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
             android.os.Handler(mainLooper).post {

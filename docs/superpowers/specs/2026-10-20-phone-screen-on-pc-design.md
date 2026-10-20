@@ -161,7 +161,7 @@ Outside the window the mouse belongs to the PC; nothing is captured.
 - **Still screens never shimmer:**
   - Unchanged frames are not re-sent, so a still screen costs almost nothing.
   - `KEY_REPEAT_PREVIOUS_FRAME_AFTER` (about 100 ms) lets the encoder send a few refining repeats once the screen stops changing, so text is sharp right after a scroll.
-  - The sender forwards at most 3 consecutive repeats, then sends nothing until the screen changes. The PC keeps showing the last frame, which cannot shimmer.
+  - Repeats are sent (they are tiny). Changed in device tests: dropping a frame the encoder called a repeat smeared the picture, because every frame is a reference for the next. Nothing is ever dropped except whole runs up to the next key frame. The PC keeps showing the last frame, which cannot shimmer.
 - **Fallback:** if the realme's encoder doesn't accept VBR with surface input, CBR is used at the same rate, with the same QP ceiling and repeat rule. A device check compares both on static text, gradients and slow scrolling, and the better one is kept.
 
 **Rotation:**
