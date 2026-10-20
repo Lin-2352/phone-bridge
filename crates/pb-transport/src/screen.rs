@@ -255,6 +255,16 @@ impl ByteQueue {
         }
     }
 
+    /// Room for a record: frames only under the cap; a new encoder's
+    /// headers (tiny, needed by the next key frame) always.
+    pub fn admit(&self, len: usize, config: bool) -> bool {
+        if config {
+            self.0.fetch_add(len, Ordering::AcqRel);
+            return true;
+        }
+        self.try_push(len)
+    }
+
     pub fn pop(&self, len: usize) {
         let mut q = self.0.load(Ordering::Acquire);
         while let Err(now) = self.0.compare_exchange_weak(
@@ -338,7 +348,10 @@ impl ScreenSink {
     pub fn send(&self, r: Record) -> SendOutcome {
         let mut bytes = Vec::with_capacity(13 + r.payload.len());
         record::encode(&r, &mut bytes);
-        if !self.queue.try_push(bytes.len()) {
+        if !self
+            .queue
+            .admit(bytes.len(), r.flags & record::FLAG_CONFIG != 0)
+        {
             return SendOutcome::Full;
         }
         let len = bytes.len();
@@ -470,6 +483,15 @@ pub async fn serve_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_records_pass_a_full_queue() {
+        let q = ByteQueue::default();
+        assert!(q.try_push(QUEUE_CAP));
+        assert!(!q.admit(100, false), "a frame waits for room");
+        assert!(q.admit(100, true), "a new encoder's headers always go");
+        assert_eq!(q.len(), QUEUE_CAP + 100);
+    }
 
     #[test]
     fn byte_queue_refuses_past_the_cap() {

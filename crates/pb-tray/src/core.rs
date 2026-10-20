@@ -875,6 +875,11 @@ fn show_screen(
         let deadline = Instant::now() + std::time::Duration::from_secs(30);
         loop {
             let t0 = Instant::now();
+            // A retry after a lost link is for the dimmed "Reconnecting"
+            // window: closed by the user, nothing is brought back.
+            if again && !crate::screen_window::is_open() {
+                return;
+            }
             if !again {
                 ui(UiEvent::Info(format!("Waiting for {name}\u{2026}")));
             }
@@ -900,6 +905,10 @@ fn show_screen(
                         view.accept.height,
                         t0.elapsed().as_millis()
                     ));
+                    if again && !crate::screen_window::is_open() {
+                        view.close();
+                        return;
+                    }
                     ui(UiEvent::ScreenShown);
                     let ended = {
                         let (node, log, ui, settings, name) = (

@@ -734,7 +734,10 @@ class ScreenReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.getStringExtra("do")) {
             "stop" -> ScreenShare.stop(userStopped = true)
-            "bright" -> ControlService.instance?.setDim(false)
+            "bright" -> {
+                ControlService.instance?.setDim(false)
+                ScreenShare.dimEnded()
+            }
         }
     }
 }

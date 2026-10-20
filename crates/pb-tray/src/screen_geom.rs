@@ -77,6 +77,29 @@ pub fn state_changed(prev: Option<(bool, bool)>, next: (bool, bool)) -> bool {
     prev != Some(next)
 }
 
+/// Keys pressed on the phone through the window and not yet released: on
+/// focus loss or close their key-ups would go to another window, leaving
+/// e.g. Ctrl held on the phone.
+#[derive(Default)]
+pub struct HeldKeys(Vec<u16>);
+
+impl HeldKeys {
+    pub fn press(&mut self, scancode: u16) {
+        if !self.0.contains(&scancode) {
+            self.0.push(scancode);
+        }
+    }
+
+    pub fn release(&mut self, scancode: u16) {
+        self.0.retain(|k| *k != scancode);
+    }
+
+    /// The keys to lift now; afterwards none are held.
+    pub fn drain(&mut self) -> Vec<u16> {
+        std::mem::take(&mut self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +165,17 @@ mod tests {
             state_changed(Some((true, false)), (true, true)),
             "dim toggled"
         );
+    }
+
+    #[test]
+    fn held_keys_are_released_once() {
+        let mut h = HeldKeys::default();
+        h.press(0x1D); // Ctrl
+        h.press(0x1D); // auto-repeat
+        h.press(0x1E); // A
+        h.release(0x1E);
+        assert_eq!(h.drain(), vec![0x1D], "Ctrl still down: lift it");
+        assert!(h.drain().is_empty());
     }
 
     #[test]

@@ -114,8 +114,21 @@ class ControlService : AccessibilityService(), InputListener {
 
     // InputListener: called on a Rust thread; all work happens on the main thread.
 
+    /**
+     * A screen or control session started or ended: no key is held any more
+     * (a key-up lost with the old session must not leave Ctrl down, which
+     * would turn the next "a" into select-all).
+     */
+    fun resetKeys() {
+        main.post {
+            ctrl = false
+            if (finger.down) finger.release()
+        }
+    }
+
     override fun onControl(active: Boolean, peerName: String) {
         main.post {
+            ctrl = false
             if (active) {
                 readBounds()
                 x = w / 2f
@@ -216,8 +229,10 @@ class ControlService : AccessibilityService(), InputListener {
     private var dimView: android.view.View? = null
     private val screenOff = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
-            // The power button: brightness comes back.
-            endDim()
+            // The power button: brightness comes back, but the phone keeps
+            // awake for the mirror (the overlay stays) and the PC is told.
+            setDim(false)
+            ScreenShare.dimEnded()
         }
     }
 

@@ -350,8 +350,54 @@ impl Grace {
     }
 }
 
+/// Take the resume grace only if it belongs to this PC and hasn't run out.
+fn take_grace(
+    slot: &mut Option<Grace>,
+    peer: &pb_identity::PeerId,
+    now: std::time::Instant,
+) -> bool {
+    if slot.as_ref().is_some_and(|g| g.admits(peer, now)) {
+        *slot = None;
+        true
+    } else {
+        false
+    }
+}
+
+/// The user pressed Stop while the link was down: nothing to resume, and
+/// that PC's retries are declined quietly.
+fn stop_during_grace(
+    grace: &mut Option<Grace>,
+    user_stop: &mut Option<Grace>,
+    now: std::time::Instant,
+) {
+    if let Some(g) = grace.take() {
+        *user_stop = Some(Grace::new(g.peer, now));
+    }
+}
+
+/// A new request from the PC whose session is still running means that
+/// session is stale: the PC restarted before the phone noticed the lost link.
+fn supersedes(current: Option<&pb_identity::PeerId>, new: &pb_identity::PeerId) -> bool {
+    current == Some(new)
+}
+
 /// Records kept while the session's streams open (config, first key frame).
 const SCREEN_PENDING: usize = 32;
+
+/// Send the records that waited for the streams; stop at the first refused
+/// one (the frames after it refer to it). True if one was refused.
+fn flush_pending(
+    waiting: Vec<pb_video::Record>,
+    mut send: impl FnMut(pb_video::Record) -> bool,
+) -> bool {
+    for r in waiting {
+        if !send(r) {
+            return true;
+        }
+    }
+    false
+}
 
 /// One screen session, phone side: encoded frames go in here.
 #[derive(uniffi::Object)]
@@ -360,6 +406,9 @@ pub struct PbScreen {
     pending: Mutex<Vec<pb_video::Record>>,
     pacer: Mutex<pb_video::Pacer>,
     stopped: std::sync::atomic::AtomicBool,
+    /// A waiting frame was refused when the streams opened: the next
+    /// advice asks the encoder for a key frame.
+    want_key: std::sync::atomic::AtomicBool,
 }
 
 impl PbScreen {
@@ -374,16 +423,28 @@ impl PbScreen {
             pending: Mutex::new(Vec::new()),
             pacer: Mutex::new(pb_video::Pacer::new(target)),
             stopped: std::sync::atomic::AtomicBool::new(false),
+            want_key: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     /// The streams are open: send what waited.
     fn ready(&self, sink: pb_transport::screen::ScreenSink) {
-        let waiting = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()));
-        for r in waiting {
-            sink.send(r);
-        }
+        // Held until the sink is set: a frame sent meanwhile waits here and
+        // goes out in order, never into a list nobody flushes again.
+        let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+        let refused = flush_pending(std::mem::take(&mut *pending), |r| {
+            matches!(sink.send(r), pb_transport::screen::SendOutcome::Queued(_))
+        });
         let _ = self.sink.set(sink);
+        drop(pending);
+        if refused {
+            self.pacer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .queue_full(std::time::Instant::now());
+            self.want_key
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 
@@ -407,11 +468,16 @@ impl PbScreen {
                 Some(sink) => sink.send(r) == pb_transport::screen::SendOutcome::Full,
                 None => {
                     let mut p = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-                    let full = p.len() >= SCREEN_PENDING;
-                    if !full {
-                        p.push(r);
+                    // `ready` may have set the sink while we waited for the lock.
+                    if let Some(sink) = self.sink.get() {
+                        sink.send(r) == pb_transport::screen::SendOutcome::Full
+                    } else {
+                        let full = p.len() >= SCREEN_PENDING;
+                        if !full {
+                            p.push(r);
+                        }
+                        full
                     }
-                    full
                 }
             };
             if refused {
@@ -425,7 +491,14 @@ impl PbScreen {
                 );
             }
         }
-        advice(d)
+        let mut a = advice(d);
+        if self
+            .want_key
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            a.request_key = true;
+        }
+        a
     }
 
     /// Round trips measured since the last call (the stats log).
@@ -548,6 +621,9 @@ struct Shared {
     screen_pending:
         Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<ScreenAnswer>>>,
     screen_grace: Mutex<Option<Grace>>,
+    /// The PC of the request being asked or the session running, and a way
+    /// to end it when that PC asks again.
+    screen_current: Mutex<Option<(pb_identity::PeerId, pb_transport::SessionCloser)>>,
     /// The user stopped sharing: requests from that PC are declined quietly
     /// for a while (the PC retries after a dropped link).
     screen_user_stop: Mutex<Option<Grace>>,
@@ -608,6 +684,7 @@ pub async fn start_node(
         screen_busy: std::sync::atomic::AtomicBool::new(false),
         screen_pending: Mutex::default(),
         screen_grace: Mutex::new(None),
+        screen_current: Mutex::new(None),
         screen_user_stop: Mutex::new(None),
     });
     // The phone only joins pairings; drop host-side requests.
@@ -887,6 +964,13 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
     );
 }
 
+/// The screen is free for the next request.
+fn release_screen(sh: &Shared) {
+    *sh.screen_current.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    sh.screen_busy
+        .store(false, std::sync::atomic::Ordering::Release);
+}
+
 /// A PC asked to see this screen: ask (or resume), then run the session.
 async fn screen_session(
     s: Session,
@@ -897,9 +981,36 @@ async fn screen_session(
     use std::sync::atomic::Ordering;
     let peer = s.peer;
     if sh.screen_busy.swap(true, Ordering::AcqRel) {
-        let _ = pb_transport::screen::serve_screen(s, start, None).await;
-        return "screen busy".into();
+        // The same PC asking again: end its stale session as a lost link
+        // (the capture waits), so this request resumes it.
+        let stale = match sh
+            .screen_current
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            Some((p, closer)) if supersedes(Some(p), &peer) => {
+                closer.close(b"screen superseded");
+                true
+            }
+            _ => false,
+        };
+        let mut free = false;
+        if stale {
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if !sh.screen_busy.swap(true, Ordering::AcqRel) {
+                    free = true;
+                    break;
+                }
+            }
+        }
+        if !free {
+            let _ = pb_transport::screen::serve_screen(s, start, None).await;
+            return "screen busy".into();
+        }
     }
+    *sh.screen_current.lock().unwrap_or_else(|p| p.into_inner()) = Some((peer, s.closer()));
     let now = std::time::Instant::now();
     let stopped_by_user = sh
         .screen_user_stop
@@ -909,15 +1020,14 @@ async fn screen_session(
         .is_some_and(|g| g.admits(&peer, now));
     if stopped_by_user {
         let _ = pb_transport::screen::serve_screen(s, start, None).await;
-        sh.screen_busy.store(false, Ordering::Release);
+        release_screen(&sh);
         return "screen stopped by the user".into();
     }
-    let resume = sh
-        .screen_grace
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take()
-        .is_some_and(|g| g.admits(&peer, now));
+    let resume = take_grace(
+        &mut sh.screen_grace.lock().unwrap_or_else(|p| p.into_inner()),
+        &peer,
+        now,
+    );
     let ask = sh.next_ask.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = tokio::sync::oneshot::channel();
     sh.screen_pending
@@ -949,7 +1059,7 @@ async fn screen_session(
         .remove(&ask);
     let Some((acc, screen)) = answer else {
         let _ = pb_transport::screen::serve_screen(s, start, None).await;
-        sh.screen_busy.store(false, Ordering::Release);
+        release_screen(&sh);
         return "screen declined".into();
     };
     let accept = pb_protocol::control::ScreenAccept {
@@ -962,7 +1072,7 @@ async fn screen_session(
     let server = match pb_transport::screen::serve_screen(s, start, Some(accept)).await {
         Ok(server) => server,
         Err(e) => {
-            sh.screen_busy.store(false, Ordering::Release);
+            release_screen(&sh);
             if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
                 let _ = l.on_stopped(false);
             }
@@ -1013,10 +1123,12 @@ async fn screen_session(
         *slot.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(Grace::new(peer, std::time::Instant::now()));
     }
-    sh.screen_busy.store(false, Ordering::Release);
+    // Kotlin hears the end before another request can start (it checks
+    // which session ended, so a quick resume is never paused by it).
     if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
         let _ = l.on_stopped(!by_user && !closed_by_pc);
     }
+    release_screen(&sh);
     "screen ended".into()
 }
 
@@ -1370,6 +1482,24 @@ impl PbNode {
         }
     }
 
+    /// The user pressed Stop while the link was down (the capture waited for
+    /// a resume): that PC is declined quietly from now on.
+    pub fn screen_user_stopped(&self) {
+        stop_during_grace(
+            &mut self
+                .shared
+                .screen_grace
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+            &mut self
+                .shared
+                .screen_user_stop
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+            std::time::Instant::now(),
+        );
+    }
+
     /// Register (screen capture ready) or clear the screen session handler.
     pub fn set_screen_listener(&self, listener: Option<Arc<dyn ScreenListener>>) {
         *self
@@ -1620,6 +1750,63 @@ mod screen_tests {
         assert!(g.admits(&a, t0 + Duration::from_secs(29)));
         assert!(!g.admits(&a, t0 + Duration::from_secs(31)));
         assert!(!g.admits(&b, t0 + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn another_pc_does_not_take_the_grace() {
+        let a = Identity::from_seed([1; 32]).peer_id();
+        let b = Identity::from_seed([2; 32]).peer_id();
+        let t0 = Instant::now();
+        let mut slot = Some(Grace::new(a, t0));
+        assert!(!take_grace(&mut slot, &b, t0), "B asks: a new share");
+        assert!(slot.is_some(), "A's grace is still there for A");
+        assert!(take_grace(&mut slot, &a, t0));
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn stop_during_grace_declines_quietly() {
+        let a = Identity::from_seed([1; 32]).peer_id();
+        let t0 = Instant::now();
+        let mut grace = Some(Grace::new(a, t0));
+        let mut user_stop = None;
+        let t1 = t0 + Duration::from_secs(10);
+        stop_during_grace(&mut grace, &mut user_stop, t1);
+        assert!(grace.is_none(), "nothing to resume");
+        let g = user_stop.expect("that PC is declined quietly");
+        assert!(g.admits(&a, t1 + Duration::from_secs(29)));
+    }
+
+    #[test]
+    fn flush_stops_at_the_first_refusal() {
+        let rec = |pts| pb_video::Record {
+            pts_us: pts,
+            flags: 0,
+            payload: vec![0; 10],
+        };
+        let mut sent = Vec::new();
+        let refused = flush_pending(vec![rec(1), rec(2), rec(3)], |r| {
+            let ok = r.pts_us != 2;
+            if ok {
+                sent.push(r.pts_us);
+            }
+            ok
+        });
+        // Frame 3 refers to the refused frame 2: not sent; a key is needed.
+        assert!(refused);
+        assert_eq!(sent, vec![1]);
+        assert!(!flush_pending(vec![rec(4)], |_| true));
+    }
+
+    #[test]
+    fn same_pc_supersedes_its_stale_session() {
+        let a = Identity::from_seed([1; 32]).peer_id();
+        let b = Identity::from_seed([2; 32]).peer_id();
+        // A restarted PC asks before the phone noticed the old link died.
+        assert!(supersedes(Some(&a), &a));
+        // Another PC never takes over a running session.
+        assert!(!supersedes(Some(&a), &b));
+        assert!(!supersedes(None, &a));
     }
 
     #[test]

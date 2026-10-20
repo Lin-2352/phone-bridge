@@ -8,7 +8,7 @@
 
 use std::{collections::VecDeque, time::Duration, time::Instant};
 
-use crate::record::FLAG_KEY;
+use crate::record::{FLAG_CONFIG, FLAG_KEY};
 
 const SECOND: Duration = Duration::from_secs(1);
 
@@ -107,6 +107,15 @@ impl Pacer {
         flags: u8,
         queued_bytes: usize,
     ) -> Decision {
+        // A new encoder's headers: tiny, and the next key frame cannot be
+        // decoded without them. Never dropped, never lag.
+        if flags & FLAG_CONFIG != 0 {
+            return Decision {
+                send: true,
+                request_key: false,
+                new_bitrate: None,
+            };
+        }
         let key = flags & FLAG_KEY != 0;
         let lag = self.in_flight.front().map_or(Duration::ZERO, |(_, sent)| {
             now.saturating_duration_since(*sent)
@@ -191,6 +200,25 @@ mod tests {
         p.on_feedback(ms(t0, 30), 0);
         let d = p.on_frame(ms(t0, 5000), 5_000_000, 0, 0);
         assert!(d.send && !d.request_key && d.new_bitrate.is_none(), "{d:?}");
+    }
+
+    #[test]
+    fn config_records_are_always_sent() {
+        use crate::record::FLAG_CONFIG;
+        let t0 = Instant::now();
+        let mut p = Pacer::new(T);
+        assert!(p.on_frame(t0, 0, FLAG_KEY, 0).send);
+        // Lag over the limit: drop mode, yet a new encoder's headers go out
+        // (the key frame after them is decoded with them).
+        assert!(!p.on_frame(ms(t0, 350), 350_000, 0, 0).send);
+        assert!(p.on_frame(ms(t0, 360), 360_000, FLAG_CONFIG, 0).send);
+        // ...without ending drop mode or counting as lag.
+        assert!(!p.on_frame(ms(t0, 383), 383_000, 0, 0).send);
+        // A full queue never stops them either.
+        assert!(
+            p.on_frame(ms(t0, 400), 400_000, FLAG_CONFIG, QUEUE_CAP)
+                .send
+        );
     }
 
     #[test]

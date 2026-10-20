@@ -133,6 +133,7 @@ class ScreenCapture(
     /** Frames from now on go to this session (a new one after a resume). */
     fun attach(s: PbScreen) {
         screen = s
+        ControlService.instance?.resetKeys()
         resume()
     }
 
@@ -457,6 +458,10 @@ object ScreenShare : ScreenListener {
             return false
         }
         node.setScreenListener(this)
+        // A capture still waiting for a resume (another PC asked): replaced,
+        // never leaked, and its grace timer must not end this share.
+        main.removeCallbacks(graceEnd)
+        capture?.stop()
         capture = c
         screen = s
         ask = a
@@ -473,8 +478,8 @@ object ScreenShare : ScreenListener {
     fun resume(id: ULong): Boolean {
         val c = capture ?: return false
         val node = Bridge.node ?: return false
-        main.removeCallbacks(graceEnd)
         val s = node.answerScreen(id, c.accept()) ?: return false
+        main.removeCallbacks(graceEnd)
         screen = s
         c.attach(s)
         sharingWith.value = ask?.peer
@@ -522,7 +527,11 @@ object ScreenShare : ScreenListener {
      */
     fun stop(userStopped: Boolean) {
         main.removeCallbacks(graceEnd)
-        if (userStopped) runCatching { screen?.stop() }
+        if (userStopped) {
+            runCatching { screen?.stop() }
+            // Stop during the grace (no live session): that PC's retries are declined.
+            runCatching { Bridge.node?.screenUserStopped() }
+        }
         val keep = !userStopped && PbService.instance?.let { Prefs(it).instantScreen } == true
         val c = capture
         capture = null
@@ -530,6 +539,7 @@ object ScreenShare : ScreenListener {
         sharingWith.value = null
         PbService.instance?.let { notifySharing(it, null) }
         ControlService.instance?.endDim()
+        ControlService.instance?.resetKeys()
         if (keep && c != null) {
             c.idle()
             armed = c
@@ -556,6 +566,13 @@ object ScreenShare : ScreenListener {
             lastDim = dim
             main.post { ControlService.instance?.setDim(dim) }
         }
+    }
+
+    /** Brightness came back on the phone (power button, notification): the PC's Dim button is out of date. */
+    fun dimEnded() {
+        if (lastDim != true) return
+        lastDim = null
+        screen?.notice("Dim ended on the phone")
     }
 
     override fun onCodecFailed() {
@@ -587,7 +604,11 @@ object ScreenShare : ScreenListener {
     }
 
     override fun onStopped(resumable: Boolean) {
+        // The session that ended: a resume may attach a new one before this
+        // runs on the main thread, and that one must not be paused or stopped.
+        val ended = screen
         main.post {
+            if (screen !== ended) return@post
             if (resumable && capture != null) {
                 // The link dropped: keep capturing (paused) for a resume.
                 capture?.pause()

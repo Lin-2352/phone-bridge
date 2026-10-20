@@ -40,9 +40,9 @@ use windows::{
                 HWND_TOPMOST, IDC_ARROW, MSG, SIZE_MINIMIZED, SM_CYSCREEN, SWP_NOMOVE, SWP_NOSIZE,
                 SWP_NOZORDER, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
                 WM_CLOSE, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-                WM_RBUTTONUP, WM_SIZE, WM_SIZING, WNDCLASSW, WS_CHILD, WS_OVERLAPPEDWINDOW,
-                WS_VISIBLE,
+                WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SIZING, WNDCLASSW, WS_CHILD,
+                WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             },
         },
     },
@@ -51,7 +51,9 @@ use windows::{
 use crate::{
     fluent::{self, px},
     screen_decode::{Decoder, Frame},
-    screen_geom::{fit_window, map_point, on_decode_error, state_changed, video_rect, Edge, Next},
+    screen_geom::{
+        fit_window, map_point, on_decode_error, state_changed, video_rect, Edge, HeldKeys, Next,
+    },
     screen_render::{device_for_window, Renderer},
 };
 
@@ -109,6 +111,7 @@ struct Shared {
     status: String,
     dragging: bool,
     last_touch: (u16, u16),
+    held: HeldKeys,
     /// The last (active, dim) sent to the phone.
     sent: Option<(bool, bool)>,
     active: bool,
@@ -264,6 +267,7 @@ fn ui_thread(
             status: String::new(),
             dragging: false,
             last_touch: (0, 0),
+            held: HeldKeys::default(),
             sent: None,
             active: true,
             frame: (
@@ -575,6 +579,31 @@ fn send(e: InputEvent) {
     }
 }
 
+/// Focus lost or closing: lift every key and the finger still down on the
+/// phone (their key-ups and button-up would go to another window).
+fn release_input() {
+    let (keys, finger) = with(|s| {
+        let finger = std::mem::take(&mut s.dragging).then_some(s.last_touch);
+        (s.held.drain(), finger)
+    })
+    .unwrap_or_default();
+    for scancode in keys {
+        send(InputEvent::Key {
+            scancode,
+            pressed: false,
+        });
+    }
+    if let Some((x, y)) = finger {
+        // SAFETY: releasing our own capture.
+        let _ = unsafe { ReleaseCapture() };
+        send(InputEvent::Touch {
+            phase: TouchPhase::Up,
+            x,
+            y,
+        });
+    }
+}
+
 fn click_button(b: u8) {
     send(InputEvent::MouseButton {
         button: b,
@@ -786,6 +815,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_CLOSE => {
+                release_input();
                 if let Some((r, msgs)) = with(|s| (s.remote.clone(), s.msgs.clone())) {
                     r.close();
                     let _ = msgs.send(Msg::Stop);
@@ -860,6 +890,10 @@ extern "system" fn video_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
                 }
                 LRESULT(0)
             }
+            WM_KILLFOCUS => {
+                release_input();
+                LRESULT(0)
+            }
             WM_RBUTTONUP => {
                 click_button(1);
                 LRESULT(0)
@@ -908,10 +942,15 @@ extern "system" fn video_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
                 } else {
                     let scan = ((lparam.0 >> 16) & 0xff) as u16;
                     let ext = if lparam.0 & (1 << 24) != 0 { 0xE000 } else { 0 };
-                    send(InputEvent::Key {
-                        scancode: scan | ext,
-                        pressed,
+                    let scancode = scan | ext;
+                    with(|s| {
+                        if pressed {
+                            s.held.press(scancode);
+                        } else {
+                            s.held.release(scancode);
+                        }
                     });
+                    send(InputEvent::Key { scancode, pressed });
                 }
                 LRESULT(0)
             }

@@ -300,7 +300,13 @@ class MainActivity : ComponentActivity() {
             ListItem(
                 headlineContent = { Text("Show my screen on my PC without asking") },
                 supportingContent = {
-                    Text(if (always) "On. Android still asks before each share" else "Off. This phone asks you first")
+                    Text(
+                        when {
+                            !always -> "Off. This phone asks you first"
+                            instant -> "On. With Instant screen on, your PC's shares start with no prompt at all"
+                            else -> "On. Android still asks before each share"
+                        },
+                    )
                 },
                 trailingContent = {
                     Switch(always, { v ->
