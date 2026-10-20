@@ -255,6 +255,16 @@ Plan: `docs/superpowers/plans/2026-10-20-phone-screen-on-pc.md`.
   - So the stream is 8-bit HEVC Main with VBR and a QP ceiling.
   - The spec's 10-bit wish cannot be met by this phone's hardware. Android composes the screen in 8-bit anyway, so Main10 would only have avoided added encoder banding; the QP ceiling and generous VBR keep that low.
   - The PC still offers Main10 first, so a phone whose encoder has it uses it.
+- **This PC decodes** H.265 Main10, H.265 and H.264 (synchronous MFTs with D3D11/DXVA, low-latency mode); an H.264 stream encoded in-box decodes on the GPU in a test.
+- **Decisions made in the plan or while building:**
+  - **One consent:** one consent per session covers video and the window's input.
+  - **Lag:** measured on frames in flight only (an idle screen is never lag).
+  - **Input records:** absolute `Touch` and `Pinch` input records; the wheel is a hover then the existing wheel.
+  - **The PC never drops records** (a missing P-frame would smear until the next key frame). A slow decoder slows the stream, and the phone's pacer drops cleanly to a key frame and lowers the bitrate.
+  - **Reconnect:** the PC retries for 30 s; the phone resumes without a prompt within its grace, and declines quietly for 30 s after its user pressed Stop.
+  - **Still screens:** repeat frames are recognised by arrival 90 ms or more after the previous one and a size under 4 KiB; at most 3 are sent.
+  - **Secure screens:** noticed from fully black 16×16 samples, once a second.
+  - **The v1 window** is a normal resizable window with the Fluent frame; the video is on a child window (flip swap chain), and the bars are painted on the parent.
 
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.
