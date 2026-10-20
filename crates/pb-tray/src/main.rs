@@ -36,7 +36,13 @@ mod share;
 #[cfg(windows)]
 mod status;
 #[cfg(windows)]
+#[allow(dead_code)]
+mod toast;
+#[cfg(windows)]
 mod ui;
+// Wired into the UI by the notifications integration; until then unused.
+#[allow(dead_code)]
+mod toast_xml;
 
 #[cfg(not(windows))]
 fn main() {
@@ -66,6 +72,36 @@ fn main() {
         path::PathBuf,
         sync::{Arc, Mutex},
     };
+    // TEMPORARY smoke test for the toast layer (removed by the integration).
+    if std::env::args().any(|a| a == "--test-toast") {
+        let r = toast::register(Box::new(|_, _| {}), Box::new(|_| {}));
+        println!("register: {r:?}");
+        let spec = toast_xml::ToastSpec {
+            tag: "pb-smoke".into(),
+            group: "pb".into(),
+            attribution: "Phone Bridge".into(),
+            title: "Phone Bridge test".into(),
+            lines: vec!["Toast layer smoke test".into()],
+            when_ms: 1_792_000_000_000,
+            launch: "a=open&t=pb-smoke".into(),
+            popup: false,
+            silent: true,
+            ..Default::default()
+        };
+        println!("show: {:?}", toast::show(&spec));
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        println!(
+            "in history: {:?}",
+            toast::history_tags().map(|t| t.contains("pb-smoke"))
+        );
+        toast::remove("pb-smoke", "pb");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        println!(
+            "after remove: {:?}",
+            toast::history_tags().map(|t| t.contains("pb-smoke"))
+        );
+        return;
+    }
 
     let mut opts = core::Options {
         dir: std::env::var_os("LOCALAPPDATA")
