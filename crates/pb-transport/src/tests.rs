@@ -1337,7 +1337,7 @@ mod screen {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn either_side_can_stop() {
-        // The PC closes: the phone hears Closed.
+        // The PC closes: the phone hears a deliberate close (no resume grace).
         let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
         let phone_task =
             tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
@@ -1348,7 +1348,8 @@ mod screen {
         let mut server = phone_task.await.unwrap().unwrap();
         view.close();
         loop {
-            if matches!(next_event(&mut server).await, ScreenEvent::Closed) {
+            if let ScreenEvent::Closed { by_peer } = next_event(&mut server).await {
+                assert!(by_peer, "the PC closed on purpose");
                 break;
             }
         }
@@ -1360,12 +1361,18 @@ mod screen {
             .open_screen(&phone.peer_id(), start(), || {})
             .await
             .unwrap();
-        let server = phone_task.await.unwrap().unwrap();
+        let mut server = phone_task.await.unwrap().unwrap();
         server.close();
         let end = tokio::time::timeout(Duration::from_secs(10), view.records.recv())
             .await
             .unwrap();
         assert!(end.is_none());
+        loop {
+            if let ScreenEvent::Closed { by_peer } = next_event(&mut server).await {
+                assert!(!by_peer, "closed here, not by the PC");
+                break;
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

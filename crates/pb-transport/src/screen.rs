@@ -289,7 +289,11 @@ pub enum ScreenEvent {
     Feedback(i64),
     State(ScreenState),
     Input(InputEvent),
-    Closed,
+    /// The session ended. `by_peer`: the PC closed it on purpose (window
+    /// closed, tray quit), not a lost link, so there is nothing to resume.
+    Closed {
+        by_peer: bool,
+    },
 }
 
 /// Phone side of a running screen session.
@@ -445,7 +449,11 @@ pub async fn serve_screen(
                 },
             }
         }
-        let _ = ev_tx.send(ScreenEvent::Closed);
+        let by_peer = matches!(
+            session.conn.close_reason(),
+            Some(iroh::endpoint::ConnectionError::ApplicationClosed(_))
+        );
+        let _ = ev_tx.send(ScreenEvent::Closed { by_peer });
         session.conn.close(0u32.into(), b"screen done");
     });
     Ok(ScreenServer {

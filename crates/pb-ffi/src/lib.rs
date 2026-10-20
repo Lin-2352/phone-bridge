@@ -971,6 +971,7 @@ async fn screen_session(
     };
     let (sink, mut events) = server.into_parts();
     screen.ready(sink);
+    let mut closed_by_pc = false;
     while let Some(ev) = events.recv().await {
         use pb_transport::screen::ScreenEvent as E;
         let listener = sh.screen_listener.lock().ok().and_then(|g| g.clone());
@@ -994,20 +995,27 @@ async fn screen_session(
                     forward_screen_input(&*l, e);
                 }
             }
-            E::Closed => break,
+            E::Closed { by_peer } => {
+                closed_by_pc = by_peer;
+                break;
+            }
         }
     }
     let by_user = screen.stopped.load(Ordering::Acquire);
-    let slot = if by_user {
-        &sh.screen_user_stop
-    } else {
-        &sh.screen_grace
-    };
-    *slot.lock().unwrap_or_else(|p| p.into_inner()) =
-        Some(Grace::new(peer, std::time::Instant::now()));
+    // The PC closed its window on purpose: nothing to resume, and its next
+    // request is a new share (not declined).
+    if !closed_by_pc || by_user {
+        let slot = if by_user {
+            &sh.screen_user_stop
+        } else {
+            &sh.screen_grace
+        };
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(Grace::new(peer, std::time::Instant::now()));
+    }
     sh.screen_busy.store(false, Ordering::Release);
     if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
-        let _ = l.on_stopped(!by_user);
+        let _ = l.on_stopped(!by_user && !closed_by_pc);
     }
     "screen ended".into()
 }
