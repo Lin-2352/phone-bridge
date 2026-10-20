@@ -35,7 +35,8 @@ private const val RESUME_GRACE_MS = 30_000L
 /** Step-down size (720-class) and frame rate. */
 private const val STEP_DOWN_LONG = 1280
 private const val STEP_DOWN_FPS = 15
-private const val FPS = 30
+/** Frames per second encoded (the 120 Hz panel is capped to this). */
+private const val FPS = 60
 /** QP ceiling: fast motion degrades in size, never in blocks. */
 private const val QP_MAX = 38
 
@@ -75,6 +76,15 @@ class ScreenCapture(
     @Volatile private var paused = false
     private var lastOutputAt = 0L
     private var steppedDown = false
+    private var startedAt = 0L
+    private var firstOutput = true
+    /** Per-second counters for the timing log. */
+    private var statFrames = 0
+    private var statBytes = 0L
+    private var statDrops = 0
+    private var statKeys = 0
+    private var statSince = 0L
+    private var bitrate = 0
 
     private val displays = ctx.getSystemService(DisplayManager::class.java)
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -192,6 +202,9 @@ class ScreenCapture(
                 if (caps.vbr) MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR else MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR,
             )
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            // The virtual display follows the 120 Hz panel; without this the
+            // encoder gets every display frame and queues them (lag).
+            setFloat("max-fps-to-encoder", fps.toFloat())
             // No periodic key frames (no pulsing): only when asked.
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 3600)
             // A few sharpening repeats once the screen stops changing.
@@ -225,6 +238,9 @@ class ScreenCapture(
         inputSurface = enc.createInputSurface()
         enc.start()
         encoder = enc
+        startedAt = android.os.SystemClock.uptimeMillis()
+        firstOutput = true
+        bitrate = if (codec == CODEC_H264) 16_000_000 else 12_000_000
         Log.i(TAG, "SCREEN encoder ${caps.encoderName} codec=$codec ${width}x$height rot=$rotation fps=$fps vbr=${caps.vbr}")
     }
 
@@ -274,15 +290,42 @@ class ScreenCapture(
                 else -> 0u
             }
             val payload = if (config) configPayload(data) else data
+            if (firstOutput) {
+                firstOutput = false
+                Log.i(TAG, "SCREEN first output after ${now - startedAt} ms")
+            }
             val advice = s.sendFrame(payload, info.presentationTimeUs, flags)
+            stats(now, info.size, advice.sent, advice.requestKey)
             if (advice.requestKey) requestKey()
             if (advice.newBitrate != 0u) {
+                bitrate = advice.newBitrate.toInt()
                 runCatching {
                     enc.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, advice.newBitrate.toInt()) })
                 }
             }
         } finally {
             runCatching { enc.releaseOutputBuffer(index, false) }
+        }
+    }
+
+    /** One line a second: frames out, bitrate actually produced, pacer drops. */
+    private fun stats(now: Long, bytes: Int, sent: Boolean, keyAsked: Boolean) {
+        if (statSince == 0L) statSince = now
+        statFrames++
+        statBytes += bytes
+        if (!sent) statDrops++
+        if (keyAsked) statKeys++
+        val span = now - statSince
+        if (span >= 1000) {
+            Log.i(
+                TAG,
+                "SCREEN stats out=${statFrames * 1000 / span}/s ${statBytes * 8 / span} kbit/s drops=$statDrops keys=$statKeys target=${bitrate / 1000} kbit/s",
+            )
+            statFrames = 0
+            statBytes = 0
+            statDrops = 0
+            statKeys = 0
+            statSince = now
         }
     }
 
@@ -327,6 +370,8 @@ object ScreenShare : ScreenListener {
         capture = c
         screen = s
         ask = a
+        lastActive = true
+        lastDim = null
         c.attach(s)
         sharingWith.value = a.peer
         notifySharing(ctx, a.peer)
@@ -360,10 +405,21 @@ object ScreenShare : ScreenListener {
         ControlService.instance?.endDim()
     }
 
+    @Volatile private var lastActive = true
+    @Volatile private var lastDim: Boolean? = null
+
     override fun onState(active: Boolean, dim: Boolean) {
         val c = capture ?: return
-        if (active) c.resume() else c.pause()
-        main.post { ControlService.instance?.setDim(dim) }
+        // Only changes: a resume asks the encoder for a key frame.
+        if (active != lastActive) {
+            lastActive = active
+            if (active) c.resume() else c.pause()
+            Log.i(TAG, "SCREEN window ${if (active) "visible" else "minimised"}")
+        }
+        if (dim != lastDim) {
+            lastDim = dim
+            main.post { ControlService.instance?.setDim(dim) }
+        }
     }
 
     override fun onCodecFailed() {

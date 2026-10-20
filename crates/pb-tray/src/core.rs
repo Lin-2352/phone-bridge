@@ -865,19 +865,24 @@ fn show_screen(
         let start = pb_protocol::control::ScreenStart {
             id: 0,
             max_long_side: if sharp { 0 } else { 1920 },
-            fps: 30,
+            fps: 60,
             codecs: codecs.iter().map(|c| *c as u32).collect(),
             dim,
             sharp,
         };
         let deadline = Instant::now() + std::time::Duration::from_secs(30);
         loop {
+            let t0 = Instant::now();
             if !again {
                 ui(UiEvent::Info(format!("Waiting for {name}\u{2026}")));
             }
             let asked = {
-                let (ui, name) = (ui.clone(), name.clone());
+                let (ui, name, log) = (ui.clone(), name.clone(), log.clone());
                 move || {
+                    log.line(&format!(
+                        "SCREEN asked after {} ms (connected)",
+                        t0.elapsed().as_millis()
+                    ));
                     if !again {
                         ui(UiEvent::Info(format!(
                             "Asking {name} to share its screen\u{2026}"
@@ -888,8 +893,10 @@ fn show_screen(
             match node.open_screen(&id, start.clone(), asked).await {
                 Ok(view) => {
                     log.line(&format!(
-                        "SCREEN \"{name}\" sharing ({}x{})",
-                        view.accept.width, view.accept.height
+                        "SCREEN \"{name}\" sharing ({}x{}) accepted after {} ms",
+                        view.accept.width,
+                        view.accept.height,
+                        t0.elapsed().as_millis()
                     ));
                     let ended = {
                         let (node, log, ui, settings, name) = (
@@ -919,6 +926,10 @@ fn show_screen(
                         }
                     };
                     let opts = crate::screen_window::WindowOpts {
+                        log: Box::new({
+                            let log = log.clone();
+                            move |m: &str| log.line(m)
+                        }),
                         name: name.clone(),
                         pinned,
                         dim,

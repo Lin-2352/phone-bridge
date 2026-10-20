@@ -70,6 +70,13 @@ pub fn on_decode_error(current: Codec, pc: &[Codec]) -> Next {
     pb_video::codec::next_after(current, pc).map_or(Next::GiveUp, Next::Retry)
 }
 
+/// Whether a window state (active, dim) must be sent to the phone: only
+/// when it differs from the last one sent (every resize would otherwise
+/// make the phone restart its key frames).
+pub fn state_changed(prev: Option<(bool, bool)>, next: (bool, bool)) -> bool {
+    prev != Some(next)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +122,26 @@ mod tests {
         assert_eq!(fit_window((500, 900), v, Edge::Bottom), (405, 900));
         assert_eq!(fit_window((500, 900), v, Edge::BottomRight), (500, 1111));
         assert_eq!(fit_window((500, 900), (0, 0), Edge::Right), (500, 900));
+    }
+
+    #[test]
+    fn state_sent_only_on_change() {
+        assert!(
+            state_changed(None, (true, false)),
+            "the first state is sent"
+        );
+        assert!(
+            !state_changed(Some((true, false)), (true, false)),
+            "resizes send nothing"
+        );
+        assert!(
+            state_changed(Some((true, false)), (false, false)),
+            "minimised"
+        );
+        assert!(
+            state_changed(Some((true, false)), (true, true)),
+            "dim toggled"
+        );
     }
 
     #[test]

@@ -36,12 +36,13 @@ use windows::{
                 AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
                 DispatchMessageW, GetClientRect, GetMessageW, GetSystemMetrics, GetWindowRect,
                 LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
-                SetWindowPos, ShowWindow, TranslateMessage, HWND_NOTOPMOST, HWND_TOPMOST,
-                IDC_ARROW, MSG, SIZE_MINIMIZED, SM_CYSCREEN, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-                SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE,
-                WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP,
-                WM_SIZE, WM_SIZING, WNDCLASSW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HWND_NOTOPMOST,
+                HWND_TOPMOST, IDC_ARROW, MSG, SIZE_MINIMIZED, SM_CYSCREEN, SWP_NOMOVE, SWP_NOSIZE,
+                SWP_NOZORDER, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
+                WM_CLOSE, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+                WM_RBUTTONUP, WM_SIZE, WM_SIZING, WNDCLASSW, WS_CHILD, WS_OVERLAPPEDWINDOW,
+                WS_VISIBLE,
             },
         },
     },
@@ -50,7 +51,7 @@ use windows::{
 use crate::{
     fluent::{self, px},
     screen_decode::{Decoder, Frame},
-    screen_geom::{fit_window, map_point, on_decode_error, video_rect, Edge, Next},
+    screen_geom::{fit_window, map_point, on_decode_error, state_changed, video_rect, Edge, Next},
     screen_render::{device_for_window, Renderer},
 };
 
@@ -66,6 +67,8 @@ const FEEDBACK: Duration = Duration::from_millis(100);
 
 /// What the tray gives the window.
 pub struct WindowOpts {
+    /// Timing lines for tray.log (no content).
+    pub log: Box<dyn Fn(&str) + Send + Sync>,
     pub name: String,
     pub pinned: bool,
     pub dim: bool,
@@ -106,6 +109,9 @@ struct Shared {
     status: String,
     dragging: bool,
     last_touch: (u16, u16),
+    /// The last (active, dim) sent to the phone.
+    sent: Option<(bool, bool)>,
+    active: bool,
     /// Window size minus client size (for WM_SIZING).
     frame: (i32, i32),
 }
@@ -184,6 +190,7 @@ fn ui_thread(
         };
         let cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
         RegisterClassW(&WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: module.into(),
             lpszClassName: CLASS,
@@ -191,6 +198,7 @@ fn ui_thread(
             ..Default::default()
         });
         RegisterClassW(&WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(video_proc),
             hInstance: module.into(),
             lpszClassName: VIDEO_CLASS,
@@ -257,6 +265,8 @@ fn ui_thread(
             status: String::new(),
             dragging: false,
             last_touch: (0, 0),
+            sent: None,
+            active: true,
             frame: (
                 (wr.right - wr.left) - cr.right,
                 (wr.bottom - wr.top) - cr.bottom,
@@ -278,9 +288,9 @@ fn ui_thread(
         let _ = ShowWindow(hwnd, SW_SHOW);
         layout(hwnd);
         let (top, vid) = (hwnd.0 as isize, video_hwnd.0 as isize);
-        let codecs = opts.codecs.clone();
         let remote2 = remote.clone();
-        std::thread::spawn(move || decode_thread(top, vid, rx, remote2, codecs, codec, video));
+        let opts2 = opts.clone();
+        std::thread::spawn(move || decode_thread(top, vid, rx, remote2, codec, video, opts2));
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
@@ -296,10 +306,17 @@ fn decode_thread(
     video_hwnd: isize,
     rx: mpsc::Receiver<Msg>,
     remote: Arc<ScreenRemote>,
-    codecs: Vec<Codec>,
     mut codec: Codec,
     mut video: (u32, u32),
+    opts: Arc<WindowOpts>,
 ) {
+    let opened = Instant::now();
+    let mut first_record = true;
+    let mut first_frame = true;
+    // Per-second: frames presented, decode+present time.
+    let mut stat_since = Instant::now();
+    let mut stat_frames = 0u32;
+    let mut stat_ms: Vec<f64> = Vec::new();
     let post = |m: u32| {
         // SAFETY: posting to our own window.
         let _ = unsafe { PostMessageW(Some(HWND(top as *mut _)), m, WPARAM(0), LPARAM(0)) };
@@ -334,6 +351,14 @@ fn decode_thread(
     loop {
         match rx.recv_timeout(FEEDBACK) {
             Ok(Msg::Record(r)) => {
+                if first_record {
+                    first_record = false;
+                    (opts.log)(&format!(
+                        "SCREEN first record after {} ms",
+                        opened.elapsed().as_millis()
+                    ));
+                }
+                let t = Instant::now();
                 if r.flags & FLAG_CONFIG != 0 {
                     if let Some(c) = Config::decode(&r.payload) {
                         let v = (u32::from(c.width), u32::from(c.height));
@@ -348,6 +373,33 @@ fn decode_thread(
                     Ok(Some(f)) => {
                         present(&mut renderer, &f, size, video, dimmed);
                         last_pts = f.pts_us;
+                        if first_frame {
+                            first_frame = false;
+                            (opts.log)(&format!(
+                                "SCREEN first frame shown after {} ms",
+                                opened.elapsed().as_millis()
+                            ));
+                        }
+                        stat_frames += 1;
+                        stat_ms.push(t.elapsed().as_secs_f64() * 1000.0);
+                        if stat_since.elapsed() >= Duration::from_secs(1) {
+                            stat_ms.sort_by(|a, b| a.total_cmp(b));
+                            let p = |q: f64| {
+                                stat_ms
+                                    .get(((stat_ms.len() as f64 - 1.0) * q) as usize)
+                                    .copied()
+                                    .unwrap_or(0.0)
+                            };
+                            (opts.log)(&format!(
+                                "SCREEN stats shown={}/s decode+present p50={:.1} p95={:.1} ms",
+                                stat_frames,
+                                p(0.5),
+                                p(0.95)
+                            ));
+                            stat_frames = 0;
+                            stat_ms.clear();
+                            stat_since = Instant::now();
+                        }
                         if let Some(black) = renderer.mean_brightness(&f) {
                             if black != secure {
                                 secure = black;
@@ -361,7 +413,7 @@ fn decode_thread(
                         last = Some(f);
                     }
                     Ok(None) => {}
-                    Err(_) => match on_decode_error(codec, &codecs) {
+                    Err(_) => match on_decode_error(codec, &opts.codecs) {
                         Next::Retry(c) => {
                             remote.codec_failed();
                             codec = c;
@@ -401,8 +453,9 @@ fn decode_thread(
 /// Bars and their buttons, for painting and clicks alike.
 fn targets(c: RECT, s: f32) -> Vec<(RECT, Target)> {
     let (top, bottom) = (px(s, TOP), px(s, BOTTOM));
-    let bw = px(s, 72);
     let pad = px(s, 6);
+    // Up to 72 px each, narrower in a narrow window (the name gives way first).
+    let bw = px(s, 72).min(((c.right - px(s, 80)) / 2 - pad).max(px(s, 36)));
     let mut v = vec![
         (
             RECT {
@@ -459,6 +512,23 @@ fn layout(hwnd: HWND) {
     }
 }
 
+/// Tell the phone the window's state, only when it changed.
+fn push_state() {
+    let change = with(|s| {
+        let next = (s.active, s.dim);
+        if state_changed(s.sent, next) {
+            s.sent = Some(next);
+            Some((s.remote.clone(), next))
+        } else {
+            None
+        }
+    })
+    .flatten();
+    if let Some((r, (active, dim))) = change {
+        r.set_state(active, dim);
+    }
+}
+
 fn send(e: InputEvent) {
     if let Some(r) = with(|s| s.remote.clone()) {
         r.input.send(e);
@@ -482,12 +552,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         match msg {
             WM_SIZE => {
                 let active = wparam.0 as u32 != SIZE_MINIMIZED;
-                if let Some((r, dim)) = with(|s| (s.remote.clone(), s.dim)) {
-                    // Minimised: the phone pauses its capture.
-                    r.set_state(active, dim);
-                }
+                // Minimised: the phone pauses its capture. Resizes send nothing.
+                with(|s| s.active = active);
+                push_state();
                 if active {
                     layout(hwnd);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }
@@ -564,7 +634,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     let tr = RECT {
                         left: px(s, 12),
                         top: 0,
-                        right: c.right - px(s, 160),
+                        right: targets(c, s).first().map_or(c.right, |(r, _)| r.left) - px(s, 8),
                         bottom: px(s, TOP),
                     };
                     fluent::text(
@@ -576,8 +646,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                     );
                     for (r, t) in targets(c, s) {
+                        let narrow = r.right - r.left < px(s, 60);
                         let (label, on) = match t {
+                            Target::Pin if narrow => ("\u{1F4CC}", pinned),
                             Target::Pin => (if pinned { "Pinned" } else { "Pin" }, pinned),
+                            Target::Dim if narrow => ("\u{1F505}", dim),
                             Target::Dim => (if dim { "Dimmed" } else { "Dim" }, dim),
                             Target::Back => ("Back", false),
                             Target::Home => ("Home", false),
@@ -627,12 +700,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             }
                         }
                         Target::Dim => {
-                            if let Some((r, dim)) = with(|sh| {
-                                sh.dim = !sh.dim;
-                                (sh.remote.clone(), sh.dim)
-                            }) {
-                                r.set_state(true, dim);
-                            }
+                            with(|sh| sh.dim = !sh.dim);
+                            push_state();
                         }
                     }
                     let _ = InvalidateRect(Some(hwnd), None, false);

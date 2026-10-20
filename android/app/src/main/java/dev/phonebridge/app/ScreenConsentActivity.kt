@@ -25,6 +25,8 @@ class ScreenConsentActivity : Activity() {
     private var ask: ScreenAsk? = null
     private var answered = false
     private var dialog: AlertDialog? = null
+    private var askedAt = 0L
+    private var promptAt = 0L
     private val main = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,6 +41,8 @@ class ScreenConsentActivity : Activity() {
             codecs = i.getIntArrayExtra("codecs")?.toList().orEmpty(),
         )
         ask = a
+        askedAt = i.getLongExtra("at", SystemClock.elapsedRealtime())
+        Log.i(TAG, "SCREEN ask window open after ${SystemClock.elapsedRealtime() - askedAt} ms")
         getSystemService(NotificationManager::class.java).cancel(SCREEN_ASK_ID)
         val left = ASK_MS - (SystemClock.elapsedRealtime() - i.getLongExtra("at", SystemClock.elapsedRealtime()))
         if (left <= 0) {
@@ -71,6 +75,8 @@ class ScreenConsentActivity : Activity() {
 
     private fun capturePrompt() {
         answered = true
+        promptAt = SystemClock.elapsedRealtime()
+        Log.i(TAG, "SCREEN capture prompt after ${promptAt - askedAt} ms")
         val mpm = getSystemService(MediaProjectionManager::class.java)
         runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQ_CAPTURE) }
             .onFailure {
@@ -84,6 +90,7 @@ class ScreenConsentActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQ_CAPTURE) return
         val a = ask ?: return finish()
+        Log.i(TAG, "SCREEN capture prompt answered after ${SystemClock.elapsedRealtime() - promptAt} ms")
         if (resultCode != RESULT_OK || data == null) {
             Log.i(TAG, "SCREEN capture prompt cancelled")
             decline()
