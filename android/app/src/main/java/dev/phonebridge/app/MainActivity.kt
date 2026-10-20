@@ -248,6 +248,54 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * "Notifications on PC": phone notifications appear in the PC's
+     * notification centre. Needs Notification access, granted in Settings.
+     */
+    @Composable
+    private fun NotificationsOnPc(modifier: Modifier = Modifier) {
+        val prefs = remember { Prefs(this@MainActivity) }
+        var on by remember { mutableStateOf(prefs.notifyToPc) }
+        val access = remember(resumed.intValue) { hasNotifyAccess(this@MainActivity) }
+        val openAccess = {
+            val i = if (Build.VERSION.SDK_INT >= 30) {
+                Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(
+                    Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                    android.content.ComponentName(this@MainActivity, NotifyListener::class.java).flattenToString(),
+                )
+            } else {
+                Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+            }
+            runCatching { startActivity(i) }
+                .onFailure { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+            Unit
+        }
+        ListItem(
+            headlineContent = { Text("Notifications on PC") },
+            supportingContent = {
+                Text(
+                    when {
+                        !on -> "Off"
+                        !access -> "Not allowed yet. Tap Grant, then turn on Phone Bridge"
+                        else -> "Showing on your PC"
+                    },
+                )
+            },
+            trailingContent = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (on && !access) TextButton(onClick = openAccess) { Text("Grant") }
+                    Switch(on, { v ->
+                        on = v
+                        prefs.notifyToPc = v
+                        Bridge.node?.setNotifyEnabled(v)
+                        if (v) NotifyListener.instance?.seedAll()
+                    })
+                }
+            },
+            modifier = modifier.clickable(enabled = on && !access) { openAccess() },
+        )
+    }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun HomeScreen(onSettings: () -> Unit) {
@@ -292,6 +340,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 item { ControlFromPc(Modifier.padding(top = 8.dp)) }
+                item { NotificationsOnPc() }
                 if (!notificationsOn) {
                     item {
                         ListItem(
@@ -442,6 +491,7 @@ class MainActivity : ComponentActivity() {
                 }
                 item { Section("Control from PC") }
                 item { ControlFromPc() }
+                item { NotificationsOnPc() }
                 item {
                     val on = remember(resumed.intValue) { ControlService.instance != null }
                     val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
