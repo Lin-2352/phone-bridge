@@ -12,6 +12,9 @@
 #[allow(dead_code)] // used by the camera menu (next task)
 mod camera_device;
 #[cfg(windows)]
+#[allow(dead_code)] // used by the camera pipeline (next)
+mod camera_fit;
+#[cfg(windows)]
 #[allow(dead_code)] // used by the camera menu (next task)
 mod camera_register;
 #[cfg(windows)]
