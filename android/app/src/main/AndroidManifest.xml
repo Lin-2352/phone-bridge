@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- Phone screen on the PC (only while sharing). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -99,6 +100,14 @@
             android:excludeFromRecents="true"
             android:taskAffinity=""
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- "Let <PC> use your camera?", then the camera permission. -->
+        <activity
+            android:name=".CameraConsentActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- Starts the service from the foreground when a tile start is refused. -->
         <activity
             android:name=".StarterActivity"
@@ -111,7 +120,7 @@
         <service
             android:name=".PbService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|mediaProjection" />
+            android:foregroundServiceType="connectedDevice|mediaProjection|camera" />
         <service
             android:name=".BridgeTileService"
             android:exported="true"
@@ -157,5 +166,6 @@
         <receiver android:name=".CopyReceiver" android:exported="false" />
         <receiver android:name=".OfferReceiver" android:exported="false" />
         <receiver android:name=".ScreenReceiver" android:exported="false" />
+        <receiver android:name=".CameraReceiver" android:exported="false" />
     </application>
 </manifest>

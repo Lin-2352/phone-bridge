@@ -107,6 +107,34 @@ Control messages, tags 17 to 20:
 3. The PC opens a uni stream of 8-byte input records (below) for the window's mouse and keyboard; one consent covers both.
 4. After a dropped link the phone keeps capturing (paused) for 30 s; a new `ScreenStart` from the same PC within that time resumes without asking again.
 
+### Phone camera
+Control messages, tags 21 to 23 (feedback reuses `ScreenFeedback`, 19):
+
+| Message | Direction | Content |
+|---|---|---|
+| `CameraStart` (21) | PC → phone | id, codecs the PC decodes (best first), lens (0 back, 1 front), width, height (the 16:9 size wanted: 1920x1080 or 1280x720), fps (30) |
+| `CameraAccept` (22) | phone → PC | id, codec, width, height, rotation (0/90/180/270, clockwise to upright), lens; declined with `OfferReply{accept: false}` |
+| `CameraControl` (23) | PC → phone | lens: switch lenses mid-stream |
+
+**Session:**
+1. After `CameraAccept`, the phone opens a uni stream of video records, the same framing as the phone screen (`PBV1`, `u32 len | i64 pts_us | u8 flags | payload`; config records `u16 rotation | u16 width | u16 height | headers`). There is no input stream.
+2. A rotation or lens change sends a new config record with the new rotation; the key frame that follows is decoded with it.
+3. A deliberate close by the PC ends the session at once; a lost link keeps the camera on the phone for 30 s for a resume.
+
+**Frames file** (PC only, tray to media source): `%ProgramData%\PhoneBridge\camera\frames`, 4096 bytes of header and two NV12 slots of 1920x1080. Little-endian; every header field is an 8-byte word:
+
+| Offset | Field |
+|---|---|
+| 0 | magic `PBCF`, `u32` version 1 |
+| 8 | `u32 wanted_w`, `u32 wanted_h` (the source writes the size the app chose) |
+| 24, 32 | seqlock per slot (odd while being written) |
+| 40 | index of the newest complete slot |
+| 48, 56 | `pts_us` per slot |
+| 64 | tray heartbeat (ms since 1601); the source shows black after 5 s without one |
+| 72, 80 | `u32 width`, `u32 height` per slot (a frame is delivered only if they equal the wanted size) |
+| 88 | count of completed frames |
+| 4096, 4096 + 3110400 | the two slots, tightly packed NV12 |
+
 ## Input datagram (fixed 8 bytes, little-endian)
 ```
 offset 0  kind   u8    0 MouseMove, 1 MouseButton, 2 Wheel, 3 Key

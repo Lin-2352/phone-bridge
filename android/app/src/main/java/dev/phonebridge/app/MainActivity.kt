@@ -318,6 +318,50 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** "Camera for my PC": who uses it now (with Stop), and the opt-in to skip the question. */
+    @Composable
+    private fun CameraForPc(modifier: Modifier = Modifier) {
+        val prefs = remember { Prefs(this@MainActivity) }
+        var always by remember { mutableStateOf(prefs.allowCamera) }
+        val user = CameraShare.usedBy.value
+        Column(modifier.fillMaxWidth()) {
+            if (user != null) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "$user is using the camera",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = { CameraShare.stop(userStopped = true) }) { Text("Stop") }
+                }
+            }
+            ListItem(
+                headlineContent = { Text("Let my PC use the camera without asking") },
+                supportingContent = {
+                    Text(
+                        if (always) "On. Android's camera indicator still shows while it is on"
+                        else "Off. This phone asks you first",
+                    )
+                },
+                trailingContent = {
+                    Switch(always, { v ->
+                        always = v
+                        prefs.allowCamera = v
+                    })
+                },
+            )
+        }
+    }
+
     /**
      * "Notifications on PC": phone notifications appear in the PC's
      * notification centre. Needs Notification access, granted in Settings.
@@ -412,6 +456,7 @@ class MainActivity : ComponentActivity() {
                 item { ControlFromPc(Modifier.padding(top = 8.dp)) }
                 item { NotificationsOnPc() }
                 item { ScreenToPc() }
+                item { CameraForPc() }
                 if (!notificationsOn) {
                     item {
                         ListItem(
@@ -564,6 +609,7 @@ class MainActivity : ComponentActivity() {
                 item { ControlFromPc() }
                 item { NotificationsOnPc() }
                 item { ScreenToPc() }
+                item { CameraForPc() }
                 item {
                     val on = remember(resumed.intValue) { ControlService.instance != null }
                     val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }

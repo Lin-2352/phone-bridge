@@ -66,6 +66,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("allow_screen", false)
         set(v) = sp.edit().putBoolean("allow_screen", v).apply()
 
+    /** The PC may use the camera without asking (Android's camera permission still applies). */
+    var allowCamera: Boolean
+        get() = sp.getBoolean("allow_camera", false)
+        set(v) = sp.edit().putBoolean("allow_camera", v).apply()
+
     /** Keep screen capture ready between shares (Android shows its cast icon). */
     var instantScreen: Boolean
         get() = sp.getBoolean("instant_screen", false)

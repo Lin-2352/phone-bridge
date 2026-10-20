@@ -49,6 +49,8 @@ private const val CH_CONTROL = "control"
 const val CONTROL_ASK_ID = 4
 const val SCREEN_ASK_ID = 6
 const val SCREEN_SHARE_ID = 7
+const val CAMERA_ASK_ID = 8
+const val CAMERA_SHARE_ID = 9
 
 /** One line in the Home screen's Recent list. */
 data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
@@ -362,6 +364,7 @@ class PbService : Service() {
         if (destroyed && (e is PbEvent.TransferProgress || e is PbEvent.IncomingOffer || e is PbEvent.ControlRequest)) return
         when (e) {
             is PbEvent.ScreenRequest -> askScreen(e)
+            is PbEvent.CameraRequest -> askCamera(e)
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
                 // Share clipboard: writing the clipboard is allowed in the background.
@@ -582,20 +585,69 @@ class PbService : Service() {
         Log.i(TAG, "SCREEN request from ${e.peerName} resume=${e.resume}")
     }
 
-    /** While sharing the screen the service also runs as mediaProjection (Android 14+ rule). */
-    fun enterProjection(): Boolean = try {
-        startForeground(
-            ONGOING_ID, statusNotification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
-        )
+    /** A PC asks to use this camera: resume within the grace, else ask. */
+    private fun askCamera(e: PbEvent.CameraRequest) {
+        if (e.resume && CameraShare.resume(e.id)) return
+        val ask = Intent(this, CameraConsentActivity::class.java)
+            .putExtra("id", e.id.toLong())
+            .putExtra("peer", e.peerName)
+            .putExtra("at", android.os.SystemClock.elapsedRealtime())
+            .putExtra("lens", e.lens.toInt())
+            .putExtra("width", e.width.toInt())
+            .putExtra("height", e.height.toInt())
+            .putExtra("codecs", IntArray(e.codecs.size) { e.codecs[it].toInt() and 0xff })
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val locked = getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+        if (locked) {
+            val n = Notification.Builder(this, CH_CONTROL)
+                .setSmallIcon(R.drawable.ic_stat_bridge)
+                .setContentTitle("Unlock to use your camera for ${e.peerName}")
+                .setContentText("Then tap here to allow it")
+                .setContentIntent(PendingIntent.getActivity(this, 44, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+                .setTimeoutAfter(30_000)
+                .setAutoCancel(true)
+                .build()
+            getSystemService(NotificationManager::class.java).notify(CAMERA_ASK_ID, n)
+        }
+        runCatching { startActivity(ask) }.onFailure { Log.i(TAG, "CAMERA ask window not allowed: $it") }
+        Log.i(TAG, "CAMERA request from ${e.peerName} resume=${e.resume}")
+    }
+
+    /** The service types in force: connectedDevice always, plus mediaProjection and camera while in use. */
+    private var projecting = false
+    private var cameraOn = false
+
+    private fun applyTypes(): Boolean = try {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (projecting) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        if (cameraOn && Build.VERSION.SDK_INT >= 30) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        startForeground(ONGOING_ID, statusNotification(), types)
         true
     } catch (t: Throwable) {
-        Log.e(TAG, "SERVICE mediaProjection type refused: $t")
+        Log.e(TAG, "SERVICE types refused (projection=$projecting camera=$cameraOn): $t")
         false
     }
 
+    /** While sharing the screen the service also runs as mediaProjection (Android 14+ rule). */
+    fun enterProjection(): Boolean {
+        projecting = true
+        return applyTypes().also { if (!it) projecting = false }
+    }
+
     fun leaveProjection() {
-        runCatching { startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) }
+        projecting = false
+        applyTypes()
+    }
+
+    /** While the camera is on the service also runs as camera (entered while our window is visible). */
+    fun enterCamera(): Boolean {
+        cameraOn = true
+        return applyTypes().also { if (!it) cameraOn = false }
+    }
+
+    fun leaveCamera() {
+        cameraOn = false
+        applyTypes()
     }
 
     private fun askControl(e: PbEvent.ControlRequest) {
@@ -740,6 +792,37 @@ class ScreenReceiver : BroadcastReceiver() {
             }
         }
     }
+}
+
+class CameraReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.getStringExtra("do")) {
+            "stop" -> CameraShare.stop(userStopped = true)
+            "lens" -> CameraShare.switchLens()
+        }
+    }
+}
+
+/** Shown while a PC uses this camera. */
+fun notifyCamera(ctx: Context, peer: String?) {
+    val nm = ctx.getSystemService(NotificationManager::class.java)
+    if (peer == null) {
+        nm.cancel(CAMERA_SHARE_ID)
+        return
+    }
+    fun action(what: String, code: Int) = PendingIntent.getBroadcast(
+        ctx, code, Intent(ctx, CameraReceiver::class.java).putExtra("do", what),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    val n = Notification.Builder(ctx, "control")
+        .setSmallIcon(R.drawable.ic_stat_bridge)
+        .setContentTitle("Camera in use by $peer")
+        .setContentText("Your camera is a webcam on that PC")
+        .setOngoing(true)
+        .addAction(Notification.Action.Builder(null, "Stop", action("stop", 52)).build())
+        .addAction(Notification.Action.Builder(null, "Switch lens", action("lens", 53)).build())
+        .build()
+    nm.notify(CAMERA_SHARE_ID, n)
 }
 
 /** Shown while a PC sees this screen. */
