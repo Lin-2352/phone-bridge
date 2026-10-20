@@ -285,3 +285,18 @@ The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms
 - `unsafe` forbidden outside audited FFI/Win32 wrappers.
 - Every parser has size limits, timeouts and a fuzz target.
 - Sensitive clipboard content is never synced without explicit user action.
+
+## Phase 4.1 device results: phone screen on the PC (2026-10-21, realme RMX3561, Android Studio closed)
+Measured on the final build (`83f75be`), 864 x 1920 H.265 at 60 fps over the hotspot:
+
+| Check | Result |
+|---|---|
+| Continuous scroll (Settings, 16 swipes) | out 55-60/s, 0 drops, encode p50 19-23 / p95 28-39 ms, **confirm p50 22 / p95 33-37 ms** (before the newest-frame fix: 160-260 ms), PC decode+present p50 11-15 / p95 24-28 ms, received 60/s, shown 54-57/s, skipped 4-6/s |
+| Still screen | 10-12 frames/s (encoder repeat every 100 ms), confirm p95 < 30 ms. The spec's "drops to 0 after the repeats" is not met: repeats continue at 10/s (about 1.5 Mbit/s). Left as is: it keeps the picture fresh and costs little. |
+| Hide, then show | hide ends the share with no resume grace (phone: "ready for an instant share"); the next show needs no prompt: accepted after 101 ms, first frame shown after 798 ms |
+| Phone Bridge memory while sharing | PSS 75 MB (native 16, Java 5, graphics 8): **over the 60 MB budget**, down from 100 MB. Open item. |
+| Free memory | MemAvailable 2.25 GB, no step-down |
+
+Fixes made during these tests and the whole-branch review: step-down only under 1.2 GB free and back up above 1.6 GB (realme sends "running low" with 2 GB free); only the newest decoded frame is presented when more are waiting (a queue had built up behind the monitor refresh); the config record is resent when a session attaches (a resumed window stayed blank); a PC-side close ends the share at once; config records are never dropped by the pacer or the send queue; frames sent while the streams open are no longer lost; keys and a finger held through the window are released on focus loss or close and reset on the phone; closing the window cancels a pending reconnect; Stop during the resume grace declines that PC quietly; a stale session of the same PC is superseded; a second PC does not take another PC's resume grace; the power button keeps the mirror awake and tells the PC; the "Asking..." pill closes when the phone accepts.
+
+Not tested on the device (need the user): rotation, file drop, a secure screen, the stopwatch glass-to-glass check, Ctrl+W then typing. Deferred review minors: a second PC window state after reconnect (position, minimised, dim not saved), single status slot, notification text during the grace, "busy" decline looks like a Deny, thermal step-down, two consent activities for one request on a locked phone.
