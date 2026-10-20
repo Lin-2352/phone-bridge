@@ -20,7 +20,8 @@ mod flyout;
 mod ipc;
 #[cfg(windows)]
 mod menu;
-#[cfg_attr(not(windows), allow(dead_code))]
+// Wired into the UI by the notifications integration; until then unused.
+#[allow(dead_code)]
 mod notify;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
