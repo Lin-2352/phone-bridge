@@ -8,6 +8,7 @@ members = [
     "crates/pb-ffi",
     "crates/pb-platform-win",
     "crates/pb-tray",
+    "crates/pb-video",
     "spikes/iroh-spike",
     "spikes/ffi-smoke",
     "spikes/wifidirect-win",
