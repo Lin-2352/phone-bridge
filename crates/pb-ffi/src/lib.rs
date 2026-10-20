@@ -516,6 +516,9 @@ struct Shared {
     screen_pending:
         Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<ScreenAnswer>>>,
     screen_grace: Mutex<Option<Grace>>,
+    /// The user stopped sharing: requests from that PC are declined quietly
+    /// for a while (the PC retries after a dropped link).
+    screen_user_stop: Mutex<Option<Grace>>,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -573,6 +576,7 @@ pub async fn start_node(
         screen_busy: std::sync::atomic::AtomicBool::new(false),
         screen_pending: Mutex::default(),
         screen_grace: Mutex::new(None),
+        screen_user_stop: Mutex::new(None),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -865,6 +869,17 @@ async fn screen_session(
         return "screen busy".into();
     }
     let now = std::time::Instant::now();
+    let stopped_by_user = sh
+        .screen_user_stop
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|g| g.admits(&peer, now));
+    if stopped_by_user {
+        let _ = pb_transport::screen::serve_screen(s, start, None).await;
+        sh.screen_busy.store(false, Ordering::Release);
+        return "screen stopped by the user".into();
+    }
     let resume = sh
         .screen_grace
         .lock()
@@ -951,10 +966,13 @@ async fn screen_session(
         }
     }
     let by_user = screen.stopped.load(Ordering::Acquire);
-    if !by_user {
-        *sh.screen_grace.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(Grace::new(peer, std::time::Instant::now()));
-    }
+    let slot = if by_user {
+        &sh.screen_user_stop
+    } else {
+        &sh.screen_grace
+    };
+    *slot.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(Grace::new(peer, std::time::Instant::now()));
     sh.screen_busy.store(false, Ordering::Release);
     if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
         let _ = l.on_stopped(!by_user);

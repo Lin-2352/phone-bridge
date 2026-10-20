@@ -38,6 +38,12 @@ pub struct Settings {
     pub notify_quiet_mirroring: bool,
     /// Phone apps seen so far: (package, name, muted).
     pub notify_apps: Vec<(String, String, bool)>,
+    /// The phone-screen window stays on top.
+    pub screen_pinned: bool,
+    /// Dim the phone's backlight while its screen is shown here.
+    pub screen_dim: bool,
+    /// Native resolution instead of a 1920 long side.
+    pub screen_sharp: bool,
 }
 
 impl Default for Settings {
@@ -64,6 +70,9 @@ impl Default for Settings {
             notify_otp_autocopy: false,
             notify_quiet_mirroring: true,
             notify_apps: Vec::new(),
+            screen_pinned: false,
+            screen_dim: false,
+            screen_sharp: false,
         }
     }
 }
@@ -129,6 +138,9 @@ impl Settings {
                 "notify_quiet_mirroring" => {
                     s.notify_quiet_mirroring = parse_bool(v).unwrap_or(s.notify_quiet_mirroring)
                 }
+                "screen_pinned" => s.screen_pinned = parse_bool(v).unwrap_or(s.screen_pinned),
+                "screen_dim" => s.screen_dim = parse_bool(v).unwrap_or(s.screen_dim),
+                "screen_sharp" => s.screen_sharp = parse_bool(v).unwrap_or(s.screen_sharp),
                 "notify_app" => {
                     let mut f = v.splitn(3, '\t');
                     if let (Some(m), Some(pkg), Some(name)) = (f.next(), f.next(), f.next()) {
@@ -164,6 +176,10 @@ impl Settings {
             self.notify_open_on_phone,
             self.notify_otp_autocopy,
             self.notify_quiet_mirroring
+        );
+        text += &format!(
+            "screen_pinned={}\nscreen_dim={}\nscreen_sharp={}\n",
+            self.screen_pinned, self.screen_dim, self.screen_sharp
         );
         let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
         for (pkg, name, muted) in &self.notify_apps {
@@ -217,6 +233,9 @@ mod tests {
                 ("com.whatsapp".into(), "WhatsApp".into(), false),
                 ("com.noisy".into(), "Noisy Game".into(), true),
             ],
+            screen_pinned: true,
+            screen_dim: true,
+            screen_sharp: true,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);

@@ -72,6 +72,8 @@ pub enum Cmd {
     },
     /// Start driving the phone with this PC's mouse and keyboard.
     ControlPhone,
+    /// Show the phone's screen in a window.
+    ShowScreen,
     /// Text or a link shared from Windows (share sheet).
     SendText {
         text: String,
@@ -164,6 +166,10 @@ pub enum UiEvent {
         peer: PeerId,
         keys: Vec<String>,
     },
+    /// The phone-screen window's Pin changed (to remember it).
+    ScreenPinned(bool),
+    /// Files dropped on the phone-screen window.
+    ScreenFiles(Vec<PathBuf>),
     /// An action on a toast did not work on the phone.
     NotifyActionFailed {
         reason: String,
@@ -434,6 +440,16 @@ pub async fn run(
                             }
                         }
                     });
+                }
+                Some(Cmd::ShowScreen) => {
+                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let Some((id, name)) = target else {
+                        ui(UiEvent::Info("Pair a phone first".into()));
+                        continue;
+                    };
+                    let (node, log, settings) = (node.clone(), log.clone(), settings.clone());
+                    let ui: Arc<dyn Fn(UiEvent) + Send + Sync> = ui.clone();
+                    tokio::spawn(show_screen(node, id, name, log, ui, settings, false));
                 }
                 Some(Cmd::ControlPhone) => {
                     // A second press while the phone is still asking cancels the request.
@@ -827,6 +843,123 @@ async fn pump(
 }
 
 use crate::toast_images::ToastImages;
+
+/// Open the phone-screen window: ask the phone, then show its screen.
+/// `again`: the link dropped a moment ago; retry quietly for 30 s (the
+/// phone resumes without asking within its grace).
+fn show_screen(
+    node: Node,
+    id: PeerId,
+    name: String,
+    log: Log,
+    ui: Arc<dyn Fn(UiEvent) + Send + Sync>,
+    settings: SharedSettings,
+    again: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        let (pinned, dim, sharp) = settings
+            .lock()
+            .map(|s| (s.screen_pinned, s.screen_dim, s.screen_sharp))
+            .unwrap_or_default();
+        let codecs = crate::screen_decode::supported_codecs();
+        let start = pb_protocol::control::ScreenStart {
+            id: 0,
+            max_long_side: if sharp { 0 } else { 1920 },
+            fps: 30,
+            codecs: codecs.iter().map(|c| *c as u32).collect(),
+            dim,
+            sharp,
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if !again {
+                ui(UiEvent::Info(format!("Waiting for {name}\u{2026}")));
+            }
+            let asked = {
+                let (ui, name) = (ui.clone(), name.clone());
+                move || {
+                    if !again {
+                        ui(UiEvent::Info(format!(
+                            "Asking {name} to share its screen\u{2026}"
+                        )))
+                    }
+                }
+            };
+            match node.open_screen(&id, start.clone(), asked).await {
+                Ok(view) => {
+                    log.line(&format!(
+                        "SCREEN \"{name}\" sharing ({}x{})",
+                        view.accept.width, view.accept.height
+                    ));
+                    let ended = {
+                        let (node, log, ui, settings, name) = (
+                            node.clone(),
+                            log.clone(),
+                            ui.clone(),
+                            settings.clone(),
+                            name.clone(),
+                        );
+                        let rt = tokio::runtime::Handle::current();
+                        move |why: String| {
+                            log.line(&format!("SCREEN ended: {why}"));
+                            if why.starts_with("Phone stopped") {
+                                // Maybe only the link: try again for 30 s.
+                                rt.spawn(show_screen(
+                                    node.clone(),
+                                    id,
+                                    name.clone(),
+                                    log.clone(),
+                                    ui.clone(),
+                                    settings.clone(),
+                                    true,
+                                ));
+                            } else {
+                                ui(UiEvent::Info(why));
+                            }
+                        }
+                    };
+                    let opts = crate::screen_window::WindowOpts {
+                        name: name.clone(),
+                        pinned,
+                        dim,
+                        codecs: codecs.clone(),
+                        on_pin: Box::new({
+                            let ui = ui.clone();
+                            move |p| ui(UiEvent::ScreenPinned(p))
+                        }),
+                        on_files: Box::new({
+                            let ui = ui.clone();
+                            move |f| ui(UiEvent::ScreenFiles(f))
+                        }),
+                        on_ended: Box::new(ended),
+                    };
+                    crate::screen_window::open(view, opts, &tokio::runtime::Handle::current());
+                    return;
+                }
+                Err(e)
+                    if again
+                        && !matches!(e, pb_transport::Error::Declined)
+                        && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                Err(e) => {
+                    log.line(&format!("SCREEN \"{name}\" not shown: {e}"));
+                    if again {
+                        crate::screen_window::close();
+                    }
+                    ui(UiEvent::Info(match e {
+                        _ if again => format!("{name} stopped sharing its screen"),
+                        pb_transport::Error::Declined => format!("{name} didn't share its screen"),
+                        pb_transport::Error::Timeout => format!("{name} didn't answer"),
+                        _ => format!("Couldn't reach {name} to show its screen"),
+                    }));
+                    return;
+                }
+            }
+        }
+    })
+}
 
 #[cfg(windows)]
 fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {

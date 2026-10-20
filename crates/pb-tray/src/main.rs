@@ -27,15 +27,12 @@ mod qr;
 #[cfg(windows)]
 mod qr_window;
 #[cfg(windows)]
-#[allow(dead_code)] // wired in by the screen window
 mod screen_decode;
-#[allow(dead_code)] // wired in by the screen window
+#[cfg_attr(not(windows), allow(dead_code))]
 mod screen_geom;
 #[cfg(windows)]
-#[allow(dead_code)] // wired in by the screen window
 mod screen_render;
 #[cfg(windows)]
-#[allow(dead_code)] // wired in by the tray integration
 mod screen_window;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings;

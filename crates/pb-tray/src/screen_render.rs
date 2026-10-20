@@ -27,9 +27,8 @@ use windows::{
             Dxgi::{
                 Common::{
                     DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
-                    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_FORMAT,
-                    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_UNKNOWN,
-                    DXGI_SAMPLE_DESC,
+                    DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1,
                 IDXGIFactory2, IDXGISwapChain1, IDXGISwapChain2, DXGI_PRESENT,
@@ -122,7 +121,6 @@ pub struct Renderer {
     video_context: ID3D11VideoContext1,
     swap: IDXGISwapChain2,
     waitable: HANDLE,
-    format: DXGI_FORMAT,
     size: (u32, u32),
     vp: Option<Processor>,
     last_sample: std::time::Instant,
@@ -168,7 +166,6 @@ impl Renderer {
                             video_context,
                             swap,
                             waitable,
-                            format,
                             size: (d.Width, d.Height),
                             vp: None,
                             last_sample: std::time::Instant::now(),
@@ -447,10 +444,6 @@ impl Renderer {
             self.context.Unmap(&staging, 0);
             Some(is_black(&samples))
         }
-    }
-
-    pub fn format_is_10_bit(&self) -> bool {
-        self.format == DXGI_FORMAT_R10G10B10A2_UNORM
     }
 }
 

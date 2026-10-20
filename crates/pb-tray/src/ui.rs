@@ -60,6 +60,7 @@ pub const ID_OPEN_FLYOUT: usize = 10;
 pub const ID_SETTINGS: usize = 11;
 pub const ID_MENU: usize = 12;
 const ID_CONTROL: usize = 13;
+const ID_SCREEN: usize = 14;
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -725,6 +726,15 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             };
             remove_toasts(gone);
         }
+        UiEvent::ScreenPinned(p) => {
+            let _ = st.settings.lock().map(|mut s| s.screen_pinned = p);
+            save_settings(st);
+        }
+        UiEvent::ScreenFiles(files) => {
+            if !files.is_empty() {
+                let _ = st.cmds.send(Cmd::SendFiles(files));
+            }
+        }
         UiEvent::NotifyActionFailed { reason, reply } => {
             crate::status::show(&reason, 6);
             let text = match reply {
@@ -859,7 +869,7 @@ fn show_phone_notification(
     };
     let ctx = Ctx {
         locked,
-        mirroring_focused: false,
+        mirroring_focused: crate::screen_window::is_focused(),
     };
     let Some(p) = present(&n, &settings, &ctx) else {
         return;
@@ -1186,6 +1196,15 @@ fn show_menu(hwnd: HWND) {
         hwnd,
         vec![
             Item::new(glyph::PHONE, "Open Phone Bridge", ID_OPEN_FLYOUT),
+            Item::new(
+                glyph::PHONE,
+                if crate::screen_window::is_open() {
+                    "Hide phone screen"
+                } else {
+                    "Show phone screen"
+                },
+                ID_SCREEN,
+            ),
             Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
             Item::new(glyph::FOLDER, "Open received files", ID_OPEN_FOLDER),
             Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
@@ -1555,6 +1574,13 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_SETTINGS => open_settings(hwnd, st),
         ID_MENU => show_menu(hwnd),
         ID_CONTROL => toggle_control(hwnd, st),
+        ID_SCREEN => {
+            if crate::screen_window::is_open() {
+                crate::screen_window::close();
+            } else {
+                let _ = st.cmds.send(Cmd::ShowScreen);
+            }
+        }
         ID_QUIT => {
             // SAFETY: our own window.
             let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd) };
