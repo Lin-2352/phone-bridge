@@ -728,6 +728,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             };
             remove_toasts(gone);
         }
+        UiEvent::ScreenShown => crate::status::close(),
         UiEvent::ScreenPinned(p) => {
             let _ = st.settings.lock().map(|mut s| s.screen_pinned = p);
             save_settings(st);

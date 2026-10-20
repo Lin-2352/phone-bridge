@@ -34,6 +34,10 @@ private const val RESUME_GRACE_MS = 30_000L
 /** Step-down size (720-class) and frame rate. */
 private const val STEP_DOWN_LONG = 1280
 private const val STEP_DOWN_FPS = 15
+/** Step down below this much free memory (spec: 1.2 GB) and back up above 1.6 GB. */
+private const val STEP_DOWN_FREE = 1_200L * 1_048_576
+private const val STEP_UP_FREE = 1_600L * 1_048_576
+private const val STEP_UP_CHECK_MS = 30_000L
 /** Frames per second encoded (the 120 Hz panel is capped to this). */
 private const val FPS = 60
 /** QP ceiling: fast motion degrades in size, never in blocks. */
@@ -73,6 +77,13 @@ class ScreenCapture(
     private var display: VirtualDisplay? = null
     @Volatile private var screen: PbScreen? = null
     @Volatile private var paused = false
+    /**
+     * The encoder's headers, sent once per encoder: kept so a session that
+     * attaches later (a resume, Instant screen) can decode at all.
+     */
+    @Volatile private var lastConfig: Pair<ByteArray, Long>? = null
+    /** Instant screen between shares: no encoder, nothing to reconfigure. */
+    @Volatile private var idling = false
     private var steppedDown = false
     private var startedAt = 0L
     private var firstOutput = true
@@ -134,11 +145,12 @@ class ScreenCapture(
         paused = false
         handler.post {
             display?.surface = inputSurface
+            lastConfig?.let { (p, t) -> screen?.sendFrame(p, t, FLAG_CONFIG) }
             requestKey()
         }
     }
 
-    /** Memory or heat: 720-class at 15 fps for the rest of the session. */
+    /** Memory or heat: 720-class at 15 fps until memory recovers. */
     fun stepDown() = handler.post {
         if (steppedDown) return@post
         steppedDown = true
@@ -147,6 +159,41 @@ class ScreenCapture(
         reconfigure()
         screen?.notice("Lower quality to save memory")
         Log.i(TAG, "SCREEN stepped down to ${width}x$height at $fps fps")
+        handler.postDelayed(stepUpCheck, STEP_UP_CHECK_MS)
+    }
+
+    /** Free memory, as Android reports it. */
+    private fun availMem(): Long {
+        val mi = android.app.ActivityManager.MemoryInfo()
+        ctx.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(mi)
+        return mi.availMem
+    }
+
+    /**
+     * Android says memory runs low: step down only if it really is (realme
+     * sends "running low" with 2 GB free while its swap is busy).
+     */
+    fun memoryPressure() {
+        val free = availMem()
+        Log.i(TAG, "SCREEN memory signal, free=${free / 1_048_576} MB")
+        if (free < STEP_DOWN_FREE) stepDown()
+    }
+
+    /** While stepped down: back to full quality once memory recovered. */
+    private val stepUpCheck = object : Runnable {
+        override fun run() {
+            if (!steppedDown || idling) return
+            if (!paused && availMem() > STEP_UP_FREE) {
+                steppedDown = false
+                maxLong = if (ask.sharp || ask.maxLong == 0) 0 else ask.maxLong
+                fps = FPS
+                reconfigure()
+                screen?.notice("")
+                Log.i(TAG, "SCREEN back to ${width}x$height at $fps fps")
+            } else {
+                handler.postDelayed(this, STEP_UP_CHECK_MS)
+            }
+        }
     }
 
     /** The PC could not decode: its next codec, if any. */
@@ -167,7 +214,9 @@ class ScreenCapture(
      */
     fun idle() {
         paused = true
+        idling = true
         screen = null
+        handler.removeCallbacks(stepUpCheck)
         handler.post {
             display?.surface = null
             stopEncoder()
@@ -177,6 +226,7 @@ class ScreenCapture(
     /** The next share while idle: a fresh encoder for this request. Main thread. */
     fun restart(a: ScreenAsk): PbScreenAccept? {
         ask = a
+        idling = false
         val chosen = chooseCodec(bytes(a.codecs), bytes(caps.codecs)) ?: return null
         codec = chosen.toInt()
         maxLong = if (a.sharp || a.maxLong == 0) 0 else a.maxLong
@@ -251,6 +301,7 @@ class ScreenCapture(
     }
 
     private fun startEncoder() {
+        lastConfig = null
         val enc = MediaCodec.createEncoderByType(caps.mime(codec))
         enc.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) = Unit
@@ -282,6 +333,7 @@ class ScreenCapture(
 
     /** New size, rotation or codec: a fresh encoder; its config record follows. */
     private fun reconfigure() {
+        if (idling) return
         rotation = currentRotation()
         measure()
         display?.surface = null
@@ -302,9 +354,11 @@ class ScreenCapture(
             val data = ByteArray(info.size)
             buf.position(info.offset)
             buf.get(data, 0, info.size)
+            val config = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+            val headers = if (config) configPayload(data) else null
+            if (headers != null) lastConfig = headers to info.presentationTimeUs
             val s = screen ?: return
             if (paused) return
-            val config = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
             val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
             val now = android.os.SystemClock.uptimeMillis()
             val flags: UByte = when {
@@ -312,7 +366,7 @@ class ScreenCapture(
                 key -> FLAG_KEY
                 else -> 0u
             }
-            val payload = if (config) configPayload(data) else data
+            val payload = headers ?: data
             if (firstOutput) {
                 firstOutput = false
                 Log.i(TAG, "SCREEN first output after ${now - startedAt} ms")

@@ -235,7 +235,7 @@ class PbService : Service() {
         if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
         ) {
-            ScreenShare.capture?.stepDown()
+            ScreenShare.capture?.memoryPressure()
         }
         super.onTrimMemory(level)
         if (level >= TRIM_MEMORY_RUNNING_LOW) {

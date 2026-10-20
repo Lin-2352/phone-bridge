@@ -166,6 +166,8 @@ pub enum UiEvent {
         peer: PeerId,
         keys: Vec<String>,
     },
+    /// The phone shares its screen: the "Asking…" pill goes.
+    ScreenShown,
     /// The phone-screen window's Pin changed (to remember it).
     ScreenPinned(bool),
     /// Files dropped on the phone-screen window.
@@ -898,6 +900,7 @@ fn show_screen(
                         view.accept.height,
                         t0.elapsed().as_millis()
                     ));
+                    ui(UiEvent::ScreenShown);
                     let ended = {
                         let (node, log, ui, settings, name) = (
                             node.clone(),

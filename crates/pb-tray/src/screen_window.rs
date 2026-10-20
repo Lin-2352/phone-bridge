@@ -167,9 +167,8 @@ pub fn open(view: ScreenView, opts: WindowOpts, rt: &tokio::runtime::Handle) {
     });
     rt.spawn(async move {
         while let Some(st) = state.recv().await {
-            if !st.notice.is_empty() {
-                set_status(&st.notice);
-            }
+            // An empty notice clears it (back to full quality).
+            set_status(&st.notice);
         }
     });
     std::thread::spawn(move || ui_thread(remote, tx, rx, Arc::new(opts)));
@@ -317,7 +316,12 @@ fn decode_thread(
     let mut stat_since = Instant::now();
     let mut stat_frames = 0u32;
     let mut stat_records = 0u32;
+    let mut stat_skipped = 0u32;
     let mut stat_ms: Vec<f64> = Vec::new();
+    // Messages taken early to see whether newer frames wait (latest wins).
+    let mut backlog = std::collections::VecDeque::<Msg>::new();
+    // The newest decoded frame was not presented yet.
+    let mut unshown = false;
     let post = |m: u32| {
         // SAFETY: posting to our own window.
         let _ = unsafe { PostMessageW(Some(HWND(top as *mut _)), m, WPARAM(0), LPARAM(0)) };
@@ -350,7 +354,11 @@ fn decode_thread(
             let _ = renderer.present(f, video, dest, dimmed);
         };
     loop {
-        match rx.recv_timeout(FEEDBACK) {
+        let next = match backlog.pop_front() {
+            Some(m) => Ok(m),
+            None => rx.recv_timeout(FEEDBACK),
+        };
+        match next {
             Ok(Msg::Record(r)) => {
                 if first_record {
                     first_record = false;
@@ -373,7 +381,21 @@ fn decode_thread(
                 }
                 match decoder.push(&r) {
                     Ok(Some(f)) => {
-                        present(&mut renderer, &f, size, video, dimmed);
+                        // Every frame is decoded (later ones refer to it),
+                        // but a present waits for the monitor's refresh: with
+                        // newer frames already waiting only the newest is
+                        // shown, so a backlog never builds up.
+                        while let Ok(m) = rx.try_recv() {
+                            backlog.push_back(m);
+                        }
+                        if backlog.iter().any(|m| matches!(m, Msg::Record(_))) {
+                            unshown = true;
+                            stat_skipped += 1;
+                        } else {
+                            present(&mut renderer, &f, size, video, dimmed);
+                            unshown = false;
+                            stat_frames += 1;
+                        }
                         last_pts = f.pts_us;
                         // Confirm every frame at once: the phone's pacer
                         // counts unconfirmed frames as lag.
@@ -386,7 +408,6 @@ fn decode_thread(
                                 opened.elapsed().as_millis()
                             ));
                         }
-                        stat_frames += 1;
                         stat_ms.push(t.elapsed().as_secs_f64() * 1000.0);
                         if stat_since.elapsed() >= Duration::from_secs(1) {
                             stat_ms.sort_by(|a, b| a.total_cmp(b));
@@ -397,14 +418,16 @@ fn decode_thread(
                                     .unwrap_or(0.0)
                             };
                             (opts.log)(&format!(
-                                "SCREEN stats received={}/s shown={}/s decode+present p50={:.1} p95={:.1} ms",
+                                "SCREEN stats received={}/s shown={}/s skipped={}/s decode+present p50={:.1} p95={:.1} ms",
                                 stat_records,
                                 stat_frames,
+                                stat_skipped,
                                 p(0.5),
                                 p(0.95)
                             ));
                             stat_frames = 0;
                             stat_records = 0;
+                            stat_skipped = 0;
                             stat_ms.clear();
                             stat_since = Instant::now();
                         }
@@ -450,6 +473,15 @@ fn decode_thread(
             }
             Ok(Msg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // The frames that were waiting gave no picture (a config record):
+        // the newest decoded one still has to be seen.
+        if unshown && !backlog.iter().any(|m| matches!(m, Msg::Record(_))) {
+            if let Some(f) = &last {
+                present(&mut renderer, f, size, video, dimmed);
+                stat_frames += 1;
+            }
+            unshown = false;
         }
         if last_pts > 0 && last_feedback.elapsed() >= FEEDBACK {
             remote.feedback(last_pts);
