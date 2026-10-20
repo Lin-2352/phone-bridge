@@ -23,6 +23,14 @@ pub struct Presentation {
     pub silent: bool,
     pub otp_label: Option<String>,
     pub show_picture: bool,
+    /// Content held back because the PC is locked: shown in full once it is
+    /// unlocked.
+    pub hidden: bool,
+}
+
+/// Whether this toast hides content only because the PC is locked.
+pub fn hidden_now(p: &Presentation) -> bool {
+    p.hidden
 }
 
 /// What a toast shows for `n`, or `None` when it must not appear at all.
@@ -36,7 +44,9 @@ pub fn present(n: &Notification, s: &Settings, ctx: &Ctx) -> Option<Presentation
     }
     let code_digits = (!n.otp.is_empty()).then(|| format!("Copy {}", n.otp));
     let code_hidden = (!n.otp.is_empty()).then(|| "Copy code".to_owned());
-    let hidden = s.notify_content == 1 && ctx.locked;
+    // Locked: hidden in "hide when locked" mode, and always for notifications
+    // the app marks private (lock-screen privacy), whatever the mode.
+    let hidden = ctx.locked && (s.notify_content == 1 || n.private);
     let (title, lines, otp_label, show_picture) = if hidden {
         let app = if n.app_name.is_empty() {
             &n.package
@@ -76,6 +86,7 @@ pub fn present(n: &Notification, s: &Settings, ctx: &Ctx) -> Option<Presentation
         silent,
         otp_label,
         show_picture,
+        hidden,
     })
 }
 
@@ -263,6 +274,50 @@ mod tests {
         locked: true,
         mirroring_focused: false,
     };
+
+    #[test]
+    fn private_is_hidden_while_locked_even_in_full_mode() {
+        let n = Notification {
+            private: true,
+            ..note()
+        };
+        let s = Settings {
+            notify_content: 0,
+            notify_lock_screen: true,
+            ..Default::default()
+        };
+        let p = present(&n, &s, &LOCKED).unwrap();
+        assert_eq!(p.title, "WhatsApp");
+        assert_eq!(p.lines, ["New notification"]);
+        assert!(hidden_now(&p));
+    }
+
+    #[test]
+    fn private_shows_content_when_unlocked() {
+        let n = Notification {
+            private: true,
+            ..note()
+        };
+        let p = present(&n, &Settings::default(), &OPEN).unwrap();
+        assert_eq!(p.title, "Mom");
+        assert!(!hidden_now(&p));
+    }
+
+    #[test]
+    fn hidden_presentation_is_flagged() {
+        assert!(hidden_now(
+            &present(&note(), &Settings::default(), &LOCKED).unwrap()
+        ));
+        assert!(!hidden_now(
+            &present(&note(), &Settings::default(), &OPEN).unwrap()
+        ));
+        let sender_only = Settings {
+            notify_content: 2,
+            ..Default::default()
+        };
+        // Sender-only is the user's choice, not a lock: nothing to refresh.
+        assert!(!hidden_now(&present(&note(), &sender_only, &OPEN).unwrap()));
+    }
 
     #[test]
     fn muted_app_is_not_shown() {

@@ -242,6 +242,12 @@ Spec: `docs/superpowers/specs/2026-10-20-phone-notifications-on-pc-design.md`; p
   - **Locking:** WinRT calls never run under the UI's notification lock.
   - **Errors:** a clear made while the phone is away fails quietly.
   - **Older phones:** the start-up sync session ends after 30 s if an older phone app never answers.
+- **Found in device tests (2026-10-20):**
+  - **Private notifications:** WhatsApp marks every notification private, so the public version ("N new messages") was all the PC got. The phone now sends the full content flagged private, and the PC hides private content while it is locked, even in "Full" mode.
+  - **Unlock refresh:** toasts that arrived while the PC was locked are filled in quietly at unlock.
+  - **App names and icons:** these needed the manifest's launcher `<queries>`, with the notification's app info as a fallback.
+  - **Several chats:** WhatsApp's several-chats notification is InboxStyle; its lines are now sent.
+  - **Phone off Wi-Fi:** the realme dropped off Wi-Fi twice (mobile data only); nothing can arrive until it is back, by design (local network only).
 
 ## Performance budgets (provisional)
 The sources disagree (idle CPU 0.1% vs 0.5%, RAM 25 vs 45 MB, camera 55 vs 35 ms). The measured idle numbers above are encouraging but cover only an endpoint with no peers and no relay connection. Set final budgets after a longer soak test with a relay connection and the real app.

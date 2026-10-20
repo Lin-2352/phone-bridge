@@ -182,18 +182,19 @@ class NotifyListener : NotificationListenerService() {
     private fun toPb(sbn: StatusBarNotification, quiet: Boolean, withMedia: Boolean): PbNotification {
         val nf = sbn.notification
         val app = appLabel(sbn)
-        val secret = nf.visibility == Notification.VISIBILITY_SECRET
-        val usePublic = nf.visibility == Notification.VISIBILITY_PRIVATE && nf.publicVersion != null
-        val ex = (if (usePublic) nf.publicVersion else nf).extras
-        val private = secret || usePublic
-        val title = if (secret) app else ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: app
-        val text = if (secret) {
-            "New notification"
-        } else {
-            (ex.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex.getCharSequence(Notification.EXTRA_TEXT))
-                ?.toString() ?: ""
-        }
-        val messages = if (private) emptyList() else messages(nf.extras)
+        // Apps mark most notifications private (WhatsApp: all of them) so the
+        // phone's lock screen hides them. The full content is sent, flagged
+        // private; the PC hides it while the PC is locked (its settings).
+        // Private = the app hides it on the lock screen: secret, or private
+        // with a public stand-in. (Android's default visibility is private for
+        // nearly everything, so that alone does not count.)
+        val private = nf.visibility == Notification.VISIBILITY_SECRET ||
+            (nf.visibility == Notification.VISIBILITY_PRIVATE && nf.publicVersion != null)
+        val ex = nf.extras
+        val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: app
+        val text = (ex.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex.getCharSequence(Notification.EXTRA_TEXT))
+            ?.toString() ?: ""
+        val messages = messages(nf.extras)
         val chat = nf.extras.containsKey(Notification.EXTRA_MESSAGES)
         val conversation = if (!chat) {
             ""
@@ -204,7 +205,7 @@ class NotifyListener : NotificationListenerService() {
             PbNotifyActionDesc(a.title?.toString() ?: "", a.remoteInputs?.any { it.allowFreeFormInput } == true)
         }
         val icon = if (withMedia && iconSent.add(sbn.packageName)) appIcon(sbn) else null
-        val picture = if (withMedia && !private) picture(nf) else null
+        val picture = if (withMedia) picture(nf) else null
         return PbNotification(
             sbn.key,
             sbn.packageName,

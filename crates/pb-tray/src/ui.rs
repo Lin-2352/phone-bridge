@@ -106,7 +106,18 @@ struct NotifyUi {
     own_counter: u64,
     /// The own toast a click acts on (latest file or link).
     last_own_tag: String,
+    /// Toasts shown without content because the PC was locked, kept to be
+    /// shown in full (quietly) at unlock.
+    hidden: std::collections::HashMap<String, HiddenToast>,
 }
+
+/// (phone, notification, app icon, picture)
+type HiddenToast = (
+    pb_identity::PeerId,
+    Box<pb_protocol::control::Notification>,
+    Option<std::path::PathBuf>,
+    Option<std::path::PathBuf>,
+);
 static NOTIFY: std::sync::LazyLock<Mutex<NotifyUi>> = std::sync::LazyLock::new(Mutex::default);
 
 fn notify_ui() -> std::sync::MutexGuard<'static, NotifyUi> {
@@ -693,7 +704,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             n,
             logo,
             picture,
-        } => show_phone_notification(hwnd, st, peer, *n, logo, picture),
+        } => show_phone_notification(hwnd, st, peer, *n, logo, picture, false),
         UiEvent::NotifyRemoved { peer, key } => {
             let gone = {
                 let mut ns = notify_ui();
@@ -734,6 +745,7 @@ fn forget(
 ) -> Vec<(String, String, Option<std::path::PathBuf>)> {
     tags.into_iter()
         .filter_map(|tag| {
+            ns.hidden.remove(&tag);
             ns.meta
                 .remove(&tag)
                 .map(|(group, _, picture)| (tag, group, picture))
@@ -814,6 +826,7 @@ fn show_phone_notification(
     n: pb_protocol::control::Notification,
     logo: Option<std::path::PathBuf>,
     picture: Option<std::path::PathBuf>,
+    refresh: bool,
 ) {
     use crate::{
         notify::{present, Ctx, Entry},
@@ -894,7 +907,7 @@ fn show_phone_notification(
         attribution: app.clone(),
         title: p.title.clone(),
         lines: p.lines.clone(),
-        logo,
+        logo: logo.clone(),
         picture: picture.clone().filter(|_| p.show_picture),
         when_ms: n.when_ms,
         launch: a(ToastArgs::Open { tag: tag.clone() }),
@@ -909,8 +922,9 @@ fn show_phone_notification(
             format!("Stop showing from {app}"),
             a(ToastArgs::Mute { tag: tag.clone() }),
         )],
-        popup: p.popup,
-        silent: p.silent,
+        // A refresh at unlock replaces the toast in place, without a pop-up.
+        popup: p.popup && !refresh,
+        silent: p.silent || refresh,
         call: n.call,
     };
     // Windows does not show it at all (turned off for Phone Bridge): do not
@@ -919,6 +933,14 @@ fn show_phone_notification(
     if shown {
         let old_picture = {
             let mut ns = notify_ui();
+            if crate::notify::hidden_now(&p) {
+                ns.hidden.insert(
+                    tag.clone(),
+                    (peer, Box::new(n.clone()), logo.clone(), picture.clone()),
+                );
+            } else {
+                ns.hidden.remove(&tag);
+            }
             ns.mirror.insert(
                 tag.clone(),
                 Entry {
@@ -948,8 +970,16 @@ fn show_phone_notification(
         }
     }
     // A quiet copy (re-send, sync at start) is old news: never auto-copy it.
-    if settings.notify_otp_autocopy && !locked && !n.quiet && !n.otp.is_empty() {
+    if settings.notify_otp_autocopy && !locked && !refresh && !n.quiet && !n.otp.is_empty() {
         copy_otp(hwnd, &n.otp);
+    }
+}
+
+/// At unlock: show in full the toasts that arrived while the PC was locked.
+fn refresh_hidden(hwnd: HWND, st: &State) {
+    let list: Vec<HiddenToast> = notify_ui().hidden.drain().map(|(_, h)| h).collect();
+    for (peer, n, logo, picture) in list {
+        show_phone_notification(hwnd, st, peer, *n, logo, picture, true);
     }
 }
 
@@ -1067,6 +1097,7 @@ fn on_toast(hwnd: HWND, st: &State, ev: ToastEvent) {
                 let e = ns.mirror.get(&tag).cloned();
                 if let Some(e) = &e {
                     ns.mirror.remove_key(&e.peer, &e.key);
+                    ns.hidden.remove(&tag);
                     if let Some((_, _, Some(p))) = ns.meta.remove(&tag) {
                         let _ = std::fs::remove_file(p);
                     }
@@ -1110,6 +1141,7 @@ fn check_cleared(hwnd: HWND, st: &State) {
         let gone = ns.mirror.vanished(&history);
         for e in &gone {
             let tag = crate::notify::tag(&e.peer, &e.key);
+            ns.hidden.remove(&tag);
             if let Some((_, _, Some(p))) = ns.meta.remove(&tag) {
                 let _ = std::fs::remove_file(p);
             }
@@ -1614,7 +1646,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_WTSSESSION_CHANGE => {
             match wparam.0 {
                 WTS_SESSION_LOCK => notify_ui().locked = true,
-                WTS_SESSION_UNLOCK => notify_ui().locked = false,
+                WTS_SESSION_UNLOCK => {
+                    notify_ui().locked = false;
+                    refresh_hidden(hwnd, st);
+                }
                 _ => {}
             }
             LRESULT(0)

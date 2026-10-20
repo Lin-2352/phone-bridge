@@ -42,7 +42,7 @@ Real Windows toasts (WinRT `ToastNotificationManager`) under Phone Bridge's own 
 - the time;
 - **flags:**
   - quiet: silent on the phone, or arrived during the phone's Do Not Disturb;
-  - private: then only the app's public version is sent;
+  - private: the app hides it on the phone's lock screen (secret, or private with a public version). The full content is still sent; the PC hides it while the PC is locked, whatever the content setting (changed during device tests: WhatsApp marks every notification private, so sending only the public version showed "N new messages" and never the messages);
   - call: `CallStyle`, or the dialer's call category;
   - one-time code, with the code (see "One-time codes");
 - **actions:** a label each, and whether it takes a reply;
