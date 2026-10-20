@@ -20,6 +20,24 @@ pub struct Settings {
     pub theme: u8,
     /// Let a paired phone drive this PC's pointer and keyboard.
     pub allow_control: bool,
+    /// Show the phone's notifications as Windows toasts.
+    pub notify_enabled: bool,
+    /// 0 = full, 1 = full but hidden while the PC is locked, 2 = sender only.
+    pub notify_content: u8,
+    /// Toasts may appear on the Windows lock screen.
+    pub notify_lock_screen: bool,
+    /// 0 = follow the phone, 1 = always alert, 2 = always quiet.
+    pub notify_sound: u8,
+    /// Clearing a toast clears the notification on the phone.
+    pub notify_clear_on_phone: bool,
+    /// Clicking a toast opens the notification on the phone.
+    pub notify_open_on_phone: bool,
+    /// Copy one-time codes to the clipboard on arrival.
+    pub notify_otp_autocopy: bool,
+    /// No pop-ups while the phone-screen window is focused.
+    pub notify_quiet_mirroring: bool,
+    /// Phone apps seen so far: (package, name, muted).
+    pub notify_apps: Vec<(String, String, bool)>,
 }
 
 impl Default for Settings {
@@ -37,6 +55,15 @@ impl Default for Settings {
             save_dir: downloads,
             theme: 0,
             allow_control: false,
+            notify_enabled: true,
+            notify_content: 1,
+            notify_lock_screen: false,
+            notify_sound: 0,
+            notify_clear_on_phone: true,
+            notify_open_on_phone: true,
+            notify_otp_autocopy: false,
+            notify_quiet_mirroring: true,
+            notify_apps: Vec::new(),
         }
     }
 }
@@ -76,6 +103,40 @@ impl Settings {
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
                 "save_dir" if !v.is_empty() => s.save_dir = PathBuf::from(v),
+                "notify_enabled" => s.notify_enabled = parse_bool(v).unwrap_or(s.notify_enabled),
+                "notify_content" => {
+                    s.notify_content = v
+                        .parse()
+                        .ok()
+                        .filter(|n| *n <= 2)
+                        .unwrap_or(s.notify_content)
+                }
+                "notify_lock_screen" => {
+                    s.notify_lock_screen = parse_bool(v).unwrap_or(s.notify_lock_screen)
+                }
+                "notify_sound" => {
+                    s.notify_sound = v.parse().ok().filter(|n| *n <= 2).unwrap_or(s.notify_sound)
+                }
+                "notify_clear_on_phone" => {
+                    s.notify_clear_on_phone = parse_bool(v).unwrap_or(s.notify_clear_on_phone)
+                }
+                "notify_open_on_phone" => {
+                    s.notify_open_on_phone = parse_bool(v).unwrap_or(s.notify_open_on_phone)
+                }
+                "notify_otp_autocopy" => {
+                    s.notify_otp_autocopy = parse_bool(v).unwrap_or(s.notify_otp_autocopy)
+                }
+                "notify_quiet_mirroring" => {
+                    s.notify_quiet_mirroring = parse_bool(v).unwrap_or(s.notify_quiet_mirroring)
+                }
+                "notify_app" => {
+                    let mut f = v.splitn(3, '\t');
+                    if let (Some(m), Some(pkg), Some(name)) = (f.next(), f.next(), f.next()) {
+                        if !pkg.is_empty() {
+                            s.notify_apps.push((pkg.into(), name.into(), m == "1"));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -83,7 +144,7 @@ impl Settings {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let text = format!(
+        let mut text = format!(
             "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\ntheme={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
@@ -93,6 +154,26 @@ impl Settings {
             self.allow_control,
             self.save_dir.display()
         );
+        text += &format!(
+            "notify_enabled={}\nnotify_content={}\nnotify_lock_screen={}\nnotify_sound={}\nnotify_clear_on_phone={}\nnotify_open_on_phone={}\nnotify_otp_autocopy={}\nnotify_quiet_mirroring={}\n",
+            self.notify_enabled,
+            self.notify_content,
+            self.notify_lock_screen,
+            self.notify_sound,
+            self.notify_clear_on_phone,
+            self.notify_open_on_phone,
+            self.notify_otp_autocopy,
+            self.notify_quiet_mirroring
+        );
+        let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+        for (pkg, name, muted) in &self.notify_apps {
+            text += &format!(
+                "notify_app={}\t{}\t{}\n",
+                u8::from(*muted),
+                clean(pkg),
+                clean(name)
+            );
+        }
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, text)?;
         std::fs::rename(tmp, path)
@@ -124,9 +205,37 @@ mod tests {
             save_dir: PathBuf::from(r"D:\Inbox"),
             theme: 2,
             allow_control: false,
+            notify_enabled: false,
+            notify_content: 2,
+            notify_lock_screen: true,
+            notify_sound: 1,
+            notify_clear_on_phone: false,
+            notify_open_on_phone: false,
+            notify_otp_autocopy: true,
+            notify_quiet_mirroring: false,
+            notify_apps: vec![
+                ("com.whatsapp".into(), "WhatsApp".into(), false),
+                ("com.noisy".into(), "Noisy Game".into(), true),
+            ],
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
+        // Separators inside an app name do not break the file.
+        let odd = Settings {
+            notify_apps: vec![(
+                "com.x".into(),
+                "Tab	here
+new"
+                .into(),
+                true,
+            )],
+            ..Settings::default()
+        };
+        odd.save(&path).unwrap();
+        assert_eq!(
+            Settings::load(&path).notify_apps,
+            [("com.x".to_owned(), "Tab here new".to_owned(), true)]
+        );
         std::fs::write(
             &path,
             "garbage\nuniversal_clipboard=maybe\nauto_accept=off\nfuture_key=1\n",

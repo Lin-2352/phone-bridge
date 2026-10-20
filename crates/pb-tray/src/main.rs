@@ -21,10 +21,12 @@ mod ipc;
 #[cfg(windows)]
 mod menu;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod notify;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
 mod qr_window;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod settings;
 #[cfg(windows)]
 mod settings_window;
