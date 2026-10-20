@@ -2415,6 +2415,8 @@ name = "pb-tray"
 version = "0.0.1"
 dependencies = [
  "embed-resource",
+ "pb-camera-frames",
+ "pb-camera-source",
  "pb-identity",
  "pb-platform-win",
  "pb-protocol",

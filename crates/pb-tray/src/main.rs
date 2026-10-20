@@ -9,6 +9,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+#[allow(dead_code)] // used by the camera menu (next task)
+mod camera_register;
+#[cfg(windows)]
 mod control;
 #[cfg(windows)]
 mod core;
@@ -82,6 +85,22 @@ fn main() {
         sync::{Arc, Mutex},
     };
 
+    // The elevated camera helpers run on their own, before anything else.
+    {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        if argv.iter().any(|a| a == "--register-camera") {
+            let sid = argv
+                .iter()
+                .position(|a| a == "--for-sid")
+                .and_then(|i| argv.get(i + 1))
+                .cloned()
+                .unwrap_or_default();
+            std::process::exit(camera_register::register_elevated(&sid));
+        }
+        if argv.iter().any(|a| a == "--unregister-camera") {
+            std::process::exit(camera_register::unregister_elevated());
+        }
+    }
     let mut opts = core::Options {
         dir: std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)

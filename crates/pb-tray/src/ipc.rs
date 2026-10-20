@@ -102,7 +102,7 @@ pub fn send_request(r: &Request) -> bool {
 }
 
 /// This process's user SID as a string (`S-1-5-21-...`).
-fn user_sid() -> Option<String> {
+pub(crate) fn user_sid() -> Option<String> {
     use windows::{
         core::PWSTR,
         Win32::{
