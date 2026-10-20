@@ -1206,3 +1206,252 @@ mod notify {
         assert!(r.is_err());
     }
 }
+
+mod screen {
+    use std::time::Duration;
+
+    use pb_protocol::{
+        control::{ScreenAccept, ScreenStart},
+        InputEvent, TouchPhase,
+    };
+    use pb_video::record::{Config, Record, FLAG_CONFIG, FLAG_KEY};
+
+    use super::*;
+    use crate::screen::{serve_screen, ScreenEvent, SendOutcome};
+
+    async fn paired() -> (Node, NodeEvents, Node, NodeEvents) {
+        let (pc, mut pc_ev, pc_store) = node(31, "PC").await;
+        let (phone, phone_ev, _) = node(32, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let mut p = lock(&pc_store).get(&phone.peer_id()).unwrap();
+        p.addrs = loopback(&phone);
+        lock(&pc_store).pin(p);
+        (pc, pc_ev, phone, phone_ev)
+    }
+
+    fn start() -> ScreenStart {
+        ScreenStart {
+            id: 1,
+            max_long_side: 1920,
+            fps: 30,
+            codecs: vec![1, 2, 3],
+            dim: false,
+            sharp: false,
+        }
+    }
+
+    fn accept() -> ScreenAccept {
+        ScreenAccept {
+            id: 1,
+            codec: 2,
+            width: 864,
+            height: 1920,
+            rotation: 0,
+        }
+    }
+
+    /// Phone side: take the next session and serve (or decline) its ScreenStart.
+    async fn phone_side(
+        ev: &mut NodeEvents,
+        answer: Option<ScreenAccept>,
+    ) -> Result<crate::screen::ScreenServer, Error> {
+        let mut s = ev.sessions.recv().await.unwrap();
+        loop {
+            match s.recv().await? {
+                Some(ControlMsg::ScreenStart(st)) => return serve_screen(s, st, answer).await,
+                Some(_) => continue,
+                None => return Err(Error::Closed),
+            }
+        }
+    }
+
+    fn rec(pts: i64, flags: u8, payload: Vec<u8>) -> Record {
+        Record {
+            pts_us: pts,
+            flags,
+            payload,
+        }
+    }
+
+    async fn next_event(server: &mut crate::screen::ScreenServer) -> ScreenEvent {
+        tokio::time::timeout(Duration::from_secs(10), server.events.recv())
+            .await
+            .expect("an event")
+            .expect("events open")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn screen_records_arrive_in_order_after_accept() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        // The phone sends once the PC reads (its channel holds 16 records and
+        // drops older non-key frames when the reader falls behind).
+        let (go, ready) = tokio::sync::oneshot::channel::<()>();
+        let phone_task = tokio::spawn(async move {
+            let server = phone_side(&mut phone_ev, Some(accept())).await.unwrap();
+            let _ = ready.await;
+            let cfg = Config {
+                rotation: 0,
+                width: 864,
+                height: 1920,
+                headers: vec![0, 0, 0, 1],
+            };
+            assert!(matches!(
+                server.send(rec(0, FLAG_CONFIG, cfg.encode())),
+                SendOutcome::Queued(_)
+            ));
+            server.send(rec(0, FLAG_KEY, vec![1; 5000]));
+            for i in 1..=20 {
+                server.send(rec(i * 33_333, 0, vec![i as u8; 100]));
+            }
+            server
+        });
+        let mut view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        assert_eq!(view.accept.width, 864);
+        let _ = go.send(());
+        let mut got = Vec::new();
+        while got.len() < 22 {
+            let r = tokio::time::timeout(Duration::from_secs(10), view.records.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            got.push(r);
+        }
+        assert_eq!(got[0].flags, FLAG_CONFIG);
+        assert_eq!(got[1].flags, FLAG_KEY);
+        assert!(got.windows(2).skip(1).all(|w| w[0].pts_us < w[1].pts_us));
+        let _server = phone_task.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn declined_screen_reports_declined() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task = tokio::spawn(async move { phone_side(&mut phone_ev, None).await });
+        let r = pc.open_screen(&phone.peer_id(), start(), || {}).await;
+        assert!(matches!(r, Err(Error::Declined)), "{:?}", r.err());
+        assert!(matches!(phone_task.await.unwrap(), Err(Error::Declined)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn either_side_can_stop() {
+        // The PC closes: the phone hears Closed.
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task =
+            tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
+        let view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let mut server = phone_task.await.unwrap().unwrap();
+        view.close();
+        loop {
+            if matches!(next_event(&mut server).await, ScreenEvent::Closed) {
+                break;
+            }
+        }
+        // The phone closes: the PC's records end.
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task =
+            tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
+        let mut view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let server = phone_task.await.unwrap().unwrap();
+        server.close();
+        let end = tokio::time::timeout(Duration::from_secs(10), view.records.recv())
+            .await
+            .unwrap();
+        assert!(end.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn feedback_and_state_reach_the_phone() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task =
+            tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
+        let view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let mut server = phone_task.await.unwrap().unwrap();
+        view.feedback(33_000);
+        view.set_state(false, true);
+        let mut feedback = None;
+        let mut state = None;
+        while feedback.is_none() || state.is_none() {
+            match next_event(&mut server).await {
+                ScreenEvent::Feedback(p) => feedback = Some(p),
+                ScreenEvent::State(s) => state = Some(s),
+                _ => {}
+            }
+        }
+        assert_eq!(feedback, Some(33_000));
+        let s = state.unwrap();
+        assert!(!s.active && s.dim);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn touches_reach_the_phone_through_the_session() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task =
+            tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
+        let view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let mut server = phone_task.await.unwrap().unwrap();
+        let down = InputEvent::Touch {
+            phase: TouchPhase::Down,
+            x: 100,
+            y: 200,
+        };
+        view.input.send(down);
+        loop {
+            if let ScreenEvent::Input(e) = next_event(&mut server).await {
+                assert_eq!(e, down);
+                break;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_phone_notice_reaches_the_pc() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task =
+            tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
+        let mut view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let server = phone_task.await.unwrap().unwrap();
+        server.notice("Lower quality to save memory");
+        let s = tokio::time::timeout(Duration::from_secs(10), view.state.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.notice, "Lower quality to save memory");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn screen_session_resumes_within_grace() {
+        // A dropped session can be followed at once by a new one from the
+        // same PC (the phone's grace bookkeeping is in pb-ffi).
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let id = phone.peer_id();
+        for _ in 0..2 {
+            let ev = &mut phone_ev;
+            let (view, server) = tokio::join!(
+                pc.open_screen(&id, start(), || {}),
+                phone_side(ev, Some(accept()))
+            );
+            let (view, server) = (view.unwrap(), server.unwrap());
+            assert_eq!(view.accept.codec, 2);
+            view.close();
+            drop(server);
+        }
+    }
+}

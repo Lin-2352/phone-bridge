@@ -10,6 +10,7 @@ pub mod files;
 pub mod input;
 pub mod notify;
 pub mod pairing;
+pub mod screen;
 pub mod tuning;
 
 use std::{

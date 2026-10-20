@@ -2390,6 +2390,7 @@ dependencies = [
  "noq-proto",
  "pb-identity",
  "pb-protocol",
+ "pb-video",
  "prost",
  "sha2 0.10.9",
  "tokio",
