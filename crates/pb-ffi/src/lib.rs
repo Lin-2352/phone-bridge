@@ -123,6 +123,21 @@ pub enum PbEvent {
         codecs: Vec<u8>,
         resume: bool,
     },
+    /// A paired PC asks to use this phone's camera. Ask the user (unless
+    /// `resume`), make sure the camera permission is held, open the camera,
+    /// then call `PbNode::answer_camera(id, ..)`.
+    CameraRequest {
+        id: u64,
+        peer_name: String,
+        /// 0 back, 1 front.
+        lens: u32,
+        /// The 16:9 size wanted (1920x1080 or 1280x720).
+        width: u32,
+        height: u32,
+        /// Codecs the PC decodes, best first (1 H.265 Main10, 2 H.265, 3 H.264).
+        codecs: Vec<u8>,
+        resume: bool,
+    },
     /// A file transfer is under way (at most every 0.7 s, and once at the end).
     TransferProgress {
         peer_name: String,
@@ -293,6 +308,16 @@ pub struct PbScreenAccept {
     pub rotation: u16,
 }
 
+/// The phone's answer to a camera request.
+#[derive(uniffi::Record)]
+pub struct PbCameraAccept {
+    pub codec: u8,
+    pub width: u32,
+    pub height: u32,
+    pub rotation: u16,
+    pub lens: u8,
+}
+
 /// What the encoder should do after a frame.
 #[derive(uniffi::Record)]
 pub struct PbAdvice {
@@ -327,6 +352,16 @@ pub trait ScreenListener: Send + Sync {
     fn on_wheel(&self, dx: i16, dy: i16) -> Result<(), PbError>;
     /// The session ended. `resumable`: the link dropped; keep capturing
     /// (paused) for 30 s in case the same PC asks again.
+    fn on_stopped(&self, resumable: bool) -> Result<(), PbError>;
+}
+
+/// The camera session's events for Kotlin.
+#[uniffi::export(with_foreign)]
+pub trait CameraListener: Send + Sync {
+    /// The PC wants the other lens (0 back, 1 front).
+    fn on_lens(&self, lens: u8) -> Result<(), PbError>;
+    /// The session ended. `resumable`: the link was lost, keep the camera
+    /// for 30 s; otherwise close it.
     fn on_stopped(&self, resumable: bool) -> Result<(), PbError>;
 }
 
@@ -573,6 +608,7 @@ pub fn next_codec(failed: u8, pc: Vec<u8>) -> Option<u8> {
 }
 
 type ScreenAnswer = Option<(PbScreenAccept, Arc<PbScreen>)>;
+type CameraAnswer = Option<(PbCameraAccept, Arc<PbScreen>)>;
 
 /// How long a control request waits for the user on the phone.
 const CONTROL_ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -624,6 +660,13 @@ struct Shared {
     /// The PC of the request being asked or the session running, and a way
     /// to end it when that PC asks again.
     screen_current: Mutex<Option<(pb_identity::PeerId, pb_transport::SessionCloser)>>,
+    camera_listener: Mutex<Option<Arc<dyn CameraListener>>>,
+    camera_busy: std::sync::atomic::AtomicBool,
+    camera_pending:
+        Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<CameraAnswer>>>,
+    camera_grace: Mutex<Option<Grace>>,
+    camera_user_stop: Mutex<Option<Grace>>,
+    camera_current: Mutex<Option<(pb_identity::PeerId, pb_transport::SessionCloser)>>,
     /// The user stopped sharing: requests from that PC are declined quietly
     /// for a while (the PC retries after a dropped link).
     screen_user_stop: Mutex<Option<Grace>>,
@@ -685,6 +728,12 @@ pub async fn start_node(
         screen_pending: Mutex::default(),
         screen_grace: Mutex::new(None),
         screen_current: Mutex::new(None),
+        camera_listener: Mutex::new(None),
+        camera_busy: std::sync::atomic::AtomicBool::new(false),
+        camera_pending: Mutex::default(),
+        camera_grace: Mutex::new(None),
+        camera_user_stop: Mutex::new(None),
+        camera_current: Mutex::new(None),
         screen_user_stop: Mutex::new(None),
     });
     // The phone only joins pairings; drop host-side requests.
@@ -729,6 +778,9 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
         match s.recv().await {
             Ok(Some(ControlMsg::ScreenStart(start))) => {
                 break screen_session(s, start, sh.clone(), name.clone()).await;
+            }
+            Ok(Some(ControlMsg::CameraStart(start))) => {
+                break camera_session(s, start, sh.clone(), name.clone()).await;
             }
             Ok(Some(ControlMsg::NotifySyncRequest(_))) => {
                 // Off: an empty list, so the PC clears what it still shows.
@@ -962,6 +1014,161 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             reason,
         },
     );
+}
+
+/// The camera is free for the next request.
+fn release_camera(sh: &Shared) {
+    *sh.camera_current.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    sh.camera_busy
+        .store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// A PC asked to use this phone's camera: ask (or resume), then run the session.
+async fn camera_session(
+    s: Session,
+    start: pb_protocol::control::CameraStart,
+    sh: Arc<Shared>,
+    name: String,
+) -> String {
+    use std::sync::atomic::Ordering;
+    let peer = s.peer;
+    if sh.camera_busy.swap(true, Ordering::AcqRel) {
+        // The same PC asking again: its old session is stale (it restarted
+        // before the phone noticed the lost link).
+        let stale = match sh
+            .camera_current
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            Some((p, closer)) if supersedes(Some(p), &peer) => {
+                closer.close(b"camera superseded");
+                true
+            }
+            _ => false,
+        };
+        let mut free = false;
+        if stale {
+            for _ in 0..60 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if !sh.camera_busy.swap(true, Ordering::AcqRel) {
+                    free = true;
+                    break;
+                }
+            }
+        }
+        if !free {
+            let _ = pb_transport::camera::serve_camera(s, start, None).await;
+            return "camera busy".into();
+        }
+    }
+    *sh.camera_current.lock().unwrap_or_else(|p| p.into_inner()) = Some((peer, s.closer()));
+    let now = std::time::Instant::now();
+    let stopped_by_user = sh
+        .camera_user_stop
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|g| g.admits(&peer, now));
+    if stopped_by_user {
+        let _ = pb_transport::camera::serve_camera(s, start, None).await;
+        release_camera(&sh);
+        return "camera stopped by the user".into();
+    }
+    let resume = take_grace(
+        &mut sh.camera_grace.lock().unwrap_or_else(|p| p.into_inner()),
+        &peer,
+        now,
+    );
+    let ask = sh.next_ask.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    sh.camera_pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(ask, tx);
+    push(
+        &sh.events,
+        PbEvent::CameraRequest {
+            id: ask,
+            peer_name: name,
+            lens: start.lens,
+            width: start.width,
+            height: start.height,
+            codecs: start.codecs.iter().map(|c| *c as u8).collect(),
+            resume,
+        },
+    );
+    // Our ask, then the camera permission and opening the camera.
+    let answer = tokio::select! {
+        r = tokio::time::timeout(std::time::Duration::from_secs(40), rx) => {
+            r.ok().and_then(|r| r.ok()).flatten()
+        }
+        () = s.closed() => None,
+    };
+    sh.camera_pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&ask);
+    let Some((acc, cam)) = answer else {
+        let _ = pb_transport::camera::serve_camera(s, start, None).await;
+        release_camera(&sh);
+        return "camera declined".into();
+    };
+    let accept = pb_protocol::control::CameraAccept {
+        id: 0,
+        codec: acc.codec.into(),
+        width: acc.width,
+        height: acc.height,
+        rotation: acc.rotation.into(),
+        lens: acc.lens.into(),
+    };
+    let server = match pb_transport::camera::serve_camera(s, start, Some(accept)).await {
+        Ok(server) => server,
+        Err(e) => {
+            if let Some(l) = sh.camera_listener.lock().ok().and_then(|g| g.clone()) {
+                let _ = l.on_stopped(false);
+            }
+            release_camera(&sh);
+            return e.to_string();
+        }
+    };
+    let (sink, mut events) = server.into_parts();
+    cam.ready(sink);
+    let mut closed_by_pc = false;
+    while let Some(ev) = events.recv().await {
+        use pb_transport::camera::CameraEvent as E;
+        match ev {
+            E::Feedback(pts) => cam
+                .pacer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .on_feedback(std::time::Instant::now(), pts),
+            E::Lens(lens) => {
+                if let Some(l) = sh.camera_listener.lock().ok().and_then(|g| g.clone()) {
+                    let _ = l.on_lens(lens as u8);
+                }
+            }
+            E::Closed { by_peer } => {
+                closed_by_pc = by_peer;
+                break;
+            }
+        }
+    }
+    let by_user = cam.stopped.load(Ordering::Acquire);
+    if !closed_by_pc || by_user {
+        let slot = if by_user {
+            &sh.camera_user_stop
+        } else {
+            &sh.camera_grace
+        };
+        *slot.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(Grace::new(peer, std::time::Instant::now()));
+    }
+    if let Some(l) = sh.camera_listener.lock().ok().and_then(|g| g.clone()) {
+        let _ = l.on_stopped(!by_user && !closed_by_pc);
+    }
+    release_camera(&sh);
+    "camera ended".into()
 }
 
 /// The screen is free for the next request.
@@ -1480,6 +1687,55 @@ impl PbNode {
                 None
             }
         }
+    }
+
+    /// Answer a `CameraRequest`: `None` declines. Accepting returns the
+    /// session to feed encoded frames into.
+    pub fn answer_camera(&self, id: u64, accept: Option<PbCameraAccept>) -> Option<Arc<PbScreen>> {
+        let tx = self
+            .shared
+            .camera_pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id)?;
+        match accept {
+            Some(a) => {
+                let cam = Arc::new(PbScreen::new(a.codec));
+                tx.send(Some((a, cam.clone()))).ok()?;
+                Some(cam)
+            }
+            None => {
+                let _ = tx.send(None);
+                None
+            }
+        }
+    }
+
+    /// Register or clear the camera session handler.
+    pub fn set_camera_listener(&self, listener: Option<Arc<dyn CameraListener>>) {
+        *self
+            .shared
+            .camera_listener
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = listener;
+    }
+
+    /// The user pressed Stop while the link was down: that PC's camera
+    /// requests are declined quietly from now on.
+    pub fn camera_user_stopped(&self) {
+        stop_during_grace(
+            &mut self
+                .shared
+                .camera_grace
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+            &mut self
+                .shared
+                .camera_user_stop
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+            std::time::Instant::now(),
+        );
     }
 
     /// The user pressed Stop while the link was down (the capture waited for
