@@ -159,15 +159,29 @@ class NotifyListener : NotificationListenerService() {
             sbn.packageName == packageName
     }
 
-    private fun appLabel(pkg: String): String = try {
-        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    /**
+     * The posting app's info: from the package manager (apps visible through
+     * the manifest's <queries>), else the copy Android puts in every
+     * notification's extras.
+     */
+    private fun appInfo(sbn: StatusBarNotification): android.content.pm.ApplicationInfo? = try {
+        packageManager.getApplicationInfo(sbn.packageName, 0)
     } catch (_: Throwable) {
-        pkg
+        if (Build.VERSION.SDK_INT >= 33) {
+            sbn.notification.extras.getParcelable("android.appInfo", android.content.pm.ApplicationInfo::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            sbn.notification.extras.getParcelable("android.appInfo")
+        }
     }
+
+    private fun appLabel(sbn: StatusBarNotification): String =
+        runCatching { appInfo(sbn)?.loadLabel(packageManager)?.toString() }.getOrNull()
+            ?.takeIf { it.isNotBlank() } ?: sbn.packageName
 
     private fun toPb(sbn: StatusBarNotification, quiet: Boolean, withMedia: Boolean): PbNotification {
         val nf = sbn.notification
-        val app = appLabel(sbn.packageName)
+        val app = appLabel(sbn)
         val secret = nf.visibility == Notification.VISIBILITY_SECRET
         val usePublic = nf.visibility == Notification.VISIBILITY_PRIVATE && nf.publicVersion != null
         val ex = (if (usePublic) nf.publicVersion else nf).extras
@@ -180,7 +194,8 @@ class NotifyListener : NotificationListenerService() {
                 ?.toString() ?: ""
         }
         val messages = if (private) emptyList() else messages(nf.extras)
-        val conversation = if (messages.isEmpty()) {
+        val chat = nf.extras.containsKey(Notification.EXTRA_MESSAGES)
+        val conversation = if (!chat) {
             ""
         } else {
             nf.shortcutId ?: nf.extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString() ?: title
@@ -188,7 +203,7 @@ class NotifyListener : NotificationListenerService() {
         val actions = nf.actions.orEmpty().map { a ->
             PbNotifyActionDesc(a.title?.toString() ?: "", a.remoteInputs?.any { it.allowFreeFormInput } == true)
         }
-        val icon = if (withMedia && iconSent.add(sbn.packageName)) appIcon(sbn.packageName) else null
+        val icon = if (withMedia && iconSent.add(sbn.packageName)) appIcon(sbn) else null
         val picture = if (withMedia && !private) picture(nf) else null
         return PbNotification(
             sbn.key,
@@ -208,8 +223,20 @@ class NotifyListener : NotificationListenerService() {
         )
     }
 
-    /** The latest messages of a MessagingStyle notification as "sender: text". */
-    private fun messages(ex: Bundle): List<String> {
+    /**
+     * The latest messages: a MessagingStyle notification's messages as
+     * "sender: text", else an InboxStyle notification's lines (WhatsApp uses
+     * those when several chats are waiting).
+     */
+    private fun messages(ex: Bundle): List<String> =
+        chatMessages(ex).ifEmpty {
+            ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES).orEmpty()
+                .map { it.toString() }
+                .filter { it.isNotBlank() }
+                .takeLast(MAX_LINES)
+        }
+
+    private fun chatMessages(ex: Bundle): List<String> {
         val arr: Array<out Parcelable>? = if (Build.VERSION.SDK_INT >= 33) {
             ex.getParcelableArray(Notification.EXTRA_MESSAGES, Parcelable::class.java)
         } else {
@@ -230,8 +257,9 @@ class NotifyListener : NotificationListenerService() {
         }.takeLast(MAX_LINES)
     }
 
-    private fun appIcon(pkg: String): ByteArray? = try {
-        val bmp = drawableBitmap(packageManager.getApplicationIcon(pkg), ICON_PX)
+    private fun appIcon(sbn: StatusBarNotification): ByteArray? = try {
+        val info = appInfo(sbn) ?: throw IllegalStateException("no app info")
+        val bmp = drawableBitmap(packageManager.getApplicationIcon(info), ICON_PX)
         val out = ByteArrayOutputStream()
         bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
         out.toByteArray().takeIf { it.size <= ICON_MAX }

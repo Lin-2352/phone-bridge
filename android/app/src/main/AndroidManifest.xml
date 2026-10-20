@@ -14,6 +14,14 @@
     <!-- "Silence" on a call toast: ringer to vibrate for that call (user grants it). -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Notifications on PC: names and icons of the apps whose notifications
+         are shown (Android 11+ hides other apps unless declared here). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="false"
