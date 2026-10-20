@@ -9,6 +9,13 @@ use pb_camera_frames::{heartbeat::FRAME_100NS, Deliver, Heartbeat, Read, Ring};
 /// The only media types the stream advertises (NV12, 30 fps).
 pub const TYPES: [(u32, u32); 2] = [(1920, 1080), (1280, 720)];
 
+/// When tick `n` is due, counted from the start: `n` frame periods of
+/// 1/30 s on an absolute schedule, so the work done in a tick never makes
+/// the next one late (a sleep after each tick would give about 28 fps).
+pub fn tick_due(n: u64) -> std::time::Duration {
+    std::time::Duration::from_nanos(n * 100 * pb_camera_frames::heartbeat::FRAME_100NS as u64)
+}
+
 /// Black in NV12: Y = 16, UV = 128.
 pub fn black(w: u32, h: u32) -> Vec<u8> {
     let (w, h) = (w as usize, h as usize);
@@ -159,6 +166,15 @@ mod tests {
         assert_eq!((s.token, s.data[0]), (1, 16));
         assert_eq!(s.data.len(), 1920 * 1080 * 3 / 2);
         assert_eq!(p.waiting(), 1);
+    }
+
+    #[test]
+    fn ticks_are_on_an_absolute_30_fps_schedule() {
+        assert_eq!(tick_due(0), std::time::Duration::ZERO);
+        // 30 ticks are a second (to within the 333,333 x 100 ns rounding).
+        let t = tick_due(30).as_micros();
+        assert!((999_000..=1_000_100).contains(&t), "{t}");
+        assert!(tick_due(7) < tick_due(8));
     }
 
     #[test]

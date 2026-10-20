@@ -250,9 +250,23 @@ impl Inner {
                     windows::Win32::System::Com::COINIT_MULTITHREADED,
                 )
             };
+            // Absolute deadlines: the work in a tick does not delay the next.
+            let start = std::time::Instant::now();
+            let mut n = 1u64;
             while !me.stop.load(Ordering::Acquire) {
-                std::thread::sleep(TICK);
+                let due = start + crate::pump::tick_due(n);
+                let now = std::time::Instant::now();
+                if due > now {
+                    std::thread::sleep((due - now).min(TICK));
+                    continue;
+                }
                 me.tick();
+                n += 1;
+                // Far behind (the machine slept): skip ahead, never burst.
+                if start.elapsed() > crate::pump::tick_due(n + 3) {
+                    n = (start.elapsed().as_nanos() / crate::pump::tick_due(1).as_nanos()) as u64
+                        + 1;
+                }
             }
         }));
     }
