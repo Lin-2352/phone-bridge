@@ -35,7 +35,8 @@ impl<C: VirtualCamera> CameraDevice<C> {
         }
     }
 
-    /// Tear down now.
+    /// Tear down now (the tray drops the device instead).
+    #[cfg(test)]
     pub fn close(mut self) {
         self.teardown();
     }
@@ -56,8 +57,7 @@ impl<C: VirtualCamera> Drop for CameraDevice<C> {
 }
 
 #[cfg(windows)]
-#[allow(unused_imports)] // used by the camera menu (next task)
-pub use real::{list_camera_names, sweep_leftovers, MfVirtualCamera, FRIENDLY_NAME};
+pub use real::{sweep_leftovers, MfVirtualCamera};
 
 #[cfg(windows)]
 mod real {
@@ -287,6 +287,8 @@ mod real {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
+    #[cfg(windows)]
+    use super::real::{list_camera_names, FRIENDLY_NAME};
     use super::*;
 
     struct Fake {

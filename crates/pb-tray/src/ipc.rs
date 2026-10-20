@@ -37,6 +37,9 @@ pub enum Request {
     /// Open the phone-screen window (for checks without clicking).
     ShowScreen,
     HideScreen,
+    /// Start / stop the phone camera (for checks without clicking).
+    StartCamera,
+    StopCamera,
     /// Text or a link from the share sheet.
     Text {
         link: bool,
@@ -54,6 +57,8 @@ fn encode(r: &Request) -> String {
         Request::Menu => "menu\n".into(),
         Request::ShowScreen => "show-screen\n".into(),
         Request::HideScreen => "hide-screen\n".into(),
+        Request::StartCamera => "start-camera\n".into(),
+        Request::StopCamera => "stop-camera\n".into(),
         Request::Text { link, text } => format!("text\n{}\n{text}", u8::from(*link)),
         Request::Send(files) => {
             let mut s = "send\n".to_owned();
@@ -77,6 +82,8 @@ pub fn decode(text: &str) -> Option<Request> {
         "menu" => Some(Request::Menu),
         "show-screen" => Some(Request::ShowScreen),
         "hide-screen" => Some(Request::HideScreen),
+        "start-camera" => Some(Request::StartCamera),
+        "stop-camera" => Some(Request::StopCamera),
         "text" => {
             let link = lines.next()? == "1";
             let text: Vec<&str> = lines.collect();
@@ -240,7 +247,9 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
                     | Request::Open
                     | Request::Menu
                     | Request::ShowScreen
-                    | Request::HideScreen),
+                    | Request::HideScreen
+                    | Request::StartCamera
+                    | Request::StopCamera),
                 ) => on_ui(&r),
                 None => {}
             }
@@ -270,6 +279,14 @@ mod tests {
         assert!(matches!(
             decode(&encode(&Request::HideScreen)),
             Some(Request::HideScreen)
+        ));
+        assert!(matches!(
+            decode(&encode(&Request::StartCamera)),
+            Some(Request::StartCamera)
+        ));
+        assert!(matches!(
+            decode(&encode(&Request::StopCamera)),
+            Some(Request::StopCamera)
         ));
         assert!(decode("send\n").is_none());
         assert!(decode("rm -rf /\n").is_none());

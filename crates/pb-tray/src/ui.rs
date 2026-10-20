@@ -63,6 +63,11 @@ const ID_CONTROL: usize = 13;
 const ID_SCREEN: usize = 14;
 pub const ID_SCREEN_SHOW: usize = 15;
 pub const ID_SCREEN_HIDE: usize = 16;
+const ID_CAMERA: usize = 17;
+pub const ID_CAMERA_START: usize = 18;
+pub const ID_CAMERA_STOP: usize = 19;
+const ID_CAMERA_LENS: usize = 20;
+const ID_CAMERA_REMOVE: usize = 21;
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -1195,26 +1200,51 @@ fn end_control(hwnd: HWND, why: &str) {
 fn show_menu(hwnd: HWND) {
     use crate::fluent::glyph;
     use crate::menu::Item;
-    crate::menu::show(
-        hwnd,
-        vec![
-            Item::new(glyph::PHONE, "Open Phone Bridge", ID_OPEN_FLYOUT),
-            Item::new(
-                glyph::PHONE,
-                if crate::screen_window::is_open() {
-                    "Hide phone screen"
-                } else {
-                    "Show phone screen"
-                },
-                ID_SCREEN,
-            ),
-            Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
-            Item::new(glyph::FOLDER, "Open received files", ID_OPEN_FOLDER),
-            Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
-            Item::separator(),
-            Item::new(glyph::POWER, "Quit Phone Bridge", ID_QUIT),
-        ],
-    );
+    let running = crate::camera::is_running();
+    let mut camera_items = vec![Item::new(
+        glyph::PHONE,
+        if running {
+            "Stop phone camera"
+        } else {
+            "Use phone as camera"
+        },
+        ID_CAMERA,
+    )];
+    if running {
+        camera_items.push(Item::new(
+            glyph::PHONE,
+            "Switch camera lens",
+            ID_CAMERA_LENS,
+        ));
+    } else if crate::camera_register::is_registered() {
+        camera_items.push(Item::new(
+            glyph::PHONE,
+            "Remove phone camera",
+            ID_CAMERA_REMOVE,
+        ));
+    }
+    let mut items = vec![
+        Item::new(glyph::PHONE, "Open Phone Bridge", ID_OPEN_FLYOUT),
+        Item::new(
+            glyph::PHONE,
+            if crate::screen_window::is_open() {
+                "Hide phone screen"
+            } else {
+                "Show phone screen"
+            },
+            ID_SCREEN,
+        ),
+        Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
+        Item::new(glyph::FOLDER, "Open received files", ID_OPEN_FOLDER),
+        Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
+        Item::separator(),
+        Item::new(glyph::POWER, "Quit Phone Bridge", ID_QUIT),
+    ];
+    // The camera entries sit right after the phone-screen entry.
+    for (i, it) in camera_items.into_iter().enumerate() {
+        items.insert(2 + i, it);
+    }
+    crate::menu::show(hwnd, items);
 }
 
 /// Snapshot of everything the settings window shows.
@@ -1583,6 +1613,25 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
         }
         ID_SCREEN_HIDE => crate::screen_window::close(),
+        ID_CAMERA_START => {
+            let _ = st.cmds.send(Cmd::StartCamera);
+        }
+        ID_CAMERA_STOP => {
+            let _ = st.cmds.send(Cmd::StopCamera);
+        }
+        ID_CAMERA_LENS => {
+            let _ = st.cmds.send(Cmd::SwitchCameraLens);
+        }
+        ID_CAMERA_REMOVE => {
+            let _ = st.cmds.send(Cmd::RemoveCamera);
+        }
+        ID_CAMERA => {
+            let _ = st.cmds.send(if crate::camera::is_running() {
+                Cmd::StopCamera
+            } else {
+                Cmd::StartCamera
+            });
+        }
         ID_SCREEN => {
             if crate::screen_window::is_open() {
                 crate::screen_window::close();
@@ -1591,6 +1640,8 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
         }
         ID_QUIT => {
+            // Nothing of the camera stays behind: Stop, Remove, Shutdown.
+            crate::camera::stop();
             // SAFETY: our own window.
             let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd) };
         }
@@ -1781,6 +1832,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_DESTROY => {
+            crate::camera::stop();
             let nid = icon_data(hwnd);
             // SAFETY: removes our icon; then ends the message loop.
             unsafe {

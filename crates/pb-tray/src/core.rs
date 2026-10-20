@@ -74,6 +74,14 @@ pub enum Cmd {
     ControlPhone,
     /// Show the phone's screen in a window.
     ShowScreen,
+    /// Use the phone's camera as a webcam on this PC.
+    StartCamera,
+    /// Stop the phone camera (and remove the virtual camera).
+    StopCamera,
+    /// Switch the phone camera's lens (front or back).
+    SwitchCameraLens,
+    /// Remove the camera from this PC (stop, sweep, one UAC prompt).
+    RemoveCamera,
     /// Text or a link shared from Windows (share sheet).
     SendText {
         text: String,
@@ -238,6 +246,13 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ui = Arc::new(ui);
     std::fs::create_dir_all(&opts.dir)?;
+    // A virtual camera a crash left behind goes now (nothing is streaming).
+    if crate::camera_register::is_registered() {
+        let log = log.clone();
+        std::thread::spawn(move || {
+            crate::camera_device::sweep_leftovers(&|m| log.line(m));
+        });
+    }
     // Partial files left by a tray that was killed mid-transfer.
     if let Ok(dir) = settings.lock().map(|s| s.save_dir.clone()) {
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -452,6 +467,28 @@ pub async fn run(
                     let (node, log, settings) = (node.clone(), log.clone(), settings.clone());
                     let ui: Arc<dyn Fn(UiEvent) + Send + Sync> = ui.clone();
                     tokio::spawn(show_screen(node, id, name, log, ui, settings, false));
+                }
+                Some(Cmd::StartCamera) => {
+                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let Some((id, name)) = target else {
+                        ui(UiEvent::Info("Pair a phone first".into()));
+                        continue;
+                    };
+                    if crate::camera::is_running() {
+                        continue;
+                    }
+                    let (node, log) = (node.clone(), log.clone());
+                    let ui: Arc<dyn Fn(UiEvent) + Send + Sync> = ui.clone();
+                    tokio::spawn(show_camera(node, id, name, log, ui, false));
+                }
+                Some(Cmd::StopCamera) => {
+                    log.line("CAMERA stopped by the user");
+                    tokio::task::spawn_blocking(crate::camera::stop);
+                }
+                Some(Cmd::SwitchCameraLens) => crate::camera::switch_lens(),
+                Some(Cmd::RemoveCamera) => {
+                    let (log, ui) = (log.clone(), ui.clone());
+                    tokio::task::spawn_blocking(move || remove_camera(&log, &*ui));
                 }
                 Some(Cmd::ControlPhone) => {
                     // A second press while the phone is still asking cancels the request.
@@ -976,6 +1013,191 @@ fn show_screen(
                         pb_transport::Error::Declined => format!("{name} didn't share its screen"),
                         pb_transport::Error::Timeout => format!("{name} didn't answer"),
                         _ => format!("Couldn't reach {name} to show its screen"),
+                    }));
+                    return;
+                }
+            }
+        }
+    })
+}
+
+/// Remove the camera from this PC: stop streaming, sweep leftovers, then
+/// take the installed files and keys away (one UAC prompt).
+fn remove_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) {
+    use crate::camera_register::RegisterError;
+    crate::camera::stop();
+    crate::camera_device::sweep_leftovers(&|m| log.line(m));
+    if !crate::camera_register::is_registered() {
+        ui(UiEvent::Info("The phone camera is not installed".into()));
+        return;
+    }
+    ui(UiEvent::Info(
+        "Removing the phone camera: Windows will ask once for permission".into(),
+    ));
+    match crate::camera_register::request_unregister() {
+        Ok(()) => {
+            log.line("CAMERA removed from this PC");
+            ui(UiEvent::Info("The phone camera was removed".into()));
+        }
+        Err(RegisterError::Declined) => {
+            ui(UiEvent::Info("The phone camera was not removed".into()));
+        }
+        Err(RegisterError::Failed(c)) => {
+            log.line(&format!("CAMERA remove failed: code {c}"));
+            ui(UiEvent::Info(format!(
+                "Couldn't remove the phone camera (code {c})"
+            )));
+        }
+    }
+}
+
+/// Use the phone's camera: install the source once (one UAC prompt), ask
+/// the phone, then run the session. `again`: the link dropped a moment ago;
+/// retry quietly for 30 s (the virtual camera stays, repeating the last frame).
+fn show_camera(
+    node: Node,
+    id: PeerId,
+    name: String,
+    log: Log,
+    ui: Arc<dyn Fn(UiEvent) + Send + Sync>,
+    again: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move {
+        use crate::camera_register::RegisterError;
+        if !again && !crate::camera_register::is_registered() {
+            ui(UiEvent::Info(
+                "Setting up the phone camera: Windows will ask once for permission".into(),
+            ));
+            let sid = crate::ipc::user_sid().unwrap_or_default();
+            let r =
+                tokio::task::spawn_blocking(move || crate::camera_register::request_register(&sid))
+                    .await;
+            match r {
+                Ok(Ok(())) => log.line("CAMERA source installed"),
+                Ok(Err(RegisterError::Declined)) => {
+                    ui(UiEvent::Info(
+                        "The camera needs a one-time permission to install".into(),
+                    ));
+                    return;
+                }
+                Ok(Err(RegisterError::Failed(c))) => {
+                    log.line(&format!("CAMERA install failed: code {c}"));
+                    ui(UiEvent::Info(format!(
+                        "Couldn't set up the camera (code {c})"
+                    )));
+                    return;
+                }
+                Err(_) => return,
+            }
+        }
+        let codecs = crate::screen_decode::supported_codecs();
+        let start = pb_protocol::control::CameraStart {
+            id: 0,
+            codecs: codecs.iter().map(|c| *c as u32).collect(),
+            lens: crate::camera::lens(),
+            width: 1920,
+            height: 1080,
+            fps: 30,
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let t0 = Instant::now();
+            if again && !crate::camera::is_running() {
+                return; // stopped by the user meanwhile
+            }
+            if !again {
+                ui(UiEvent::Info(format!("Waiting for {name}\u{2026}")));
+            }
+            let asked = {
+                let (ui, name, log) = (ui.clone(), name.clone(), log.clone());
+                move || {
+                    log.line(&format!(
+                        "CAMERA asked after {} ms (connected)",
+                        t0.elapsed().as_millis()
+                    ));
+                    if !again {
+                        ui(UiEvent::Info(format!(
+                            "Asking {name} to share its camera\u{2026}"
+                        )))
+                    }
+                }
+            };
+            match node.open_camera(&id, start.clone(), asked).await {
+                Ok(view) => {
+                    log.line(&format!(
+                        "CAMERA \"{name}\" streaming ({}x{}, rotation {}) accepted after {} ms",
+                        view.accept.width,
+                        view.accept.height,
+                        view.accept.rotation,
+                        t0.elapsed().as_millis()
+                    ));
+                    if again && !crate::camera::is_running() {
+                        view.close();
+                        return;
+                    }
+                    crate::camera::set_lens(view.accept.lens);
+                    let codec = pb_video::Codec::from_u32(view.accept.codec)
+                        .unwrap_or(pb_video::Codec::H264);
+                    let ended = {
+                        let (node, log, ui, name) =
+                            (node.clone(), log.clone(), ui.clone(), name.clone());
+                        let rt = tokio::runtime::Handle::current();
+                        move |why: String| {
+                            log.line(&format!("CAMERA ended: {why}"));
+                            if why.starts_with("Phone camera stopped") {
+                                // Maybe only the link: try again for 30 s.
+                                rt.spawn(show_camera(
+                                    node.clone(),
+                                    id,
+                                    name.clone(),
+                                    log.clone(),
+                                    ui.clone(),
+                                    true,
+                                ));
+                            } else {
+                                crate::camera::stop();
+                                ui(UiEvent::Info(why));
+                            }
+                        }
+                    };
+                    let opts = crate::camera::CameraOpts {
+                        log: Box::new({
+                            let log = log.clone();
+                            move |m: &str| log.line(m)
+                        }),
+                        on_ended: Box::new(ended),
+                    };
+                    match crate::camera::start(
+                        view,
+                        codec,
+                        opts,
+                        &tokio::runtime::Handle::current(),
+                    ) {
+                        Ok(()) => ui(UiEvent::Info("Phone camera on".into())),
+                        Err(e) => {
+                            log.line(&format!("CAMERA start failed: {e}"));
+                            crate::camera::stop();
+                            ui(UiEvent::Info("Couldn't start the phone camera".into()));
+                        }
+                    }
+                    return;
+                }
+                Err(e)
+                    if again
+                        && !matches!(e, pb_transport::Error::Declined)
+                        && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+                Err(e) => {
+                    log.line(&format!("CAMERA \"{name}\" not started: {e}"));
+                    // Nothing keeps the camera alive without a session.
+                    tokio::task::spawn_blocking(crate::camera::stop);
+                    ui(UiEvent::Info(match e {
+                        _ if again => format!("{name} stopped sharing its camera"),
+                        pb_transport::Error::Declined => format!("{name} didn't share its camera"),
+                        pb_transport::Error::Timeout => format!("{name} didn't answer"),
+                        _ => format!("Couldn't reach {name} to use its camera"),
                     }));
                     return;
                 }

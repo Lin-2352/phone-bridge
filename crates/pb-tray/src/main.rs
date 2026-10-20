@@ -9,13 +9,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(windows)]
-#[allow(dead_code)] // used by the camera menu (next task)
+mod camera;
+#[cfg(windows)]
 mod camera_device;
 #[cfg(windows)]
-#[allow(dead_code)] // used by the camera pipeline (next)
 mod camera_fit;
 #[cfg(windows)]
-#[allow(dead_code)] // used by the camera menu (next task)
 mod camera_register;
 #[cfg(windows)]
 mod control;
@@ -140,6 +139,8 @@ fn main() {
             "--menu" => ui_request = Some(ipc::Request::Menu),
             "--show-screen" => ui_request = Some(ipc::Request::ShowScreen),
             "--hide-screen" => ui_request = Some(ipc::Request::HideScreen),
+            "--start-camera" => ui_request = Some(ipc::Request::StartCamera),
+            "--stop-camera" => ui_request = Some(ipc::Request::StopCamera),
             // Everything after --send is a file (Explorer "Send to" passes paths).
             "--send" => send_files.extend(args.by_ref().map(PathBuf::from)),
             _ => {}
@@ -259,6 +260,8 @@ fn main() {
                     ipc::Request::Menu => ui::ID_MENU,
                     ipc::Request::ShowScreen => ui::ID_SCREEN_SHOW,
                     ipc::Request::HideScreen => ui::ID_SCREEN_HIDE,
+                    ipc::Request::StartCamera => ui::ID_CAMERA_START,
+                    ipc::Request::StopCamera => ui::ID_CAMERA_STOP,
                     _ => ui::ID_SEND_CLIPBOARD,
                 },
             )
