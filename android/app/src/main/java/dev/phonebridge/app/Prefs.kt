@@ -66,6 +66,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("allow_screen", false)
         set(v) = sp.edit().putBoolean("allow_screen", v).apply()
 
+    /** Keep screen capture ready between shares (Android shows its cast icon). */
+    var instantScreen: Boolean
+        get() = sp.getBoolean("instant_screen", false)
+        set(v) = sp.edit().putBoolean("instant_screen", v).apply()
+
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?
         get() = sp.getString("save_tree", null)?.let(Uri::parse)

@@ -61,6 +61,8 @@ pub const ID_SETTINGS: usize = 11;
 pub const ID_MENU: usize = 12;
 const ID_CONTROL: usize = 13;
 const ID_SCREEN: usize = 14;
+pub const ID_SCREEN_SHOW: usize = 15;
+pub const ID_SCREEN_HIDE: usize = 16;
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -1574,6 +1576,12 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_SETTINGS => open_settings(hwnd, st),
         ID_MENU => show_menu(hwnd),
         ID_CONTROL => toggle_control(hwnd, st),
+        ID_SCREEN_SHOW => {
+            if !crate::screen_window::is_open() {
+                let _ = st.cmds.send(Cmd::ShowScreen);
+            }
+        }
+        ID_SCREEN_HIDE => crate::screen_window::close(),
         ID_SCREEN => {
             if crate::screen_window::is_open() {
                 crate::screen_window::close();

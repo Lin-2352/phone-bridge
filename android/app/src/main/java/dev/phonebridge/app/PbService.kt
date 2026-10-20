@@ -548,6 +548,15 @@ class PbService : Service() {
     /** A PC asks to see this screen: resume within the grace, else ask. */
     private fun askScreen(e: PbEvent.ScreenRequest) {
         if (e.resume && ScreenShare.resume(e.id)) return
+        if (ScreenShare.armed != null && Prefs(this).allowScreen) {
+            val a = ScreenAsk(
+                e.id, e.peerName, e.maxLongSide.toInt(), e.sharp, e.dim,
+                List(e.codecs.size) { e.codecs[it].toInt() and 0xff },
+            )
+            android.os.Handler(mainLooper).post { ScreenShare.startArmed(a) }
+            Log.i(TAG, "SCREEN request from ${e.peerName}: instant")
+            return
+        }
         val ask = Intent(this, ScreenConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)

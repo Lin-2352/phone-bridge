@@ -57,7 +57,7 @@ data class ScreenAsk(
 class ScreenCapture(
     private val ctx: Context,
     private val projection: MediaProjection,
-    private val ask: ScreenAsk,
+    private var ask: ScreenAsk,
 ) {
     private val caps = EncoderCaps.get()
     private val thread = HandlerThread("pb-screen").apply { start() }
@@ -83,6 +83,7 @@ class ScreenCapture(
     private var statKeys = 0
     private var statSince = 0L
     private var bitrate = 0
+    private val encodeMs = ArrayList<Int>()
 
     private val displays = ctx.getSystemService(DisplayManager::class.java)
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -158,6 +159,35 @@ class ScreenCapture(
         }
         codec = next
         reconfigure()
+    }
+
+    /**
+     * Instant screen: keep the projection and the virtual display, but stop
+     * encoding (no work, no frames) until the next share. Main thread.
+     */
+    fun idle() {
+        paused = true
+        screen = null
+        handler.post {
+            display?.surface = null
+            stopEncoder()
+        }
+    }
+
+    /** The next share while idle: a fresh encoder for this request. Main thread. */
+    fun restart(a: ScreenAsk): PbScreenAccept? {
+        ask = a
+        val chosen = chooseCodec(bytes(a.codecs), bytes(caps.codecs)) ?: return null
+        codec = chosen.toInt()
+        maxLong = if (a.sharp || a.maxLong == 0) 0 else a.maxLong
+        fps = FPS
+        steppedDown = false
+        rotation = currentRotation()
+        measure()
+        stopEncoder()
+        startEncoder()
+        display?.resize(width, height, density())
+        return accept()
     }
 
     fun stop() {
@@ -287,6 +317,8 @@ class ScreenCapture(
                 firstOutput = false
                 Log.i(TAG, "SCREEN first output after ${now - startedAt} ms")
             }
+            // Capture (surface timestamp, nanoTime-based) to encoder output.
+            if (!config) encodeMs.add(((System.nanoTime() / 1000 - info.presentationTimeUs) / 1000).toInt())
             val advice = s.sendFrame(payload, info.presentationTimeUs, flags)
             stats(now, info.size, advice.sent, advice.requestKey)
             if (advice.requestKey) requestKey()
@@ -310,10 +342,16 @@ class ScreenCapture(
         if (keyAsked) statKeys++
         val span = now - statSince
         if (span >= 5000) {
+            encodeMs.sort()
+            fun pct(q: Double) = encodeMs.getOrNull(((encodeMs.size - 1) * q).toInt()) ?: 0
+            val c = screen?.takeConfirmStats()
             Log.i(
                 TAG,
-                "SCREEN stats out=${statFrames * 1000 / span}/s ${statBytes * 8 / span} kbit/s drops=$statDrops keys=$statKeys target=${bitrate / 1000} kbit/s",
+                "SCREEN stats out=${statFrames * 1000 / span}/s ${statBytes * 8 / span} kbit/s drops=$statDrops keys=$statKeys " +
+                    "target=${bitrate / 1000} kbit/s encode p50=${pct(0.5)} p95=${pct(0.95)} ms " +
+                    "confirm p50=${c?.p50} p95=${c?.p95} ms (${c?.samples})",
             )
+            encodeMs.clear()
             statFrames = 0
             statBytes = 0
             statDrops = 0
@@ -339,6 +377,11 @@ object ScreenShare : ScreenListener {
 
     @Volatile var capture: ScreenCapture? = null
         private set
+
+    /** Instant screen: a capture kept between shares (Android shows its cast icon). */
+    @Volatile var armed: ScreenCapture? = null
+        private set
+    val ready = mutableStateOf(false)
     @Volatile private var screen: PbScreen? = null
     @Volatile private var ask: ScreenAsk? = null
     private val main = Handler(Looper.getMainLooper())
@@ -385,17 +428,63 @@ object ScreenShare : ScreenListener {
         return true
     }
 
-    /** End sharing; the projection service type is dropped. */
+    /** Instant screen is armed: share now without Android's prompt. */
+    fun startArmed(a: ScreenAsk): Boolean {
+        val c = armed ?: return false
+        val node = Bridge.node ?: return false
+        val accept = runCatching { c.restart(a) }.onFailure { Log.e(TAG, "SCREEN restart failed: $it") }.getOrNull()
+        if (accept == null) {
+            node.answerScreen(a.id, null)
+            disarm()
+            return false
+        }
+        val s = node.answerScreen(a.id, accept) ?: return false
+        armed = null
+        ready.value = false
+        node.setScreenListener(this)
+        capture = c
+        screen = s
+        ask = a
+        lastActive = true
+        lastDim = null
+        c.attach(s)
+        sharingWith.value = a.peer
+        PbService.instance?.let { notifySharing(it, a.peer) }
+        Log.i(TAG, "SCREEN sharing with ${a.peer} (instant)")
+        return true
+    }
+
+    /** Release a kept capture (toggle off, or a full stop). */
+    fun disarm() {
+        armed?.stop()
+        armed = null
+        ready.value = false
+        if (capture == null) PbService.instance?.leaveProjection()
+    }
+
+    /**
+     * End sharing. With Instant screen on and not stopped by the user, the
+     * capture is kept (idle) for the next share; otherwise everything goes.
+     */
     fun stop(userStopped: Boolean) {
         main.removeCallbacks(graceEnd)
         if (userStopped) runCatching { screen?.stop() }
-        capture?.stop()
+        val keep = !userStopped && PbService.instance?.let { Prefs(it).instantScreen } == true
+        val c = capture
         capture = null
         screen = null
         sharingWith.value = null
         PbService.instance?.let { notifySharing(it, null) }
-        PbService.instance?.leaveProjection()
         ControlService.instance?.endDim()
+        if (keep && c != null) {
+            c.idle()
+            armed = c
+            ready.value = true
+            Log.i(TAG, "SCREEN ready for an instant share")
+        } else {
+            c?.stop()
+            disarm()
+        }
     }
 
     @Volatile private var lastActive = true

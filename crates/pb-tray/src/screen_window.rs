@@ -316,6 +316,7 @@ fn decode_thread(
     // Per-second: frames presented, decode+present time.
     let mut stat_since = Instant::now();
     let mut stat_frames = 0u32;
+    let mut stat_records = 0u32;
     let mut stat_ms: Vec<f64> = Vec::new();
     let post = |m: u32| {
         // SAFETY: posting to our own window.
@@ -359,6 +360,7 @@ fn decode_thread(
                     ));
                 }
                 let t = Instant::now();
+                stat_records += 1;
                 if r.flags & FLAG_CONFIG != 0 {
                     if let Some(c) = Config::decode(&r.payload) {
                         let v = (u32::from(c.width), u32::from(c.height));
@@ -395,12 +397,14 @@ fn decode_thread(
                                     .unwrap_or(0.0)
                             };
                             (opts.log)(&format!(
-                                "SCREEN stats shown={}/s decode+present p50={:.1} p95={:.1} ms",
+                                "SCREEN stats received={}/s shown={}/s decode+present p50={:.1} p95={:.1} ms",
+                                stat_records,
                                 stat_frames,
                                 p(0.5),
                                 p(0.95)
                             ));
                             stat_frames = 0;
+                            stat_records = 0;
                             stat_ms.clear();
                             stat_since = Instant::now();
                         }

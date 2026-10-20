@@ -40,6 +40,8 @@ pub struct Pacer {
     last_drop: Option<Instant>,
     last_raise: Option<Instant>,
     last_key_request: Option<Instant>,
+    /// Send → confirmed times (ms) since the last `take_confirm_ms`.
+    confirm_ms: Vec<u32>,
 }
 
 impl Pacer {
@@ -52,6 +54,7 @@ impl Pacer {
             last_drop: None,
             last_raise: None,
             last_key_request: None,
+            confirm_ms: Vec::new(),
         }
     }
 
@@ -138,14 +141,22 @@ impl Pacer {
     }
 
     /// The PC presented up to this pts.
-    pub fn on_feedback(&mut self, _now: Instant, presented_pts_us: i64) {
-        while self
-            .in_flight
-            .front()
-            .is_some_and(|(pts, _)| *pts <= presented_pts_us)
-        {
+    pub fn on_feedback(&mut self, now: Instant, presented_pts_us: i64) {
+        while let Some(&(pts, sent)) = self.in_flight.front() {
+            if pts > presented_pts_us {
+                break;
+            }
             self.in_flight.pop_front();
+            if self.confirm_ms.len() < 1000 {
+                self.confirm_ms
+                    .push(now.saturating_duration_since(sent).as_millis() as u32);
+            }
         }
+    }
+
+    /// Send → shown-on-the-PC round trips (ms) measured since the last call.
+    pub fn take_confirm_ms(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.confirm_ms)
     }
 }
 
@@ -158,6 +169,18 @@ mod tests {
 
     fn ms(t0: Instant, n: u64) -> Instant {
         t0 + Duration::from_millis(n)
+    }
+
+    #[test]
+    fn confirm_times_are_measured() {
+        let t0 = Instant::now();
+        let mut p = Pacer::new(T);
+        assert!(p.on_frame(t0, 0, FLAG_KEY, 0).send);
+        assert!(p.on_frame(ms(t0, 10), 10_000, 0, 0).send);
+        p.on_feedback(ms(t0, 40), 0);
+        p.on_feedback(ms(t0, 60), 10_000);
+        assert_eq!(p.take_confirm_ms(), [40, 50]);
+        assert!(p.take_confirm_ms().is_empty(), "taken once");
     }
 
     #[test]

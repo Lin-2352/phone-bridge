@@ -34,6 +34,9 @@ pub enum Request {
     Open,
     /// Show the tray menu (for checks without clicking the icon).
     Menu,
+    /// Open the phone-screen window (for checks without clicking).
+    ShowScreen,
+    HideScreen,
     /// Text or a link from the share sheet.
     Text {
         link: bool,
@@ -49,6 +52,8 @@ fn encode(r: &Request) -> String {
         Request::Settings => "settings\n".into(),
         Request::Open => "open\n".into(),
         Request::Menu => "menu\n".into(),
+        Request::ShowScreen => "show-screen\n".into(),
+        Request::HideScreen => "hide-screen\n".into(),
         Request::Text { link, text } => format!("text\n{}\n{text}", u8::from(*link)),
         Request::Send(files) => {
             let mut s = "send\n".to_owned();
@@ -70,6 +75,8 @@ pub fn decode(text: &str) -> Option<Request> {
         "settings" => Some(Request::Settings),
         "open" => Some(Request::Open),
         "menu" => Some(Request::Menu),
+        "show-screen" => Some(Request::ShowScreen),
+        "hide-screen" => Some(Request::HideScreen),
         "text" => {
             let link = lines.next()? == "1";
             let text: Vec<&str> = lines.collect();
@@ -228,8 +235,12 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
                     let _ = cmds.send(Cmd::SendText { text, link });
                 }
                 Some(
-                    r
-                    @ (Request::SendClipboard | Request::Settings | Request::Open | Request::Menu),
+                    r @ (Request::SendClipboard
+                    | Request::Settings
+                    | Request::Open
+                    | Request::Menu
+                    | Request::ShowScreen
+                    | Request::HideScreen),
                 ) => on_ui(&r),
                 None => {}
             }
@@ -252,6 +263,14 @@ mod tests {
             _ => panic!(),
         }
         assert!(matches!(decode("pair\n"), Some(Request::Pair)));
+        assert!(matches!(
+            decode(&encode(&Request::ShowScreen)),
+            Some(Request::ShowScreen)
+        ));
+        assert!(matches!(
+            decode(&encode(&Request::HideScreen)),
+            Some(Request::HideScreen)
+        ));
         assert!(decode("send\n").is_none());
         assert!(decode("rm -rf /\n").is_none());
         assert!(decode("").is_none());

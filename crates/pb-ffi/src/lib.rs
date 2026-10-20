@@ -276,6 +276,14 @@ fn to_wire(n: PbNotification) -> (pb_protocol::control::Notification, Option<Vec
     (wire, n.icon_png)
 }
 
+/// Send → shown-on-the-PC round trips since the last call (ms).
+#[derive(uniffi::Record)]
+pub struct PbConfirmStats {
+    pub samples: u32,
+    pub p50: u32,
+    pub p95: u32,
+}
+
 /// The phone's answer to a screen request.
 #[derive(uniffi::Record)]
 pub struct PbScreenAccept {
@@ -418,6 +426,26 @@ impl PbScreen {
             }
         }
         advice(d)
+    }
+
+    /// Round trips measured since the last call (the stats log).
+    pub fn take_confirm_stats(&self) -> PbConfirmStats {
+        let mut v = self
+            .pacer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take_confirm_ms();
+        v.sort_unstable();
+        let at = |q: f64| {
+            v.get(((v.len() as f64 - 1.0) * q) as usize)
+                .copied()
+                .unwrap_or(0)
+        };
+        PbConfirmStats {
+            samples: v.len() as u32,
+            p50: at(0.5),
+            p95: at(0.95),
+        }
     }
 
     /// Something for the PC window to say ("Lower quality to save memory").

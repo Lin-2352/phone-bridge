@@ -277,6 +277,26 @@ class MainActivity : ComponentActivity() {
                     Button(onClick = { ScreenShare.stop(userStopped = true) }) { Text("Stop") }
                 }
             }
+            var instant by remember { mutableStateOf(prefs.instantScreen) }
+            ListItem(
+                headlineContent = { Text("Instant screen") },
+                supportingContent = {
+                    Text(
+                        when {
+                            !instant -> "Off. Android asks each time your PC shows this screen"
+                            ScreenShare.ready.value -> "Ready. Android shows its cast icon while ready"
+                            else -> "On. After the next share, later ones skip Android's prompt"
+                        },
+                    )
+                },
+                trailingContent = {
+                    Switch(instant, { v ->
+                        instant = v
+                        prefs.instantScreen = v
+                        if (!v) ScreenShare.disarm()
+                    })
+                },
+            )
             ListItem(
                 headlineContent = { Text("Show my screen on my PC without asking") },
                 supportingContent = {

@@ -113,6 +113,8 @@ fn main() {
             "--settings" => ui_request = Some(ipc::Request::Settings),
             "--open" => ui_request = Some(ipc::Request::Open),
             "--menu" => ui_request = Some(ipc::Request::Menu),
+            "--show-screen" => ui_request = Some(ipc::Request::ShowScreen),
+            "--hide-screen" => ui_request = Some(ipc::Request::HideScreen),
             // Everything after --send is a file (Explorer "Send to" passes paths).
             "--send" => send_files.extend(args.by_ref().map(PathBuf::from)),
             _ => {}
@@ -230,6 +232,8 @@ fn main() {
                     ipc::Request::Settings => ui::ID_SETTINGS,
                     ipc::Request::Open => ui::ID_OPEN_FLYOUT,
                     ipc::Request::Menu => ui::ID_MENU,
+                    ipc::Request::ShowScreen => ui::ID_SCREEN_SHOW,
+                    ipc::Request::HideScreen => ui::ID_SCREEN_HIDE,
                     _ => ui::ID_SEND_CLIPBOARD,
                 },
             )

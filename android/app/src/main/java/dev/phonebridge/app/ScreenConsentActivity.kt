@@ -54,6 +54,7 @@ class ScreenConsentActivity : Activity() {
             capturePrompt()
             return
         }
+        if (ScreenShare.armed != null) Log.i(TAG, "SCREEN instant share waiting for the user's yes")
         dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Let ${a.peer} see this screen?")
             .setMessage("Your screen appears in a window on the PC, which can also tap and type here. Stop any time from Phone Bridge or the notification.")
@@ -75,6 +76,14 @@ class ScreenConsentActivity : Activity() {
 
     private fun capturePrompt() {
         answered = true
+        // Instant screen: the capture is already allowed and running idle.
+        ask?.let { a ->
+            if (ScreenShare.armed != null) {
+                if (!ScreenShare.startArmed(a)) Bridge.node?.answerScreen(a.id, null)
+                finish()
+                return
+            }
+        }
         promptAt = SystemClock.elapsedRealtime()
         Log.i(TAG, "SCREEN capture prompt after ${promptAt - askedAt} ms")
         val mpm = getSystemService(MediaProjectionManager::class.java)
