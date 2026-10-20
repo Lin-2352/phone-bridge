@@ -52,6 +52,26 @@ pub struct ScreenView {
 }
 
 impl ScreenView {
+    /// A shareable remote (input, feedback, state, close) and the streams.
+    pub fn into_parts(
+        self,
+    ) -> (
+        ScreenRemote,
+        mpsc::Receiver<Record>,
+        mpsc::Receiver<ScreenState>,
+    ) {
+        (
+            ScreenRemote {
+                accept: self.accept,
+                input: self.input,
+                ctl: self.ctl,
+                closer: self.closer,
+            },
+            self.records,
+            self.state,
+        )
+    }
+
     pub fn feedback(&self, presented_pts_us: i64) {
         let _ = self.ctl.send(ControlMsg::ScreenFeedback(ScreenFeedback {
             presented_pts_us,
@@ -67,6 +87,42 @@ impl ScreenView {
     }
 
     /// Decoding failed: ask the phone for the next codec.
+    pub fn codec_failed(&self) {
+        let _ = self.ctl.send(ControlMsg::ScreenState(ScreenState {
+            active: true,
+            codec_failed: true,
+            ..Default::default()
+        }));
+    }
+
+    pub fn close(&self) {
+        self.closer.close(b"screen closed on the PC");
+    }
+}
+
+/// The PC window's handle on a screen session (thread-safe).
+pub struct ScreenRemote {
+    pub accept: ScreenAccept,
+    pub input: InputSender,
+    ctl: mpsc::UnboundedSender<ControlMsg>,
+    closer: SessionCloser,
+}
+
+impl ScreenRemote {
+    pub fn feedback(&self, presented_pts_us: i64) {
+        let _ = self.ctl.send(ControlMsg::ScreenFeedback(ScreenFeedback {
+            presented_pts_us,
+        }));
+    }
+
+    pub fn set_state(&self, active: bool, dim: bool) {
+        let _ = self.ctl.send(ControlMsg::ScreenState(ScreenState {
+            active,
+            dim,
+            ..Default::default()
+        }));
+    }
+
     pub fn codec_failed(&self) {
         let _ = self.ctl.send(ControlMsg::ScreenState(ScreenState {
             active: true,

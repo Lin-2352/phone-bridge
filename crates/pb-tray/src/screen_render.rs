@@ -259,9 +259,16 @@ impl Renderer {
         self.vp.as_ref().ok_or_else(|| "no video processor".into())
     }
 
-    /// The frame, letterboxed into `dest` (client coordinates); `dimmed`
-    /// darkens it (Reconnecting…).
-    pub fn present(&mut self, f: &Frame, dest: RECT, dimmed: bool) -> Result<(), String> {
+    /// The frame's `src` area (the video size; decoders pad the texture),
+    /// letterboxed into `dest` (client coordinates); `dimmed` darkens it
+    /// (Reconnecting…).
+    pub fn present(
+        &mut self,
+        f: &Frame,
+        src: (u32, u32),
+        dest: RECT,
+        dimmed: bool,
+    ) -> Result<(), String> {
         // SAFETY: D3D11 video processing into our back buffer; views are
         // released before the next resize.
         unsafe {
@@ -276,6 +283,18 @@ impl Renderer {
             let back: ID3D11Texture2D = self.swap.GetBuffer(0).map_err(err)?;
             let out = self.output_view(&back, &enumerator)?;
             let input = self.input_view(&f.texture, f.index, &enumerator)?;
+            let src_rect = RECT {
+                left: 0,
+                top: 0,
+                right: src.0.min(td.Width) as i32,
+                bottom: src.1.min(td.Height) as i32,
+            };
+            self.video_context.VideoProcessorSetStreamSourceRect(
+                &processor,
+                0,
+                true,
+                Some(&src_rect),
+            );
             self.video_context
                 .VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&dest));
             self.video_context.VideoProcessorSetStreamAlpha(
