@@ -2330,6 +2330,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pb-camera-frames"
+version = "0.0.1"
+
+[[package]]
 name = "pb-cli"
 version = "0.0.1"
 dependencies = [

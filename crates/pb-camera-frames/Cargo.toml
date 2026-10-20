@@ -1,0 +1,16 @@
+[package]
+name = "pb-camera-frames"
+description = "Phone Bridge camera: the frames file shared by the tray and the media source, NV12 copy, 16:9 fit and the 30 fps heartbeat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+
+[dependencies]

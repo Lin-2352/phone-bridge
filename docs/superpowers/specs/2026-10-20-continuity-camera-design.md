@@ -142,14 +142,15 @@ New `ControlMsg` variants (`crates/pb-protocol/src/control.rs`, next free tags):
 
 | Offset | Field |
 |---|---|
-| 0 | magic `PBCF`, `u32` version = 1 |
+| 0 | magic `PBCF` (4 bytes), `u32` version = 1 |
 | 8 | `u32 wanted_w`, `u32 wanted_h` (written by the source) |
-| 16 | `u32 width`, `u32 height` of the frames (written by the tray) |
-| 24 | `u64 seq[2]`: a seqlock per slot. Odd while it's being written; each completed write adds 2 |
+| 24, 32 | `u64 seq[2]`: a seqlock per slot. Odd while it's being written; each completed write adds 2 |
 | 40 | `u64 newest`: the slot index of the last complete frame (0 or 1) |
-| 48 | `u64 pts_us[2]` |
+| 48, 56 | `u64 pts_us[2]` |
 | 64 | `u64 tray_heartbeat_ms` (the tray's wall clock; the source shows black after 5 s without an update) |
-| 4096 | slot 0: NV12, `1920 × 1080 × 3 / 2` bytes, sized for the largest type |
+| 72, 80 | per slot: `u32 width`, `u32 height` of the frame in that slot (checked inside the seqlock) |
+| 88 | `u64 frames`: count of completed frames (0 = nothing yet; readers compare it with the last one they saw) |
+| 4096 | slot 0: NV12, `1920 * 1080 * 3 / 2` bytes, sized for the largest type |
 | 4096 + slot | slot 1 |
 
 **Reader rule:**
