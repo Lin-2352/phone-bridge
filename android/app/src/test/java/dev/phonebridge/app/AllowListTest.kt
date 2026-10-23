@@ -51,3 +51,15 @@ class UniquePeerIdTest {
         assertEquals("", uniquePeerId(peers, "Nope"))
     }
 }
+
+class PruneAllowedTest {
+    @Test
+    fun a_removed_pc_is_dropped_from_the_list() {
+        assertEquals(setOf("a"), pruneAllowed(setOf("a", "b"), listOf("a", "c")))
+    }
+
+    @Test
+    fun nothing_changes_while_every_listed_pc_is_still_paired() {
+        assertEquals(setOf("a", "b"), pruneAllowed(setOf("a", "b"), listOf("a", "b", "c")))
+    }
+}

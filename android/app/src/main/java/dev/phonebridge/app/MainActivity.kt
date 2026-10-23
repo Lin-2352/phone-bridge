@@ -322,7 +322,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun CameraForPc(modifier: Modifier = Modifier) {
         val prefs = remember { Prefs(this@MainActivity) }
-        var allowed by remember { mutableStateOf(prefs.allowedCameraPcs) }
+        var allowed by remember(resumed.intValue) { mutableStateOf(prefs.allowedCameraPcs) }
         val user = CameraShare.usedBy.value
         Column(modifier.fillMaxWidth()) {
             if (user != null) {
@@ -522,6 +522,7 @@ class MainActivity : ComponentActivity() {
                     TextButton(onClick = {
                         removing = null
                         Bridge.node?.unpair(p.id)
+                        Prefs(this@MainActivity).let { it.allowedCameraPcs = pruneAllowed(it.allowedCameraPcs, Bridge.node?.peers()?.map { q -> q.id }.orEmpty()) }
                         Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
                         PbService.refresh(this@MainActivity)
                         onBack()

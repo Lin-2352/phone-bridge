@@ -67,9 +67,12 @@ class CameraConsentActivity : Activity() {
             .setTitle("Let ${a.peer} use your camera?")
             .setMessage("Your camera becomes a webcam on the PC while it is on. Android shows its camera indicator, and Stop is in the notification.")
             .setPositiveButton("Allow") { _, _ -> allow(always = false) }
-            .setNeutralButton("Always allow") { _, _ -> allow(always = true) }
             .setNegativeButton("Deny") { _, _ -> decline() }
             .setOnDismissListener { if (!answered) decline() }
+            .apply {
+                // Without a known id "Always allow" could not be remembered.
+                if (peerId.isNotEmpty()) setNeutralButton("Always allow") { _, _ -> allow(always = true) }
+            }
             .show()
         main.postDelayed({ if (!answered) decline() }, left)
     }

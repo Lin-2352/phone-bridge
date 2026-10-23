@@ -84,7 +84,7 @@ class CameraMathTest {
     @Test
     fun steppedDownTheSizeIsCappedAtHd() {
         assertEquals(1280 to 720, pickSize(listOf(1280 to 720, 1920 to 1080), steppedDown = true))
-        assertNull(pickSize(listOf(1920 to 1080), steppedDown = true))
+        assertNull(pickSize(listOf(640 to 480), steppedDown = true))
     }
 
     @Test
@@ -99,5 +99,18 @@ class CameraMathTest {
         assertEquals(1, lensToUse(0, hasBack = false, hasFront = true))
         assertNull(lensToUse(0, hasBack = false, hasFront = false))
         assertEquals(1, lensToUse(7, hasBack = true, hasFront = true))
+    }
+}
+
+class StepDownFallbackTest {
+    @Test
+    fun stepped_down_uses_720p_when_the_camera_has_it() {
+        assertEquals(1280 to 720, pickSize(listOf(1920 to 1080, 1280 to 720), steppedDown = true))
+    }
+
+    @Test
+    fun stepped_down_still_starts_at_1080p_when_there_is_no_720p() {
+        // Refusing to start would be worse than the memory it saves.
+        assertEquals(1920 to 1080, pickSize(listOf(1920 to 1080), steppedDown = true))
     }
 }

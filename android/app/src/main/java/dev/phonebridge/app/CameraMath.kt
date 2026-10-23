@@ -53,9 +53,12 @@ fun pickFpsRange(ranges: List<Pair<Int, Int>>): Pair<Int, Int>? {
  * Stepped down (low memory): 1280x720 at most.
  */
 fun pickSize(sizes: List<Pair<Int, Int>>, steppedDown: Boolean = false): Pair<Int, Int>? =
-    listOf(1920 to 1080, 1280 to 720)
-        .filter { !steppedDown || it.first <= 1280 }
-        .firstOrNull { it in sizes }
+    listOf(1920 to 1080, 1280 to 720).let { all ->
+        // Stepping down never makes the camera refuse to start: without a
+        // 720p size the full size is used.
+        all.filter { !steppedDown || it.first <= 1280 }.firstOrNull { it in sizes }
+            ?: all.firstOrNull { it in sizes }
+    }
 
 /**
  * Low memory: true while the camera should run at 1280x720. Steps down
