@@ -44,6 +44,8 @@ const ROUNDS: u32 = 4;
 
 /// A PC -> phone control request still waiting for the phone's answer.
 static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
+/// The task that is setting up the camera or waiting for the phone's answer.
+static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The phone -> PC control session running now, so turning the setting off ends it.
 static PHONE_CONTROL: Mutex<Option<pb_transport::SessionCloser>> = Mutex::new(None);
 
@@ -475,14 +477,22 @@ pub async fn run(
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
                     };
-                    if crate::camera::is_running() {
+                    let mut request = CAMERA_REQUEST.lock().unwrap_or_else(|p| p.into_inner());
+                    if crate::camera::is_running() || request.as_ref().is_some_and(|h| !h.is_finished()) {
                         continue;
                     }
                     let (node, log) = (node.clone(), log.clone());
                     let ui: Arc<dyn Fn(UiEvent) + Send + Sync> = ui.clone();
-                    tokio::spawn(show_camera(node, id, name, log, ui, false));
+                    *request = Some(tokio::spawn(show_camera(node, id, name, log, ui, false)).abort_handle());
                 }
                 Some(Cmd::StopCamera) => {
+                    // Stop also cancels a request the phone has not answered yet.
+                    if let Some(h) = CAMERA_REQUEST.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                        if !h.is_finished() {
+                            h.abort();
+                            log.line("CAMERA request cancelled by the user");
+                        }
+                    }
                     log.line("CAMERA stopped by the user");
                     tokio::task::spawn_blocking(crate::camera::stop);
                 }
@@ -1125,7 +1135,11 @@ fn show_camera(
                     }
                 }
             };
-            match node.open_camera(&id, start.clone(), asked).await {
+            // Open while the phone has not answered; any way out clears it.
+            let pending = (!again).then(crate::camera::PendingGuard::new);
+            let opened = node.open_camera(&id, start.clone(), asked).await;
+            drop(pending);
+            match opened {
                 Ok(view) => {
                     log.line(&format!(
                         "CAMERA \"{name}\" streaming ({}x{}, rotation {}) accepted after {} ms",

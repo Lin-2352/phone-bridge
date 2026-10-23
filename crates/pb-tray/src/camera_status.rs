@@ -26,6 +26,9 @@ pub struct Inputs {
     /// The window read pictures from the camera the way an app does:
     /// `None` not tried, `Some(frames per second)` after.
     pub preview_fps: Option<u32>,
+    /// The phone has been asked and has not answered yet (its consent window
+    /// is open).
+    pub pending: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -87,7 +90,13 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
         ),
         Access::Unknown => row("Windows camera access", Mark::Wait, "Checking"),
     });
-    out.push(if i.streaming {
+    out.push(if i.pending && !i.streaming {
+        row(
+            "Phone camera",
+            Mark::Wait,
+            "Waiting for the phone: accept on the phone",
+        )
+    } else if i.streaming {
         if i.fps > 0 && i.dark {
             row(
                 "Phone camera",
@@ -141,6 +150,25 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
     out
 }
 
+/// What the Start/Stop button (and the tray entry) does right now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CameraButton {
+    Start,
+    /// Withdraw a request the phone has not answered yet.
+    Cancel,
+    Stop,
+}
+
+pub fn button(streaming: bool, pending: bool) -> CameraButton {
+    if pending {
+        CameraButton::Cancel
+    } else if streaming {
+        CameraButton::Stop
+    } else {
+        CameraButton::Start
+    }
+}
+
 /// The whole camera works for apps when every row is ok.
 pub fn all_ok(rows: &[Row]) -> bool {
     rows.iter().all(|r| r.mark == Mark::Ok)
@@ -161,6 +189,7 @@ mod tests {
             listed: Some(true),
             preview_fps: Some(28),
             dark: false,
+            pending: false,
         }
     }
 
@@ -259,5 +288,41 @@ mod tests {
     fn streaming_without_a_first_picture_waits() {
         let r = rows(&Inputs { fps: 0, ..base() });
         assert_eq!(mark(&r, "Phone camera"), Mark::Wait);
+    }
+
+    #[test]
+    fn a_pending_request_shows_waiting_for_the_phone() {
+        let r = rows(&Inputs {
+            streaming: false,
+            fps: 0,
+            listed: None,
+            preview_fps: None,
+            pending: true,
+            ..base()
+        });
+        assert_eq!(mark(&r, "Phone camera"), Mark::Wait);
+        let d = &r.iter().find(|x| x.label == "Phone camera").unwrap().detail;
+        assert_eq!(d, "Waiting for the phone: accept on the phone");
+        assert_eq!(r.len(), 6);
+    }
+
+    #[test]
+    fn button_is_cancel_while_pending() {
+        assert_eq!(button(false, true), CameraButton::Cancel);
+    }
+
+    #[test]
+    fn button_is_stop_while_streaming() {
+        assert_eq!(button(true, false), CameraButton::Stop);
+    }
+
+    #[test]
+    fn button_is_start_when_idle() {
+        assert_eq!(button(false, false), CameraButton::Start);
+    }
+
+    #[test]
+    fn streaming_wins_over_pending_only_when_not_pending() {
+        assert_eq!(button(true, true), CameraButton::Cancel);
     }
 }

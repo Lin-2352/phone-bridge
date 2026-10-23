@@ -1210,7 +1210,9 @@ fn show_menu(hwnd: HWND) {
     let running = crate::camera::is_running();
     let camera_items = vec![Item::new(
         glyph::PHONE,
-        if running {
+        if crate::camera::pending() {
+            "Cancel phone camera request"
+        } else if running {
             "Stop phone camera"
         } else {
             "Use phone as camera"
@@ -1631,7 +1633,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 Box::new(move |a| {
                     let _ = cmds.send(match a {
                         crate::camera_window::Action::Toggle => {
-                            if crate::camera::is_running() {
+                            if crate::camera::is_running() || crate::camera::pending() {
                                 Cmd::StopCamera
                             } else {
                                 Cmd::StartCamera
@@ -1644,11 +1646,13 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             );
         }
         ID_CAMERA => {
-            let _ = st.cmds.send(if crate::camera::is_running() {
-                Cmd::StopCamera
-            } else {
-                Cmd::StartCamera
-            });
+            let _ = st
+                .cmds
+                .send(if crate::camera::is_running() || crate::camera::pending() {
+                    Cmd::StopCamera
+                } else {
+                    Cmd::StartCamera
+                });
         }
         ID_SCREEN => {
             if crate::screen_window::is_open() {

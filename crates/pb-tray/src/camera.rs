@@ -54,6 +54,30 @@ pub fn fps() -> u32 {
 /// or the camera delivers nothing but black.
 static DARK: AtomicBool = AtomicBool::new(false);
 
+/// The phone has been asked for its camera and has not answered yet.
+static PENDING: AtomicBool = AtomicBool::new(false);
+
+pub fn pending() -> bool {
+    PENDING.load(Ordering::Acquire)
+}
+
+/// Marks a request as open for as long as it lives, so every way out
+/// (answer, refusal, timeout, cancel) clears it.
+pub struct PendingGuard(());
+
+impl PendingGuard {
+    pub fn new() -> Self {
+        PENDING.store(true, Ordering::Release);
+        Self(())
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        PENDING.store(false, Ordering::Release);
+    }
+}
+
 pub fn picture_dark() -> bool {
     DARK.load(Ordering::Relaxed)
 }

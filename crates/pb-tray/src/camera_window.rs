@@ -41,7 +41,7 @@ use windows::{
 
 use crate::{
     camera_preview::Preview,
-    camera_status::{rows, Inputs, Mark, Row},
+    camera_status::{button, rows, CameraButton, Inputs, Mark, Row},
     fluent::{self, glyph, px},
 };
 
@@ -70,6 +70,7 @@ struct State {
     hwnd: isize,
     rows: Vec<Row>,
     streaming: bool,
+    pending: bool,
     preview: Option<Preview>,
     hover: Option<Button>,
     on_action: Box<dyn Fn(Action) + Send>,
@@ -136,13 +137,16 @@ const BUTTONS: [Button; 4] = [
     Button::Remove,
 ];
 
-fn button_label(b: Button, streaming: bool) -> &'static str {
-    match (b, streaming) {
-        (Button::Toggle, false) => "Start camera",
-        (Button::Toggle, true) => "Stop camera",
-        (Button::Lens, _) => "Switch lens",
-        (Button::Privacy, _) => "Camera privacy",
-        (Button::Remove, _) => "Remove",
+fn button_label(b: Button, streaming: bool, pending: bool) -> &'static str {
+    match b {
+        Button::Toggle => match button(streaming, pending) {
+            CameraButton::Start => "Start camera",
+            CameraButton::Cancel => "Cancel",
+            CameraButton::Stop => "Stop camera",
+        },
+        Button::Lens => "Switch lens",
+        Button::Privacy => "Camera privacy",
+        Button::Remove => "Remove",
     }
 }
 
@@ -302,13 +306,21 @@ fn paint(hwnd: HWND) {
                 fluent::text(
                     hdc,
                     f.small,
-                    button_label(b, st.streaming),
+                    button_label(b, st.streaming, st.pending),
                     *r,
                     p.text,
                     DT_CENTER | DT_SINGLELINE | DT_VCENTER,
                 );
             } else {
-                fluent::button(hdc, &f, &p, *r, button_label(b, st.streaming), accent, s);
+                fluent::button(
+                    hdc,
+                    &f,
+                    &p,
+                    *r,
+                    button_label(b, st.streaming, st.pending),
+                    accent,
+                    s,
+                );
             }
         }
     });
@@ -458,6 +470,7 @@ pub fn open(
                 hwnd: hwnd.0 as isize,
                 rows: Vec::new(),
                 streaming: false,
+                pending: false,
                 preview: None,
                 hover: None,
                 on_action,
@@ -506,6 +519,7 @@ fn collect(
     }
     while !stop.load(Ordering::Acquire) {
         let streaming = crate::camera::is_running();
+        let pending = crate::camera::pending();
         let listed = streaming.then(|| {
             crate::camera_device::list_camera_names()
                 .iter()
@@ -517,6 +531,7 @@ fn collect(
             let Ok(mut g) = CURRENT.lock() else { break };
             let Some(st) = g.as_mut() else { break };
             st.streaming = streaming;
+            st.pending = pending;
             if want_preview && st.preview.is_none() {
                 st.preview = Some(Preview::start(Box::new(move || post_repaint(hwnd))));
             } else if !want_preview {
@@ -537,6 +552,7 @@ fn collect(
             dark: crate::camera::picture_dark(),
             listed,
             preview_fps,
+            pending,
         };
         if let Ok(mut g) = CURRENT.lock() {
             if let Some(st) = g.as_mut() {
