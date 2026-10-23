@@ -319,3 +319,22 @@ Camera review (fresh reviewer, 2026-10-21): the Critical finding was real: the e
 Phone Bridge memory (2026-10-21, `dumpsys meminfo`, realme RMX3561): the "PSS under 60 MB" budget counted memory that is not ours. Idle reading: TOTAL PSS 60-70 MB, of which "System" is 28-29 MB (shared Android framework pages that any app carries and no app can reduce). Our own part: Java heap 6 MB, native heap 8 MB, graphics 12 MB, code 4 MB, other 8 MB: about 38 MB; during a 1080p share the earlier reading of 75 MB total is about 47 MB of our own. **Ruling: the budget is measured as TOTAL PSS minus "System" (our own footprint), limit 60 MB** — met (about 47 MB while sharing). A live-share breakdown still needs the phone's capture prompt tapped; it is in the open device checks. Cost if wrong: none to users; only the number we hold ourselves to.
 
 Camera source pacing: the 30 fps timer uses absolute deadlines (`pump::tick_due`) instead of a sleep after each tick (which gave about 28 fps).
+
+## Phase 5.1 (2026-10-23): camera device results and the realme "no focus window" kill
+Device: realme RMX3561, this PC, the phone's own Camera app open underneath.
+
+| Check | Result |
+|---|---|
+| Streaming with the phone's Camera app open | Works: 30 fps, a real picture, the status window shows six green rows and "Working". Held for 60 s in one process. |
+| Virtual camera as an app sees it | Listed by Windows as "Phone Bridge Camera (Windows Virtual Camera)"; the window's own source reader reads 29-30 frames a second. |
+| Quick Settings tile after the app was killed | Locked: a tap starts the service directly (0.16 s, no unlock prompt). Unlocked: a tap starts it through the invisible foreground activity. Both verified from a fully stopped app. A real phone restart is not tested (needs the user). |
+
+**The stalled stream was a watchdog kill, not a link problem.** The invisible window kept in front of the phone's Camera app was touch-through and not focusable. With no focusable window the system has no focus window; realme's "Theia" watchdog logs `hasTopDisplayFocusWindow focus:null`, then `ANR in dev.phonebridge.app ... Changing to new focus window timeout`, and kills the process about 13 s later. Frames fell 29, 3, 0 a second and the tray reported "Phone camera stopped". Fixed: the window is touch-through only (`holdWindowFlags()`, unit tested); 60 s run with the same process, no kill. Rule for this phone: a held-open activity must stay focusable.
+
+**Request that Android cannot open a window for.** A camera or screen request that arrives while the app is in the background used to be dropped silently on an unlocked phone (Android blocks the background activity start). It now always posts a notification ("<PC> wants to use your camera", tap to answer); the window cancels it when it opens.
+
+**Always allow is per PC (decision).** The camera consent remembers allowed PCs by peer id, not one global switch. The old global switch is not migrated: no PC is allowed until it is chosen again. The id is looked up from the PC's name, and a name shared by two paired PCs gives no id, so it is never auto-allowed.
+
+Also in this stretch: the camera steps down to 1280x720 under 1.2 GB free and returns above 1.6 GB (decided per session); the tray menu and the camera window show Cancel while the phone has not answered; the window offers "Repair camera" when starting fails or the shipped source is newer; the phone reports its lens (wire tag 24) so the tray's "Switch lens" and the next request follow the real lens, and the window names it.
+
+Not tested on the device (need the user): Cancel and Repair on screen, the lens report end to end (the phone's consent for this PC must be given again, see above), a phone restart with the tile, the phone-screen and notification items listed under Phase 4.1.
