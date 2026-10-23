@@ -69,6 +69,22 @@ fun cameraStepDown(freeMb: Long, steppedDown: Boolean): Boolean = when {
 }
 
 /**
+ * The lens (0 back, 1 front) the camera really uses: the one asked for when
+ * the phone has it, else the other one, else null (no camera). The PC is told
+ * this lens, so it must be the one that is open.
+ */
+fun lensToUse(wanted: Int, hasBack: Boolean, hasFront: Boolean): Int? {
+    val front = wanted.coerceIn(0, 1) == 1
+    return when {
+        front && hasFront -> 1
+        !front && hasBack -> 0
+        hasFront -> 1
+        hasBack -> 0
+        else -> null
+    }
+}
+
+/**
  * Flags of the invisible window kept in front while the camera streams.
  * Touch-through, but still focusable: with no focusable window the system has
  * no focus window and realme's watchdog kills the app after about 13 s.

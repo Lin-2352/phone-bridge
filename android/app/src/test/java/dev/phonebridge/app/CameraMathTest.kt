@@ -86,4 +86,18 @@ class CameraMathTest {
         assertEquals(1280 to 720, pickSize(listOf(1280 to 720, 1920 to 1080), steppedDown = true))
         assertNull(pickSize(listOf(1920 to 1080), steppedDown = true))
     }
+
+    @Test
+    fun theLensInUseIsTheOneAskedForWhenThePhoneHasIt() {
+        assertEquals(1, lensToUse(1, hasBack = true, hasFront = true))
+        assertEquals(0, lensToUse(0, hasBack = true, hasFront = true))
+    }
+
+    @Test
+    fun aMissingLensFallsBackToTheOtherSoTheReportedLensIsTrue() {
+        assertEquals(0, lensToUse(1, hasBack = true, hasFront = false))
+        assertEquals(1, lensToUse(0, hasBack = false, hasFront = true))
+        assertNull(lensToUse(0, hasBack = false, hasFront = false))
+        assertEquals(1, lensToUse(7, hasBack = true, hasFront = true))
+    }
 }

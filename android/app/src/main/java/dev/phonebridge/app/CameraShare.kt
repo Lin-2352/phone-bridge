@@ -154,7 +154,8 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
     fun prepare(): PbCameraAccept? {
         val chosen = chooseCodec(bytes(ask.codecs), bytes(caps.codecs)) ?: return null
         codec = chosen.toInt()
-        val id = cameraId(lens == 1) ?: cameraId(lens != 1) ?: return null
+        lens = lensToUse(lens, cameraId(false) != null, cameraId(true) != null) ?: return null
+        val id = cameraId(lens == 1) ?: return null
         val size = sizeFor(id) ?: return null
         width = size.first
         height = size.second
@@ -178,7 +179,9 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         handler.post {
             sendConfig()
             requestKey()
-            if (device == null) openCamera()
+            // A resume keeps the open camera: say which lens it is. (A fresh
+            // start says so once the camera is configured.)
+            if (device == null) openCamera() else reportLens()
         }
     }
 
@@ -308,6 +311,7 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
                         if (closed) return s.close()
                         session = s
                         runCatching { s.setRepeatingRequest(request(camera, id, surface), null, handler) }
+                            .onSuccess { reportLens() }
                             .onFailure { Log.e(TAG, "CAMERA repeating request failed: $it") }
                     }
                     override fun onConfigureFailed(s: CameraCaptureSession) {
@@ -344,10 +348,23 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         device = null
     }
 
+    /**
+     * The lens is open and streaming (at the start, after a switch asked from
+     * the phone or the PC): tell the PC, which follows it.
+     */
+    private fun reportLens() {
+        runCatching { sender?.sendLens(lens.toUByte()) }
+    }
+
     /** The other lens: close this camera, open that one on the same encoder. */
     fun switchTo(newLens: Int) {
         handler.post {
             if (closed || newLens == lens) return@post
+            // A phone without that lens keeps the one it has (and says so).
+            if (lensToUse(newLens, cameraId(false) != null, cameraId(true) != null) != newLens) {
+                reportLens()
+                return@post
+            }
             closeCamera()
             lens = newLens
             val id = cameraId(lens == 1)

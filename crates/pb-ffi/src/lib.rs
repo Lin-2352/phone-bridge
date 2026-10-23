@@ -563,6 +563,15 @@ impl PbScreen {
         }
     }
 
+    /// Camera sessions: the lens now in use (0 back, 1 front), after a
+    /// switch and when streaming starts. Dropped before the streams open
+    /// (`CameraAccept` carried the lens then).
+    pub fn send_lens(&self, lens: u8) {
+        if let Some(s) = self.sink.get() {
+            s.send_lens(lens);
+        }
+    }
+
     /// The user stopped sharing on the phone.
     pub fn stop(&self) {
         self.stopped
@@ -2079,5 +2088,15 @@ mod screen_tests {
             new_bitrate: Some(8_400_000),
         });
         assert!(!drop.sent && drop.request_key && drop.new_bitrate == 8_400_000);
+    }
+
+    #[test]
+    fn send_lens_before_the_streams_open_is_harmless() {
+        // The PC learns the starting lens from `CameraAccept`; a report made
+        // before the session is up has nowhere to go and is dropped.
+        let cam = PbScreen::new(pb_video::Codec::H264 as u8);
+        cam.send_lens(1);
+        cam.send_lens(7);
+        assert!(cam.sink.get().is_none());
     }
 }
