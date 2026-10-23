@@ -82,6 +82,8 @@ pub enum Cmd {
     StopCamera,
     /// Switch the phone camera's lens (front or back).
     SwitchCameraLens,
+    /// Install the camera again (one UAC prompt), then forget the start error.
+    RepairCamera,
     /// Remove the camera from this PC (stop, sweep, one UAC prompt).
     RemoveCamera,
     /// Text or a link shared from Windows (share sheet).
@@ -497,6 +499,16 @@ pub async fn run(
                     tokio::task::spawn_blocking(crate::camera::stop);
                 }
                 Some(Cmd::SwitchCameraLens) => crate::camera::switch_lens(),
+                Some(Cmd::RepairCamera) => {
+                    let (log, ui) = (log.clone(), ui.clone());
+                    tokio::spawn(async move {
+                        // Nothing may hold the old files while they are replaced.
+                        let _ = tokio::task::spawn_blocking(crate::camera::stop).await;
+                        if install_camera(&log, &*ui).await {
+                            crate::camera::set_last_error(None);
+                        }
+                    });
+                }
                 Some(Cmd::RemoveCamera) => {
                     let (log, ui) = (log.clone(), ui.clone());
                     tokio::task::spawn_blocking(move || remove_camera(&log, &*ui));
@@ -1062,6 +1074,35 @@ fn remove_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) {
     }
 }
 
+/// Install the camera source (one UAC prompt). False when it did not work;
+/// the reason is told to the user and kept for the camera window.
+async fn install_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) -> bool {
+    use crate::camera_register::RegisterError;
+    ui(UiEvent::Info(
+        "Setting up the phone camera: Windows will ask once for permission".into(),
+    ));
+    let sid = crate::ipc::user_sid().unwrap_or_default();
+    let r =
+        tokio::task::spawn_blocking(move || crate::camera_register::request_register(&sid)).await;
+    let why = match r {
+        Ok(Ok(())) => {
+            log.line("CAMERA source installed");
+            return true;
+        }
+        Ok(Err(RegisterError::Declined)) => {
+            "The camera needs a one-time permission to install".to_string()
+        }
+        Ok(Err(RegisterError::Failed(c))) => {
+            log.line(&format!("CAMERA install failed: code {c}"));
+            format!("Couldn't set up the camera (code {c})")
+        }
+        Err(_) => return false,
+    };
+    crate::camera::set_last_error(Some(why.clone()));
+    ui(UiEvent::Info(why));
+    false
+}
+
 /// Use the phone's camera: install the source once (one UAC prompt), ask
 /// the phone, then run the session. `again`: the link dropped a moment ago;
 /// retry quietly for 30 s (the virtual camera stays, repeating the last frame).
@@ -1074,34 +1115,11 @@ fn show_camera(
     again: bool,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
     Box::pin(async move {
-        use crate::camera_register::RegisterError;
         if !again
             && (!crate::camera_register::is_registered() || crate::camera_register::needs_install())
+            && !install_camera(&log, &*ui).await
         {
-            ui(UiEvent::Info(
-                "Setting up the phone camera: Windows will ask once for permission".into(),
-            ));
-            let sid = crate::ipc::user_sid().unwrap_or_default();
-            let r =
-                tokio::task::spawn_blocking(move || crate::camera_register::request_register(&sid))
-                    .await;
-            match r {
-                Ok(Ok(())) => log.line("CAMERA source installed"),
-                Ok(Err(RegisterError::Declined)) => {
-                    ui(UiEvent::Info(
-                        "The camera needs a one-time permission to install".into(),
-                    ));
-                    return;
-                }
-                Ok(Err(RegisterError::Failed(c))) => {
-                    log.line(&format!("CAMERA install failed: code {c}"));
-                    ui(UiEvent::Info(format!(
-                        "Couldn't set up the camera (code {c})"
-                    )));
-                    return;
-                }
-                Err(_) => return,
-            }
+            return;
         }
         let codecs = crate::screen_decode::supported_codecs();
         let start = pb_protocol::control::CameraStart {

@@ -41,21 +41,22 @@ use windows::{
 
 use crate::{
     camera_preview::Preview,
-    camera_status::{button, rows, CameraButton, Inputs, Mark, Row},
+    camera_status::{button, offer_repair, rows, CameraButton, Inputs, Mark, Row},
     fluent::{self, glyph, px},
 };
 
 const CLASS: PCWSTR = w!("PhoneBridgeCamera");
 const W: i32 = 520;
-const H: i32 = 676;
+const H: i32 = 688;
 const WM_STATUS: u32 = WM_APP + 1;
-const ROW_H: i32 = 40;
+const ROW_H: i32 = 36;
 
 /// What the buttons ask for; the tray turns them into its own commands.
 pub enum Action {
     Toggle,
     Lens,
     Remove,
+    Repair,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,6 +65,17 @@ enum Button {
     Lens,
     Privacy,
     Remove,
+    Repair,
+}
+
+/// While the camera is off and needs repair, "Repair camera" takes the place
+/// of "Switch lens" (the lens only matters while it streams).
+fn shown(b: Button, repair: bool) -> Button {
+    if b == Button::Lens && repair {
+        Button::Repair
+    } else {
+        b
+    }
 }
 
 struct State {
@@ -71,6 +83,7 @@ struct State {
     rows: Vec<Row>,
     streaming: bool,
     pending: bool,
+    repair: bool,
     preview: Option<Preview>,
     hover: Option<Button>,
     on_action: Box<dyn Fn(Action) + Send>,
@@ -101,7 +114,8 @@ struct Layout {
 fn layout(s: f32) -> Layout {
     let p = |v: i32| px(s, v);
     let rows_top = 64;
-    let rows_bottom = rows_top + 6 * ROW_H;
+    // Six rows, a seventh when the camera could not start.
+    let rows_bottom = rows_top + 7 * ROW_H;
     let pw = W - 32;
     let ph = pw * 9 / 16;
     let bw = (W - 32 - 3 * 8) / 4;
@@ -147,6 +161,7 @@ fn button_label(b: Button, streaming: bool, pending: bool) -> &'static str {
         Button::Lens => "Switch lens",
         Button::Privacy => "Camera privacy",
         Button::Remove => "Remove",
+        Button::Repair => "Repair camera",
     }
 }
 
@@ -300,6 +315,7 @@ fn paint(hwnd: HWND) {
             ),
         }
         for (r, b) in l.buttons.iter().zip(BUTTONS) {
+            let b = shown(b, st.repair);
             let accent = b == Button::Toggle;
             if st.hover == Some(b) && !accent {
                 fluent::round_rect(hdc, r, p.hover, Some(p.stroke), px(s, 6), false);
@@ -328,11 +344,16 @@ fn paint(hwnd: HWND) {
 
 fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Button> {
     let l = layout(fluent::scale(hwnd));
+    let repair = CURRENT
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.repair))
+        .unwrap_or(false);
     l.buttons
         .iter()
         .zip(BUTTONS)
         .find(|(r, _)| fluent::inside(r, x, y))
-        .map(|(_, b)| b)
+        .map(|(_, b)| shown(b, repair))
 }
 
 fn open_privacy_settings() {
@@ -387,12 +408,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(b) = hit(hwnd, x, y) {
                     match b {
                         Button::Privacy => open_privacy_settings(),
-                        Button::Toggle | Button::Lens | Button::Remove => {
+                        Button::Toggle | Button::Lens | Button::Remove | Button::Repair => {
                             if let Ok(g) = CURRENT.lock() {
                                 if let Some(st) = g.as_ref() {
                                     (st.on_action)(match b {
                                         Button::Toggle => Action::Toggle,
                                         Button::Lens => Action::Lens,
+                                        Button::Repair => Action::Repair,
                                         _ => Action::Remove,
                                     });
                                 }
@@ -471,6 +493,7 @@ pub fn open(
                 rows: Vec::new(),
                 streaming: false,
                 pending: false,
+                repair: false,
                 preview: None,
                 hover: None,
                 on_action,
@@ -542,10 +565,13 @@ fn collect(
             st.preview.as_ref().and_then(|p| p.snapshot().fps)
         };
         let installed = crate::camera_register::is_registered();
+        let update_ready = installed && crate::camera_register::needs_install();
+        let start_error = crate::camera::last_error();
+        let repair = !streaming && offer_repair(installed, update_ready, &start_error);
         let inputs = Inputs {
             phone: phone(),
             installed,
-            update_ready: installed && crate::camera_register::needs_install(),
+            update_ready,
             access: crate::camera_register::camera_access(),
             streaming,
             fps: crate::camera::fps(),
@@ -553,10 +579,12 @@ fn collect(
             listed,
             preview_fps,
             pending,
+            start_error,
         };
         if let Ok(mut g) = CURRENT.lock() {
             if let Some(st) = g.as_mut() {
                 st.rows = rows(&inputs);
+                st.repair = repair;
             }
         }
         post_repaint(hwnd);

@@ -29,6 +29,8 @@ pub struct Inputs {
     /// The phone has been asked and has not answered yet (its consent window
     /// is open).
     pub pending: bool,
+    /// Why the last start failed, until a start works or the camera is repaired.
+    pub start_error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,7 +149,16 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
             format!("{n} frames a second read the way an app does"),
         ),
     });
+    if let (Some(msg), false) = (&i.start_error, i.streaming) {
+        out.push(row("Camera could not start", Mark::Bad, msg.as_str()));
+    }
     out
+}
+
+/// "Repair camera" is offered when the virtual camera is missing, outdated
+/// (the shipped source differs) or the last start failed.
+pub fn offer_repair(installed: bool, update_ready: bool, start_error: &Option<String>) -> bool {
+    !installed || update_ready || start_error.is_some()
 }
 
 /// What the Start/Stop button (and the tray entry) does right now.
@@ -190,6 +201,7 @@ mod tests {
             preview_fps: Some(28),
             dark: false,
             pending: false,
+            start_error: None,
         }
     }
 
@@ -324,5 +336,54 @@ mod tests {
     #[test]
     fn streaming_wins_over_pending_only_when_not_pending() {
         assert_eq!(button(true, true), CameraButton::Cancel);
+    }
+
+    #[test]
+    fn an_error_row_appears_when_starting_failed() {
+        let r = rows(&Inputs {
+            streaming: false,
+            fps: 0,
+            listed: None,
+            preview_fps: None,
+            start_error: Some("the camera is not installed".into()),
+            ..base()
+        });
+        let e = r
+            .iter()
+            .find(|x| x.label == "Camera could not start")
+            .expect("error row");
+        assert_eq!(e.mark, Mark::Bad);
+        assert_eq!(e.detail, "the camera is not installed");
+        assert!(!all_ok(&r));
+    }
+
+    #[test]
+    fn no_error_row_while_streaming() {
+        let r = rows(&Inputs {
+            start_error: Some("old failure".into()),
+            ..base()
+        });
+        assert!(r.iter().all(|x| x.label != "Camera could not start"));
+        assert!(all_ok(&r), "{r:?}");
+    }
+
+    #[test]
+    fn repair_is_offered_when_not_installed() {
+        assert!(offer_repair(false, false, &None));
+    }
+
+    #[test]
+    fn repair_is_offered_when_an_update_is_ready() {
+        assert!(offer_repair(true, true, &None));
+    }
+
+    #[test]
+    fn repair_is_offered_after_a_start_error() {
+        assert!(offer_repair(true, false, &Some("broken".into())));
+    }
+
+    #[test]
+    fn repair_is_not_offered_when_everything_is_fine() {
+        assert!(!offer_repair(true, false, &None));
     }
 }

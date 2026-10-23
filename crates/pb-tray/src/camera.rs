@@ -78,6 +78,17 @@ impl Drop for PendingGuard {
     }
 }
 
+/// Why the last start failed (cleared when a start works).
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn last_error() -> Option<String> {
+    lock(&LAST_ERROR).clone()
+}
+
+pub fn set_last_error(e: Option<String>) {
+    *lock(&LAST_ERROR) = e;
+}
+
 pub fn picture_dark() -> bool {
     DARK.load(Ordering::Relaxed)
 }
@@ -148,6 +159,17 @@ pub fn start(
     opts: CameraOpts,
     rt: &tokio::runtime::Handle,
 ) -> Result<(), String> {
+    let r = start_session(view, codec, opts, rt);
+    set_last_error(r.clone().err());
+    r
+}
+
+fn start_session(
+    view: CameraView,
+    codec: Codec,
+    opts: CameraOpts,
+    rt: &tokio::runtime::Handle,
+) -> Result<(), String> {
     {
         let mut dev = lock(&DEVICE);
         if dev.is_none() {
@@ -189,6 +211,7 @@ pub fn start(
                 Ok(()) => "Phone camera stopped".into(),
                 Err(e) => {
                     (opts.log)(&format!("CAMERA pipeline failed: {e}"));
+                    set_last_error(Some(e));
                     "Can't show this phone's camera on this PC".into()
                 }
             });

@@ -69,6 +69,7 @@ pub const ID_CAMERA_STOP: usize = 19;
 const ID_CAMERA_LENS: usize = 20;
 const ID_CAMERA_REMOVE: usize = 21;
 pub const ID_CAMERA_WINDOW: usize = 22;
+pub const ID_CAMERA_REPAIR: usize = 23;
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -1617,6 +1618,9 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_CAMERA_LENS => {
             let _ = st.cmds.send(Cmd::SwitchCameraLens);
         }
+        ID_CAMERA_REPAIR => {
+            let _ = st.cmds.send(Cmd::RepairCamera);
+        }
         ID_CAMERA_REMOVE => {
             let _ = st.cmds.send(Cmd::RemoveCamera);
         }
@@ -1641,6 +1645,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                         }
                         crate::camera_window::Action::Lens => Cmd::SwitchCameraLens,
                         crate::camera_window::Action::Remove => Cmd::RemoveCamera,
+                        crate::camera_window::Action::Repair => Cmd::RepairCamera,
                     });
                 }),
             );
