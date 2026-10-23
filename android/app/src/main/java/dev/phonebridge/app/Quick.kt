@@ -101,37 +101,39 @@ class BridgeTileService : TileService() {
         qsTile?.apply {
             state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             if (Build.VERSION.SDK_INT >= 29) {
-                subtitle = when {
-                    !on -> "Off"
-                    !Bridge.running.value -> "Starting\u2026"
-                    Bridge.linked.value != null -> Bridge.linked.value
-                    else -> "On"
-                }
+                subtitle = tileSubtitle(
+                    wished = Prefs(this@BridgeTileService).enabled,
+                    running = Bridge.running.value,
+                    starting = on && !Bridge.running.value,
+                    linked = Bridge.linked.value,
+                )
             }
             updateTile()
         }
     }
 
     override fun onClick() {
-        val on = !Bridge.shownOn()
-        if (!on) {
-            setBridgeEnabled(this, false)
-        } else {
-            try {
-                setBridgeEnabled(this, true)
-            } catch (t: Throwable) {
-                // Some versions refuse a foreground start from the tile: go through
-                // an invisible activity, which is always allowed to start it.
-                Log.i(TAG, "TILE start via activity: $t")
-                val i = Intent(this, StarterActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (Build.VERSION.SDK_INT >= 34) {
-                    startActivityAndCollapse(PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE))
-                } else {
-                    collapseAndStartLegacy(i)
-                }
+        val plan = tileClick(Bridge.shownOn(), isLocked)
+        Log.i(TAG, "TILE tap: $plan")
+        val viaActivity = {
+            val i = Intent(this, StarterActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (Build.VERSION.SDK_INT >= 34) {
+                startActivityAndCollapse(PendingIntent.getActivity(this, 0, i, PendingIntent.FLAG_IMMUTABLE))
+            } else {
+                collapseAndStartLegacy(i)
             }
         }
-        Log.i(TAG, "TILE Phone Bridge ${if (on) "on" else "off"}")
+        when (plan) {
+            TileClick.Stop -> setBridgeEnabled(this, false)
+            TileClick.StartViaActivity -> viaActivity()
+            TileClick.StartDirect -> try {
+                setBridgeEnabled(this, true)
+            } catch (t: Throwable) {
+                // Refused on the lock screen: start after the user unlocks.
+                Log.i(TAG, "TILE direct start refused: $t")
+                unlockAndRun { viaActivity() }
+            }
+        }
         paint()
         // While the panel keeps us bound, catch the service coming up or down.
         for (d in longArrayOf(500, 1500, 3000)) main.postDelayed({ paint() }, d)
