@@ -322,7 +322,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun CameraForPc(modifier: Modifier = Modifier) {
         val prefs = remember { Prefs(this@MainActivity) }
-        var always by remember { mutableStateOf(prefs.allowCamera) }
+        var allowed by remember { mutableStateOf(prefs.allowedCameraPcs) }
         val user = CameraShare.usedBy.value
         Column(modifier.fillMaxWidth()) {
             if (user != null) {
@@ -345,18 +345,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
             ListItem(
-                headlineContent = { Text("Let my PC use the camera without asking") },
+                headlineContent = { Text("PCs always allowed to use the camera") },
                 supportingContent = {
                     Text(
-                        if (always) "On. Android's camera indicator still shows while it is on"
-                        else "Off. This phone asks you first",
+                        if (allowed.isNotEmpty()) "${allowed.size} PC(s) skip the question. Android's camera indicator still shows"
+                        else "None. This phone asks you first (choose Always allow in the question)",
                     )
                 },
                 trailingContent = {
-                    Switch(always, { v ->
-                        always = v
-                        prefs.allowCamera = v
-                    })
+                    // Turning off forgets every PC; a PC is added from the question.
+                    Switch(allowed.isNotEmpty(), { _ ->
+                        allowed = emptySet()
+                        prefs.allowedCameraPcs = emptySet()
+                    }, enabled = allowed.isNotEmpty())
                 },
             )
         }

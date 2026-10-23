@@ -596,6 +596,7 @@ class PbService : Service() {
         val ask = Intent(this, CameraConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
+            .putExtra("peerId", Bridge.node?.peers()?.firstOrNull { it.name == e.peerName }?.id.orEmpty())
             .putExtra("at", android.os.SystemClock.elapsedRealtime())
             .putExtra("lens", e.lens.toInt())
             .putExtra("width", e.width.toInt())

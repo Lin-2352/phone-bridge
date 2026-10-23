@@ -66,10 +66,17 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("allow_screen", false)
         set(v) = sp.edit().putBoolean("allow_screen", v).apply()
 
-    /** The PC may use the camera without asking (Android's camera permission still applies). */
-    var allowCamera: Boolean
-        get() = sp.getBoolean("allow_camera", false)
-        set(v) = sp.edit().putBoolean("allow_camera", v).apply()
+    /**
+     * PCs (by peer id) that may use the camera without asking; Android's
+     * camera permission still applies. The old global switch ("allow_camera")
+     * is dropped, not turned into "every PC": nobody is allowed by it.
+     */
+    var allowedCameraPcs: Set<String>
+        get() {
+            if (sp.contains("allow_camera")) sp.edit().remove("allow_camera").apply()
+            return sp.getStringSet("allow_camera_pcs", emptySet()).orEmpty().toSet()
+        }
+        set(v) = sp.edit().putStringSet("allow_camera_pcs", v).apply()
 
     /** Keep screen capture ready between shares (Android shows its cast icon). */
     var instantScreen: Boolean

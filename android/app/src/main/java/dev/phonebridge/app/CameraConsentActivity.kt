@@ -34,6 +34,7 @@ class CameraConsentActivity : Activity() {
     }
 
     private var ask: CameraAsk? = null
+    private var peerId = ""
     private var answered = false
     private var dialog: AlertDialog? = null
     private val main = Handler(Looper.getMainLooper())
@@ -50,6 +51,7 @@ class CameraConsentActivity : Activity() {
             codecs = i.getIntArrayExtra("codecs")?.toList().orEmpty(),
         )
         ask = a
+        peerId = i.getStringExtra("peerId").orEmpty()
         getSystemService(NotificationManager::class.java).cancel(CAMERA_ASK_ID)
         val left = ASK_MS - (SystemClock.elapsedRealtime() - i.getLongExtra("at", SystemClock.elapsedRealtime()))
         if (left <= 0) {
@@ -57,7 +59,7 @@ class CameraConsentActivity : Activity() {
             decline()
             return
         }
-        if (Prefs(this).allowCamera) {
+        if (allowedFor(peerId, Prefs(this).allowedCameraPcs)) {
             ensurePermission()
             return
         }
@@ -76,7 +78,7 @@ class CameraConsentActivity : Activity() {
         if (answered) return
         answered = true
         main.removeCallbacksAndMessages(null)
-        if (always) Prefs(this).allowCamera = true
+        if (always) Prefs(this).let { it.allowedCameraPcs = withAllowed(it.allowedCameraPcs, peerId, true) }
         ensurePermission()
     }
 
