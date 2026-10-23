@@ -68,6 +68,7 @@ pub const ID_CAMERA_START: usize = 18;
 pub const ID_CAMERA_STOP: usize = 19;
 const ID_CAMERA_LENS: usize = 20;
 const ID_CAMERA_REMOVE: usize = 21;
+pub const ID_CAMERA_WINDOW: usize = 22;
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -251,6 +252,9 @@ fn open_flyout(hwnd: HWND, st: &State) {
             .lock()
             .map(|s| s.universal_clipboard)
             .unwrap_or(false),
+        screen_on: crate::screen_window::is_open(),
+        camera_on: crate::camera::is_running(),
+        camera_fps: crate::camera::fps(),
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
     };
     let raw = hwnd.0 as isize;
@@ -265,6 +269,9 @@ fn open_flyout(hwnd: HWND, st: &State) {
             crate::flyout::Action::Pair => post_command(raw, ID_PAIR),
             crate::flyout::Action::Settings => post_command(raw, ID_SETTINGS),
             crate::flyout::Action::ControlPhone => post_command(raw, ID_CONTROL),
+            crate::flyout::Action::ShowScreen => post_command(raw, ID_SCREEN),
+            crate::flyout::Action::ToggleCamera => post_command(raw, ID_CAMERA),
+            crate::flyout::Action::CameraWindow => post_command(raw, ID_CAMERA_WINDOW),
             crate::flyout::Action::Dropped(files) => {
                 let _ = cmds.send(Cmd::SendFiles(files));
             }
@@ -1201,7 +1208,7 @@ fn show_menu(hwnd: HWND) {
     use crate::fluent::glyph;
     use crate::menu::Item;
     let running = crate::camera::is_running();
-    let mut camera_items = vec![Item::new(
+    let camera_items = vec![Item::new(
         glyph::PHONE,
         if running {
             "Stop phone camera"
@@ -1210,19 +1217,6 @@ fn show_menu(hwnd: HWND) {
         },
         ID_CAMERA,
     )];
-    if running {
-        camera_items.push(Item::new(
-            glyph::PHONE,
-            "Switch camera lens",
-            ID_CAMERA_LENS,
-        ));
-    } else if crate::camera_register::is_registered() {
-        camera_items.push(Item::new(
-            glyph::PHONE,
-            "Remove phone camera",
-            ID_CAMERA_REMOVE,
-        ));
-    }
     let mut items = vec![
         Item::new(glyph::PHONE, "Open Phone Bridge", ID_OPEN_FLYOUT),
         Item::new(
@@ -1235,7 +1229,6 @@ fn show_menu(hwnd: HWND) {
             ID_SCREEN,
         ),
         Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
-        Item::new(glyph::FOLDER, "Open received files", ID_OPEN_FOLDER),
         Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
         Item::separator(),
         Item::new(glyph::POWER, "Quit Phone Bridge", ID_QUIT),
@@ -1625,6 +1618,31 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_CAMERA_REMOVE => {
             let _ = st.cmds.send(Cmd::RemoveCamera);
         }
+        ID_CAMERA_WINDOW => {
+            let peers = st.peers.clone();
+            let cmds = st.cmds.clone();
+            crate::camera_window::open(
+                std::sync::Arc::new(move || {
+                    peers
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.first().map(|(_, n)| n.clone()))
+                }),
+                Box::new(move |a| {
+                    let _ = cmds.send(match a {
+                        crate::camera_window::Action::Toggle => {
+                            if crate::camera::is_running() {
+                                Cmd::StopCamera
+                            } else {
+                                Cmd::StartCamera
+                            }
+                        }
+                        crate::camera_window::Action::Lens => Cmd::SwitchCameraLens,
+                        crate::camera_window::Action::Remove => Cmd::RemoveCamera,
+                    });
+                }),
+            );
+        }
         ID_CAMERA => {
             let _ = st.cmds.send(if crate::camera::is_running() {
                 Cmd::StopCamera
@@ -1640,6 +1658,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
         }
         ID_QUIT => {
+            crate::camera_window::close();
             // Nothing of the camera stays behind: Stop, Remove, Shutdown.
             crate::camera::stop();
             // SAFETY: our own window.

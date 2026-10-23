@@ -43,6 +43,13 @@ struct Active {
 
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static DEVICE: Mutex<Option<CameraDevice<MfVirtualCamera>>> = Mutex::new(None);
+/// Frames per second written into the frames file (0 when idle).
+static FPS: AtomicU32 = AtomicU32::new(0);
+
+pub fn fps() -> u32 {
+    FPS.load(Ordering::Relaxed)
+}
+
 /// The lens in use (0 back, 1 front), for "Switch lens".
 static LENS: AtomicU32 = AtomicU32::new(0);
 
@@ -221,16 +228,16 @@ fn pipe(
             ring.beat(now_ms());
             last_beat = std::time::Instant::now();
         }
-        if since.elapsed() >= Duration::from_secs(5) {
-            (opts.log)(&format!(
-                "CAMERA stats {}/s written",
-                frames * 1000 / since.elapsed().as_millis().max(1) as u32
-            ));
+        if since.elapsed() >= Duration::from_secs(2) {
+            let rate = frames * 1000 / since.elapsed().as_millis().max(1) as u32;
+            FPS.store(rate, Ordering::Relaxed);
+            (opts.log)(&format!("CAMERA stats {rate}/s written"));
             frames = 0;
             since = std::time::Instant::now();
         }
     }
     // Nothing of the picture stays in the file.
     ring.zero();
+    FPS.store(0, Ordering::Relaxed);
     Ok(())
 }

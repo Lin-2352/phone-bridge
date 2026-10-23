@@ -15,7 +15,13 @@ mod camera_device;
 #[cfg(windows)]
 mod camera_fit;
 #[cfg(windows)]
+mod camera_preview;
+#[cfg(windows)]
 mod camera_register;
+#[cfg(windows)]
+mod camera_status;
+#[cfg(windows)]
+mod camera_window;
 #[cfg(windows)]
 mod control;
 #[cfg(windows)]
@@ -139,6 +145,7 @@ fn main() {
             "--menu" => ui_request = Some(ipc::Request::Menu),
             "--show-screen" => ui_request = Some(ipc::Request::ShowScreen),
             "--hide-screen" => ui_request = Some(ipc::Request::HideScreen),
+            "--camera-window" => ui_request = Some(ipc::Request::CameraWindow),
             "--start-camera" => ui_request = Some(ipc::Request::StartCamera),
             "--stop-camera" => ui_request = Some(ipc::Request::StopCamera),
             // Everything after --send is a file (Explorer "Send to" passes paths).
@@ -260,6 +267,7 @@ fn main() {
                     ipc::Request::Menu => ui::ID_MENU,
                     ipc::Request::ShowScreen => ui::ID_SCREEN_SHOW,
                     ipc::Request::HideScreen => ui::ID_SCREEN_HIDE,
+                    ipc::Request::CameraWindow => ui::ID_CAMERA_WINDOW,
                     ipc::Request::StartCamera => ui::ID_CAMERA_START,
                     ipc::Request::StopCamera => ui::ID_CAMERA_STOP,
                     _ => ui::ID_SEND_CLIPBOARD,

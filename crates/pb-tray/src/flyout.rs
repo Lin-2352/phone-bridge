@@ -37,13 +37,18 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 const CLASS: PCWSTR = w!("PhoneBridgeFlyout");
 /// Logical (96-dpi) size of the flyout.
 const W: i32 = 360;
-const H: i32 = 312;
+const H: i32 = 396;
 
 /// What the flyout shows; filled in by the UI before opening.
 #[derive(Clone, Default)]
 pub struct Model {
     pub peer: Option<String>,
     pub clipboard_on: bool,
+    /// The phone-screen window is open.
+    pub screen_on: bool,
+    /// The phone camera is streaming, and its frames per second.
+    pub camera_on: bool,
+    pub camera_fps: u32,
     pub last: String,
 }
 
@@ -53,6 +58,9 @@ pub enum Action {
     SendFiles,
     Pair,
     ControlPhone,
+    ShowScreen,
+    ToggleCamera,
+    CameraWindow,
     Settings,
     Dropped(Vec<std::path::PathBuf>),
 }
@@ -71,6 +79,9 @@ enum Hit {
     Clip,
     Send,
     Pair,
+    Screen,
+    Camera,
+    CameraInfo,
     Settings,
     Close,
 }
@@ -89,7 +100,7 @@ struct Layout {
     settings: RECT,
     close: RECT,
     drop: RECT,
-    tiles: [RECT; 3],
+    tiles: [RECT; 6],
     footer: RECT,
 }
 
@@ -113,19 +124,21 @@ fn layout(s: f32) -> Layout {
             bottom: p(164),
         },
         tiles: std::array::from_fn(|i| {
-            let l = p(16) + i as i32 * (tw + p(8));
+            let (col, row) = ((i % 3) as i32, (i / 3) as i32);
+            let l = p(16) + col * (tw + p(8));
+            let top = p(176) + row * p(88);
             RECT {
                 left: l,
-                top: p(176),
+                top,
                 right: l + tw,
-                bottom: p(256),
+                bottom: top + p(80),
             }
         }),
         footer: RECT {
             left: p(16),
-            top: p(268),
+            top: p(352),
             right: p(W - 16),
-            bottom: p(296),
+            bottom: p(380),
         },
     }
 }
@@ -214,17 +227,39 @@ fn paint(hwnd: HWND) {
         );
 
         // Tiles.
-        let tiles = [
-            (glyph::CLIPBOARD, "Share clipboard", Hit::Clip),
-            (glyph::SEND, "Send files", Hit::Send),
-            if st.model.peer.is_some() {
-                (glyph::KEYBOARD, "Control phone", Hit::Pair)
+        let camera_label = if st.model.camera_on {
+            if st.model.camera_fps > 0 {
+                format!("Camera on, {} fps", st.model.camera_fps)
             } else {
-                (glyph::ADD, "Pair device", Hit::Pair)
+                "Camera on".to_owned()
+            }
+        } else {
+            "Use phone camera".to_owned()
+        };
+        let tiles = [
+            (glyph::CLIPBOARD, "Share clipboard".to_owned(), Hit::Clip),
+            (glyph::SEND, "Send files".to_owned(), Hit::Send),
+            if st.model.peer.is_some() {
+                (glyph::KEYBOARD, "Control phone".to_owned(), Hit::Pair)
+            } else {
+                (glyph::ADD, "Pair device".to_owned(), Hit::Pair)
             },
+            (
+                glyph::PHONE,
+                if st.model.screen_on {
+                    "Hide phone screen".to_owned()
+                } else {
+                    "Show phone screen".to_owned()
+                },
+                Hit::Screen,
+            ),
+            ('\u{E722}', camera_label, Hit::Camera),
+            ('\u{E9D9}', "Camera status".to_owned(), Hit::CameraInfo),
         ];
         for (r, (g, label, h)) in l.tiles.iter().zip(tiles) {
-            let on = h == Hit::Clip && st.model.clipboard_on;
+            let on = (h == Hit::Clip && st.model.clipboard_on)
+                || (h == Hit::Screen && st.model.screen_on)
+                || (h == Hit::Camera && st.model.camera_on);
             let (fill, fg) = if on {
                 (p.accent, p.on_accent)
             } else if hv == Some(h) {
@@ -253,7 +288,7 @@ fn paint(hwnd: HWND) {
                 right: r.right - px(s, 6),
                 bottom: r.bottom - px(s, 4),
             };
-            fluent::text(hdc, f.small, label, tr, fg, DT_LEFT | DT_WORDBREAK);
+            fluent::text(hdc, f.small, &label, tr, fg, DT_LEFT | DT_WORDBREAK);
         }
 
         // Footer: last activity.
@@ -280,6 +315,9 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Hit> {
         (l.tiles[0], Hit::Clip),
         (l.tiles[1], Hit::Send),
         (l.tiles[2], Hit::Pair),
+        (l.tiles[3], Hit::Screen),
+        (l.tiles[4], Hit::Camera),
+        (l.tiles[5], Hit::CameraInfo),
     ]
     .into_iter()
     .find(|(r, _)| fluent::inside(r, x, y))
@@ -411,6 +449,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     } else {
                         Action::Pair
                     });
+                    close();
+                }
+                Some(Hit::Screen) => {
+                    act(Action::ShowScreen);
+                    close();
+                }
+                Some(Hit::Camera) => {
+                    act(Action::ToggleCamera);
+                    close();
+                }
+                Some(Hit::CameraInfo) => {
+                    act(Action::CameraWindow);
                     close();
                 }
                 Some(Hit::Settings) => {

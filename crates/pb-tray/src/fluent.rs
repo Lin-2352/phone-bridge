@@ -33,7 +33,6 @@ use windows::{
 /// Segoe Fluent Icons code points used across the tray UI.
 pub mod glyph {
     pub const SEND: char = '\u{E724}';
-    pub const FOLDER: char = '\u{E838}';
     pub const SETTINGS: char = '\u{E713}';
     pub const POWER: char = '\u{E7E8}';
     pub const PHONE: char = '\u{E8EA}';
@@ -189,6 +188,10 @@ impl Drop for Fonts {
 
 /// Draw `s` with `font` into `r`.
 pub fn text(hdc: HDC, font: HGDIOBJ, s: &str, r: RECT, color: u32, flags: DRAW_TEXT_FORMAT) {
+    // DrawTextW on an empty buffer faults (with an ellipsis flag it writes to it).
+    if s.is_empty() {
+        return;
+    }
     let mut w: Vec<u16> = s.encode_utf16().collect();
     let mut r = r;
     // SAFETY: valid DC; the previous font is restored.
@@ -348,6 +351,33 @@ pub fn set_cursor(hand: bool) {
     unsafe {
         if let Ok(c) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }) {
             SetCursor(Some(c));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An empty string once crashed the whole tray inside `DrawTextW`.
+    #[test]
+    fn drawing_empty_text_is_harmless() {
+        use windows::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, DT_END_ELLIPSIS, DT_LEFT,
+        };
+        // SAFETY: a memory DC made and freed here.
+        unsafe {
+            let hdc = CreateCompatibleDC(None);
+            let f = Fonts::new(1.0);
+            let r = RECT {
+                left: 0,
+                top: 0,
+                right: 100,
+                bottom: 20,
+            };
+            text(hdc, f.small, "", r, 0, DT_LEFT | DT_END_ELLIPSIS);
+            text(hdc, f.small, "", r, 0, DT_LEFT);
+            let _ = DeleteDC(hdc);
         }
     }
 }

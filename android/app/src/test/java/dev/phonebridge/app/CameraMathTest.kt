@@ -31,6 +31,16 @@ class CameraMathTest {
     }
 
     @Test
+    fun aBusyCameraIsRetriedAFewTimesThenGivenUp() {
+        assertEquals(0L, retryDelayMs(0))
+        assertEquals(400L, retryDelayMs(1))
+        assertEquals(800L, retryDelayMs(2))
+        assertEquals(1200L, retryDelayMs(3))
+        assertNull(retryDelayMs(4))
+        assertNull(retryDelayMs(-1))
+    }
+
+    @Test
     fun theFpsRangeIsLockedToThirtyWhenOffered() {
         assertEquals(30 to 30, pickFpsRange(listOf(15 to 30, 30 to 30, 24 to 24)))
     }

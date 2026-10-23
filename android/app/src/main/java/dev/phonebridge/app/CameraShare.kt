@@ -225,8 +225,33 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         inputSurface = null
     }
 
+    /**
+     * The camera could not be opened or configured. The phone's own Camera
+     * app may still be letting go of the sensor, so try again a few times
+     * (0.4 / 0.8 / 1.2 s) before giving up.
+     */
+    private fun retryOrFail(attempt: Int, why: String) {
+        closeCamera()
+        val delay = retryDelayMs(attempt + 1)
+        if (closed) return
+        if (delay == null) {
+            Log.e(TAG, "CAMERA giving up: $why")
+            android.os.Handler(Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    ctx,
+                    "The phone's camera is busy. Close the Camera app and try again",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+            CameraShare.cameraFailed()
+            return
+        }
+        Log.i(TAG, "CAMERA retry ${attempt + 1} in $delay ms ($why)")
+        handler.postDelayed({ openCamera(attempt + 1) }, delay)
+    }
+
     @SuppressLint("MissingPermission")
-    private fun openCamera() {
+    private fun openCamera(attempt: Int = 0) {
         if (closed) return
         if (ctx.checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             Log.e(TAG, "CAMERA no permission")
@@ -239,29 +264,27 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
                 override fun onOpened(camera: CameraDevice) {
                     if (closed) return camera.close()
                     device = camera
-                    startSession(camera, id)
+                    startSession(camera, id, attempt)
                 }
                 override fun onDisconnected(camera: CameraDevice) {
                     Log.i(TAG, "CAMERA disconnected (another app took it?)")
                     camera.close()
                     if (device === camera) device = null
-                    CameraShare.cameraFailed()
+                    retryOrFail(attempt, "disconnected")
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
-                    Log.e(TAG, "CAMERA error $error")
                     camera.close()
                     if (device === camera) device = null
-                    CameraShare.cameraFailed()
+                    retryOrFail(attempt, "error $error")
                 }
             }, handler)
         }.onFailure {
-            Log.e(TAG, "CAMERA open failed: $it")
-            CameraShare.cameraFailed()
+            retryOrFail(attempt, "open failed: $it")
         }
     }
 
     @Suppress("DEPRECATION")
-    private fun startSession(camera: CameraDevice, id: String) {
+    private fun startSession(camera: CameraDevice, id: String, attempt: Int) {
         val surface = inputSurface ?: return
         runCatching {
             camera.createCaptureSession(
@@ -274,13 +297,12 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
                             .onFailure { Log.e(TAG, "CAMERA repeating request failed: $it") }
                     }
                     override fun onConfigureFailed(s: CameraCaptureSession) {
-                        Log.e(TAG, "CAMERA session configuration failed")
-                        CameraShare.cameraFailed()
+                        retryOrFail(attempt, "session configuration failed")
                     }
                 },
                 handler,
             )
-        }.onFailure { Log.e(TAG, "CAMERA session failed: $it"); CameraShare.cameraFailed() }
+        }.onFailure { retryOrFail(attempt, "session failed: $it") }
     }
 
     /** TEMPLATE_RECORD, fps locked to 30, stabilisation on when offered. */
@@ -473,6 +495,7 @@ object CameraShare : CameraListener {
         capture = null
         sender = null
         usedBy.value = null
+        CameraConsentActivity.close()
         // Even if the service is gone, the notification must not stay.
         (PbService.instance ?: appContext)?.let { notifyCamera(it, null) }
         PbService.instance?.leaveCamera()

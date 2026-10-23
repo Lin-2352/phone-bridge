@@ -235,6 +235,56 @@ pub fn needs_install() -> bool {
         .is_some_and(|n| n == want)
 }
 
+/// Windows' "Camera access" switches: the machine-wide one (HKLM) and the
+/// user's (HKCU). Either `Deny` blocks every camera, this one included.
+pub fn combine_access(hklm: Option<&str>, hkcu: Option<&str>) -> crate::camera_status::Access {
+    use crate::camera_status::Access;
+    let is = |v: Option<&str>, w: &str| v.is_some_and(|x| x.eq_ignore_ascii_case(w));
+    if is(hklm, "Deny") || is(hkcu, "Deny") {
+        Access::Deny
+    } else if is(hklm, "Allow") || is(hkcu, "Allow") {
+        Access::Allow
+    } else {
+        Access::Unknown
+    }
+}
+
+fn read_string(root: HKEY, subkey: &str, name: &str) -> Option<String> {
+    // SAFETY: a read-only registry query; the key is closed again.
+    unsafe {
+        let mut key = HKEY::default();
+        RegOpenKeyExW(root, &HSTRING::from(subkey), None, KEY_READ, &mut key)
+            .ok()
+            .ok()?;
+        let mut buf = vec![0u16; 64];
+        let mut bytes = (buf.len() * 2) as u32;
+        let r = RegQueryValueExW(
+            key,
+            &HSTRING::from(name),
+            None,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut bytes),
+        );
+        let _ = RegCloseKey(key);
+        if r != WIN32_ERROR(0) {
+            return None;
+        }
+        let len = (bytes as usize / 2).saturating_sub(1).min(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+/// Read the two switches now.
+pub fn camera_access() -> crate::camera_status::Access {
+    use windows::Win32::System::Registry::HKEY_CURRENT_USER;
+    let key = "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam";
+    combine_access(
+        read_string(HKEY_LOCAL_MACHINE, key, "Value").as_deref(),
+        read_string(HKEY_CURRENT_USER, key, "Value").as_deref(),
+    )
+}
+
 /// Whether the camera source is installed: the class key names a DLL that
 /// exists.
 pub fn is_registered() -> bool {
@@ -569,6 +619,29 @@ mod tests {
             .arg(&link)
             .output();
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn either_camera_switch_off_blocks_every_camera() {
+        use crate::camera_status::Access;
+        assert_eq!(combine_access(Some("Allow"), Some("Allow")), Access::Allow);
+        assert_eq!(combine_access(Some("Deny"), Some("Allow")), Access::Deny);
+        assert_eq!(combine_access(Some("Allow"), Some("deny")), Access::Deny);
+        assert_eq!(combine_access(None, Some("Allow")), Access::Allow);
+        assert_eq!(combine_access(None, None), Access::Unknown);
+        assert_eq!(combine_access(Some(""), Some("Prompt")), Access::Unknown);
+    }
+
+    #[test]
+    fn the_real_registry_gives_an_answer() {
+        // Any machine has these keys; the value is one of the three.
+        let a = camera_access();
+        assert!(matches!(
+            a,
+            crate::camera_status::Access::Allow
+                | crate::camera_status::Access::Deny
+                | crate::camera_status::Access::Unknown
+        ));
     }
 
     #[test]

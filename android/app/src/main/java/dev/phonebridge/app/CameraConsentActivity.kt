@@ -23,6 +23,16 @@ private const val ASK_MS = 30_000L
  * a foreground service open the camera only then.
  */
 class CameraConsentActivity : Activity() {
+    companion object {
+        /** The window kept in front while the camera streams. */
+        @Volatile private var current: CameraConsentActivity? = null
+
+        /** The camera stopped: the window is not needed any more. */
+        fun close() {
+            current?.let { a -> a.runOnUiThread { a.finish() } }
+        }
+    }
+
     private var ask: CameraAsk? = null
     private var answered = false
     private var dialog: AlertDialog? = null
@@ -100,8 +110,19 @@ class CameraConsentActivity : Activity() {
         }
         if (!CameraShare.start(this, a)) {
             PbService.instance?.leaveCamera()
+            finish()
+            return
         }
-        finish()
+        // Stay in front, invisible and touch-through, while the camera
+        // streams: another camera app that was open (the phone's own) stays
+        // paused underneath instead of taking the camera back ("higher
+        // priority client"). It goes when the camera stops, or when the
+        // user opens another app.
+        window.addFlags(
+            android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        )
+        current = this
     }
 
     private fun decline() {
@@ -113,6 +134,7 @@ class CameraConsentActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (current === this) current = null
         main.removeCallbacksAndMessages(null)
         dialog?.setOnDismissListener(null)
         super.onDestroy()

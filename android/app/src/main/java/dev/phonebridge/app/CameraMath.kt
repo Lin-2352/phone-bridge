@@ -23,6 +23,19 @@ fun deviceRotationFromSensor(degrees: Int): Int? {
 }
 
 /**
+ * Another app (the phone's own Camera app) may still be releasing the
+ * sensor when we open it: try again a few times, 0, 0.4, 0.8 and 1.2 s
+ * after the start, then give up (null).
+ */
+fun retryDelayMs(attempt: Int): Long? = when (attempt) {
+    0 -> 0L
+    1 -> 400L
+    2 -> 800L
+    3 -> 1200L
+    else -> null
+}
+
+/**
  * The auto-exposure frame-rate range to lock: exactly 30 when the camera
  * offers [30, 30] (so indoor light does not drop the stream to 15 fps),
  * otherwise the highest fixed range, otherwise the one with the highest

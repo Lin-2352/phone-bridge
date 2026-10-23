@@ -40,6 +40,8 @@ pub enum Request {
     /// Start / stop the phone camera (for checks without clicking).
     StartCamera,
     StopCamera,
+    /// Open the phone-camera window.
+    CameraWindow,
     /// Text or a link from the share sheet.
     Text {
         link: bool,
@@ -59,6 +61,7 @@ fn encode(r: &Request) -> String {
         Request::HideScreen => "hide-screen\n".into(),
         Request::StartCamera => "start-camera\n".into(),
         Request::StopCamera => "stop-camera\n".into(),
+        Request::CameraWindow => "camera-window\n".into(),
         Request::Text { link, text } => format!("text\n{}\n{text}", u8::from(*link)),
         Request::Send(files) => {
             let mut s = "send\n".to_owned();
@@ -84,6 +87,7 @@ pub fn decode(text: &str) -> Option<Request> {
         "hide-screen" => Some(Request::HideScreen),
         "start-camera" => Some(Request::StartCamera),
         "stop-camera" => Some(Request::StopCamera),
+        "camera-window" => Some(Request::CameraWindow),
         "text" => {
             let link = lines.next()? == "1";
             let text: Vec<&str> = lines.collect();
@@ -249,7 +253,8 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
                     | Request::ShowScreen
                     | Request::HideScreen
                     | Request::StartCamera
-                    | Request::StopCamera),
+                    | Request::StopCamera
+                    | Request::CameraWindow),
                 ) => on_ui(&r),
                 None => {}
             }
@@ -287,6 +292,10 @@ mod tests {
         assert!(matches!(
             decode(&encode(&Request::StopCamera)),
             Some(Request::StopCamera)
+        ));
+        assert!(matches!(
+            decode(&encode(&Request::CameraWindow)),
+            Some(Request::CameraWindow)
         ));
         assert!(decode("send\n").is_none());
         assert!(decode("rm -rf /\n").is_none());

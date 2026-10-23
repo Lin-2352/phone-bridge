@@ -8,6 +8,17 @@
 //! The camera is a pure software source: this module never calls
 //! `AddDeviceSourceInfo`, so no physical webcam is touched.
 
+/// Whether a device name from Windows' list is our camera. Windows adds
+/// " (Windows Virtual Camera)" to the name we gave, so an exact comparison
+/// never matches (the leftover sweep and the status window both missed it).
+pub fn is_our_camera(name: &str) -> bool {
+    const OURS: &str = "Phone Bridge Camera";
+    name == OURS
+        || name
+            .strip_prefix(OURS)
+            .is_some_and(|rest| rest.starts_with(" ("))
+}
+
 /// What the device needs from a virtual camera (a fake in the tests).
 pub trait VirtualCamera {
     fn start(&mut self) -> Result<(), String>;
@@ -57,7 +68,7 @@ impl<C: VirtualCamera> Drop for CameraDevice<C> {
 }
 
 #[cfg(windows)]
-pub use real::{sweep_leftovers, MfVirtualCamera};
+pub use real::{enumerate_cameras, list_camera_names, sweep_leftovers, MfVirtualCamera};
 
 #[cfg(windows)]
 mod real {
@@ -70,9 +81,9 @@ mod real {
         core::{HSTRING, PWSTR},
         Win32::{
             Media::{
-                KernelStreaming::KSCATEGORY_VIDEO_CAMERA,
+                KernelStreaming::{KSCATEGORY_CAPTURE, KSCATEGORY_VIDEO, KSCATEGORY_VIDEO_CAMERA},
                 MediaFoundation::{
-                    IMFVirtualCamera, MFCreateAttributes, MFCreateVirtualCamera,
+                    IMFActivate, IMFVirtualCamera, MFCreateAttributes, MFCreateVirtualCamera,
                     MFEnumDeviceSources, MFShutdown, MFStartup, MFVirtualCameraAccess_CurrentUser,
                     MFVirtualCameraLifetime_Session, MFVirtualCameraType_SoftwareCameraSource,
                     MFSTARTUP_FULL, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
@@ -102,7 +113,11 @@ mod real {
                 MFVirtualCameraAccess_CurrentUser,
                 &HSTRING::from(FRIENDLY_NAME),
                 &HSTRING::from(source_id()),
-                Some(&[KSCATEGORY_VIDEO_CAMERA]),
+                Some(&[
+                    KSCATEGORY_VIDEO_CAMERA,
+                    KSCATEGORY_VIDEO,
+                    KSCATEGORY_CAPTURE,
+                ]),
             )
             .map_err(|e| format!("MFCreateVirtualCamera: {e}"))
         }
@@ -218,8 +233,10 @@ mod real {
         }
     }
 
-    /// The video devices Media Foundation lists, by friendly name.
-    pub fn list_camera_names() -> Vec<String> {
+    /// The video devices Media Foundation lists: friendly name and the
+    /// activator that opens it. The caller needs COM and Media Foundation
+    /// started on its thread.
+    pub fn enumerate_cameras() -> Vec<(String, IMFActivate)> {
         // SAFETY: MF enumeration; the activate array and strings are freed.
         unsafe {
             let mut attrs = None;
@@ -243,7 +260,7 @@ mod real {
             if MFEnumDeviceSources(&attrs, &mut list, &mut count).is_err() || list.is_null() {
                 return Vec::new();
             }
-            let mut names = Vec::new();
+            let mut found = Vec::new();
             for i in 0..count as usize {
                 if let Some(act) = (*list.add(i)).take() {
                     let mut s = PWSTR::null();
@@ -252,14 +269,19 @@ mod real {
                         .GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &mut s, &mut len)
                         .is_ok()
                     {
-                        names.push(s.to_string().unwrap_or_default());
+                        found.push((s.to_string().unwrap_or_default(), act));
                         CoTaskMemFree(Some(s.0.cast()));
                     }
                 }
             }
             CoTaskMemFree(Some(list.cast()));
-            names
+            found
         }
+    }
+
+    /// The video devices Media Foundation lists, by friendly name.
+    pub fn list_camera_names() -> Vec<String> {
+        enumerate_cameras().into_iter().map(|(n, _)| n).collect()
     }
 
     /// Remove any "Phone Bridge Camera" a crash left behind (call when this
@@ -270,7 +292,7 @@ mod real {
         };
         let leftover = list_camera_names()
             .iter()
-            .filter(|n| n.as_str() == FRIENDLY_NAME)
+            .filter(|n| super::is_our_camera(n))
             .count();
         if leftover == 0 {
             return 0;
@@ -289,7 +311,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     #[cfg(windows)]
-    use super::real::{list_camera_names, FRIENDLY_NAME};
+    use super::real::list_camera_names;
     use super::*;
 
     struct Fake {
@@ -329,6 +351,17 @@ mod tests {
     }
 
     #[test]
+    fn windows_adds_a_suffix_to_the_camera_name() {
+        assert!(is_our_camera("Phone Bridge Camera"));
+        assert!(is_our_camera(
+            "Phone Bridge Camera (Windows Virtual Camera)"
+        ));
+        assert!(!is_our_camera("USB2.0 HD UVC WebCam"));
+        assert!(!is_our_camera("Phone Bridge Camera Pro"), "another camera");
+        assert!(!is_our_camera(""));
+    }
+
+    #[test]
     fn teardown_order_is_stop_remove_shutdown() {
         let (f, calls) = fake(false);
         let d = CameraDevice::open(f).unwrap();
@@ -349,6 +382,25 @@ mod tests {
         let (f, calls) = fake(true);
         assert!(CameraDevice::open(f).is_err());
         assert_eq!(*calls.borrow(), ["start", "remove", "shutdown"]);
+    }
+
+    /// Prints what Media Foundation enumerates (run by hand while streaming).
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    #[allow(unsafe_code)]
+    fn prints_the_enumerated_cameras() {
+        use windows::Win32::{
+            Media::MediaFoundation::{MFStartup, MFSTARTUP_FULL, MF_VERSION},
+            System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
+        };
+        // SAFETY: COM and Media Foundation start-up for this test process.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION, MFSTARTUP_FULL).unwrap();
+        }
+        let names = list_camera_names();
+        println!("enumerated: {names:?}");
     }
 
     /// Needs the camera source registered on this PC. Activates the installed
@@ -406,21 +458,21 @@ mod tests {
     fn a_started_camera_is_listed_and_gone_after_the_stop_sequence() {
         let before = list_camera_names()
             .iter()
-            .filter(|n| *n == FRIENDLY_NAME)
+            .filter(|n| is_our_camera(n))
             .count();
         let cam = MfVirtualCamera::spawn().expect("create");
         let d = CameraDevice::open(cam).expect("start");
         std::thread::sleep(std::time::Duration::from_millis(500));
         let during = list_camera_names()
             .iter()
-            .filter(|n| *n == FRIENDLY_NAME)
+            .filter(|n| is_our_camera(n))
             .count();
         assert_eq!(during, before + 1, "listed while streaming");
         d.close();
         std::thread::sleep(std::time::Duration::from_millis(500));
         let after = list_camera_names()
             .iter()
-            .filter(|n| *n == FRIENDLY_NAME)
+            .filter(|n| is_our_camera(n))
             .count();
         assert_eq!(after, before, "nothing left after the stop sequence");
     }
