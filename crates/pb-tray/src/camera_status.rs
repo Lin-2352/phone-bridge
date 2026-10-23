@@ -31,6 +31,8 @@ pub struct Inputs {
     pub pending: bool,
     /// Why the last start failed, until a start works or the camera is repaired.
     pub start_error: Option<String>,
+    /// The lens in use while streaming (0 back, 1 front); `None` when unknown.
+    pub lens: Option<u8>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -56,6 +58,16 @@ fn row(label: &'static str, mark: Mark, detail: impl Into<String>) -> Row {
         mark,
         detail: detail.into(),
     }
+}
+
+/// "30 frames a second from the phone (front lens)"; no lens when unknown.
+pub fn streaming_detail(fps: u32, lens: Option<u8>) -> String {
+    let lens = match lens {
+        Some(0) => " (back lens)",
+        Some(1) => " (front lens)",
+        _ => "",
+    };
+    format!("{fps} frames a second from the phone{lens}")
 }
 
 pub fn rows(i: &Inputs) -> Vec<Row> {
@@ -106,11 +118,7 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
                 "Pictures arrive but they are black: is the phone's lens covered?",
             )
         } else if i.fps > 0 {
-            row(
-                "Phone camera",
-                Mark::Ok,
-                format!("{} frames a second from the phone", i.fps),
-            )
+            row("Phone camera", Mark::Ok, streaming_detail(i.fps, i.lens))
         } else {
             row("Phone camera", Mark::Wait, "Waiting for the first picture")
         }
@@ -202,7 +210,51 @@ mod tests {
             dark: false,
             pending: false,
             start_error: None,
+            lens: None,
         }
+    }
+
+    fn detail(rows: &[Row], label: &str) -> String {
+        rows.iter()
+            .find(|r| r.label == label)
+            .unwrap()
+            .detail
+            .clone()
+    }
+
+    #[test]
+    fn names_the_lens_when_known() {
+        let front = rows(&Inputs {
+            fps: 30,
+            lens: Some(1),
+            ..base()
+        });
+        assert_eq!(
+            detail(&front, "Phone camera"),
+            "30 frames a second from the phone (front lens)"
+        );
+        assert_eq!(mark(&front, "Phone camera"), Mark::Ok);
+        assert_eq!(
+            streaming_detail(29, Some(0)),
+            "29 frames a second from the phone (back lens)"
+        );
+    }
+
+    #[test]
+    fn omits_the_lens_when_unknown() {
+        let r = rows(&Inputs {
+            fps: 30,
+            lens: None,
+            ..base()
+        });
+        assert_eq!(
+            detail(&r, "Phone camera"),
+            "30 frames a second from the phone"
+        );
+        assert_eq!(
+            streaming_detail(29, Some(9)),
+            "29 frames a second from the phone"
+        );
     }
 
     fn mark(rows: &[Row], label: &str) -> Mark {

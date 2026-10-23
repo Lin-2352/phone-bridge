@@ -93,7 +93,8 @@ pub fn picture_dark() -> bool {
     DARK.load(Ordering::Relaxed)
 }
 
-/// The lens in use (0 back, 1 front), for "Switch lens".
+/// The lens in use (0 back, 1 front), as the phone last reported it (or as
+/// asked since): "Switch lens" goes to the other one, a new request asks for it.
 static LENS: AtomicU32 = AtomicU32::new(0);
 
 fn lock<T>(m: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
@@ -126,7 +127,7 @@ pub fn is_running() -> bool {
 /// The user asked for the other lens.
 pub fn switch_lens() {
     if let Some(a) = lock(&ACTIVE).as_ref() {
-        let next = 1 - LENS.load(Ordering::Relaxed).min(1);
+        let next = other_lens();
         LENS.store(next, Ordering::Relaxed);
         a.remote.switch_lens(next);
     }
@@ -138,6 +139,22 @@ pub fn lens() -> u32 {
 
 pub fn set_lens(lens: u32) {
     LENS.store(lens.min(1), Ordering::Relaxed);
+}
+
+/// Where "Switch lens" goes from the lens in use.
+fn other_lens() -> u32 {
+    1 - lens().min(1)
+}
+
+/// Follow the lens the phone reports (a switch from its notification, or
+/// one the PC asked for) until the session ends.
+async fn follow_lens(mut updates: tokio::sync::watch::Receiver<Option<u8>>) {
+    while updates.changed().await.is_ok() {
+        let reported = *updates.borrow_and_update();
+        if let Some(l) = reported {
+            set_lens(l.into());
+        }
+    }
 }
 
 /// End everything now: the session, then the virtual camera (Stop, Remove,
@@ -182,6 +199,7 @@ fn start_session(
         let (remote, records) = view.into_parts();
         (Arc::new(remote), records)
     };
+    rt.spawn(follow_lens(remote.lens_updates()));
     let stop = Arc::new(AtomicBool::new(false));
     *lock(&ACTIVE) = Some(Active {
         remote: remote.clone(),
@@ -304,4 +322,42 @@ fn pipe(
     FPS.store(0, Ordering::Relaxed);
     DARK.store(false, Ordering::Relaxed);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn until(want: u32) {
+        let t0 = std::time::Instant::now();
+        while lens() != want && t0.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// The only test that touches `LENS` (a process-wide static).
+    #[tokio::test]
+    async fn lens_follows_the_phone() {
+        // A fake session: the phone's lens reports, as the transport hands them.
+        let (phone, updates) = tokio::sync::watch::channel(None);
+        set_lens(0);
+        let follower = tokio::spawn(follow_lens(updates));
+        // Switched on the phone (its notification button): the PC follows.
+        phone.send_replace(Some(1));
+        until(1).await;
+        assert_eq!(lens(), 1, "the front lens the phone reported");
+        // "Switch lens" toggles from there, and a new request asks for it.
+        assert_eq!(other_lens(), 0);
+        phone.send_replace(Some(0));
+        until(0).await;
+        assert_eq!(lens(), 0);
+        assert_eq!(other_lens(), 1);
+        // The session ends: the follower stops, the last lens is kept.
+        drop(phone);
+        tokio::time::timeout(Duration::from_secs(5), follower)
+            .await
+            .expect("the follower ends with the session")
+            .unwrap();
+        assert_eq!(lens(), 0);
+    }
 }

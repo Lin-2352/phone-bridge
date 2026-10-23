@@ -580,6 +580,7 @@ fn collect(
             preview_fps,
             pending,
             start_error,
+            lens: streaming.then(|| crate::camera::lens() as u8),
         };
         if let Ok(mut g) = CURRENT.lock() {
             if let Some(st) = g.as_mut() {
