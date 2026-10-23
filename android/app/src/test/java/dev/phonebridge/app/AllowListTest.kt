@@ -32,3 +32,22 @@ class AllowListTest {
         assertEquals(setOf("pc-a"), withAllowed(setOf("pc-a"), "", true))
     }
 }
+
+class UniquePeerIdTest {
+    private val peers = listOf("My PC" to "id-a", "Office" to "id-b", "My PC" to "id-c")
+
+    @Test
+    fun a_name_used_once_gives_its_id() {
+        assertEquals("id-b", uniquePeerId(peers, "Office"))
+    }
+
+    @Test
+    fun a_name_shared_by_two_pcs_gives_no_id_so_it_is_never_auto_allowed() {
+        assertEquals("", uniquePeerId(peers, "My PC"))
+    }
+
+    @Test
+    fun an_unknown_name_gives_no_id() {
+        assertEquals("", uniquePeerId(peers, "Nope"))
+    }
+}

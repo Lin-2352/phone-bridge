@@ -10,3 +10,7 @@ fun withAllowed(allowed: Set<String>, peerId: String, on: Boolean): Set<String> 
     on -> allowed + peerId
     else -> allowed - peerId
 }
+
+/** The id of the one peer called [name]; empty when none or several have it (never auto-allowed then). */
+fun uniquePeerId(peers: List<Pair<String, String>>, name: String): String =
+    peers.filter { it.first == name }.singleOrNull()?.second.orEmpty()
