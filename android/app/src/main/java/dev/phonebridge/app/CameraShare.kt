@@ -38,6 +38,9 @@ private const val CAMERA_FPS = 30
 /** The camera is kept this long after a dropped link, for a resume. */
 private const val CAMERA_GRACE_MS = 30_000L
 
+/** Whether the last session started stepped down: the hysteresis carries over between sessions. */
+@Volatile private var cameraSteppedDown = false
+
 /** What the PC asked for: the lens and the 16:9 size, with the codecs it decodes. */
 data class CameraAsk(
     val id: ULong,
@@ -128,12 +131,23 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         return rotationDegrees(sensor, deviceRotation(), front = lens == 1)
     }
 
+    /** Free memory, as Android reports it, in MB. */
+    private fun freeMb(): Long {
+        val mi = android.app.ActivityManager.MemoryInfo()
+        ctx.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(mi)
+        return mi.availMem / 1_048_576
+    }
+
     private fun sizeFor(id: String): Pair<Int, Int>? {
         val map = manager.getCameraCharacteristics(id)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val sizes = (map.getOutputSizes(MediaCodec::class.java) ?: map.getOutputSizes(ImageFormat.YUV_420_888) ?: return null)
             .map { it.width to it.height }
-        return pickSize(sizes)
+        // Decided once, when the session starts: no change mid-stream.
+        val down = cameraStepDown(freeMb(), cameraSteppedDown)
+        cameraSteppedDown = down
+        if (down) Log.i(TAG, "CAMERA low memory: capped at 1280x720")
+        return pickSize(sizes, down)
     }
 
     /** Choose lens, size and codec; start the encoder. Main thread. */

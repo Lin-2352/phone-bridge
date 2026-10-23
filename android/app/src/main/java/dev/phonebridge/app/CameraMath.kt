@@ -48,9 +48,25 @@ fun pickFpsRange(ranges: List<Pair<Int, Int>>): Pair<Int, Int>? {
     return fixed.maxByOrNull { it.second } ?: ranges.maxByOrNull { it.second }
 }
 
-/** A 16:9 output size: 1920x1080 if offered, else 1280x720, else null. */
-fun pickSize(sizes: List<Pair<Int, Int>>): Pair<Int, Int>? =
-    listOf(1920 to 1080, 1280 to 720).firstOrNull { it in sizes }
+/**
+ * A 16:9 output size: 1920x1080 if offered, else 1280x720, else null.
+ * Stepped down (low memory): 1280x720 at most.
+ */
+fun pickSize(sizes: List<Pair<Int, Int>>, steppedDown: Boolean = false): Pair<Int, Int>? =
+    listOf(1920 to 1080, 1280 to 720)
+        .filter { !steppedDown || it.first <= 1280 }
+        .firstOrNull { it in sizes }
+
+/**
+ * Low memory: true while the camera should run at 1280x720. Steps down
+ * under 1200 MB free, returns to full size only above 1600 MB (hysteresis),
+ * as the screen share does.
+ */
+fun cameraStepDown(freeMb: Long, steppedDown: Boolean): Boolean = when {
+    !steppedDown && freeMb < 1200 -> true
+    steppedDown && freeMb > 1600 -> false
+    else -> steppedDown
+}
 
 /**
  * Flags of the invisible window kept in front while the camera streams.

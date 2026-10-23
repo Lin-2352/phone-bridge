@@ -58,4 +58,32 @@ class CameraMathTest {
         assertEquals(1280 to 720, pickSize(listOf(640 to 480, 1280 to 720)))
         assertNull(pickSize(listOf(640 to 480, 4000 to 3000)))
     }
+
+    @Test
+    fun steps_down_under_1200() {
+        assertEquals(true, cameraStepDown(1199, steppedDown = false))
+    }
+
+    @Test
+    fun stays_stepped_down_between_1200_and_1600() {
+        assertEquals(true, cameraStepDown(1400, steppedDown = true))
+        assertEquals(true, cameraStepDown(1600, steppedDown = true))
+    }
+
+    @Test
+    fun returns_above_1600() {
+        assertEquals(false, cameraStepDown(1601, steppedDown = true))
+    }
+
+    @Test
+    fun stays_full_between_1200_and_1600_when_not_stepped() {
+        assertEquals(false, cameraStepDown(1200, steppedDown = false))
+        assertEquals(false, cameraStepDown(1400, steppedDown = false))
+    }
+
+    @Test
+    fun steppedDownTheSizeIsCappedAtHd() {
+        assertEquals(1280 to 720, pickSize(listOf(1280 to 720, 1920 to 1080), steppedDown = true))
+        assertNull(pickSize(listOf(1920 to 1080), steppedDown = true))
+    }
 }
