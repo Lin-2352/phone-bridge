@@ -50,6 +50,14 @@ pub fn fps() -> u32 {
     FPS.load(Ordering::Relaxed)
 }
 
+/// The picture being written is (nearly) black: the phone's lens is covered
+/// or the camera delivers nothing but black.
+static DARK: AtomicBool = AtomicBool::new(false);
+
+pub fn picture_dark() -> bool {
+    DARK.load(Ordering::Relaxed)
+}
+
 /// The lens in use (0 back, 1 front), for "Switch lens".
 static LENS: AtomicU32 = AtomicU32::new(0);
 
@@ -189,6 +197,7 @@ fn pipe(
     let mut last_beat = std::time::Instant::now();
     let mut frames = 0u32;
     let mut since = std::time::Instant::now();
+    let mut last_level = std::time::Instant::now();
     loop {
         if stop.load(Ordering::Acquire) {
             break;
@@ -220,6 +229,13 @@ fn pipe(
                 });
                 remote.feedback(f.pts_us);
                 frames += 1;
+                if last_level.elapsed() >= Duration::from_secs(1) {
+                    let mean =
+                        pb_camera_frames::mean_luma(&out_buf, wanted.0 as usize, wanted.1 as usize);
+                    DARK.store(pb_camera_frames::is_dark(mean), Ordering::Relaxed);
+                    (opts.log)(&format!("CAMERA picture level {mean}"));
+                    last_level = std::time::Instant::now();
+                }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -239,5 +255,6 @@ fn pipe(
     // Nothing of the picture stays in the file.
     ring.zero();
     FPS.store(0, Ordering::Relaxed);
+    DARK.store(false, Ordering::Relaxed);
     Ok(())
 }

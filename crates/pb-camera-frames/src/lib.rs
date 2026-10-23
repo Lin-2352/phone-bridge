@@ -6,8 +6,10 @@ pub mod copy;
 pub mod fit;
 pub mod heartbeat;
 pub mod layout;
+pub mod level;
 
 pub use copy::copy_nv12;
 pub use fit::{fit, Rect};
 pub use heartbeat::{Deliver, Heartbeat};
 pub use layout::{Read, Ring, DATA_OFFSET, FILE_BYTES, MAGIC, SLOT_BYTES, VERSION};
+pub use level::{is_dark, mean_luma};

@@ -534,6 +534,7 @@ fn collect(
             access: crate::camera_register::camera_access(),
             streaming,
             fps: crate::camera::fps(),
+            dark: crate::camera::picture_dark(),
             listed,
             preview_fps,
         };

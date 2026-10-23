@@ -21,6 +21,8 @@ pub struct Inputs {
     pub fps: u32,
     /// `None` until measured; `Some(listed)` after.
     pub listed: Option<bool>,
+    /// The picture the phone sends is (nearly) black.
+    pub dark: bool,
     /// The window read pictures from the camera the way an app does:
     /// `None` not tried, `Some(frames per second)` after.
     pub preview_fps: Option<u32>,
@@ -86,7 +88,13 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
         Access::Unknown => row("Windows camera access", Mark::Wait, "Checking"),
     });
     out.push(if i.streaming {
-        if i.fps > 0 {
+        if i.fps > 0 && i.dark {
+            row(
+                "Phone camera",
+                Mark::Bad,
+                "Pictures arrive but they are black: is the phone's lens covered?",
+            )
+        } else if i.fps > 0 {
             row(
                 "Phone camera",
                 Mark::Ok,
@@ -152,6 +160,7 @@ mod tests {
             fps: 29,
             listed: Some(true),
             preview_fps: Some(28),
+            dark: false,
         }
     }
 
@@ -231,6 +240,19 @@ mod tests {
             ..base()
         });
         assert_eq!(mark(&u, "Camera installed"), Mark::Wait);
+    }
+
+    #[test]
+    fn frames_that_are_black_say_so_and_do_not_count_as_working() {
+        let r = rows(&Inputs {
+            dark: true,
+            ..base()
+        });
+        assert_eq!(mark(&r, "Phone camera"), Mark::Bad);
+        let d = &r.iter().find(|x| x.label == "Phone camera").unwrap().detail;
+        assert!(d.to_lowercase().contains("black"), "{d}");
+        assert!(d.to_lowercase().contains("lens"), "{d}");
+        assert!(!all_ok(&r));
     }
 
     #[test]
