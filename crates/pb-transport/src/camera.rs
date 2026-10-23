@@ -8,7 +8,7 @@ use pb_protocol::control::{
     CameraAccept, CameraControl, CameraStart, ControlMsg, OfferReply, ScreenFeedback,
 };
 use pb_video::record::{Decoder, Record, MAGIC};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     screen::{ByteQueue, ScreenSink, ACCEPT_TIMEOUT, RECORDS_CHANNEL, STREAM_TIMEOUT},
@@ -20,6 +20,7 @@ pub struct CameraView {
     pub accept: CameraAccept,
     /// Video records in order, all of them (backpressure, like the screen).
     pub records: mpsc::Receiver<Record>,
+    lens: watch::Receiver<Option<u8>>,
     ctl: mpsc::UnboundedSender<ControlMsg>,
     closer: SessionCloser,
 }
@@ -30,6 +31,7 @@ impl CameraView {
         (
             CameraRemote {
                 accept: self.accept,
+                lens: self.lens,
                 ctl: self.ctl,
                 closer: self.closer,
             },
@@ -45,6 +47,16 @@ impl CameraView {
         switch_lens(&self.ctl, lens);
     }
 
+    /// The lens the phone last said it uses (`None` until it says).
+    pub fn lens(&self) -> Option<u8> {
+        *self.lens.borrow()
+    }
+
+    /// Follows `lens()`: changes each time the phone reports a lens.
+    pub fn lens_updates(&self) -> watch::Receiver<Option<u8>> {
+        self.lens.clone()
+    }
+
     pub fn close(&self) {
         self.closer.close(b"camera closed on the PC");
     }
@@ -53,6 +65,7 @@ impl CameraView {
 /// The PC's handle on a camera session (thread-safe).
 pub struct CameraRemote {
     pub accept: CameraAccept,
+    lens: watch::Receiver<Option<u8>>,
     ctl: mpsc::UnboundedSender<ControlMsg>,
     closer: SessionCloser,
 }
@@ -64,6 +77,16 @@ impl CameraRemote {
 
     pub fn switch_lens(&self, lens: u32) {
         switch_lens(&self.ctl, lens);
+    }
+
+    /// The lens the phone last said it uses (`None` until it says).
+    pub fn lens(&self) -> Option<u8> {
+        *self.lens.borrow()
+    }
+
+    /// Follows `lens()`: changes each time the phone reports a lens.
+    pub fn lens_updates(&self) -> watch::Receiver<Option<u8>> {
+        self.lens.clone()
     }
 
     pub fn close(&self) {
@@ -131,6 +154,7 @@ impl Node {
         });
         let closer = s.closer();
         let (ctl, mut ctl_rx) = mpsc::unbounded_channel::<ControlMsg>();
+        let (lens_tx, lens) = watch::channel(None);
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -144,6 +168,10 @@ impl Node {
                         None => break,
                     },
                     r = s.recv() => match r {
+                        Ok(Some(ControlMsg::CameraLens(l))) => {
+                            // Every report counts, even the same value again.
+                            lens_tx.send_replace(Some(l.lens));
+                        }
                         Ok(Some(_)) => {}
                         _ => break,
                     },
@@ -154,6 +182,7 @@ impl Node {
         Ok(CameraView {
             accept,
             records,
+            lens,
             ctl,
             closer,
         })
@@ -186,6 +215,11 @@ impl CameraServer {
 
     pub fn send(&self, r: Record) -> crate::screen::SendOutcome {
         self.sink.send(r)
+    }
+
+    /// Tell the PC which lens is in use (0 back, 1 front).
+    pub fn send_lens(&self, lens: u8) {
+        self.sink.send_lens(lens);
     }
 
     pub fn close(&self) {

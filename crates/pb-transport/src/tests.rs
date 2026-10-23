@@ -1587,6 +1587,35 @@ mod camera {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn the_pc_learns_the_lens_the_phone_switched_to() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let phone_task =
+            tokio::spawn(async move { phone_side(&mut phone_ev, Some(accept())).await });
+        let view = pc
+            .open_camera(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let server = phone_task.await.unwrap().unwrap();
+        assert_eq!(view.lens(), None, "nothing reported yet");
+        let mut updates = view.lens_updates();
+        server.send_lens(1);
+        tokio::time::timeout(Duration::from_secs(10), updates.wait_for(|l| *l == Some(1)))
+            .await
+            .expect("the front lens is reported")
+            .unwrap();
+        assert_eq!(view.lens(), Some(1));
+        // The remote half sees it too, and the sink (what the FFI holds) sends.
+        let (remote, _records) = view.into_parts();
+        let (sink, _events) = server.into_parts();
+        sink.send_lens(0);
+        tokio::time::timeout(Duration::from_secs(10), updates.wait_for(|l| *l == Some(0)))
+            .await
+            .expect("the back lens is reported")
+            .unwrap();
+        assert_eq!(remote.lens(), Some(0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn pc_close_is_by_peer_and_phone_close_is_not() {
         let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
         let phone_task =

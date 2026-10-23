@@ -14,7 +14,7 @@ pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 pub struct Control {
     #[prost(
         oneof = "ControlMsg",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
     )]
     pub msg: Option<ControlMsg>,
 }
@@ -90,6 +90,9 @@ pub enum ControlMsg {
     /// PC -> phone, mid-stream: switch lens.
     #[prost(message, tag = "23")]
     CameraControl(CameraControl),
+    /// Phone -> PC: the lens now in use (after any switch, and at the start).
+    #[prost(message, tag = "24")]
+    CameraLens(CameraLens),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -132,6 +135,57 @@ pub struct CameraAccept {
 pub struct CameraControl {
     #[prost(uint32, tag = "1")]
     pub lens: u32,
+}
+
+/// The lens the phone is using: 0 back, 1 front. On the wire exactly like
+/// `CameraControl` (uint32, field 1); written by hand so that decoding
+/// rejects any other value.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct CameraLens {
+    pub lens: u8,
+}
+
+impl Message for CameraLens {
+    fn encode_raw(&self, buf: &mut impl prost::bytes::BufMut) {
+        if self.lens != 0 {
+            prost::encoding::uint32::encode(1, &u32::from(self.lens), buf);
+        }
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: prost::encoding::WireType,
+        buf: &mut impl prost::bytes::Buf,
+        ctx: prost::encoding::DecodeContext,
+    ) -> Result<(), prost::DecodeError> {
+        if tag != 1 {
+            return prost::encoding::skip_field(wire_type, tag, buf, ctx);
+        }
+        let mut lens = 0u32;
+        prost::encoding::uint32::merge(wire_type, &mut lens, buf, ctx)?;
+        // Checked before narrowing, so 256 cannot pass as 0.
+        if lens > 1 {
+            // The only public way to make this error; deprecated in prost
+            // 0.14 for removal in its next breaking release.
+            #[allow(deprecated)]
+            return Err(prost::DecodeError::new("camera lens above 1"));
+        }
+        self.lens = lens as u8;
+        Ok(())
+    }
+
+    fn encoded_len(&self) -> usize {
+        if self.lens != 0 {
+            prost::encoding::uint32::encoded_len(1, &u32::from(self.lens))
+        } else {
+            0
+        }
+    }
+
+    fn clear(&mut self) {
+        self.lens = 0;
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -661,6 +715,7 @@ mod tests {
                 lens: 1,
             }),
             ControlMsg::CameraControl(CameraControl { lens: 0 }),
+            ControlMsg::CameraLens(CameraLens { lens: 1 }),
         ];
         for m in msgs {
             let bytes = encode_frame(&Control::from(m.clone())).unwrap();
@@ -772,6 +827,87 @@ mod tests {
         ] {
             assert_eq!(bad.parse::<PairingCode>(), Err(BadPairingCode), "{bad:.40}");
         }
+    }
+
+    /// A `Control` frame carrying `CameraLens` with `lens` as a raw varint.
+    fn raw_camera_lens_frame(lens: u64) -> Vec<u8> {
+        let mut inner = vec![0x08];
+        prost::encoding::encode_varint(lens, &mut inner);
+        // Field 24, wire type 2: tag bytes 0xC2 0x01.
+        let mut body = vec![0xC2, 0x01, inner.len() as u8];
+        body.extend(inner);
+        let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+        frame.extend(body);
+        frame
+    }
+
+    #[test]
+    fn camera_lens_round_trips() {
+        for lens in [0u8, 1] {
+            let m = ControlMsg::CameraLens(CameraLens { lens });
+            let bytes = encode_frame(&Control::from(m.clone())).unwrap();
+            let (got, used): (Control, usize) = decode_frame(&bytes).unwrap().unwrap();
+            assert_eq!(got.msg, Some(m.clone()));
+            assert_eq!(used, bytes.len());
+            // A sender that writes the default 0 explicitly is read the same.
+            let (got, _): (Control, usize) = decode_frame(&raw_camera_lens_frame(lens.into()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(got.msg, Some(m));
+        }
+        // Field 24 holding a uint32 field 1, like `CameraControl`.
+        let front = encode_frame(&Control::from(ControlMsg::CameraLens(CameraLens {
+            lens: 1,
+        })));
+        assert_eq!(front.unwrap(), raw_camera_lens_frame(1));
+    }
+
+    #[test]
+    fn camera_lens_rejects_a_lens_above_one() {
+        // 256 and 300 would wrap to 0 and 44 if narrowed before the check.
+        for lens in [2u64, 7, 256, 300, u64::from(u32::MAX)] {
+            assert_eq!(
+                decode_frame::<Control>(&raw_camera_lens_frame(lens)),
+                Err(crate::FrameError::Decode),
+                "lens {lens}"
+            );
+        }
+    }
+
+    #[test]
+    fn camera_lens_rejects_a_truncated_frame() {
+        let bytes = raw_camera_lens_frame(1);
+        for cut in 0..bytes.len() {
+            assert_eq!(
+                decode_frame::<Control>(&bytes[..cut]),
+                Ok(None),
+                "cut {cut}"
+            );
+        }
+        // The frame is complete but the message inside it ends early.
+        for body in [&[0xC2u8, 0x01, 0x02, 0x08][..], &[0xC2, 0x01, 0x01, 0x08]] {
+            let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+            frame.extend_from_slice(body);
+            assert_eq!(
+                decode_frame::<Control>(&frame),
+                Err(crate::FrameError::Decode),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_control_tag_is_ignored_not_fatal() {
+        // Field 999 (a message from a newer peer), wire type 2, two bytes.
+        let mut body = Vec::new();
+        prost::encoding::encode_varint((999 << 3) | 2, &mut body);
+        body.extend([0x02, 0x08, 0x01]);
+        let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+        frame.extend(body);
+        let (got, used): (Control, usize) = decode_frame(&frame).unwrap().unwrap();
+        // `Session::recv` skips an empty envelope and reads on.
+        assert_eq!(got.msg, None);
+        assert_eq!(used, frame.len());
     }
 
     #[test]

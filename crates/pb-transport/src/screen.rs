@@ -13,7 +13,9 @@ use std::{
 
 use pb_identity::PeerId;
 use pb_protocol::{
-    control::{ControlMsg, OfferReply, ScreenAccept, ScreenFeedback, ScreenStart, ScreenState},
+    control::{
+        CameraLens, ControlMsg, OfferReply, ScreenAccept, ScreenFeedback, ScreenStart, ScreenState,
+    },
     InputDatagram, InputEvent,
 };
 use pb_video::{
@@ -387,6 +389,14 @@ impl ScreenSink {
             notice: text.to_owned(),
             ..Default::default()
         }));
+    }
+
+    /// Camera sessions: the lens now in use (0 back, 1 front; others are
+    /// not sent, the PC would reject them).
+    pub fn send_lens(&self, lens: u8) {
+        if lens <= 1 {
+            let _ = self.ctl.send(ControlMsg::CameraLens(CameraLens { lens }));
+        }
     }
 
     pub fn close(&self) {

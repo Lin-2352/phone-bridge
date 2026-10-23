@@ -108,13 +108,14 @@ Control messages, tags 17 to 20:
 4. After a dropped link the phone keeps capturing (paused) for 30 s; a new `ScreenStart` from the same PC within that time resumes without asking again.
 
 ### Phone camera
-Control messages, tags 21 to 23 (feedback reuses `ScreenFeedback`, 19):
+Control messages, tags 21 to 24 (feedback reuses `ScreenFeedback`, 19):
 
 | Message | Direction | Content |
 |---|---|---|
 | `CameraStart` (21) | PC → phone | id, codecs the PC decodes (best first), lens (0 back, 1 front), width, height (the 16:9 size wanted: 1920x1080 or 1280x720), fps (30) |
 | `CameraAccept` (22) | phone → PC | id, codec, width, height, rotation (0/90/180/270, clockwise to upright), lens; declined with `OfferReply{accept: false}` |
 | `CameraControl` (23) | PC → phone | lens: switch lenses mid-stream |
+| `CameraLens` (24) | phone → PC | lens (0 back, 1 front) now in use: after every switch, from the phone or the PC, and when streaming starts; any other value fails decoding. Older peers skip the unknown tag |
 
 **Session:**
 1. After `CameraAccept`, the phone opens a uni stream of video records, the same framing as the phone screen (`PBV1`, `u32 len | i64 pts_us | u8 flags | payload`; config records `u16 rotation | u16 width | u16 height | headers`). There is no input stream.
