@@ -118,10 +118,7 @@ class CameraConsentActivity : Activity() {
         // paused underneath instead of taking the camera back ("higher
         // priority client"). It goes when the camera stops, or when the
         // user opens another app.
-        window.addFlags(
-            android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-        )
+        window.addFlags(holdWindowFlags())
         current = this
     }
 

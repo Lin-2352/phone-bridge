@@ -51,3 +51,10 @@ fun pickFpsRange(ranges: List<Pair<Int, Int>>): Pair<Int, Int>? {
 /** A 16:9 output size: 1920x1080 if offered, else 1280x720, else null. */
 fun pickSize(sizes: List<Pair<Int, Int>>): Pair<Int, Int>? =
     listOf(1920 to 1080, 1280 to 720).firstOrNull { it in sizes }
+
+/**
+ * Flags of the invisible window kept in front while the camera streams.
+ * Touch-through, but still focusable: with no focusable window the system has
+ * no focus window and realme's watchdog kills the app after about 13 s.
+ */
+fun holdWindowFlags(): Int = android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE

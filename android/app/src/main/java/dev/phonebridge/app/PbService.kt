@@ -572,11 +572,14 @@ class PbService : Service() {
             .putExtra("codecs", IntArray(e.codecs.size) { e.codecs[it].toInt() and 0xff })
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val locked = getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
-        if (locked) {
+        // Always posted: Android may refuse to open the window from the
+        // background (the accessibility service gives the exemption and is
+        // off after a force-stop). The window cancels it when it opens.
+        run {
             val n = Notification.Builder(this, CH_CONTROL)
                 .setSmallIcon(R.drawable.ic_stat_bridge)
-                .setContentTitle("Unlock to share your screen with ${e.peerName}")
-                .setContentText("Then tap here to allow it")
+                .setContentTitle(askTitle("share your screen", e.peerName, locked))
+                .setContentText(askBody(locked))
                 .setContentIntent(PendingIntent.getActivity(this, 43, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
                 .setTimeoutAfter(30_000)
                 .setAutoCancel(true)
@@ -600,11 +603,11 @@ class PbService : Service() {
             .putExtra("codecs", IntArray(e.codecs.size) { e.codecs[it].toInt() and 0xff })
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val locked = getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
-        if (locked) {
+        run {
             val n = Notification.Builder(this, CH_CONTROL)
                 .setSmallIcon(R.drawable.ic_stat_bridge)
-                .setContentTitle("Unlock to use your camera for ${e.peerName}")
-                .setContentText("Then tap here to allow it")
+                .setContentTitle(askTitle("use your camera", e.peerName, locked))
+                .setContentText(askBody(locked))
                 .setContentIntent(PendingIntent.getActivity(this, 44, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
                 .setTimeoutAfter(30_000)
                 .setAutoCancel(true)
