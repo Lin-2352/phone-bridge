@@ -65,6 +65,14 @@ fun pickSize(sizes: List<Pair<Int, Int>>, steppedDown: Boolean = false): Pair<In
  * under 1200 MB free, returns to full size only above 1600 MB (hysteresis),
  * as the screen share does.
  */
+/**
+ * The step-down for this session: decided once from free memory ([session]
+ * null), then kept, so a lens switch cannot change the size mid-stream.
+ * [carried]: where the last session ended (the hysteresis).
+ */
+fun stepDownForSession(session: Boolean?, carried: Boolean, freeMb: Long): Boolean =
+    session ?: cameraStepDown(freeMb, carried)
+
 fun cameraStepDown(freeMb: Long, steppedDown: Boolean): Boolean = when {
     !steppedDown && freeMb < 1200 -> true
     steppedDown && freeMb > 1600 -> false

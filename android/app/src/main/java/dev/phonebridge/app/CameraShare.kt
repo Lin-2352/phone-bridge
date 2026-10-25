@@ -138,15 +138,19 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
         return mi.availMem / 1_048_576
     }
 
+    /** Decided at the first size pick of this session; a lens switch reuses it. */
+    private var sessionDown: Boolean? = null
+
     private fun sizeFor(id: String): Pair<Int, Int>? {
         val map = manager.getCameraCharacteristics(id)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val sizes = (map.getOutputSizes(MediaCodec::class.java) ?: map.getOutputSizes(ImageFormat.YUV_420_888) ?: return null)
             .map { it.width to it.height }
         // Decided once, when the session starts: no change mid-stream.
-        val down = cameraStepDown(freeMb(), cameraSteppedDown)
+        val down = stepDownForSession(sessionDown, cameraSteppedDown, freeMb())
+        if (sessionDown == null && down) Log.i(TAG, "CAMERA low memory: capped at 1280x720")
+        sessionDown = down
         cameraSteppedDown = down
-        if (down) Log.i(TAG, "CAMERA low memory: capped at 1280x720")
         return pickSize(sizes, down)
     }
 

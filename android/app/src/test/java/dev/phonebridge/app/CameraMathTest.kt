@@ -109,6 +109,19 @@ class StepDownFallbackTest {
     }
 
     @Test
+    fun a_lens_switch_keeps_the_session_step_down() {
+        // Memory recovered to 3 GB mid-session: the size stays as chosen.
+        assertEquals(true, stepDownForSession(session = true, carried = true, freeMb = 3000))
+        assertEquals(false, stepDownForSession(session = false, carried = false, freeMb = 500))
+    }
+
+    @Test
+    fun the_first_evaluation_uses_free_memory() {
+        assertEquals(true, stepDownForSession(session = null, carried = false, freeMb = 1000))
+        assertEquals(false, stepDownForSession(session = null, carried = true, freeMb = 2000))
+    }
+
+    @Test
     fun stepped_down_still_starts_at_1080p_when_there_is_no_720p() {
         // Refusing to start would be worse than the memory it saves.
         assertEquals(1920 to 1080, pickSize(listOf(1920 to 1080), steppedDown = true))
