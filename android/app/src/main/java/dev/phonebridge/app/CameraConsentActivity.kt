@@ -1,8 +1,8 @@
 package dev.phonebridge.app
 
 import android.Manifest
-import android.app.Activity
-import android.app.AlertDialog
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -10,6 +10,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 private const val TAG = "PhoneBridge"
 private const val REQ_CAMERA = 8
@@ -22,7 +25,7 @@ private const val ASK_MS = 30_000L
  * service takes the camera type while this window is visible: Android lets
  * a foreground service open the camera only then.
  */
-class CameraConsentActivity : Activity() {
+class CameraConsentActivity : ComponentActivity() {
     companion object {
         /** The window kept in front while the camera streams. */
         @Volatile private var current: CameraConsentActivity? = null
@@ -36,7 +39,7 @@ class CameraConsentActivity : Activity() {
     private var ask: CameraAsk? = null
     private var peerId = ""
     private var answered = false
-    private var dialog: AlertDialog? = null
+    private var asking by mutableStateOf(false)
     private val main = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,23 +66,28 @@ class CameraConsentActivity : Activity() {
             ensurePermission()
             return
         }
-        dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Let ${a.peer} use your camera?")
-            .setMessage("Your camera becomes a webcam on the PC while it is on. Android shows its camera indicator, and Stop is in the notification.")
-            .setPositiveButton("Allow") { _, _ -> allow(always = false) }
-            .setNegativeButton("Deny") { _, _ -> decline() }
-            .setOnDismissListener { if (!answered) decline() }
-            .apply {
-                // Without a known id "Always allow" could not be remembered.
-                if (peerId.isNotEmpty()) setNeutralButton("Always allow") { _, _ -> allow(always = true) }
+        asking = true
+        setContent {
+            PbTheme {
+                if (asking) {
+                    ConsentDialog(
+                        title = "Let ${a.peer} use your camera?",
+                        body = "Your camera becomes a webcam on the PC while it is on. Android shows its camera indicator, and Stop is in the notification.",
+                        onAllow = { allow(always = false) },
+                        onDeny = { if (!answered) decline() },
+                        // Without a known id "Always allow" could not be remembered.
+                        onAlways = if (peerId.isNotEmpty()) ({ allow(always = true) }) else null,
+                    )
+                }
             }
-            .show()
+        }
         main.postDelayed({ if (!answered) decline() }, left)
     }
 
     private fun allow(always: Boolean) {
         if (answered) return
         answered = true
+        asking = false
         main.removeCallbacksAndMessages(null)
         if (always) Prefs(this).let { it.allowedCameraPcs = withAllowed(it.allowedCameraPcs, peerId, true) }
         ensurePermission()
@@ -94,7 +102,7 @@ class CameraConsentActivity : Activity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQ_CAMERA) return
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
@@ -129,6 +137,7 @@ class CameraConsentActivity : Activity() {
 
     private fun decline() {
         answered = true
+        asking = false
         main.removeCallbacksAndMessages(null)
         ask?.let { Bridge.node?.answerCamera(it.id, null) }
         Log.i(TAG, "CAMERA request declined")
@@ -138,7 +147,6 @@ class CameraConsentActivity : Activity() {
     override fun onDestroy() {
         if (current === this) current = null
         main.removeCallbacksAndMessages(null)
-        dialog?.setOnDismissListener(null)
         super.onDestroy()
     }
 }

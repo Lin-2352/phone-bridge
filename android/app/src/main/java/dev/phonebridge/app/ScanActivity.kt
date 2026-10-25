@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.widget.FrameLayout
-import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -15,6 +14,14 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.PlanarYUVLuminanceSource
@@ -48,11 +55,24 @@ class ScanActivity : ComponentActivity() {
         preview = PreviewView(this)
         setContentView(FrameLayout(this).apply {
             addView(preview)
-            addView(TextView(context).apply {
-                text = "Point at the QR code shown by $APP_NAME on your PC"
-                setPadding(32, 64, 32, 32)
-                setTextColor(0xFFFFFFFF.toInt())
-                setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
+            addView(ComposeView(context).apply {
+                setContent {
+                    PbTheme {
+                        // A scrim card instead of bare shadowed text: readable over any camera image, in light and dark.
+                        Surface(
+                            shape = RoundedCornerShape(Radius.card),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                            modifier = Modifier.statusBarsPadding().padding(Spacing.lg),
+                        ) {
+                            Text(
+                                "Point at the QR code shown by $APP_NAME on your PC",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md),
+                            )
+                        }
+                    }
+                }
             })
         })
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()

@@ -1,7 +1,10 @@
 package dev.phonebridge.app
 
-import android.app.Activity
-import android.app.AlertDialog
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import android.app.NotificationManager
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
@@ -21,10 +24,10 @@ private const val ASK_MS = 30_000L
  * own capture prompt, which Android shows every session. On success the
  * capture starts and the PC gets its answer.
  */
-class ScreenConsentActivity : Activity() {
+class ScreenConsentActivity : ComponentActivity() {
     private var ask: ScreenAsk? = null
     private var answered = false
-    private var dialog: AlertDialog? = null
+    private var asking by mutableStateOf(false)
     private var askedAt = 0L
     private var promptAt = 0L
     private val main = Handler(Looper.getMainLooper())
@@ -55,20 +58,27 @@ class ScreenConsentActivity : Activity() {
             return
         }
         if (ScreenShare.armed != null) Log.i(TAG, "SCREEN instant share waiting for the user's yes")
-        dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Let ${a.peer} see this screen?")
-            .setMessage("Your screen appears in a window on the PC, which can also tap and type here. Stop any time from $APP_NAME or the notification.")
-            .setPositiveButton("Allow") { _, _ -> allow(always = false) }
-            .setNeutralButton("Always allow") { _, _ -> allow(always = true) }
-            .setNegativeButton("Deny") { _, _ -> decline() }
-            .setOnDismissListener { if (!answered) decline() }
-            .show()
+        asking = true
+        setContent {
+            PbTheme {
+                if (asking) {
+                    ConsentDialog(
+                        title = "Let ${a.peer} see this screen?",
+                        body = "Your screen appears in a window on the PC, which can also tap and type here. Stop any time from $APP_NAME or the notification.",
+                        onAllow = { allow(always = false) },
+                        onDeny = { if (!answered) decline() },
+                        onAlways = { allow(always = true) },
+                    )
+                }
+            }
+        }
         main.postDelayed({ if (!answered) decline() }, left)
     }
 
     private fun allow(always: Boolean) {
         if (answered) return
         answered = true
+        asking = false
         main.removeCallbacksAndMessages(null)
         if (always) Prefs(this).allowScreen = true
         capturePrompt()
@@ -122,6 +132,7 @@ class ScreenConsentActivity : Activity() {
 
     private fun decline() {
         answered = true
+        asking = false
         main.removeCallbacksAndMessages(null)
         ask?.let { Bridge.node?.answerScreen(it.id, null) }
         Log.i(TAG, "SCREEN request declined")
@@ -130,7 +141,6 @@ class ScreenConsentActivity : Activity() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
-        dialog?.setOnDismissListener(null)
         super.onDestroy()
     }
 }

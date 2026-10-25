@@ -82,6 +82,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -174,34 +176,35 @@ class MainActivity : ComponentActivity() {
         }
         sas.value?.let { code ->
             val amber = if (isDark()) AmberDark else Amber
-            AlertDialog(
+            RelayDialog(
+                // The PC's name is not known until pairing completes, so the heading stays generic.
+                title = "Pair with this PC?",
                 onDismissRequest = {},
-                title = { Text("Does the PC show this code?") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            listOf(code.take(3), code.drop(3)).forEach {
-                                Text(
-                                    it,
-                                    fontSize = 40.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = amber,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(amber.copy(alpha = 0.16f))
-                                        .padding(horizontal = 12.dp, vertical = 2.dp),
-                                )
-                            }
-                        }
-                        Text("If the codes are different, choose No. Someone may be trying to intercept the connection.", style = MaterialTheme.typography.bodyMedium)
-                    }
-                },
-                confirmButton = { Button(onClick = { scope.launch { Bridge.confirm(applicationContext, true) } }) { Text("Yes, pair") } },
-                dismissButton = { OutlinedButton(onClick = { scope.launch { Bridge.confirm(applicationContext, false) } }) { Text("No") } },
-            )
+                confirmText = "Yes, it matches",
+                onConfirm = { scope.launch { Bridge.confirm(applicationContext, true) } },
+                dismissText = "No",
+                onDismiss = { scope.launch { Bridge.confirm(applicationContext, false) } },
+            ) {
+                Text("Check that your PC shows this code.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    groupCode(code),
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = 2.sp,
+                    color = amber,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(Radius.card))
+                        .background(amber.copy(alpha = 0.16f))
+                        .padding(vertical = Spacing.lg)
+                        .semantics { contentDescription = "Pairing code ${code.toList().joinToString(" ")}" },
+                )
+                Text("If the codes are different, choose No. Someone may be trying to intercept the connection.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         message.value?.let { m ->
-            AlertDialog(onDismissRequest = { message.value = null }, text = { Text(m) }, confirmButton = { TextButton(onClick = { message.value = null }) { Text("OK") } })
+            RelayDialog(title = null, onDismissRequest = { message.value = null }, confirmText = "OK", onConfirm = { message.value = null }) { Text(m, style = MaterialTheme.typography.bodyMedium) }
         }
     }
 
@@ -222,7 +225,7 @@ class MainActivity : ComponentActivity() {
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(Radius.banner))
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -274,7 +277,7 @@ class MainActivity : ComponentActivity() {
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(Radius.banner))
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -341,7 +344,7 @@ class MainActivity : ComponentActivity() {
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .clip(RoundedCornerShape(20.dp))
+                        .clip(RoundedCornerShape(Radius.banner))
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -440,7 +443,7 @@ class MainActivity : ComponentActivity() {
             LazyColumn(Modifier.padding(pad).padding(horizontal = 16.dp)) {
                 item {
                     Column(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(20.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(Radius.hero)).background(MaterialTheme.colorScheme.surfaceContainer).padding(20.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         LinkIndicator(Build.MODEL ?: "Phone", pc, running)
@@ -471,7 +474,7 @@ class MainActivity : ComponentActivity() {
                             Modifier
                                 .fillMaxWidth()
                                 .padding(top = 8.dp)
-                                .clip(RoundedCornerShape(20.dp))
+                                .clip(RoundedCornerShape(Radius.banner))
                                 .background(MaterialTheme.colorScheme.primaryContainer)
                                 .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -556,22 +559,23 @@ class MainActivity : ComponentActivity() {
         val peers = remember(resumed.intValue, Bridge.linked.value, Bridge.nodeReady.value) { Bridge.node?.peers().orEmpty() }
         var removing by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
         removing?.let { p ->
-            AlertDialog(
+            RelayDialog(
+                title = "Remove ${p.name}?",
                 onDismissRequest = { removing = null },
-                title = { Text("Remove ${p.name}?") },
-                text = { Text("It will no longer be able to connect. You can pair again later by scanning its QR code.") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        removing = null
-                        Bridge.node?.unpair(p.id)
-                        Prefs(this@MainActivity).let { it.allowedCameraPcs = pruneAllowed(it.allowedCameraPcs, Bridge.node?.peers()?.map { q -> q.id }.orEmpty()) }
-                        Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
-                        PbService.refresh(this@MainActivity)
-                        onBack()
-                    }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                confirmText = "Remove",
+                destructive = true,
+                onConfirm = {
+                    removing = null
+                    Bridge.node?.unpair(p.id)
+                    Prefs(this@MainActivity).let { it.allowedCameraPcs = pruneAllowed(it.allowedCameraPcs, Bridge.node?.peers()?.map { q -> q.id }.orEmpty()) }
+                    Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
+                    PbService.refresh(this@MainActivity)
+                    onBack()
                 },
-                dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } },
-            )
+                dismissText = "Cancel",
+            ) {
+                Text("It will no longer be able to connect. You can pair again later by scanning its QR code.", style = MaterialTheme.typography.bodyMedium)
+            }
         }
         val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
             if (uri != null) {
@@ -778,14 +782,7 @@ private fun Section(title: String) {
 @Composable
 private fun GroupCard(title: String?, content: @Composable () -> Unit) {
     if (title != null) Section(title)
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-    ) {
-        Column(Modifier.padding(vertical = 16.dp)) { content() }
-    }
+    SectionCard { content() }
 }
 
 /** A home tile: accent container when [on], dimmed when disabled; tappable only when it has an [action]. */
