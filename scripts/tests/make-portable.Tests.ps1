@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 $out = Join-Path ([IO.Path]::GetTempPath()) "relay test $(Get-Random)"
 try {
-    & "$PSScriptRoot\..\make-portable.ps1" -OutDir $out
+    & "$PSScriptRoot\..\make-portable.ps1" -OutDir $out -Zip
     $dir = Join-Path $out "Relay"
     $fail = @()
     foreach ($f in "Relay.exe", "relay-cli.exe", "pb_camera_source.dll", "README.txt", "Relay.cmd") {
@@ -14,6 +14,12 @@ try {
     if ($cmd -notmatch [regex]::Escape('%~dp0data')) { $fail += "Relay.cmd does not use a relative data folder" }
     $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
     if ($cmd -match [regex]::Escape($repo)) { $fail += "Relay.cmd holds the repo path" }
+    $zip = Join-Path $out "Relay-portable.zip"
+    if (-not (Test-Path $zip)) { $fail += "missing Relay-portable.zip" } else {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $names = [IO.Compression.ZipFile]::OpenRead($zip).Entries | ForEach-Object { $_.FullName }
+        if ($names -notcontains "Relay/Relay.exe") { $fail += "zip lacks Relay/Relay.exe" }
+    }
     if ($fail) { $fail | ForEach-Object { Write-Error $_ -ErrorAction Continue }; exit 1 }
     "OK: $dir"
 } finally {
