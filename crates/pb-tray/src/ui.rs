@@ -21,15 +21,17 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
-                MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage,
-                IDI_APPLICATION, IDYES, MB_ICONQUESTION, MB_OK, MB_SETFOREGROUND, MB_YESNO, MSG,
-                WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WNDCLASSW,
+                PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, IDI_APPLICATION,
+                MSG, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WNDCLASSW,
             },
         },
     },
 };
 
-use crate::core::{Cmd, Peers, UiEvent};
+use crate::{
+    core::{Cmd, Peers, UiEvent},
+    dialog_window::Dialog,
+};
 
 /// Window class name; test tooling finds the window by it (hidden top-level window).
 pub const CLASS: PCWSTR = w!("PhoneBridgeTray");
@@ -447,36 +449,14 @@ fn set_tip(hwnd: HWND, tip: &str) {
     let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }
 
-/// Modal dialogs run on their own thread so the tray keeps working.
-fn ask_yes_no(text: String, title: &'static str, done: impl FnOnce(bool) + Send + 'static) {
-    std::thread::spawn(move || {
-        let (t, c) = (wide(&text), wide(title));
-        // SAFETY: both strings are NUL-terminated and outlive the call.
-        let r = unsafe {
-            MessageBoxW(
-                None,
-                PCWSTR(t.as_ptr()),
-                PCWSTR(c.as_ptr()),
-                MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND,
-            )
-        };
-        done(r == IDYES);
-    });
+/// Questions and notices are Fluent dialogs on their own thread, so the tray
+/// keeps working while one is open.
+fn ask_yes_no(d: Dialog, done: impl FnOnce(bool) + Send + 'static) {
+    crate::dialog_window::ask(d, done);
 }
 
-fn show_info(text: String, title: &'static str) {
-    std::thread::spawn(move || {
-        let (t, c) = (wide(&text), wide(title));
-        // SAFETY: as in `ask_yes_no`.
-        unsafe {
-            MessageBoxW(
-                None,
-                PCWSTR(t.as_ptr()),
-                PCWSTR(c.as_ptr()),
-                MB_OK | MB_SETFOREGROUND,
-            )
-        };
-    });
+fn show_info(d: Dialog) {
+    crate::dialog_window::info(d);
 }
 
 /// Run a menu command on the UI thread (used by the pipe server).
@@ -557,7 +537,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             closes_in,
         } => {
             if let Err(e) = crate::qr_window::show(&code, refresh_in, closes_in) {
-                show_info(
+                show_info(Dialog::notice(
+                    "Pair a new device".into(),
                     format!(
                         "Pairing code (valid 30 seconds):
 
@@ -565,8 +546,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
 
 ({e})"
                     ),
-                    "Pair a new device",
-                );
+                ));
             }
         }
         UiEvent::PairingClosed => {
@@ -581,15 +561,9 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 let _ = cmds.send(Cmd::Decide { id, accept: true });
                 return;
             }
-            ask_yes_no(
-                format!(
-                    "Pair with \"{peer_name}\"?\n\nDoes the phone show this code?\n\n        {sas}"
-                ),
-                "Relay pairing",
-                move |yes| {
-                    let _ = cmds.send(Cmd::Decide { id, accept: yes });
-                },
-            );
+            ask_yes_no(Dialog::pairing(&peer_name, &sas), move |yes| {
+                let _ = cmds.send(Cmd::Decide { id, accept: yes });
+            });
         }
         UiEvent::Clipboard {
             from,
@@ -697,8 +671,12 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         }
         UiEvent::AskControl { from, reply } => {
             ask_yes_no(
-                format!("Allow {from} to control this PC's mouse and keyboard?\n\nYou can turn this off any time in Relay settings."),
-                "Relay",
+                Dialog::question(
+                    format!("Allow {from} to control this PC?"),
+                    "It will be able to use this PC's mouse and keyboard. You can turn this off any time in Relay settings.".into(),
+                    "Allow",
+                    "Don't allow",
+                ),
                 move |yes| {
                     // An answer after the request timed out changes nothing.
                     let in_time = reply.send(yes).is_ok();
@@ -720,8 +698,14 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         } => {
             let mb = size as f64 / 1_048_576.0;
             ask_yes_no(
-                format!("{from} wants to send {name} ({mb:.1} MB).\n\nSave it to your Downloads\\Phone Bridge folder?"),
-                "Relay",
+                Dialog::question(
+                    format!("{from} wants to send a file"),
+                    format!(
+                        "{name} ({mb:.1} MB)\n\nSave it to your Downloads\\Phone Bridge folder?"
+                    ),
+                    "Save",
+                    "Decline",
+                ),
                 move |yes| {
                     let _ = reply.send(yes);
                 },
@@ -1734,8 +1718,12 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             if let Some((pid, name)) = peer {
                 let cmds = st.cmds.clone();
                 ask_yes_no(
-                    format!("Remove \"{name}\"? It will no longer be able to connect."),
-                    "Relay",
+                    Dialog::question(
+                        format!("Remove \"{name}\"?"),
+                        "It will no longer be able to connect.".into(),
+                        "Remove",
+                        "Cancel",
+                    ),
                     move |yes| {
                         if yes {
                             let _ = cmds.send(Cmd::Unpair(pid));

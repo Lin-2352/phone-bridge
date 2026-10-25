@@ -28,6 +28,8 @@ mod camera_window;
 mod control;
 #[cfg(windows)]
 mod core;
+#[cfg(windows)]
+mod dialog_window;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod ease;
 #[cfg(windows)]
