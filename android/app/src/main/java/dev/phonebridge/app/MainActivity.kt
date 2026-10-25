@@ -463,13 +463,34 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                Bridge.controlledBy.value?.let { controller ->
+                    item {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer)
+                                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "$controller is controlling this phone",
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Button(onClick = { Bridge.node?.stopControl() }) { Text("Stop") }
+                        }
+                    }
+                }
                 item {
                     val tiles = homeTiles(pc != null && running, CameraShare.usedBy.value != null, ScreenShare.sharingWith.value != null)
                     Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         tiles.chunked(2).forEach { row ->
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 row.forEach { t ->
-                                    val tile = if (t.group == Group.Settings) t.copy(on = clipOn) else t
+                                    val tile = if (t.group == Group.Settings) t.copy(on = clipOn, enabled = true) else t
                                     // Camera and Screen start from the PC: tapping while live stops the share (same as the old Stop buttons).
                                     // Send file has no action on the phone (files are shared from other apps), so it is a status tile.
                                     val action: (() -> Unit)? = when (tile.group) {
