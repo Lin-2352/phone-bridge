@@ -181,14 +181,30 @@ fn set_clipboard_own(hwnd: HWND, text: &str, sensitive: bool) -> std::io::Result
     Ok(())
 }
 
-fn sendto_link() -> Option<std::path::PathBuf> {
+fn sendto_folder() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA").map(|a| {
         std::path::PathBuf::from(a)
             .join("Microsoft")
             .join("Windows")
             .join("SendTo")
-            .join("Phone Bridge.lnk")
     })
+}
+
+fn sendto_link() -> Option<std::path::PathBuf> {
+    sendto_folder().map(|d| d.join(crate::app_name::LINK_NAME))
+}
+
+/// The shortcut an older build made under its old name.
+fn legacy_sendto_link() -> Option<std::path::PathBuf> {
+    sendto_folder().map(|d| d.join(crate::app_name::LEGACY_LINK_NAME))
+}
+
+/// Whether the Send to entry exists (under either name).
+fn sendto_enabled() -> bool {
+    [sendto_link(), legacy_sendto_link()]
+        .into_iter()
+        .flatten()
+        .any(|l| l.exists())
 }
 
 /// Create (or remove) the Explorer "Send to > Phone Bridge" shortcut. Explorer
@@ -206,8 +222,15 @@ fn toggle_sendto() -> Result<bool, String> {
         },
     };
     let link = sendto_link().ok_or("no APPDATA folder")?;
-    if link.exists() {
-        std::fs::remove_file(&link).map_err(|e| e.to_string())?;
+    if sendto_enabled() {
+        for l in [Some(link.clone()), legacy_sendto_link()]
+            .into_iter()
+            .flatten()
+        {
+            if l.exists() {
+                std::fs::remove_file(&l).map_err(|e| e.to_string())?;
+            }
+        }
         return Ok(false);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -221,7 +244,7 @@ fn toggle_sendto() -> Result<bool, String> {
             .map_err(|e| e.to_string())?;
         sl.SetArguments(&HSTRING::from(send_to_arguments()))
             .map_err(|e| e.to_string())?;
-        sl.SetDescription(&HSTRING::from("Send to your phone with Phone Bridge"))
+        sl.SetDescription(&HSTRING::from("Send to your phone with Relay"))
             .map_err(|e| e.to_string())?;
         sl.SetIconLocation(&HSTRING::from(exe.as_os_str()), 0)
             .map_err(|e| e.to_string())?;
@@ -328,7 +351,7 @@ fn pick_files() -> Vec<std::path::PathBuf> {
         if let Ok(opts) = dlg.GetOptions() {
             let _ = dlg.SetOptions(opts | FOS_ALLOWMULTISELECT | FOS_FORCEFILESYSTEM);
         }
-        let _ = dlg.SetTitle(w!("Send files with Phone Bridge"));
+        let _ = dlg.SetTitle(w!("Send files with Relay"));
         if dlg.Show(None).is_err() {
             return out; // cancelled
         }
@@ -505,7 +528,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     }
     match e {
         UiEvent::Ready { fingerprint } => {
-            set_tip(hwnd, &format!("Phone Bridge ({})", &fingerprint[..9]));
+            set_tip(hwnd, &format!("Relay ({})", &fingerprint[..9]));
             if let Ok(mut f) = MY_FINGERPRINT.lock() {
                 *f = fingerprint[..9].to_owned();
             }
@@ -548,7 +571,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         }
         UiEvent::PairingClosed => {
             crate::qr_window::close();
-            balloon(hwnd, "Phone Bridge", "Pairing window expired");
+            balloon(hwnd, "Relay", "Pairing window expired");
         }
         UiEvent::Sas { id, peer_name, sas } => {
             crate::qr_window::close();
@@ -562,7 +585,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 format!(
                     "Pair with \"{peer_name}\"?\n\nDoes the phone show this code?\n\n        {sas}"
                 ),
-                "Phone Bridge pairing",
+                "Relay pairing",
                 move |yes| {
                     let _ = cmds.send(Cmd::Decide { id, accept: yes });
                 },
@@ -583,11 +606,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 &format!("Clipboard from {from}"),
                 &text.chars().take(120).collect::<String>(),
             ),
-            Err(e) => balloon(
-                hwnd,
-                "Phone Bridge",
-                &format!("Could not set clipboard: {e}"),
-            ),
+            Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
         },
         UiEvent::RemoteClipboard {
             from,
@@ -607,11 +626,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                     "Password or code, ready to paste",
                 ),
                 Ok(()) => balloon(hwnd, &format!("Copied on {from}"), "Ready to paste"),
-                Err(e) => balloon(
-                    hwnd,
-                    "Phone Bridge",
-                    &format!("Could not set clipboard: {e}"),
-                ),
+                Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
             }
         }
         UiEvent::ControlReady { name, sender } => {
@@ -639,7 +654,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 // The session ends (sender dropped) and the phone hides its cursor.
                 balloon(
                     hwnd,
-                    "Phone Bridge",
+                    "Relay",
                     "Could not take over this PC's mouse and keyboard. Try again.",
                 );
             }
@@ -682,8 +697,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         }
         UiEvent::AskControl { from, reply } => {
             ask_yes_no(
-                format!("Allow {from} to control this PC's mouse and keyboard?\n\nYou can turn this off any time in Phone Bridge settings."),
-                "Phone Bridge",
+                format!("Allow {from} to control this PC's mouse and keyboard?\n\nYou can turn this off any time in Relay settings."),
+                "Relay",
                 move |yes| {
                     // An answer after the request timed out changes nothing.
                     let in_time = reply.send(yes).is_ok();
@@ -706,7 +721,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             let mb = size as f64 / 1_048_576.0;
             ask_yes_no(
                 format!("{from} wants to send {name} ({mb:.1} MB).\n\nSave it to your Downloads\\Phone Bridge folder?"),
-                "Phone Bridge",
+                "Relay",
                 move |yes| {
                     let _ = reply.send(yes);
                 },
@@ -724,7 +739,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 6
             };
             crate::status::show(&msg, secs);
-            balloon(hwnd, "Phone Bridge", &msg)
+            balloon(hwnd, "Relay", &msg)
         }
         UiEvent::Notify {
             peer,
@@ -768,7 +783,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 Some(r) => format!("{reason}\nYour reply: {r}"),
                 None => reason,
             };
-            balloon(hwnd, "Phone Bridge", &text);
+            balloon(hwnd, "Relay", &text);
         }
     }
 }
@@ -1213,7 +1228,7 @@ fn end_control(hwnd: HWND, why: &str) {
     let _ =
         unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_CONTROL) };
     crate::status::show(why, 4);
-    balloon(hwnd, "Phone Bridge", why);
+    balloon(hwnd, "Relay", why);
 }
 
 fn show_menu(hwnd: HWND) {
@@ -1232,7 +1247,7 @@ fn show_menu(hwnd: HWND) {
         ID_CAMERA,
     )];
     let mut items = vec![
-        Item::new(glyph::PHONE, "Open Phone Bridge", ID_OPEN_FLYOUT),
+        Item::new(glyph::PHONE, "Open Relay", ID_OPEN_FLYOUT),
         Item::new(
             glyph::PHONE,
             if crate::screen_window::is_open() {
@@ -1245,7 +1260,7 @@ fn show_menu(hwnd: HWND) {
         Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
         Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
         Item::separator(),
-        Item::new(glyph::POWER, "Quit Phone Bridge", ID_QUIT),
+        Item::new(glyph::POWER, "Quit Relay", ID_QUIT),
     ];
     // The camera entries sit right after the phone-screen entry.
     for (i, it) in camera_items.into_iter().enumerate() {
@@ -1279,7 +1294,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
         keep,
         auto,
         save_dir,
-        sendto: sendto_link().is_some_and(|l| l.exists()),
+        sendto: sendto_enabled(),
         startup: startup_enabled(),
         control,
         devices: st
@@ -1441,11 +1456,7 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
         }
         Action::Toggle(Key::Startup) => {
             if let Err(e) = set_startup(!startup_enabled()) {
-                balloon(
-                    hwnd,
-                    "Phone Bridge",
-                    &format!("Could not change startup: {e}"),
-                );
+                balloon(hwnd, "Relay", &format!("Could not change startup: {e}"));
             }
         }
         Action::ChangeFolder => {
@@ -1573,16 +1584,12 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                     .line("SEND refused: clipboard marked private by its source app");
                 balloon(
                     hwnd,
-                    "Phone Bridge",
+                    "Relay",
                     "Not sent: the app that copied this marked it private",
                 );
             }
-            Ok(ClipText::Empty) => balloon(hwnd, "Phone Bridge", "Clipboard has no text"),
-            Err(e) => balloon(
-                hwnd,
-                "Phone Bridge",
-                &format!("Could not read clipboard: {e}"),
-            ),
+            Ok(ClipText::Empty) => balloon(hwnd, "Relay", "Clipboard has no text"),
+            Err(e) => balloon(hwnd, "Relay", &format!("Could not read clipboard: {e}")),
         },
         ID_SEND_FILES => {
             let cmds = st.cmds.clone();
@@ -1594,15 +1601,11 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             });
         }
         ID_SENDTO => match toggle_sendto() {
-            Ok(true) => balloon(
-                hwnd,
-                "Phone Bridge",
-                "Added: right-click files, Send to, Phone Bridge",
-            ),
-            Ok(false) => balloon(hwnd, "Phone Bridge", "Removed from the Send to menu"),
+            Ok(true) => balloon(hwnd, "Relay", "Added: right-click files, Send to, Relay"),
+            Ok(false) => balloon(hwnd, "Relay", "Removed from the Send to menu"),
             Err(e) => balloon(
                 hwnd,
-                "Phone Bridge",
+                "Relay",
                 &format!("Could not change the Send to menu: {e}"),
             ),
         },
@@ -1732,7 +1735,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 let cmds = st.cmds.clone();
                 ask_yes_no(
                     format!("Remove \"{name}\"? It will no longer be able to connect."),
-                    "Phone Bridge",
+                    "Relay",
                     move |yes| {
                         if yes {
                             let _ = cmds.send(Cmd::Unpair(pid));
@@ -1755,9 +1758,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         // Explorer restarted: our icon is gone, add it again (same tooltip).
         let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
         let tip = if fp.is_empty() {
-            "Phone Bridge".to_owned()
+            "Relay".to_owned()
         } else {
-            format!("Phone Bridge ({fp})")
+            format!("Relay ({fp})")
         };
         add_icon(hwnd, &tip);
         return LRESULT(0);
@@ -1969,7 +1972,7 @@ pub fn create(
         let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW,
             CLASS,
-            w!("Phone Bridge"),
+            w!("Relay"),
             windows::Win32::UI::WindowsAndMessaging::WS_POPUP,
             0,
             0,
@@ -1984,7 +1987,7 @@ pub fn create(
             windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(w!("TaskbarCreated")),
             std::sync::atomic::Ordering::Relaxed,
         );
-        add_icon(hwnd, "Phone Bridge (starting)");
+        add_icon(hwnd, "Relay (starting)");
         // Real toasts with Phone Bridge's identity; balloons if that fails.
         let raw = hwnd.0 as isize;
         let push = move |ev: ToastEvent| {

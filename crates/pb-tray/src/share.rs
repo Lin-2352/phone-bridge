@@ -69,7 +69,7 @@ pub fn take() -> Option<Share> {
         }
         None => {
             let _ = op.ReportError(&windows::core::HSTRING::from(
-                "Phone Bridge could not read what was shared",
+                "Relay could not read what was shared",
             ));
             None
         }

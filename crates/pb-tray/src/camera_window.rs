@@ -200,7 +200,7 @@ fn paint(hwnd: HWND) {
         let verdict = if st.rows.is_empty() {
             ""
         } else if crate::camera_status::all_ok(&st.rows) {
-            "Working: apps can use Phone Bridge Camera"
+            "Working: apps can use Relay Camera"
         } else {
             "Not working yet: see the marks below"
         };
@@ -479,7 +479,7 @@ pub fn open(
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_APPWINDOW,
             CLASS,
-            w!("Phone Bridge camera"),
+            w!("Relay camera"),
             style,
             0,
             0,

@@ -156,7 +156,7 @@ fn paint(hwnd: HWND) {
             let bar_top = scale * total as i32;
             let window_left = s.closes_at.saturating_duration_since(now).as_secs();
             let mut text: Vec<u16> = format!(
-                "Scan with Phone Bridge on your phone (\u{201c}Scan QR\u{201d}).\nNew code in {} s \u{2022} pairing closes in {}:{:02}\nEach code works once. Closing this window cancels pairing.",
+                "Scan with Relay on your phone (\u{201c}Scan QR\u{201d}).\nNew code in {} s \u{2022} pairing closes in {}:{:02}\nEach code works once. Closing this window cancels pairing.",
                 left.as_secs() + 1,
                 window_left / 60,
                 window_left % 60
@@ -204,7 +204,7 @@ pub fn show(code: &str, refresh_in: Duration, closes_in: Duration) -> Result<(),
             let h = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 CLASS,
-                w!("Phone Bridge: pair a new device"),
+                w!("Relay: pair a new device"),
                 WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,

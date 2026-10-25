@@ -1,4 +1,4 @@
-//! The "Phone Bridge Camera" device's life: it exists only while streaming.
+//! The "Relay Camera" device's life: it exists only while streaming.
 //!
 //! `CameraDevice` always ends with `stop`, `remove`, `shutdown`, each once,
 //! on every path (menu stop, phone ended, tray exit, drop). The device is
@@ -12,11 +12,13 @@
 /// " (Windows Virtual Camera)" to the name we gave, so an exact comparison
 /// never matches (the leftover sweep and the status window both missed it).
 pub fn is_our_camera(name: &str) -> bool {
-    const OURS: &str = "Phone Bridge Camera";
-    name == OURS
-        || name
-            .strip_prefix(OURS)
-            .is_some_and(|rest| rest.starts_with(" ("))
+    use crate::app_name::{CAMERA_NAME, LEGACY_CAMERA_NAME};
+    [CAMERA_NAME, LEGACY_CAMERA_NAME].iter().any(|ours| {
+        name == *ours
+            || name
+                .strip_prefix(ours)
+                .is_some_and(|rest| rest.starts_with(" ("))
+    })
 }
 
 /// What the device needs from a virtual camera (a fake in the tests).
@@ -98,7 +100,7 @@ mod real {
     use super::VirtualCamera;
 
     /// The name apps list.
-    pub const FRIENDLY_NAME: &str = "Phone Bridge Camera";
+    pub const FRIENDLY_NAME: &str = crate::app_name::CAMERA_NAME;
 
     fn source_id() -> String {
         format!("{{{:?}}}", CLSID_PHONE_BRIDGE_CAMERA_SOURCE)
@@ -352,12 +354,11 @@ mod tests {
 
     #[test]
     fn windows_adds_a_suffix_to_the_camera_name() {
-        assert!(is_our_camera("Phone Bridge Camera"));
-        assert!(is_our_camera(
-            "Phone Bridge Camera (Windows Virtual Camera)"
-        ));
+        assert!(is_our_camera("Relay Camera"));
+        assert!(is_our_camera("Phone Bridge Camera"), "an older build's");
+        assert!(is_our_camera("Relay Camera (Windows Virtual Camera)"));
         assert!(!is_our_camera("USB2.0 HD UVC WebCam"));
-        assert!(!is_our_camera("Phone Bridge Camera Pro"), "another camera");
+        assert!(!is_our_camera("Relay Camera Pro"), "another camera");
         assert!(!is_our_camera(""));
     }
 

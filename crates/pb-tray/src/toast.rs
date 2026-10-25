@@ -93,7 +93,7 @@ fn start_menu_link() -> Result<std::path::PathBuf, String> {
         .join("Windows")
         .join("Start Menu")
         .join("Programs")
-        .join("Phone Bridge.lnk"))
+        .join(crate::app_name::LINK_NAME))
 }
 
 /// A PROPVARIANT holding a CoTaskMem string (freed by PropVariantClear).
@@ -121,8 +121,7 @@ fn write_shortcut(exe: &Path) -> Result<(), String> {
         let sl: IShellLinkW =
             CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(err)?;
         sl.SetPath(&HSTRING::from(exe.as_os_str())).map_err(err)?;
-        sl.SetDescription(&HSTRING::from("Phone Bridge"))
-            .map_err(err)?;
+        sl.SetDescription(&HSTRING::from("Relay")).map_err(err)?;
         sl.SetIconLocation(&HSTRING::from(exe.as_os_str()), 0)
             .map_err(err)?;
         let store: IPropertyStore = sl.cast().map_err(err)?;
@@ -138,6 +137,10 @@ fn write_shortcut(exe: &Path) -> Result<(), String> {
         let pf: IPersistFile = sl.cast().map_err(err)?;
         pf.Save(&HSTRING::from(link.as_os_str()), true)
             .map_err(err)?;
+    }
+    // The shortcut an older build made under its old name would show twice.
+    if let Some(dir) = link.parent() {
+        let _ = std::fs::remove_file(dir.join(crate::app_name::LEGACY_LINK_NAME));
     }
     Ok(())
 }

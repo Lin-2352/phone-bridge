@@ -556,7 +556,7 @@ pub struct BadPairingCode;
 
 impl fmt::Display for BadPairingCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("not a Phone Bridge pairing code")
+        f.write_str("not a Relay pairing code")
     }
 }
 

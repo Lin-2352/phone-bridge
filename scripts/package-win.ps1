@@ -1,4 +1,4 @@
-# Register Phone Bridge as a Windows share target (per user, no admin).
+# Register Relay as a Windows share target (per user, no admin).
 #
 # Uses a sparse package: packaging/windows/AppxManifest.xml gives the existing
 # pb-tray.exe a package identity; the exe is not copied. Loose registration

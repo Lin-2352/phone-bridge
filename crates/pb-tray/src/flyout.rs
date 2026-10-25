@@ -717,7 +717,7 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             CLASS,
-            w!("Phone Bridge"),
+            w!("Relay"),
             WS_POPUP,
             0,
             0,

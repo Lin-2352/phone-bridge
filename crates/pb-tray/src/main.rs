@@ -209,7 +209,7 @@ fn main() {
         if ok {
             share.done();
         } else {
-            share.failed("Phone Bridge is not running");
+            share.failed("Relay is not running");
         }
         std::process::exit(if ok { 0 } else { 1 });
     }
@@ -298,10 +298,7 @@ fn main() {
         ));
         if let Err(e) = result {
             core_log.line(&format!("FATAL {e}"));
-            ui::post_event(
-                hwnd,
-                core::UiEvent::Info(format!("Phone Bridge stopped: {e}")),
-            );
+            ui::post_event(hwnd, core::UiEvent::Info(format!("Relay stopped: {e}")));
         }
     });
     log.line("tray started");

@@ -89,11 +89,7 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
             "An update installs next time the camera starts",
         )
     } else {
-        row(
-            "Camera installed",
-            Mark::Ok,
-            "Phone Bridge Camera is set up",
-        )
+        row("Camera installed", Mark::Ok, "Relay Camera is set up")
     });
     out.push(match i.access {
         Access::Allow => row("Windows camera access", Mark::Ok, "On"),
@@ -135,7 +131,7 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
         (true, Some(true)) => row(
             "Listed by Windows",
             Mark::Ok,
-            "Apps and browsers can pick Phone Bridge Camera",
+            "Apps and browsers can pick Relay Camera",
         ),
         (true, Some(false)) => row(
             "Listed by Windows",

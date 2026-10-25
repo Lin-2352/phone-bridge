@@ -121,7 +121,7 @@ pub fn show(text: &str, secs: u32) {
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
             CLASS,
-            w!("Phone Bridge"),
+            w!("Relay"),
             WS_POPUP,
             0,
             0,

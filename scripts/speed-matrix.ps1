@@ -110,7 +110,7 @@ $upOk = (Get-ChildItem $InboxDir -Filter "pbm3_100MB*" | Where-Object { $_.LastW
 $p = A shell pidof dev.phonebridge.app
 $adj = if ($p) { A shell "cat /proc/$p/oom_score_adj" } else { "dead" }
 $free = [math]::Round([int]((A shell "grep MemAvailable /proc/meminfo") -replace '\D', '') / 1024)
-"Phone Bridge priority $adj, phone free ${free} MB, crashes: " + (A logcat -d -b crash | Select-String "Process: dev.phonebridge").Count
+"Relay priority $adj, phone free ${free} MB, crashes: " + (A logcat -d -b crash | Select-String "Process: dev.phonebridge").Count
 
 Row @((Get-Date).ToString('s'), $Scenario, $phoneLink, $pcLink, "ok", $down, $downOk, $up, "$upOk/2", $adj) | Add-Content $csv
 "Test files left on the phone (delete when done): $bigName and pbping-$stamp.txt in Download/Phone Bridge"

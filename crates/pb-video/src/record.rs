@@ -31,7 +31,7 @@ pub enum RecordError {
 impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadMagic => f.write_str("not a Phone Bridge video stream"),
+            Self::BadMagic => f.write_str("not a Relay video stream"),
             Self::TooLarge(n) => write!(f, "video record of {n} bytes is too large"),
         }
     }
