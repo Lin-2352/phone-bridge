@@ -40,6 +40,7 @@ mod notify;
 mod qr;
 #[cfg(windows)]
 mod qr_window;
+#[cfg(windows)]
 mod relaunch;
 #[cfg(windows)]
 mod screen_decode;
