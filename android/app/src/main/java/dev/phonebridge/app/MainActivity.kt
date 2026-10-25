@@ -19,6 +19,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +40,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -154,12 +159,14 @@ class MainActivity : ComponentActivity() {
     private fun App() {
         var screen by remember { mutableStateOf("home") }
         val scope = rememberCoroutineScope()
-        when (screen) {
-            "settings" -> {
-                BackHandler { screen = "home" }
-                SettingsScreen(onBack = { screen = "home" })
+        Crossfade(targetState = screen, animationSpec = tween(150), label = "screen") { s ->
+            when (s) {
+                "settings" -> {
+                    BackHandler { screen = "home" }
+                    SettingsScreen(onBack = { screen = "home" })
+                }
+                else -> HomeScreen(onSettings = { screen = "settings" })
             }
-            else -> HomeScreen(onSettings = { screen = "settings" })
         }
         sas.value?.let { code ->
             val amber = if (isDark()) AmberDark else Amber
@@ -548,139 +555,131 @@ class MainActivity : ComponentActivity() {
             },
         ) { pad ->
             LazyColumn(Modifier.padding(pad)) {
-                item { Section("Appearance") }
                 item {
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-                        listOf("System", "Light", "Dark").forEachIndexed { i, label ->
-                            SegmentedButton(
-                                selected = ThemeChoice.mode.intValue == i,
-                                onClick = { ThemeChoice.mode.intValue = i; prefs.theme = i },
-                                shape = SegmentedButtonDefaults.itemShape(i, 3),
-                            ) { Text(label) }
+                    GroupCard(groupTitle(Group.Connection)) {
+                        peers.forEach { p ->
+                            ListItem(
+                                headlineContent = { Text(p.name) },
+                                supportingContent = { Text("Fingerprint ${p.fingerprint.take(9)}") },
+                                trailingContent = {
+                                    TextButton(onClick = { removing = p }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                                },
+                            )
                         }
+                        ListItem(
+                            headlineContent = { Text("Pair a new PC", color = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable { startActivity(Intent(this@MainActivity, ScanActivity::class.java)) },
+                        )
                     }
                 }
-                item { Section("Clipboard") }
                 item {
-                    ListItem(
-                        headlineContent = { Text("Share clipboard") },
-                        supportingContent = { Text("Share what you copy with your paired PC") },
-                        trailingContent = { Switch(clipOn, { clipOn = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }) },
-                    )
+                    GroupCard(groupTitle(Group.Camera)) {
+                        CameraForPc()
+                    }
                 }
                 item {
-                    ListItem(
-                        headlineContent = { Text("Passwords and codes") },
-                        supportingContent = { Text("Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC") },
-                        trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clipOn) },
-                    )
+                    GroupCard(groupTitle(Group.Screen)) {
+                        ControlFromPc()
+                        NotificationsOnPc()
+                        ScreenToPc()
+                        val on = remember(resumed.intValue) { ControlService.instance != null }
+                        val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
+                        ListItem(
+                            headlineContent = { Text("Accessibility permission") },
+                            supportingContent = { Text("\u201cPhone Bridge control\u201d lets your PC tap and type here. Without it your PC cannot control this phone") },
+                            trailingContent = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                        )
+                    }
                 }
                 item {
-                    Text(
-                        "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open Phone Bridge or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    )
+                    GroupCard(groupTitle(Group.Files)) {
+                        ListItem(
+                            headlineContent = { Text("Accept from my devices automatically") },
+                            supportingContent = { Text("Only paired devices can send") },
+                            trailingContent = { Switch(auto, { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) }) },
+                        )
+                        ListItem(
+                            headlineContent = { Text("Save files to") },
+                            supportingContent = { Text(treeLabel(tree)) },
+                            trailingContent = {
+                                if (tree != null) {
+                                    TextButton(onClick = {
+                                        tree?.let { runCatching { contentResolver.releasePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
+                                        prefs.saveTree = null
+                                        tree = null
+                                    }) { Text("Reset") }
+                                }
+                            },
+                            modifier = Modifier.clickable { pickFolder.launch(null) },
+                        )
+                    }
                 }
-                item { Section("Sharing") }
                 item {
-                    ListItem(
-                        headlineContent = { Text("Accept from my devices automatically") },
-                        supportingContent = { Text("Only paired devices can send") },
-                        trailingContent = { Switch(auto, { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) }) },
-                    )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Save files to") },
-                        supportingContent = { Text(treeLabel(tree)) },
-                        trailingContent = {
-                            if (tree != null) {
-                                TextButton(onClick = {
-                                    tree?.let { runCatching { contentResolver.releasePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
-                                    prefs.saveTree = null
-                                    tree = null
-                                }) { Text("Reset") }
+                    GroupCard(groupTitle(Group.Settings)) {
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                            listOf("System", "Light", "Dark").forEachIndexed { i, label ->
+                                SegmentedButton(
+                                    selected = ThemeChoice.mode.intValue == i,
+                                    onClick = { ThemeChoice.mode.intValue = i; prefs.theme = i },
+                                    shape = SegmentedButtonDefaults.itemShape(i, 3),
+                                ) { Text(label) }
                             }
-                        },
-                        modifier = Modifier.clickable { pickFolder.launch(null) },
-                    )
-                }
-                item { Section("Control from PC") }
-                item { ControlFromPc() }
-                item { NotificationsOnPc() }
-                item { ScreenToPc() }
-                item { CameraForPc() }
-                item {
-                    val on = remember(resumed.intValue) { ControlService.instance != null }
-                    val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
-                    ListItem(
-                        headlineContent = { Text("Accessibility permission") },
-                        supportingContent = { Text("\u201cPhone Bridge control\u201d lets your PC tap and type here. Without it your PC cannot control this phone") },
-                        trailingContent = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary) },
-                        modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                    )
-                }
-                item { Section("Background") }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Phone Bridge") },
-                        supportingContent = { Text(if (Bridge.running.value) "On: your PC can reach this phone. Quick Settings tile turns it off" else "Off: your PC cannot reach this phone") },
-                        trailingContent = { Switch(Bridge.running.value, { setBridgeEnabled(this@MainActivity, it) }) },
-                    )
-                }
-                item {
-                    val unrestricted = remember(resumed.intValue) { mutableStateOf(isBatteryUnrestricted(this@MainActivity)) }
-                    ListItem(
-                        headlineContent = { Text("Keep running in background") },
-                        supportingContent = {
-                            Text(
-                                if (unrestricted.value) "On. Android lets Phone Bridge come back by itself if the phone runs low on memory"
-                                else "Recommended. Without it, Android may stop Phone Bridge when memory is low until you open it again",
-                            )
-                        },
-                        trailingContent = { Text(if (unrestricted.value) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
-                        modifier = Modifier.clickable {
-                            if (!unrestricted.value) {
-                                startActivity(
-                                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                                        .setData(Uri.parse("package:$packageName")),
+                        }
+                        ListItem(
+                            headlineContent = { Text("Share clipboard") },
+                            supportingContent = { Text("Share what you copy with your paired PC") },
+                            trailingContent = { Switch(clipOn, { clipOn = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }) },
+                        )
+                        ListItem(
+                            headlineContent = { Text("Passwords and codes") },
+                            supportingContent = { Text("Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC") },
+                            trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clipOn) },
+                        )
+                        Text(
+                            "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open Phone Bridge or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                        ListItem(
+                            headlineContent = { Text("Phone Bridge") },
+                            supportingContent = { Text(if (Bridge.running.value) "On: your PC can reach this phone. Quick Settings tile turns it off" else "Off: your PC cannot reach this phone") },
+                            trailingContent = { Switch(Bridge.running.value, { setBridgeEnabled(this@MainActivity, it) }) },
+                        )
+                        val unrestricted = remember(resumed.intValue) { mutableStateOf(isBatteryUnrestricted(this@MainActivity)) }
+                        ListItem(
+                            headlineContent = { Text("Keep running in background") },
+                            supportingContent = {
+                                Text(
+                                    if (unrestricted.value) "On. Android lets Phone Bridge come back by itself if the phone runs low on memory"
+                                    else "Recommended. Without it, Android may stop Phone Bridge when memory is low until you open it again",
                                 )
-                            } else {
-                                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                            }
-                        },
-                    )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Hide the status notification") },
-                        supportingContent = { Text("Android needs it while Phone Bridge runs in the background. You can turn it off for this app; Phone Bridge keeps working") },
-                        modifier = Modifier.clickable {
-                            startActivity(
-                                Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
-                                    .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-                                    .putExtra(Settings.EXTRA_CHANNEL_ID, "status"),
-                            )
-                        },
-                    )
-                }
-                item { Section("Devices") }
-                items(peers) { p ->
-                    ListItem(
-                        headlineContent = { Text(p.name) },
-                        supportingContent = { Text("Fingerprint ${p.fingerprint.take(9)}") },
-                        trailingContent = {
-                            TextButton(onClick = { removing = p }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
-                        },
-                    )
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Pair a new PC", color = MaterialTheme.colorScheme.primary) },
-                        modifier = Modifier.clickable { startActivity(Intent(this@MainActivity, ScanActivity::class.java)) },
-                    )
+                            },
+                            trailingContent = { Text(if (unrestricted.value) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable {
+                                if (!unrestricted.value) {
+                                    startActivity(
+                                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                            .setData(Uri.parse("package:$packageName")),
+                                    )
+                                } else {
+                                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                }
+                            },
+                        )
+                        ListItem(
+                            headlineContent = { Text("Hide the status notification") },
+                            supportingContent = { Text("Android needs it while Phone Bridge runs in the background. You can turn it off for this app; Phone Bridge keeps working") },
+                            modifier = Modifier.clickable {
+                                startActivity(
+                                    Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                        .putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                                        .putExtra(Settings.EXTRA_CHANNEL_ID, "status"),
+                                )
+                            },
+                        )
+                    }
                 }
                 item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             }
@@ -691,6 +690,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Section(title: String) {
     Text(title, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp))
+}
+
+/** A settings group: its header over a rounded card holding the group's rows. */
+@Composable
+private fun GroupCard(title: String, content: @Composable () -> Unit) {
+    Section(title)
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+    ) {
+        Column(Modifier.padding(vertical = 16.dp)) { content() }
+    }
 }
 
 /** Phone and PC joined by the link line: the design's signature element. */
