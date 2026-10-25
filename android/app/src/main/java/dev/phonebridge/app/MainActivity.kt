@@ -485,12 +485,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 item {
-                    val tiles = homeTiles(pc != null && running, CameraShare.usedBy.value != null, ScreenShare.sharingWith.value != null)
+                    val tiles = homeTiles(pc != null && running, CameraShare.usedBy.value != null, ScreenShare.sharingWith.value != null, clipOn)
                     Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         tiles.chunked(2).forEach { row ->
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                row.forEach { t ->
-                                    val tile = if (t.group == Group.Settings) t.copy(on = clipOn, enabled = true) else t
+                                row.forEach { tile ->
                                     // Camera and Screen start from the PC: tapping while live stops the share (same as the old Stop buttons).
                                     // Send file has no action on the phone (files are shared from other apps), so it is a status tile.
                                     val action: (() -> Unit)? = when (tile.group) {
