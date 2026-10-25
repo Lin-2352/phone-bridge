@@ -47,6 +47,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -68,6 +69,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -461,10 +463,31 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                item { ControlFromPc(Modifier.padding(top = 8.dp)) }
-                item { NotificationsOnPc() }
-                item { ScreenToPc() }
-                item { CameraForPc() }
+                item {
+                    val tiles = homeTiles(pc != null && running, CameraShare.usedBy.value != null, ScreenShare.sharingWith.value != null)
+                    Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        tiles.chunked(2).forEach { row ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                row.forEach { t ->
+                                    val tile = if (t.group == Group.Settings) t.copy(on = clipOn) else t
+                                    // Camera and Screen start from the PC: tapping while live stops the share (same as the old Stop buttons).
+                                    // Send file has no action on the phone (files are shared from other apps), so it is a status tile.
+                                    val action: (() -> Unit)? = when (tile.group) {
+                                        Group.Camera -> if (tile.on) ({ CameraShare.stop(userStopped = true) }) else null
+                                        Group.Screen -> if (tile.on) ({ ScreenShare.stop(userStopped = true) }) else null
+                                        Group.Settings -> ({
+                                            clipOn = !clipOn
+                                            prefs.clipboardSync = clipOn
+                                            Bridge.node?.setClipboardSync(clipOn)
+                                        })
+                                        else -> null
+                                    }
+                                    HomeTileCard(tile, action, Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+                }
                 if (!notificationsOn) {
                     item {
                         ListItem(
@@ -475,19 +498,6 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                }
-                item {
-                    ListItem(
-                        headlineContent = { Text("Share clipboard") },
-                        supportingContent = { Text("Copy here, paste on your PC, and back") },
-                        trailingContent = {
-                            Switch(checked = clipOn, onCheckedChange = {
-                                clipOn = it
-                                prefs.clipboardSync = it
-                                Bridge.node?.setClipboardSync(it)
-                            })
-                        },
-                    )
                 }
                 item { Text("Recent", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 16.dp, top = 8.dp)) }
                 if (Bridge.recent.isEmpty()) {
@@ -704,6 +714,30 @@ private fun GroupCard(title: String, content: @Composable () -> Unit) {
     ) {
         Column(Modifier.padding(vertical = 16.dp)) { content() }
     }
+}
+
+/** A home tile: accent container when [on], dimmed when disabled; tappable only when it has an [action]. */
+@Composable
+private fun HomeTileCard(tile: HomeTile, action: (() -> Unit)?, modifier: Modifier = Modifier) {
+    val colors = if (tile.on) {
+        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
+    } else {
+        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer, contentColor = MaterialTheme.colorScheme.onSurface)
+    }
+    val body: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(tile.label, style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (tile.group == Group.Files) "Share from any app" else if (tile.on) "On" else "Off",
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalContentColor.current.copy(alpha = 0.7f),
+            )
+        }
+    }
+    val shape = RoundedCornerShape(16.dp)
+    val m = modifier.alpha(if (tile.enabled) 1f else 0.5f)
+    if (action != null && tile.enabled) Card(onClick = action, shape = shape, colors = colors, modifier = m) { body() }
+    else Card(shape = shape, colors = colors, modifier = m) { body() }
 }
 
 /** Phone and PC joined by the link line: the design's signature element. */
