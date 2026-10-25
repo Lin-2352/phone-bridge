@@ -37,6 +37,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -50,6 +52,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -164,7 +167,6 @@ class MainActivity : ComponentActivity() {
         Crossfade(targetState = screen, animationSpec = tween(150), label = "screen") { s ->
             when (s) {
                 "settings" -> {
-                    BackHandler { screen = "home" }
                     SettingsScreen(onBack = { screen = "home" })
                 }
                 else -> HomeScreen(onSettings = { screen = "settings" })
@@ -544,6 +546,9 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun SettingsScreen(onBack: () -> Unit) {
+        var nav by remember { mutableStateOf(SettingsNav()) }
+        val goBack = { nav.back()?.let { nav = it } ?: onBack() }
+        BackHandler(onBack = goBack)
         var clipOn by remember(resumed.intValue) { mutableStateOf(prefs.clipboardSync) }
         var sens by remember(resumed.intValue) { mutableStateOf(prefs.sendSensitive) }
         var auto by remember(resumed.intValue) { mutableStateOf(prefs.autoAccept) }
@@ -579,14 +584,59 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Settings") },
-                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                    title = { Text(nav.page?.let(::groupTitle) ?: "Settings") },
+                    navigationIcon = { IconButton(onClick = goBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 )
             },
         ) { pad ->
-            LazyColumn(Modifier.padding(pad)) {
-                item {
-                    GroupCard(groupTitle(Group.Connection)) {
+            Crossfade(targetState = nav.page, animationSpec = tween(150), label = "settings page", modifier = Modifier.padding(pad)) { page ->
+            LazyColumn(Modifier.fillMaxSize()) {
+                if (page == null) {
+                    item {
+                        OutlinedTextField(
+                            value = nav.query,
+                            onValueChange = { nav = nav.copy(query = it) },
+                            singleLine = true,
+                            placeholder = { Text("Search settings") },
+                            leadingIcon = { Icon(Icons.Filled.Search, null) },
+                            trailingIcon = {
+                                if (nav.query.isNotEmpty()) IconButton(onClick = { nav = nav.copy(query = "") }) { Icon(Icons.Filled.Clear, "Clear search") }
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        )
+                    }
+                    if (nav.query.isNotBlank()) {
+                        val hits = searchSettings(nav.query)
+                        if (hits.isEmpty()) {
+                            item { Text("No settings match", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
+                        }
+                        items(hits) { h ->
+                            ListItem(
+                                headlineContent = { Text(h.title) },
+                                supportingContent = { Text("${groupTitle(h.group)}: ${h.subtitle}") },
+                                modifier = Modifier.clickable { nav = nav.open(h.group) },
+                            )
+                        }
+                    } else {
+                        items(Group.entries) { g ->
+                            Card(
+                                onClick = { nav = nav.open(g) },
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                            ) {
+                                ListItem(
+                                    headlineContent = { Text(groupTitle(g)) },
+                                    supportingContent = { Text(pageSummary(g)) },
+                                    colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+                                )
+                            }
+                        }
+                    }
+                } else when (page) {
+                Group.Connection -> item {
+                    GroupCard(null) {
                         peers.forEach { p ->
                             ListItem(
                                 headlineContent = { Text(p.name) },
@@ -602,13 +652,13 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                item {
-                    GroupCard(groupTitle(Group.Camera)) {
+                Group.Camera -> item {
+                    GroupCard(null) {
                         CameraForPc()
                     }
                 }
-                item {
-                    GroupCard(groupTitle(Group.Screen)) {
+                Group.Screen -> item {
+                    GroupCard(null) {
                         ControlFromPc()
                         NotificationsOnPc()
                         ScreenToPc()
@@ -622,8 +672,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                item {
-                    GroupCard(groupTitle(Group.Files)) {
+                Group.Files -> item {
+                    GroupCard(null) {
                         ListItem(
                             headlineContent = { Text("Accept from my devices automatically") },
                             supportingContent = { Text("Only paired devices can send") },
@@ -645,8 +695,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                item {
-                    GroupCard(groupTitle(Group.Settings)) {
+                Group.Settings -> item {
+                    GroupCard(null) {
                         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                             listOf("System", "Light", "Dark").forEachIndexed { i, label ->
                                 SegmentedButton(
@@ -711,7 +761,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                }
                 item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
+            }
             }
         }
     }
@@ -724,8 +776,8 @@ private fun Section(title: String) {
 
 /** A settings group: its header over a rounded card holding the group's rows. */
 @Composable
-private fun GroupCard(title: String, content: @Composable () -> Unit) {
-    Section(title)
+private fun GroupCard(title: String?, content: @Composable () -> Unit) {
+    if (title != null) Section(title)
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),

@@ -39,3 +39,70 @@ class SettingsGroupsTest {
         )
     }
 }
+
+class SettingsSearchTest {
+    private val index = listOf(
+        SettingEntry(Group.Camera, "PCs always allowed to use the camera", "Skip the question"),
+        SettingEntry(Group.Files, "Save files to", "Downloads folder"),
+        SettingEntry(Group.Settings, "Share clipboard", "Share what you copy"),
+    )
+
+    @Test
+    fun an_empty_or_blank_query_matches_nothing() {
+        assertEquals(emptyList<SettingEntry>(), searchSettings("", index))
+        assertEquals(emptyList<SettingEntry>(), searchSettings("   ", index))
+    }
+
+    @Test
+    fun matches_the_title_ignoring_case() {
+        assertEquals(listOf(index[1]), searchSettings("SAVE", index))
+    }
+
+    @Test
+    fun matches_the_subtitle() {
+        assertEquals(listOf(index[2]), searchSettings("what you copy", index))
+    }
+
+    @Test
+    fun no_match_gives_an_empty_list() {
+        assertEquals(emptyList<SettingEntry>(), searchSettings("zebra", index))
+    }
+
+    @Test
+    fun results_keep_index_order() {
+        assertEquals(index, searchSettings("a", index))
+    }
+
+    @Test
+    fun the_real_index_covers_every_group_and_finds_the_clipboard() {
+        assertEquals(Group.entries.toSet(), settingEntries.map { it.group }.toSet())
+        assertEquals(Group.Settings, searchSettings("clipboard").first().group)
+    }
+
+    @Test
+    fun every_page_has_a_summary() {
+        for (g in Group.entries) assertEquals(g.name, false, pageSummary(g).isBlank())
+    }
+}
+
+class SettingsNavTest {
+    @Test
+    fun opening_a_page_then_back_returns_to_the_list() {
+        val n = SettingsNav().open(Group.Camera)
+        assertEquals(Group.Camera, n.page)
+        assertEquals(SettingsNav(), n.back())
+    }
+
+    @Test
+    fun back_from_the_list_clears_the_query_before_leaving() {
+        val n = SettingsNav(query = "cam")
+        assertEquals(SettingsNav(), n.back())
+        assertEquals(null, SettingsNav().back())
+    }
+
+    @Test
+    fun back_from_a_page_opened_by_search_keeps_the_query_on_the_list() {
+        val n = SettingsNav(query = "cam").open(Group.Camera)
+        assertEquals(SettingsNav(query = "cam"), n.back())
+    }
+}
