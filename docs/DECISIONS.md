@@ -338,3 +338,9 @@ Device: realme RMX3561, this PC, the phone's own Camera app open underneath.
 Also in this stretch: the camera steps down to 1280x720 under 1.2 GB free and returns above 1.6 GB (decided per session); the tray menu and the camera window show Cancel while the phone has not answered; the window offers "Repair camera" when starting fails or the shipped source is newer; the phone reports its lens (wire tag 24) so the tray's "Switch lens" and the next request follow the real lens, and the window names it.
 
 Not tested on the device (need the user): Cancel and Repair on screen, the lens report end to end (the phone's consent for this PC must be given again, see above), a phone restart with the tile, the phone-screen and notification items listed under Phase 4.1.
+
+## Phase 5.2 (2026-10-25): deferred camera minors and the portable Relay folder
+
+- Fixed with tests first: the pending flag is a count (a quick Cancel then Start keeps the request open); Repair is not offered for decode/GPU errors; only one install prompt at a time; Cancel works during the first install; the memory step-down is decided once per session.
+- Left as they are: the phone's request window stays up to 30 s after the PC cancels (no wire message tells the phone; a new one is not worth it for a 30 s window); the lens decoder keeps `#[allow(deprecated)]` because `prost::DecodeError::new` is the only way to reject a value in a hand-written `Message`.
+- Portable folder: `scripts/make-portable.ps1` builds `dist\Relay` (Relay.exe, relay-cli.exe, pb_camera_source.dll, Relay.cmd, data\). Name chosen by the user: Relay. Only file and folder names changed; window titles, crate names, the Android package and the phone app label are unchanged.

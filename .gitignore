@@ -17,3 +17,4 @@ build/
 
 # Kotlin compiler caches
 .kotlin/
+dist/
