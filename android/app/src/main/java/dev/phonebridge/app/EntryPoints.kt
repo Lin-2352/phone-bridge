@@ -22,7 +22,7 @@ class ShareActivity : Activity() {
         super.onCreate(savedInstanceState)
         honourUserStop(this)
         if (!Prefs(this).enabled) {
-            Toast.makeText(this, "Phone Bridge is off. Turn it on from its Quick Settings tile", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "$APP_NAME is off. Turn it on from its Quick Settings tile", Toast.LENGTH_LONG).show()
             finish()
             return
         }
@@ -31,7 +31,7 @@ class ShareActivity : Activity() {
         // now; then the node (and the peer list) comes a moment later.
         val known = Bridge.firstPeer()
         if (Bridge.node != null && known == null) {
-            Toast.makeText(this, "Pair Phone Bridge with your PC first", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Pair $APP_NAME with your PC first", Toast.LENGTH_LONG).show()
             finish()
             return
         }
@@ -92,9 +92,9 @@ class ShareActivity : Activity() {
             val peer = node?.peers()?.firstOrNull()
             if (node == null || peer == null) {
                 opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() } }
-                Log.e(TAG, "SHARE dropped: ${if (node == null) "Phone Bridge did not start" else "not paired"}")
+                Log.e(TAG, "SHARE dropped: ${if (node == null) "$APP_NAME did not start" else "not paired"}")
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Toast.makeText(app, if (node == null) "Phone Bridge could not start. Try again" else "Pair Phone Bridge with your PC first", Toast.LENGTH_LONG).show()
+                    Toast.makeText(app, if (node == null) "$APP_NAME could not start. Try again" else "Pair $APP_NAME with your PC first", Toast.LENGTH_LONG).show()
                 }
                 return@launch
             }
@@ -106,7 +106,7 @@ class ShareActivity : Activity() {
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE failed: $t")
                     PbService.cancelOutgoingProgress(app)
-                    notifyInfo(app, "Could not send ${f.name}", "${peer.name} did not receive it. Is Phone Bridge running there?")
+                    notifyInfo(app, "Could not send ${f.name}", "${peer.name} did not receive it. Is $APP_NAME running there?")
                 }
             }
             if (uris.isEmpty() && !text.isNullOrBlank()) {

@@ -209,7 +209,7 @@ class QuickPanelActivity : ComponentActivity() {
         ) {
             Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { finish() }) { Icon(Icons.Filled.Close, "Close") }
-                Text("Phone Bridge", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                Text("$APP_NAME", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(start = 8.dp))
                 Switch(on, { on = it; setBridgeEnabled(this@QuickPanelActivity, it) })
             }
             Text(

@@ -57,7 +57,7 @@ class ScreenConsentActivity : Activity() {
         if (ScreenShare.armed != null) Log.i(TAG, "SCREEN instant share waiting for the user's yes")
         dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Let ${a.peer} see this screen?")
-            .setMessage("Your screen appears in a window on the PC, which can also tap and type here. Stop any time from Phone Bridge or the notification.")
+            .setMessage("Your screen appears in a window on the PC, which can also tap and type here. Stop any time from $APP_NAME or the notification.")
             .setPositiveButton("Allow") { _, _ -> allow(always = false) }
             .setNeutralButton("Always allow") { _, _ -> allow(always = true) }
             .setNegativeButton("Deny") { _, _ -> decline() }

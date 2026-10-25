@@ -239,8 +239,8 @@ class MainActivity : ComponentActivity() {
                 supportingContent = {
                     Text(
                         when {
-                            serviceStuck -> "Android stopped “Phone Bridge control”. Tap, then turn it off and on again"
-                            !serviceOn -> "Needs \u201cPhone Bridge control\u201d in Accessibility settings. Tap to turn it on"
+                            serviceStuck -> "Android stopped “$APP_NAME control”. Tap, then turn it off and on again"
+                            !serviceOn -> "Needs \u201c$APP_NAME control\u201d in Accessibility settings. Tap to turn it on"
                             allow -> "On. Ctrl+Alt+P on your PC uses its mouse and keyboard here, and again to return"
                             else -> "Off. When your PC asks, this phone asks you first"
                         },
@@ -400,7 +400,7 @@ class MainActivity : ComponentActivity() {
                 Text(
                     when {
                         !on -> "Off"
-                        !access -> "Not allowed yet. Tap Grant, then turn on Phone Bridge"
+                        !access -> "Not allowed yet. Tap Grant, then turn on $APP_NAME"
                         else -> "Showing on your PC"
                     },
                 )
@@ -430,7 +430,7 @@ class MainActivity : ComponentActivity() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Phone Bridge") },
+                    title = { Text("$APP_NAME") },
                     actions = { IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, "Settings") } },
                 )
             },
@@ -444,10 +444,10 @@ class MainActivity : ComponentActivity() {
                         LinkIndicator(Build.MODEL ?: "Phone", pc, running)
                         Text(
                             when {
-                                !running -> "Phone Bridge is off. Your PC cannot reach this phone."
+                                !running -> "$APP_NAME is off. Your PC cannot reach this phone."
                                 !Bridge.nodeReady.value -> "Starting\u2026"
-                                pc != null -> "Paired with $pc. Anything you share to Phone Bridge goes to your PC."
-                                else -> "Not paired yet. On your PC, open Phone Bridge and choose Pair new device, then tap Pair below."
+                                pc != null -> "Paired with $pc. Anything you share to $APP_NAME goes to your PC."
+                                else -> "Not paired yet. On your PC, open $APP_NAME and choose Pair new device, then tap Pair below."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -521,7 +521,7 @@ class MainActivity : ComponentActivity() {
                 }
                 item { Text("Recent", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 16.dp, top = 8.dp)) }
                 if (Bridge.recent.isEmpty()) {
-                    item { Text("Nothing yet. Share a photo or file to Phone Bridge from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
+                    item { Text("Nothing yet. Share a photo or file to $APP_NAME from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
                 }
                 items(Bridge.recent) { r ->
                     ListItem(
@@ -616,7 +616,7 @@ class MainActivity : ComponentActivity() {
                         val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
                         ListItem(
                             headlineContent = { Text("Accessibility permission") },
-                            supportingContent = { Text("\u201cPhone Bridge control\u201d lets your PC tap and type here. Without it your PC cannot control this phone") },
+                            supportingContent = { Text("\u201c$APP_NAME control\u201d lets your PC tap and type here. Without it your PC cannot control this phone") },
                             trailingContent = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary) },
                             modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                         )
@@ -667,13 +667,13 @@ class MainActivity : ComponentActivity() {
                             trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clipOn) },
                         )
                         Text(
-                            "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open Phone Bridge or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
+                            "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open $APP_NAME or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                         )
                         ListItem(
-                            headlineContent = { Text("Phone Bridge") },
+                            headlineContent = { Text("$APP_NAME") },
                             supportingContent = { Text(if (Bridge.running.value) "On: your PC can reach this phone. Quick Settings tile turns it off" else "Off: your PC cannot reach this phone") },
                             trailingContent = { Switch(Bridge.running.value, { setBridgeEnabled(this@MainActivity, it) }) },
                         )
@@ -682,8 +682,8 @@ class MainActivity : ComponentActivity() {
                             headlineContent = { Text("Keep running in background") },
                             supportingContent = {
                                 Text(
-                                    if (unrestricted.value) "On. Android lets Phone Bridge come back by itself if the phone runs low on memory"
-                                    else "Recommended. Without it, Android may stop Phone Bridge when memory is low until you open it again",
+                                    if (unrestricted.value) "On. Android lets $APP_NAME come back by itself if the phone runs low on memory"
+                                    else "Recommended. Without it, Android may stop $APP_NAME when memory is low until you open it again",
                                 )
                             },
                             trailingContent = { Text(if (unrestricted.value) "On" else "Off", color = MaterialTheme.colorScheme.primary) },
@@ -700,7 +700,7 @@ class MainActivity : ComponentActivity() {
                         )
                         ListItem(
                             headlineContent = { Text("Hide the status notification") },
-                            supportingContent = { Text("Android needs it while Phone Bridge runs in the background. You can turn it off for this app; Phone Bridge keeps working") },
+                            supportingContent = { Text("Android needs it while $APP_NAME runs in the background. You can turn it off for this app; $APP_NAME keeps working") },
                             modifier = Modifier.clickable {
                                 startActivity(
                                     Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">Relay</string>
+    <string name="app_name_control">Relay control</string>
+    <string name="app_name_notifications">Relay notifications</string>
     <string name="control_summary">Use your paired PC\'s mouse and keyboard on this phone</string>
     <string name="control_description">Lets your paired PC control this phone when you press Ctrl+Alt+P on the PC: an on-screen cursor follows the PC mouse, clicks tap, the wheel scrolls and typing goes into the focused text field. It only acts during a session started from your PC, and only for a PC you paired. Turn it off here at any time.</string>
 </resources>

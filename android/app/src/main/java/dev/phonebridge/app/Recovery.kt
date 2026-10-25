@@ -69,7 +69,7 @@ fun notifyStopped(ctx: Context) {
     )
     val n = android.app.Notification.Builder(ctx, "events")
         .setSmallIcon(R.drawable.ic_stat_bridge)
-        .setContentTitle("Phone Bridge is not running")
+        .setContentTitle("$APP_NAME is not running")
         .setContentText("Android stopped it in the background. Tap to turn it on")
         .setContentIntent(start)
         .setAutoCancel(true)
@@ -107,7 +107,7 @@ fun honourUserStop(ctx: Context): Boolean {
         cancelRecovery(ctx)
         ctx.getSystemService(android.app.NotificationManager::class.java).cancel(STOPPED_ID)
         refreshTile(ctx)
-        Log.i(TAG, "RECOVERY user stopped Phone Bridge from the system: now off")
+        Log.i(TAG, "RECOVERY user stopped $APP_NAME from the system: now off")
     }
     return stopped
 }

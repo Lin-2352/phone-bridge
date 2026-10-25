@@ -119,7 +119,7 @@ class ScreenCapture(
         }, Handler(Looper.getMainLooper()))
         startEncoder()
         display = projection.createVirtualDisplay(
-            "Phone Bridge", width, height, density(),
+            "$APP_NAME", width, height, density(),
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, inputSurface, null, handler,
         )
         displays.registerDisplayListener(displayListener, handler)

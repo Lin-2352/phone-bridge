@@ -118,7 +118,7 @@ object Bridge {
 
     /** Pairing, step 1: join with the scanned code; the code check shows next. */
     suspend fun join(code: String) {
-        val n = awaitNode() ?: run { pairMessage.value = "Phone Bridge is off"; return }
+        val n = awaitNode() ?: run { pairMessage.value = "$APP_NAME is off"; return }
         try {
             val s = n.joinPairing(code.trim())
             Log.i(TAG, "SAS=$s")
@@ -132,7 +132,7 @@ object Bridge {
     /** Pairing, step 2: the user compared the codes. */
     suspend fun confirm(ctx: Context, accept: Boolean) {
         sas.value = null
-        val n = node ?: run { pairMessage.value = "Phone Bridge stopped. Turn it on and pair again"; return }
+        val n = node ?: run { pairMessage.value = "$APP_NAME stopped. Turn it on and pair again"; return }
         try {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
@@ -398,7 +398,7 @@ class PbService : Service() {
     }
 
     private fun writeClipboard(text: String, sensitive: Boolean) {
-        val clip = ClipData.newPlainText("Phone Bridge", text)
+        val clip = ClipData.newPlainText("$APP_NAME", text)
         if (sensitive) {
             clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         }
@@ -438,7 +438,7 @@ class PbService : Service() {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, e.name)
             put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Phone Bridge")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/$APP_NAME")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = try {
@@ -457,7 +457,7 @@ class PbService : Service() {
             src.delete()
             Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName}")
             Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to Downloads", RecentItem.Kind.File, uri))
-            notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/Phone Bridge")
+            notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/$APP_NAME")
         } catch (t: Throwable) {
             runCatching { contentResolver.delete(uri, null, null) }
             src.delete()
@@ -783,7 +783,7 @@ class CopyReceiver : BroadcastReceiver() {
             android.widget.Toast.makeText(context, "That clip is no longer available", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
-        val clip = ClipData.newPlainText("Phone Bridge", text)
+        val clip = ClipData.newPlainText("$APP_NAME", text)
         if (sensitive) {
             clip.description.extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
         }

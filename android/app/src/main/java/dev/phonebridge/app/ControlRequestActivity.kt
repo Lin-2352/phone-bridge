@@ -50,7 +50,7 @@ class ControlRequestActivity : Activity() {
         }
         dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Let $peer control this phone?")
-            .setMessage("Its mouse and keyboard will work here. Stop any time from Phone Bridge or with Ctrl+Alt+P on the PC.")
+            .setMessage("Its mouse and keyboard will work here. Stop any time from $APP_NAME or with Ctrl+Alt+P on the PC.")
             .setPositiveButton("Allow") { _, _ -> answer(true, always = false) }
             .setNeutralButton("Always allow") { _, _ -> answer(true, always = true) }
             .setNegativeButton("Deny") { _, _ -> answer(false, always = false) }

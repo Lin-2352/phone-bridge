@@ -31,7 +31,7 @@
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
-        android:label="Phone Bridge"
+        android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
@@ -125,7 +125,7 @@
             android:name=".BridgeTileService"
             android:exported="true"
             android:icon="@drawable/ic_stat_bridge"
-            android:label="Phone Bridge"
+            android:label="@string/app_name"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -136,7 +136,7 @@
         <service
             android:name=".ControlService"
             android:exported="true"
-            android:label="Phone Bridge control"
+            android:label="@string/app_name_control"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -147,7 +147,7 @@
         <service
             android:name=".NotifyListener"
             android:exported="true"
-            android:label="Phone Bridge notifications"
+            android:label="@string/app_name_notifications"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

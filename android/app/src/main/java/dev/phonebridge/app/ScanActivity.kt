@@ -49,7 +49,7 @@ class ScanActivity : ComponentActivity() {
         setContentView(FrameLayout(this).apply {
             addView(preview)
             addView(TextView(context).apply {
-                text = "Point at the QR code shown by Phone Bridge on your PC"
+                text = "Point at the QR code shown by $APP_NAME on your PC"
                 setPadding(32, 64, 32, 32)
                 setTextColor(0xFFFFFFFF.toInt())
                 setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())

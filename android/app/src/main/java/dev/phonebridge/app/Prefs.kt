@@ -91,7 +91,7 @@ class Prefs(context: Context) {
 
 /** "primary:Documents/Phone" -> "Documents/Phone" for display. */
 fun treeLabel(tree: Uri?): String {
-    tree ?: return "Downloads/Phone Bridge"
+    tree ?: return "Downloads/$APP_NAME"
     val id = android.provider.DocumentsContract.getTreeDocumentId(tree)
     return id.substringAfter(':').ifEmpty { "Internal storage" }
 }
