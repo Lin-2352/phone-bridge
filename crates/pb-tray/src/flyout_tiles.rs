@@ -93,6 +93,15 @@ pub fn status_line(m: &Model, max_chars: usize) -> String {
     out
 }
 
+/// What a left-button release should act on: the thing under the cursor, but
+/// only when the press started on that same thing.
+pub fn release_target<T: PartialEq>(pressed: Option<T>, under: Option<T>) -> Option<T> {
+    match (pressed, under) {
+        (Some(p), Some(u)) if p == u => Some(u),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +169,22 @@ mod tests {
         let line = status_line(&m, 40);
         assert!(line.chars().count() <= 40);
         assert!(line.ends_with('…'));
+    }
+
+    #[test]
+    fn release_on_the_pressed_tile_acts() {
+        assert_eq!(release_target(Some(2), Some(2)), Some(2));
+    }
+
+    #[test]
+    fn release_on_another_tile_does_nothing() {
+        assert_eq!(release_target(Some(2), Some(3)), None);
+        assert_eq!(release_target(Some(2), None), None);
+    }
+
+    #[test]
+    fn release_without_a_press_does_nothing() {
+        assert_eq!(release_target(None, Some(2)), None);
+        assert_eq!(release_target::<usize>(None, None), None);
     }
 }

@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Builds the Relay folder into a temp dir and checks what is in it.
 #   pwsh scripts/tests/make-portable.Tests.ps1
 $ErrorActionPreference = "Stop"
@@ -17,7 +18,12 @@ try {
     $zip = Join-Path $out "Relay-portable.zip"
     if (-not (Test-Path $zip)) { $fail += "missing Relay-portable.zip" } else {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $names = [IO.Compression.ZipFile]::OpenRead($zip).Entries | ForEach-Object { $_.FullName }
+        $archive = [IO.Compression.ZipFile]::OpenRead($zip)
+        try {
+            $names = $archive.Entries | ForEach-Object { $_.FullName }
+        } finally {
+            $archive.Dispose()
+        }
         if ($names -notcontains "Relay/Relay.exe") { $fail += "zip lacks Relay/Relay.exe" }
     }
     if ($fail) { $fail | ForEach-Object { Write-Error $_ -ErrorAction Continue }; exit 1 }

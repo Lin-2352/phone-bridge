@@ -22,7 +22,7 @@ Set-Content -Path "$dir\Relay.cmd" -Encoding ascii -Value '@echo off', 'start ""
 if ($Zip) {
     $zipPath = Join-Path (Split-Path $dir) "Relay-portable.zip"
     if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
-    Compress-Archive -Path $dir -DestinationPath $zipPath
+    Compress-Archive -LiteralPath $dir -DestinationPath $zipPath
     "Zipped $zipPath"
 }
 "Built $dir"

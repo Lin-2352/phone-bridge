@@ -37,7 +37,7 @@ use windows::{
 
 use crate::ease;
 use crate::fluent::{self, glyph, px};
-use crate::flyout_tiles::{status_line, tiles, TileKind};
+use crate::flyout_tiles::{release_target, status_line, tiles, TileKind};
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const CLASS: PCWSTR = w!("PhoneBridgeFlyout");
@@ -126,6 +126,8 @@ impl Hit {
 fn clickable(m: &Model, h: Hit) -> bool {
     match h {
         Hit::Tile(k) => tiles(m).iter().any(|t| t.kind == k && t.enabled),
+        // Like the dimmed Send files tile: nothing to send to without a phone.
+        Hit::Drop => m.peer.is_some(),
         _ => true,
     }
 }
@@ -598,10 +600,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let mut target = None;
             if let Ok(mut g) = CURRENT.lock() {
                 if let Some(st) = g.as_mut() {
-                    st.pressed = None;
+                    let pressed = st.pressed.take();
                     paired = st.model.peer.is_some();
-                    // A dimmed tile ignores the click.
-                    target = hit(hwnd, x, y).filter(|&h| clickable(&st.model, h));
+                    // A dimmed tile ignores the click, and so does a release
+                    // away from where the press started.
+                    target = release_target(pressed, hit(hwnd, x, y))
+                        .filter(|&h| clickable(&st.model, h));
                 }
             }
             animate(hwnd);

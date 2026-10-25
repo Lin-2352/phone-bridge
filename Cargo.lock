@@ -839,7 +839,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "ffi-smoke"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "iroh",
  "iroh-spike",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "iroh-spike"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "iroh",
  "n0-error",
@@ -2319,7 +2319,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pb-bench"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
  "iroh",
@@ -2331,11 +2331,11 @@ dependencies = [
 
 [[package]]
 name = "pb-camera-frames"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "pb-camera-source"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "pb-camera-frames",
  "windows",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "pb-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "pb-identity",
  "pb-platform-win",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "pb-ffi"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "async-compat",
  "iroh",
@@ -2371,7 +2371,7 @@ dependencies = [
 
 [[package]]
 name = "pb-identity"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
@@ -2380,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "pb-platform-win"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "pb-identity",
  "pb-protocol",
@@ -2389,14 +2389,14 @@ dependencies = [
 
 [[package]]
 name = "pb-protocol"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "prost",
 ]
 
 [[package]]
 name = "pb-transport"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "fs4",
  "getrandom 0.3.4",
@@ -2412,7 +2412,7 @@ dependencies = [
 
 [[package]]
 name = "pb-tray"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "embed-resource",
  "pb-camera-frames",
@@ -2432,7 +2432,7 @@ dependencies = [
 
 [[package]]
 name = "pb-video"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "pem-rfc7468"
@@ -3787,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "uniffi",
 ]
@@ -4123,7 +4123,7 @@ checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "wifidirect-win"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "windows",
 ]
