@@ -1,4 +1,4 @@
-//! Settings window, laid out like Windows 11 Settings: section headers and
+//! Settings window, laid out like Windows 11 Settings: a sidebar of pages and
 //! rounded cards with toggles and buttons, light/dark, per-monitor DPI,
 //! mouse-wheel scrolling. Reads a [`Model`] snapshot and reports [`Action`]s;
 //! the UI thread applies them and calls [`update`].
@@ -30,53 +30,37 @@ use windows::{
 };
 
 use crate::fluent::{self, px};
-use crate::settings_groups::{group_of, groups, label_of};
+use crate::settings_groups::{label_of, page_of, pages, Page};
 use crate::settings_rows::{rows, Row};
 pub use crate::settings_rows::{Action, ChoiceKey, Key, Model};
 
 const CLASS: PCWSTR = w!("PhoneBridgeSettings");
-const W: i32 = 560;
-const H: i32 = 640;
+const W: i32 = 800;
+const H: i32 = 730;
 const MARGIN: i32 = 24;
+const SIDEBAR: i32 = 188;
 
-/// What the window paints: group captions and the option rows under them.
+/// What the window paints: the page title and the option rows on the page.
 enum Item {
-    /// Group caption; the flag marks the first one (no divider above it).
-    Caption(&'static str, bool),
+    /// Page title.
+    Caption(&'static str),
     Row(Row),
 }
 
-/// The settings rows laid out under the group captions. Rows keep their
-/// order within a group; a section header is kept as a sub-heading unless it
-/// repeats the caption. Groups without rows get no caption.
-fn items(m: &Model) -> Vec<Item> {
-    let all = rows(m);
-    let mut out = Vec::new();
-    for (group, title) in groups() {
-        let mut section: Option<&'static str> = None;
-        let mut shown: Option<&'static str> = None;
-        let mut started = false;
-        for row in &all {
-            if let Row::Header(t) = row {
-                section = Some(t);
-                continue;
-            }
-            if label_of(row).map(group_of) != Some(group) {
-                continue;
-            }
-            if !started {
-                out.push(Item::Caption(title, out.is_empty()));
-                started = true;
-            }
-            if section != shown {
-                shown = section;
-                if let Some(t) = section.filter(|t| *t != title) {
-                    out.push(Item::Row(Row::Header(t)));
-                }
-            }
-            out.push(Item::Row(row.clone()));
-        }
-    }
+/// The rows of one page, under its title. A section header is dropped: the
+/// sidebar page already names the section.
+fn items(m: &Model, page: Page) -> Vec<Item> {
+    let title = pages()
+        .iter()
+        .find(|(p, _)| *p == page)
+        .map_or("", |(_, t)| *t);
+    let mut out = vec![Item::Caption(title)];
+    out.extend(
+        rows(m)
+            .into_iter()
+            .filter(|r| label_of(r).map(page_of) == Some(page))
+            .map(Item::Row),
+    );
     out
 }
 
@@ -105,12 +89,14 @@ enum Target {
     Pair,
     Choice(ChoiceKey, u8),
     Mute(usize),
+    Page(Page),
 }
 
 struct State {
     hwnd: isize,
     model: Model,
     scroll: i32,
+    page: Page,
     targets: Vec<(RECT, Target)>,
     on_action: Box<dyn Fn(Action) + Send>,
 }
@@ -119,14 +105,14 @@ static CURRENT: Mutex<Option<State>> = Mutex::new(None);
 
 fn item_height(i: &Item) -> i32 {
     match i {
-        Item::Caption(..) => 36,
+        Item::Caption(..) => 44,
         Item::Row(r) => row_height(r),
     }
 }
 
-fn content_height(s: f32, m: &Model) -> i32 {
+fn content_height(s: f32, m: &Model, page: Page) -> i32 {
     px(s, 16)
-        + items(m)
+        + items(m, page)
             .iter()
             .map(|i| px(s, item_height(i) + 4))
             .sum::<i32>()
@@ -143,11 +129,12 @@ fn paint(hwnd: HWND) {
     let f = fluent::Fonts::new(s);
     let m = st.model.clone();
     let scroll = st.scroll;
+    let page = st.page;
     let mut targets = Vec::new();
     fluent::paint(hwnd, |hdc, c| {
-        let (l, r) = (px(s, MARGIN), c.right - px(s, MARGIN));
+        let (l, r) = (px(s, SIDEBAR + MARGIN), c.right - px(s, MARGIN));
         let mut y = px(s, 16) - scroll;
-        for item in items(&m) {
+        for item in items(&m, page) {
             let h = px(s, item_height(&item));
             let card = RECT {
                 left: l,
@@ -159,27 +146,18 @@ fn paint(hwnd: HWND) {
             let inner_r = r - px(s, 16);
             let visible = card.bottom > 0 && card.top < c.bottom;
             let row = match item {
-                Item::Caption(t, first) => {
+                Item::Caption(t) => {
                     if visible {
-                        if !first {
-                            let line = RECT {
-                                top: y + px(s, 4),
-                                bottom: y + px(s, 4) + px(s, 1).max(1),
-                                ..card
-                            };
-                            fluent::round_rect(hdc, &line, p.stroke, None, 0, false);
-                        }
                         let tr = RECT {
                             left: l + px(s, 2),
-                            top: y + px(s, 10),
                             ..card
                         };
                         fluent::text(
                             hdc,
-                            f.small,
+                            f.title,
                             t,
                             tr,
-                            p.text2,
+                            p.text,
                             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                         );
                     }
@@ -497,6 +475,52 @@ fn paint(hwnd: HWND) {
             }
             y += h + px(s, 4);
         }
+        // Sidebar, drawn last so it stays put while the page scrolls.
+        let bar = RECT {
+            left: 0,
+            top: 0,
+            right: px(s, SIDEBAR),
+            bottom: c.bottom,
+        };
+        fluent::round_rect(hdc, &bar, p.bg, None, 0, false);
+        let edge = RECT {
+            left: bar.right - px(s, 1).max(1),
+            ..bar
+        };
+        fluent::round_rect(hdc, &edge, p.stroke, None, 0, false);
+        let mut ny = px(s, 16);
+        for (pg, title) in pages() {
+            let item = RECT {
+                left: px(s, 10),
+                top: ny,
+                right: bar.right - px(s, 10),
+                bottom: ny + px(s, 40),
+            };
+            if pg == page {
+                fluent::round_rect(hdc, &item, p.card, Some(p.stroke), px(s, 8), false);
+                let pill = RECT {
+                    left: item.left + px(s, 2),
+                    top: item.top + px(s, 10),
+                    right: item.left + px(s, 5),
+                    bottom: item.bottom - px(s, 10),
+                };
+                fluent::round_rect(hdc, &pill, p.accent, None, px(s, 2), false);
+            }
+            let tr = RECT {
+                left: item.left + px(s, 16),
+                ..item
+            };
+            fluent::text(
+                hdc,
+                f.body,
+                title,
+                tr,
+                if pg == page { p.text } else { p.text2 },
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+            );
+            targets.push((item, Target::Page(pg)));
+            ny += px(s, 44);
+        }
     });
     st.targets = targets;
 }
@@ -544,7 +568,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let _ = unsafe { GetClientRect(hwnd, &mut c) };
             if let Ok(mut g) = CURRENT.lock() {
                 if let Some(st) = g.as_mut() {
-                    let max = (content_height(s, &st.model) - c.bottom).max(0);
+                    let max = (content_height(s, &st.model, st.page) - c.bottom).max(0);
                     st.scroll = (st.scroll - delta * px(s, 48) / 120).clamp(0, max);
                 }
             }
@@ -564,6 +588,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 Some(Target::Pair) => act(Action::Pair),
                 Some(Target::Choice(k, i)) => act(Action::Choice(k, i)),
                 Some(Target::Mute(i)) => act(Action::Mute(i)),
+                Some(Target::Page(pg)) => {
+                    if let Ok(mut g) = CURRENT.lock() {
+                        if let Some(st) = g.as_mut() {
+                            st.page = pg;
+                            st.scroll = 0;
+                        }
+                    }
+                    // SAFETY: repaint our own window.
+                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                }
                 None => {}
             }
             LRESULT(0)
@@ -640,6 +674,7 @@ pub fn open(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
                 hwnd: hwnd.0 as isize,
                 model,
                 scroll: 0,
+                page: Page::Devices,
                 targets: Vec::new(),
                 on_action,
             });
