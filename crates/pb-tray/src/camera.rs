@@ -113,8 +113,28 @@ pub fn playback_error() -> bool {
 }
 
 pub fn set_last_error(e: Option<String>) {
-    PLAYBACK_ERROR.store(false, Ordering::Release);
-    *lock(&LAST_ERROR) = e;
+    set_last_error_kind(e, false);
+}
+
+/// The error and its kind change together (under the one lock), so a setup
+/// error written from another task is never flagged as a playback one.
+pub fn set_last_error_kind(e: Option<String>, playback: bool) {
+    let mut last = lock(&LAST_ERROR);
+    PLAYBACK_ERROR.store(playback, Ordering::Release);
+    *last = e;
+}
+
+/// A pipeline error that Repair cannot fix: not the frames file the
+/// installer makes (missing, unreadable or wrongly formatted).
+fn is_playback_error(e: &str) -> bool {
+    !(e.starts_with("the camera is not installed") || e.starts_with("the frames file"))
+}
+
+/// Run `f` (a blocking install) while holding `guard`: the guard goes when
+/// the job ends, not when the task that started it is aborted.
+pub fn holding<T>(guard: InstallGuard, f: impl FnOnce() -> T) -> T {
+    let _guard = guard;
+    f()
 }
 
 pub fn picture_dark() -> bool {
@@ -257,8 +277,8 @@ fn start_session(
                 Ok(()) => "Phone camera stopped".into(),
                 Err(e) => {
                     (opts.log)(&format!("CAMERA pipeline failed: {e}"));
-                    set_last_error(Some(e));
-                    PLAYBACK_ERROR.store(true, Ordering::Release);
+                    let playback = is_playback_error(&e);
+                    set_last_error_kind(Some(e), playback);
                     "Can't show this phone's camera on this PC".into()
                 }
             });
@@ -362,6 +382,38 @@ mod tests {
         while lens() != want && t0.elapsed() < Duration::from_secs(5) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    #[test]
+    fn setup_errors_in_the_pipeline_are_not_playback_errors() {
+        // Repair can fix these (frames file unreadable or wrong); it cannot fix a decoder.
+        assert!(!is_playback_error(
+            "the camera is not installed (access denied)"
+        ));
+        assert!(!is_playback_error("the frames file is not formatted"));
+        assert!(is_playback_error("decoder: device removed"));
+    }
+
+    /// The only test that touches `LAST_ERROR` and `PLAYBACK_ERROR`.
+    #[test]
+    fn the_error_and_its_kind_are_set_together() {
+        set_last_error_kind(Some("decoder: device removed".into()), true);
+        assert!(playback_error());
+        set_last_error(Some("could not install".into()));
+        assert!(!playback_error(), "a setup error replaces the kind too");
+        assert_eq!(last_error().as_deref(), Some("could not install"));
+        set_last_error(None);
+    }
+
+    #[test]
+    fn the_install_guard_is_held_while_the_job_runs() {
+        let g = InstallGuard::try_new().expect("free");
+        let seen = holding(g, || InstallGuard::try_new().is_none());
+        assert!(seen, "still held inside the job");
+        assert!(
+            InstallGuard::try_new().is_some(),
+            "released when the job ends"
+        );
     }
 
     /// The only test that touches `INSTALLING` (a process-wide static).

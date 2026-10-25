@@ -1078,7 +1078,7 @@ fn remove_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) {
 /// the reason is told to the user and kept for the camera window.
 async fn install_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) -> bool {
     use crate::camera_register::RegisterError;
-    let Some(_installing) = crate::camera::InstallGuard::try_new() else {
+    let Some(installing) = crate::camera::InstallGuard::try_new() else {
         ui(UiEvent::Info(
             "The phone camera is already being set up: answer the Windows prompt".into(),
         ));
@@ -1088,8 +1088,14 @@ async fn install_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) -> bool
         "Setting up the phone camera: Windows will ask once for permission".into(),
     ));
     let sid = crate::ipc::user_sid().unwrap_or_default();
-    let r =
-        tokio::task::spawn_blocking(move || crate::camera_register::request_register(&sid)).await;
+    // The guard moves into the job: aborting this task does not stop the
+    // elevated installer, so it must not free the guard either.
+    let r = tokio::task::spawn_blocking(move || {
+        crate::camera::holding(installing, || {
+            crate::camera_register::request_register(&sid)
+        })
+    })
+    .await;
     let why = match r {
         Ok(Ok(())) => {
             log.line("CAMERA source installed");

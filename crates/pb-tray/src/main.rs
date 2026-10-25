@@ -40,6 +40,7 @@ mod notify;
 mod qr;
 #[cfg(windows)]
 mod qr_window;
+mod relaunch;
 #[cfg(windows)]
 mod screen_decode;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -112,12 +113,13 @@ fn main() {
             std::process::exit(camera_register::unregister_elevated());
         }
     }
+    let default_dir = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("PhoneBridge")
+        .join("tray");
     let mut opts = core::Options {
-        dir: std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("PhoneBridge")
-            .join("tray"),
+        dir: default_dir.clone(),
         port: 47200,
         name: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into()),
         pair_on_start: false,
@@ -153,6 +155,7 @@ fn main() {
             _ => {}
         }
     }
+    relaunch::set(relaunch::args_for(&opts.dir, &default_dir, &opts.name));
     // Crisp text and correct sizes on scaled displays.
     #[allow(unsafe_code)]
     // SAFETY: called once at startup before any window exists.
@@ -182,7 +185,9 @@ fn main() {
         let mut ok = ipc::send_request(&req);
         if !ok {
             if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(exe).spawn();
+                let _ = std::process::Command::new(exe)
+                    .args(relaunch::args())
+                    .spawn();
             }
             for _ in 0..50 {
                 std::thread::sleep(std::time::Duration::from_millis(100));

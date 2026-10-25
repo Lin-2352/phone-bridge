@@ -219,7 +219,7 @@ fn toggle_sendto() -> Result<bool, String> {
             CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
         sl.SetPath(&HSTRING::from(exe.as_os_str()))
             .map_err(|e| e.to_string())?;
-        sl.SetArguments(&HSTRING::from("--send"))
+        sl.SetArguments(&HSTRING::from(send_to_arguments()))
             .map_err(|e| e.to_string())?;
         sl.SetDescription(&HSTRING::from("Send to your phone with Phone Bridge"))
             .map_err(|e| e.to_string())?;
@@ -230,6 +230,17 @@ fn toggle_sendto() -> Result<bool, String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(true)
+}
+
+/// `--dir`/`--name` first (so a portable copy keeps its folder), then `--send`,
+/// which takes every following argument as a file.
+fn send_to_arguments() -> String {
+    let a = crate::relaunch::quoted(crate::relaunch::args());
+    if a.is_empty() {
+        "--send".into()
+    } else {
+        format!("{a} --send")
+    }
 }
 
 /// Last thing that happened, shown at the bottom of the flyout.
@@ -1462,7 +1473,10 @@ fn set_startup(on: bool) -> Result<(), String> {
     };
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let value = wide(&format!("\"{}\"", exe.display()));
+        let value = wide(&crate::relaunch::command_line(
+            &exe,
+            crate::relaunch::args(),
+        ));
         // SAFETY: NUL-terminated UTF-16 value with its byte length.
         unsafe {
             RegSetKeyValueW(
