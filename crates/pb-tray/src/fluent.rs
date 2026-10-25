@@ -129,6 +129,11 @@ pub fn palette() -> Palette {
     }
 }
 
+/// Gap between groups and the window margin, in logical px.
+pub const GROUP_GAP: i32 = 16;
+/// Padding inside a row, in logical px.
+pub const ROW_PAD: i32 = 12;
+
 pub fn scale(hwnd: HWND) -> f32 {
     // SAFETY: plain query on our window.
     (unsafe { GetDpiForWindow(hwnd) }.max(96)) as f32 / 96.0
@@ -480,6 +485,12 @@ pub fn set_cursor(hand: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spacing_constants_are_on_the_4px_grid() {
+        assert_eq!(GROUP_GAP % 4, 0);
+        assert_eq!(ROW_PAD % 4, 0);
+    }
 
     #[test]
     fn radius_scales_with_dpi() {

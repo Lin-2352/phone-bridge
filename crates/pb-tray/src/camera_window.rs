@@ -42,7 +42,7 @@ use windows::{
 use crate::{
     camera_preview::Preview,
     camera_status::{button, offer_repair, rows, CameraButton, Inputs, Mark, Row},
-    fluent::{self, glyph, px},
+    fluent::{self, glyph, px, GROUP_GAP},
 };
 
 const CLASS: PCWSTR = w!("PhoneBridgeCamera");
@@ -116,29 +116,29 @@ fn layout(s: f32) -> Layout {
     let rows_top = 64;
     // Six rows, a seventh when the camera could not start.
     let rows_bottom = rows_top + 7 * ROW_H;
-    let pw = W - 32;
+    let pw = W - 2 * GROUP_GAP;
     let ph = pw * 9 / 16;
-    let bw = (W - 32 - 3 * 8) / 4;
+    let bw = (W - 2 * GROUP_GAP - 3 * 8) / 4;
     Layout {
         rows: RECT {
-            left: p(16),
+            left: p(GROUP_GAP),
             top: p(rows_top),
-            right: p(W - 16),
+            right: p(W - GROUP_GAP),
             bottom: p(rows_bottom),
         },
         preview: RECT {
-            left: p(16),
+            left: p(GROUP_GAP),
             top: p(rows_bottom + 8),
-            right: p(16 + pw),
+            right: p(GROUP_GAP + pw),
             bottom: p(rows_bottom + 8 + ph),
         },
         buttons: std::array::from_fn(|i| {
-            let l = 16 + i as i32 * (bw + 8);
+            let l = GROUP_GAP + i as i32 * (bw + 8);
             RECT {
                 left: p(l),
-                top: p(rows_bottom + 8 + ph + 16),
+                top: p(rows_bottom + 8 + ph + GROUP_GAP),
                 right: p(l + bw),
-                bottom: p(rows_bottom + 8 + ph + 16 + 36),
+                bottom: p(rows_bottom + 8 + ph + GROUP_GAP + 36),
             }
         }),
     }

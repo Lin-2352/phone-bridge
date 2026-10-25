@@ -55,7 +55,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let f = fluent::Fonts::new(s);
                 let mut r = c;
                 r.left += px(s, 18);
-                r.right -= px(s, 14);
+                r.right -= px(s, fluent::ROW_PAD);
                 fluent::text(
                     hdc,
                     f.body,
@@ -150,7 +150,10 @@ pub fn show(text: &str, secs: u32) {
         };
         let (x, y) = if GetMonitorInfoW(mon, &mut mi).as_bool() {
             let wa = mi.rcWork;
-            (wa.right - w - px(s, 16), wa.bottom - h - px(s, 16))
+            (
+                wa.right - w - px(s, fluent::GROUP_GAP),
+                wa.bottom - h - px(s, fluent::GROUP_GAP),
+            )
         } else {
             (0, 0)
         };
