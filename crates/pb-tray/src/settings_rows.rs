@@ -1,6 +1,8 @@
 //! What the settings window shows, as plain data (tested on every
 //! platform); `settings_window` paints it.
 
+use crate::camera_status::Summary;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Key {
     Share,
@@ -52,6 +54,8 @@ pub struct Model {
     pub sound: u8,
     /// Phone apps seen so far: (name, shown). Off = muted.
     pub apps: Vec<(String, bool)>,
+    /// What the camera is doing now (`None` before the first reading).
+    pub camera: Option<Summary>,
 }
 
 impl Model {
@@ -81,7 +85,20 @@ impl Model {
     }
 }
 
+/// What the Camera page asks for; each is what the camera window and the
+/// tray entry already do.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CameraAct {
+    /// Start, Cancel or Stop, whichever the status card offers.
+    Toggle,
+    Repair,
+    OpenWindow,
+}
+
 pub enum Action {
+    Camera(CameraAct),
+    /// Ask for a fresh snapshot (the camera changes on its own).
+    Refresh,
     Theme(u8),
     Toggle(Key),
     ChangeFolder,
@@ -105,6 +122,10 @@ pub enum Row {
     Device(usize),
     Pair,
     About,
+    /// The camera status card with its buttons.
+    CameraStatus,
+    /// Opens the camera window (preview and the full checklist).
+    CameraWindow,
 }
 
 pub fn rows(m: &Model) -> Vec<Row> {
@@ -169,6 +190,7 @@ pub fn rows(m: &Model) -> Vec<Row> {
             "Toasts still go to the notification centre",
         ),
     ];
+    v.extend([Row::Header("Camera"), Row::CameraStatus, Row::CameraWindow]);
     if !m.apps.is_empty() {
         v.push(Row::Header("Apps"));
         v.extend((0..m.apps.len()).map(Row::App));
@@ -184,13 +206,13 @@ pub fn rows(m: &Model) -> Vec<Row> {
         Row::Toggle(
             Key::SendTo,
             "Show in Explorer \u{201c}Send to\u{201d}",
-            "Right-click files, Send to, Phone Bridge",
+            "Right-click files, Send to, Relay",
         ),
         Row::Header("General"),
         Row::Toggle(
             Key::Startup,
             "Start with Windows",
-            "Phone Bridge waits quietly in the tray",
+            "Relay waits quietly in the tray",
         ),
         Row::Toggle(
             Key::Control,
@@ -243,6 +265,9 @@ mod tests {
                 "Clicking opens it on the phone",
                 "Copy one-time codes automatically",
                 "Quiet while the phone screen is open",
+                "# Camera",
+                "?",
+                "?",
                 "# Apps",
                 "app 0",
             ]

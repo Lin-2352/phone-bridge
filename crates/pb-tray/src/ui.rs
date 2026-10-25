@@ -1305,7 +1305,34 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
             .iter()
             .map(|(_, name, muted)| (name.clone(), !muted))
             .collect(),
+        camera: crate::settings_window::wants_camera().then(|| camera_summary(st)),
     }
+}
+
+/// What the camera is doing, from the same model the camera window uses
+/// (the slow measurements are left to that window).
+fn camera_summary(st: &State) -> crate::camera_status::Summary {
+    let streaming = crate::camera::is_running();
+    let installed = crate::camera_register::is_registered();
+    let inputs = crate::camera_status::Inputs {
+        phone: st
+            .peers
+            .lock()
+            .ok()
+            .and_then(|g| g.first().map(|(_, n)| n.clone())),
+        installed,
+        update_ready: installed && crate::camera_register::needs_install(),
+        access: crate::camera_register::camera_access(),
+        streaming,
+        fps: crate::camera::fps(),
+        listed: None,
+        dark: crate::camera::picture_dark(),
+        preview_fps: None,
+        pending: crate::camera::pending(),
+        start_error: crate::camera::last_error(),
+        lens: streaming.then(|| crate::camera::lens() as u8),
+    };
+    crate::camera_status::summary(&inputs, crate::camera::playback_error())
 }
 
 fn open_settings(hwnd: HWND, st: &State) {
@@ -1332,7 +1359,7 @@ fn open_settings(hwnd: HWND, st: &State) {
 }
 
 fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Action) {
-    use crate::settings_window::{Action, Key};
+    use crate::settings_window::{Action, CameraAct, Key};
     match a {
         Action::Theme(t) => {
             let _ = st.settings.lock().map(|mut s| s.theme = t);
@@ -1443,6 +1470,14 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
         Action::OpenFolder => command(hwnd, st, ID_OPEN_FOLDER),
         Action::Remove(i) => command(hwnd, st, ID_UNPAIR_BASE + i),
         Action::Pair => command(hwnd, st, ID_PAIR),
+        // The caller refreshes the window after every action.
+        Action::Refresh => {}
+        // The same commands as the tray entry and the camera window.
+        Action::Camera(CameraAct::Toggle) => command(hwnd, st, ID_CAMERA),
+        Action::Camera(CameraAct::Repair) => {
+            let _ = st.cmds.send(Cmd::RepairCamera);
+        }
+        Action::Camera(CameraAct::OpenWindow) => command(hwnd, st, ID_CAMERA_WINDOW),
     }
 }
 

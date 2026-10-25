@@ -9,6 +9,8 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod app_name;
+#[cfg(windows)]
 mod camera;
 #[cfg(windows)]
 mod camera_device;

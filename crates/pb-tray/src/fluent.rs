@@ -20,9 +20,9 @@ use windows::{
             Gdi::{
                 BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
                 CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-                RoundRect, SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER,
-                DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, PS_DASH, PS_NULL, PS_SOLID,
-                SRCCOPY, TRANSPARENT,
+                RoundRect, SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CALCRECT,
+                DT_CENTER, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, PS_DASH, PS_NULL,
+                PS_SOLID, SRCCOPY, TRANSPARENT,
             },
             GdiPlus::{
                 DashStyleDash, FillModeAlternate, GdipAddPathArc, GdipAddPathRectangle,
@@ -53,6 +53,7 @@ pub mod glyph {
     pub const CLOSE: char = '\u{E711}';
     pub const UPLOAD: char = '\u{E898}';
     pub const KEYBOARD: char = '\u{E765}';
+    pub const SEARCH: char = '\u{E721}';
 }
 
 /// 0 = follow Windows, 1 = light, 2 = dark (from settings).
@@ -223,6 +224,22 @@ pub fn text(hdc: HDC, font: HGDIOBJ, s: &str, r: RECT, color: u32, flags: DRAW_T
         DrawTextW(hdc, &mut w, &mut r, flags);
         SelectObject(hdc, old);
     }
+}
+
+/// Width in pixels `s` takes in `font` on one line.
+pub fn text_width(hdc: HDC, font: HGDIOBJ, s: &str) -> i32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let mut w: Vec<u16> = s.encode_utf16().collect();
+    let mut r = RECT::default();
+    // SAFETY: valid DC; DT_CALCRECT only measures; the font is restored.
+    unsafe {
+        let old = SelectObject(hdc, font);
+        DrawTextW(hdc, &mut w, &mut r, DT_CALCRECT | DT_SINGLELINE);
+        SelectObject(hdc, old);
+    }
+    r.right - r.left
 }
 
 pub fn icon(hdc: HDC, font: HGDIOBJ, g: char, r: RECT, color: u32) {

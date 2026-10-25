@@ -195,6 +195,80 @@ pub fn button(streaming: bool, pending: bool) -> CameraButton {
     }
 }
 
+/// One line for the settings page: what the camera is doing right now, from
+/// the same rows the camera window draws (so they never disagree), and what
+/// the buttons offer. The slow checks the window measures ("listed", "apps
+/// can read pictures") are left to the window.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Summary {
+    pub mark: Mark,
+    pub title: String,
+    pub detail: String,
+    pub button: CameraButton,
+    pub repair: bool,
+}
+
+pub fn summary(i: &Inputs, playback_error: bool) -> Summary {
+    const FAST: [&str; 5] = [
+        "Phone",
+        "Camera installed",
+        "Windows camera access",
+        "Phone camera",
+        "Camera could not start",
+    ];
+    let all = rows(i);
+    let fast: Vec<&Row> = all.iter().filter(|r| FAST.contains(&r.label)).collect();
+    let button = button(i.streaming, i.pending);
+    let repair = !i.streaming
+        && !i.pending
+        && offer_repair(i.installed, i.update_ready, &i.start_error, playback_error);
+    let find = |label: &str| {
+        fast.iter()
+            .find(|r| r.label == label)
+            .map(|r| (**r).clone())
+    };
+    let from = |r: &Row, title: &str| Summary {
+        mark: r.mark,
+        title: title.to_owned(),
+        detail: r.detail.clone(),
+        button,
+        repair,
+    };
+    let phone_camera = find("Phone camera");
+    // The first thing that is wrong, in the order the window lists them.
+    let bad = fast.iter().find(|r| r.mark == Mark::Bad);
+    if i.streaming || i.pending {
+        if let Some(r) = bad.filter(|r| r.label == "Phone camera") {
+            return from(r, "Camera has a problem");
+        }
+        if let Some(r) = phone_camera {
+            return match r.mark {
+                Mark::Ok => from(&r, "Camera is on"),
+                _ => from(&r, "Starting the camera"),
+            };
+        }
+    }
+    if let Some(r) = bad {
+        let title = if r.label == "Camera could not start" {
+            r.label
+        } else {
+            "Camera cannot start yet"
+        };
+        return from(r, title);
+    }
+    let detail = match find("Camera installed") {
+        Some(r) if r.mark != Mark::Ok => r.detail,
+        _ => "Use your phone as a webcam in any app".to_owned(),
+    };
+    Summary {
+        mark: Mark::Idle,
+        title: "Camera is off".to_owned(),
+        detail,
+        button,
+        repair,
+    }
+}
+
 /// The whole camera works for apps when every row is ok.
 pub fn all_ok(rows: &[Row]) -> bool {
     rows.iter().all(|r| r.mark == Mark::Ok)
@@ -465,5 +539,123 @@ mod tests {
             &Some("decode failed".into()),
             true
         ));
+    }
+
+    #[test]
+    fn summary_follows_the_same_rows_as_the_window() {
+        let on = summary(&base(), false);
+        assert_eq!(on.mark, Mark::Ok);
+        assert_eq!(on.title, "Camera is on");
+        assert_eq!(on.detail, "29 frames a second from the phone");
+        assert_eq!(on.button, CameraButton::Stop);
+        assert!(!on.repair);
+
+        let off = summary(
+            &Inputs {
+                streaming: false,
+                fps: 0,
+                listed: None,
+                preview_fps: None,
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(off.mark, Mark::Idle);
+        assert_eq!(off.title, "Camera is off");
+        assert_eq!(off.button, CameraButton::Start);
+
+        let wait = summary(
+            &Inputs {
+                streaming: false,
+                pending: true,
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(wait.mark, Mark::Wait);
+        assert_eq!(wait.button, CameraButton::Cancel);
+        assert!(wait.detail.contains("accept on the phone"));
+    }
+
+    #[test]
+    fn summary_reports_what_blocks_the_camera() {
+        let no_phone = summary(
+            &Inputs {
+                phone: None,
+                streaming: false,
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(no_phone.mark, Mark::Bad);
+        assert_eq!(no_phone.detail, "Pair a phone first");
+
+        let denied = summary(
+            &Inputs {
+                access: Access::Deny,
+                streaming: false,
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(denied.mark, Mark::Bad);
+        assert!(denied.detail.contains("Camera"));
+
+        let failed = summary(
+            &Inputs {
+                streaming: false,
+                start_error: Some("no frames".into()),
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(failed.mark, Mark::Bad);
+        assert_eq!(failed.title, "Camera could not start");
+        assert_eq!(failed.detail, "no frames");
+        assert!(failed.repair);
+
+        let dark = summary(
+            &Inputs {
+                dark: true,
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(dark.mark, Mark::Bad);
+    }
+
+    #[test]
+    fn summary_offers_repair_only_when_idle_and_needed() {
+        let missing = summary(
+            &Inputs {
+                installed: false,
+                streaming: false,
+                ..base()
+            },
+            false,
+        );
+        assert!(missing.repair);
+        let streaming_outdated = summary(
+            &Inputs {
+                update_ready: true,
+                ..base()
+            },
+            false,
+        );
+        assert!(!streaming_outdated.repair);
+    }
+
+    #[test]
+    fn summary_ignores_the_slow_checks_that_may_not_have_run() {
+        // The settings page never measures "listed" or the preview.
+        let s = summary(
+            &Inputs {
+                listed: None,
+                preview_fps: None,
+                ..base()
+            },
+            false,
+        );
+        assert_eq!(s.mark, Mark::Ok);
     }
 }
