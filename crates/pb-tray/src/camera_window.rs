@@ -29,11 +29,11 @@ use windows::{
             Shell::ShellExecuteW,
             WindowsAndMessaging::{
                 AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                GetSystemMetrics, LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow,
-                SetWindowPos, ShowWindow, IDC_ARROW, SM_CXSCREEN, SM_CYSCREEN, SWP_NOZORDER,
-                SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
-                WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW,
-                WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+                GetSystemMetrics, LoadCursorW, LoadIconW, PostMessageW, RegisterClassW,
+                SetForegroundWindow, SetWindowPos, ShowWindow, IDC_ARROW, SM_CXSCREEN, SM_CYSCREEN,
+                SWP_NOZORDER, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_DESTROY,
+                WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_CAPTION,
+                WS_EX_APPWINDOW, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
             },
         },
     },
@@ -466,6 +466,12 @@ pub fn open(
             hInstance: hinstance.into(),
             lpszClassName: CLASS,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // The app icon (resource 1), as the settings window has it.
+            hIcon: LoadIconW(
+                Some(hinstance.into()),
+                PCWSTR(std::ptr::without_provenance::<u16>(1)),
+            )
+            .unwrap_or_default(),
             ..Default::default()
         };
         RegisterClassW(&wc);
