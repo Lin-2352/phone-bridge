@@ -3,7 +3,10 @@
 //! toggles and buttons, double-buffered painting, DWM window frame.
 #![allow(unsafe_code)]
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    OnceLock,
+};
 
 use windows::{
     core::{w, PCWSTR},
@@ -20,6 +23,15 @@ use windows::{
                 RoundRect, SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER,
                 DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, PS_DASH, PS_NULL, PS_SOLID,
                 SRCCOPY, TRANSPARENT,
+            },
+            GdiPlus::{
+                DashStyleDash, FillModeAlternate, GdipAddPathArc, GdipAddPathRectangle,
+                GdipClosePathFigure, GdipCreateFromHDC, GdipCreatePath, GdipCreatePen1,
+                GdipCreateSolidFill, GdipDeleteBrush, GdipDeleteGraphics, GdipDeletePath,
+                GdipDeletePen, GdipDrawPath, GdipFillPath, GdipSetPenDashArray,
+                GdipSetPenDashStyle, GdipSetPixelOffsetMode, GdipSetSmoothingMode, GdiplusStartup,
+                GdiplusStartupInput, GpGraphics, GpPath, PixelOffsetModeHalf,
+                SmoothingModeAntiAlias, UnitPixel,
             },
         },
         System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
@@ -126,6 +138,11 @@ pub fn px(s: f32, v: i32) -> i32 {
     (v as f32 * s).round() as i32
 }
 
+/// Corner radius (logical px at scale `s`), never 0 so corners stay round.
+pub fn corner_radius(s: f32, logical: i32) -> i32 {
+    px(s, logical).max(1)
+}
+
 pub fn inside(r: &RECT, x: i32, y: i32) -> bool {
     x >= r.left && x < r.right && y >= r.top && y < r.bottom
 }
@@ -214,8 +231,113 @@ pub fn icon(hdc: HDC, font: HGDIOBJ, g: char, r: RECT, color: u32) {
     );
 }
 
-/// Rounded rectangle; `stroke: None` draws fill only.
+/// COLORREF (0x00BBGGRR) to opaque GDI+ ARGB (0xFFRRGGBB).
+fn argb(c: u32) -> u32 {
+    0xff00_0000 | (c & 0xff) << 16 | (c & 0xff00) | (c >> 16) & 0xff
+}
+
+/// GDI+ is started once and never shut down while the process runs;
+/// `false` if it could not start (shapes then fall back to plain GDI).
+fn gdiplus_ready() -> bool {
+    static READY: OnceLock<bool> = OnceLock::new();
+    *READY.get_or_init(|| {
+        let input = GdiplusStartupInput {
+            GdiplusVersion: 1,
+            ..Default::default()
+        };
+        let mut token = 0usize;
+        // SAFETY: valid input; the output may be null because GDI+ keeps
+        // its own background thread (SuppressBackgroundThread is false).
+        unsafe { GdiplusStartup(&mut token, &input, std::ptr::null_mut()) }.0 == 0
+    })
+}
+
+/// Adds a rounded rectangle (`d` = corner ellipse diameter) to `path`.
+///
+/// SAFETY: `path` must be a live GDI+ path.
+unsafe fn add_round_path(path: *mut GpPath, x: f32, y: f32, w: f32, h: f32, d: f32) {
+    let d = d.min(w).min(h);
+    // SAFETY: per this function's contract.
+    unsafe {
+        if d <= 0.0 {
+            GdipAddPathRectangle(path, x, y, w, h);
+            return;
+        }
+        GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
+        GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
+        GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+        GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+        GdipClosePathFigure(path);
+    }
+}
+
+/// Anti-aliased `round_rect`; `false` (nothing drawn) if GDI+ is unusable.
+fn smooth_round_rect(
+    hdc: HDC,
+    r: &RECT,
+    fill: u32,
+    stroke: Option<u32>,
+    radius: i32,
+    dashed: bool,
+) -> bool {
+    if !gdiplus_ready() {
+        return false;
+    }
+    let mut g: *mut GpGraphics = std::ptr::null_mut();
+    // SAFETY: every GDI+ object made here is deleted before returning; the
+    // graphics is deleted last so its drawing is flushed to `hdc`.
+    unsafe {
+        if GdipCreateFromHDC(hdc, &mut g).0 != 0 || g.is_null() {
+            return false;
+        }
+        GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+        // Integer coordinates are pixel edges, so a fill covers exactly the
+        // pixels GDI would and a 1 px stroke on a .5 line is crisp.
+        GdipSetPixelOffsetMode(g, PixelOffsetModeHalf);
+        // The outline sits on the outermost pixel row, like GDI's pen.
+        let inset = if stroke.is_some() { 0.5 } else { 0.0 };
+        let x = r.left as f32 + inset;
+        let y = r.top as f32 + inset;
+        let w = (r.right - r.left) as f32 - 2.0 * inset;
+        let h = (r.bottom - r.top) as f32 - 2.0 * inset;
+        let mut path: *mut GpPath = std::ptr::null_mut();
+        if w > 0.0 && h > 0.0 && GdipCreatePath(FillModeAlternate, &mut path).0 == 0 {
+            add_round_path(path, x, y, w, h, radius as f32);
+            let mut brush = std::ptr::null_mut();
+            if GdipCreateSolidFill(argb(fill), &mut brush).0 == 0 {
+                GdipFillPath(g, brush as _, path);
+                GdipDeleteBrush(brush as _);
+            }
+            if let Some(c) = stroke {
+                let mut pen = std::ptr::null_mut();
+                if GdipCreatePen1(argb(c), 1.0, UnitPixel, &mut pen).0 == 0 {
+                    if dashed {
+                        GdipSetPenDashStyle(pen, DashStyleDash);
+                        // GDI's PS_DASH pattern: 18 px on, 6 px off.
+                        let dash = [18.0f32, 6.0];
+                        GdipSetPenDashArray(pen, dash.as_ptr(), dash.len() as i32);
+                    }
+                    GdipDrawPath(g, pen, path);
+                    GdipDeletePen(pen);
+                }
+            }
+            GdipDeletePath(path);
+        }
+        GdipDeleteGraphics(g);
+    }
+    true
+}
+
+/// Rounded rectangle; `stroke: None` draws fill only. `radius` is the
+/// corner ellipse size (as GDI's `RoundRect`); drawn anti-aliased with GDI+.
 pub fn round_rect(hdc: HDC, r: &RECT, fill: u32, stroke: Option<u32>, radius: i32, dashed: bool) {
+    if !smooth_round_rect(hdc, r, fill, stroke, radius, dashed) {
+        gdi_round_rect(hdc, r, fill, stroke, radius, dashed);
+    }
+}
+
+/// Plain GDI fallback for `round_rect` (jagged edges).
+fn gdi_round_rect(hdc: HDC, r: &RECT, fill: u32, stroke: Option<u32>, radius: i32, dashed: bool) {
     // SAFETY: GDI objects are selected out and deleted before returning.
     unsafe {
         let brush = CreateSolidBrush(COLORREF(fill));
@@ -269,7 +391,7 @@ pub fn toggle(hdc: HDC, s: f32, p: &Palette, right: i32, cy: i32, on: bool, enab
 /// Standard button (accent or neutral) with a centred label.
 pub fn button(hdc: HDC, f: &Fonts, p: &Palette, r: RECT, label: &str, accent: bool, s: f32) {
     if accent {
-        round_rect(hdc, &r, p.accent, None, px(s, 8), false);
+        round_rect(hdc, &r, p.accent, None, corner_radius(s, 8), false);
         text(
             hdc,
             f.body,
@@ -279,7 +401,7 @@ pub fn button(hdc: HDC, f: &Fonts, p: &Palette, r: RECT, label: &str, accent: bo
             DT_CENTER | DT_VCENTER | DT_SINGLELINE,
         );
     } else {
-        round_rect(hdc, &r, p.card, Some(p.stroke), px(s, 8), false);
+        round_rect(hdc, &r, p.card, Some(p.stroke), corner_radius(s, 8), false);
         text(
             hdc,
             f.body,
@@ -358,6 +480,72 @@ pub fn set_cursor(hand: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radius_scales_with_dpi() {
+        assert_eq!(corner_radius(96.0 / 96.0, 8), 8);
+        assert_eq!(corner_radius(192.0 / 96.0, 8), 16);
+        assert_eq!(corner_radius(1.25, 6), 8);
+    }
+
+    #[test]
+    fn radius_is_never_zero() {
+        assert_eq!(corner_radius(1.0, 0), 1);
+        assert_eq!(corner_radius(0.1, 1), 1);
+        assert_eq!(corner_radius(1.0, -4), 1);
+    }
+
+    /// COLORREF is 0x00BBGGRR; GDI+ wants opaque 0xAARRGGBB.
+    #[test]
+    fn colorref_becomes_opaque_argb() {
+        assert_eq!(argb(0xb86700), 0xff0067b8);
+        assert_eq!(argb(0x000000), 0xff000000);
+        assert_eq!(argb(0xffffff), 0xffffffff);
+        assert_eq!(argb(0x1c2bc4), 0xffc42b1c);
+    }
+
+    /// The GDI+ path draws the same colours GDI would, edge to edge.
+    #[test]
+    fn round_rect_draws_antialiased_with_the_palette_colour() {
+        use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
+        assert!(gdiplus_ready());
+        // SAFETY: a memory DC and bitmap made and freed here.
+        unsafe {
+            let screen = GetDC(None);
+            let hdc = CreateCompatibleDC(Some(screen));
+            let bmp = CreateCompatibleBitmap(screen, 40, 40);
+            let old = SelectObject(hdc, HGDIOBJ(bmp.0));
+            let all = RECT {
+                left: 0,
+                top: 0,
+                right: 40,
+                bottom: 40,
+            };
+            round_rect(hdc, &all, 0x000000, None, 0, false);
+            let r = RECT {
+                left: 4,
+                top: 4,
+                right: 36,
+                bottom: 36,
+            };
+            assert!(smooth_round_rect(
+                hdc,
+                &r,
+                0xb86700,
+                Some(0x1c2bc4),
+                16,
+                false
+            ));
+            assert_eq!(GetPixel(hdc, 20, 20).0, 0xb86700, "fill");
+            assert_eq!(GetPixel(hdc, 20, 4).0, 0x1c2bc4, "top edge");
+            assert_eq!(GetPixel(hdc, 20, 3).0, 0x000000, "outside");
+            assert_eq!(GetPixel(hdc, 4, 4).0, 0x000000, "rounded corner");
+            SelectObject(hdc, old);
+            let _ = DeleteObject(HGDIOBJ(bmp.0));
+            let _ = DeleteDC(hdc);
+            ReleaseDC(None, screen);
+        }
+    }
 
     /// An empty string once crashed the whole tray inside `DrawTextW`.
     #[test]
