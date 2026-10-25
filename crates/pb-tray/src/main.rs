@@ -26,6 +26,8 @@ mod camera_window;
 mod control;
 #[cfg(windows)]
 mod core;
+#[allow(dead_code)] // consumed by the hover and press animation in a later task
+mod ease;
 #[cfg(windows)]
 mod fluent;
 #[cfg(windows)]
