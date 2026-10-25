@@ -30,6 +30,7 @@ use windows::{
 };
 
 use crate::fluent::{self, px};
+use crate::settings_groups::{group_of, groups, label_of};
 use crate::settings_rows::{rows, Row};
 pub use crate::settings_rows::{Action, ChoiceKey, Key, Model};
 
@@ -37,6 +38,47 @@ const CLASS: PCWSTR = w!("PhoneBridgeSettings");
 const W: i32 = 560;
 const H: i32 = 640;
 const MARGIN: i32 = 24;
+
+/// What the window paints: group captions and the option rows under them.
+enum Item {
+    /// Group caption; the flag marks the first one (no divider above it).
+    Caption(&'static str, bool),
+    Row(Row),
+}
+
+/// The settings rows laid out under the group captions. Rows keep their
+/// order within a group; a section header is kept as a sub-heading unless it
+/// repeats the caption. Groups without rows get no caption.
+fn items(m: &Model) -> Vec<Item> {
+    let all = rows(m);
+    let mut out = Vec::new();
+    for (group, title) in groups() {
+        let mut section: Option<&'static str> = None;
+        let mut shown: Option<&'static str> = None;
+        let mut started = false;
+        for row in &all {
+            if let Row::Header(t) = row {
+                section = Some(t);
+                continue;
+            }
+            if label_of(row).map(group_of) != Some(group) {
+                continue;
+            }
+            if !started {
+                out.push(Item::Caption(title, out.is_empty()));
+                started = true;
+            }
+            if section != shown {
+                shown = section;
+                if let Some(t) = section.filter(|t| *t != title) {
+                    out.push(Item::Row(Row::Header(t)));
+                }
+            }
+            out.push(Item::Row(row.clone()));
+        }
+    }
+    out
+}
 
 fn row_height(r: &Row) -> i32 {
     match r {
@@ -75,11 +117,18 @@ struct State {
 
 static CURRENT: Mutex<Option<State>> = Mutex::new(None);
 
+fn item_height(i: &Item) -> i32 {
+    match i {
+        Item::Caption(..) => 36,
+        Item::Row(r) => row_height(r),
+    }
+}
+
 fn content_height(s: f32, m: &Model) -> i32 {
     px(s, 16)
-        + rows(m)
+        + items(m)
             .iter()
-            .map(|r| px(s, row_height(r) + 4))
+            .map(|i| px(s, item_height(i) + 4))
             .sum::<i32>()
         + px(s, 16)
 }
@@ -98,8 +147,8 @@ fn paint(hwnd: HWND) {
     fluent::paint(hwnd, |hdc, c| {
         let (l, r) = (px(s, MARGIN), c.right - px(s, MARGIN));
         let mut y = px(s, 16) - scroll;
-        for row in rows(&m) {
-            let h = px(s, row_height(&row));
+        for item in items(&m) {
+            let h = px(s, item_height(&item));
             let card = RECT {
                 left: l,
                 top: y,
@@ -109,6 +158,36 @@ fn paint(hwnd: HWND) {
             let inner_l = l + px(s, 16);
             let inner_r = r - px(s, 16);
             let visible = card.bottom > 0 && card.top < c.bottom;
+            let row = match item {
+                Item::Caption(t, first) => {
+                    if visible {
+                        if !first {
+                            let line = RECT {
+                                top: y + px(s, 4),
+                                bottom: y + px(s, 4) + px(s, 1).max(1),
+                                ..card
+                            };
+                            fluent::round_rect(hdc, &line, p.stroke, None, 0, false);
+                        }
+                        let tr = RECT {
+                            left: l + px(s, 2),
+                            top: y + px(s, 10),
+                            ..card
+                        };
+                        fluent::text(
+                            hdc,
+                            f.small,
+                            t,
+                            tr,
+                            p.text2,
+                            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                        );
+                    }
+                    y += h + px(s, 4);
+                    continue;
+                }
+                Item::Row(row) => row,
+            };
             match row {
                 Row::Header(t) => {
                     if visible {
@@ -119,7 +198,7 @@ fn paint(hwnd: HWND) {
                         };
                         fluent::text(
                             hdc,
-                            f.title,
+                            f.body,
                             t,
                             tr,
                             p.text,

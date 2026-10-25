@@ -93,6 +93,7 @@ pub enum Action {
     Mute(usize),
 }
 
+#[derive(Clone)]
 pub enum Row {
     Header(&'static str),
     Theme,

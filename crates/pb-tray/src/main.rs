@@ -56,6 +56,8 @@ mod screen_render;
 mod screen_window;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings;
+#[cfg(windows)]
+mod settings_groups;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings_rows;
 #[cfg(windows)]
