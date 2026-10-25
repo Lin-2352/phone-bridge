@@ -55,10 +55,12 @@ pub fn fps() -> u32 {
 static DARK: AtomicBool = AtomicBool::new(false);
 
 /// The phone has been asked for its camera and has not answered yet.
-static PENDING: AtomicBool = AtomicBool::new(false);
+/// A count, not a flag: a Cancel followed at once by a new Start must not be
+/// cleared by the first request unwinding.
+static PENDING: AtomicU32 = AtomicU32::new(0);
 
 pub fn pending() -> bool {
-    PENDING.load(Ordering::Acquire)
+    PENDING.load(Ordering::Acquire) > 0
 }
 
 /// Marks a request as open for as long as it lives, so every way out
@@ -67,14 +69,32 @@ pub struct PendingGuard(());
 
 impl PendingGuard {
     pub fn new() -> Self {
-        PENDING.store(true, Ordering::Release);
+        PENDING.fetch_add(1, Ordering::AcqRel);
         Self(())
     }
 }
 
 impl Drop for PendingGuard {
     fn drop(&mut self) {
-        PENDING.store(false, Ordering::Release);
+        PENDING.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Held while the elevated installer runs, so Repair and a first start
+/// cannot raise two permission prompts at once.
+pub struct InstallGuard(());
+
+impl InstallGuard {
+    pub fn try_new() -> Option<Self> {
+        (!INSTALLING.swap(true, Ordering::AcqRel)).then_some(Self(()))
+    }
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::Release);
     }
 }
 
@@ -85,7 +105,15 @@ pub fn last_error() -> Option<String> {
     lock(&LAST_ERROR).clone()
 }
 
+/// The last error came from decoding or drawing the picture, not from setup.
+static PLAYBACK_ERROR: AtomicBool = AtomicBool::new(false);
+
+pub fn playback_error() -> bool {
+    PLAYBACK_ERROR.load(Ordering::Acquire)
+}
+
 pub fn set_last_error(e: Option<String>) {
+    PLAYBACK_ERROR.store(false, Ordering::Release);
     *lock(&LAST_ERROR) = e;
 }
 
@@ -230,6 +258,7 @@ fn start_session(
                 Err(e) => {
                     (opts.log)(&format!("CAMERA pipeline failed: {e}"));
                     set_last_error(Some(e));
+                    PLAYBACK_ERROR.store(true, Ordering::Release);
                     "Can't show this phone's camera on this PC".into()
                 }
             });
@@ -333,6 +362,32 @@ mod tests {
         while lens() != want && t0.elapsed() < Duration::from_secs(5) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// The only test that touches `INSTALLING` (a process-wide static).
+    #[test]
+    fn a_second_install_is_refused_while_one_runs() {
+        let first = InstallGuard::try_new().expect("nothing is installing");
+        assert!(
+            InstallGuard::try_new().is_none(),
+            "one UAC prompt at a time"
+        );
+        drop(first);
+        assert!(InstallGuard::try_new().is_some(), "free again afterwards");
+    }
+
+    /// The only test that touches `PENDING` (a process-wide static).
+    #[test]
+    fn a_quick_cancel_then_start_keeps_pending() {
+        assert!(!pending());
+        let first = PendingGuard::new();
+        assert!(pending());
+        // Cancel then Start again before the first request has unwound.
+        let second = PendingGuard::new();
+        drop(first);
+        assert!(pending(), "the new request is still open");
+        drop(second);
+        assert!(!pending(), "pending clears when all guards are dropped");
     }
 
     /// The only test that touches `LENS` (a process-wide static).

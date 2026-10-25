@@ -164,9 +164,16 @@ pub fn rows(i: &Inputs) -> Vec<Row> {
 }
 
 /// "Repair camera" is offered when the virtual camera is missing, outdated
-/// (the shipped source differs) or the last start failed.
-pub fn offer_repair(installed: bool, update_ready: bool, start_error: &Option<String>) -> bool {
-    !installed || update_ready || start_error.is_some()
+/// (the shipped source differs) or the last start failed. `playback_error`:
+/// the failure was in decoding or drawing the phone's picture, which the
+/// installer cannot fix.
+pub fn offer_repair(
+    installed: bool,
+    update_ready: bool,
+    start_error: &Option<String>,
+    playback_error: bool,
+) -> bool {
+    !installed || update_ready || (start_error.is_some() && !playback_error)
 }
 
 /// What the Start/Stop button (and the tray entry) does right now.
@@ -421,21 +428,42 @@ mod tests {
 
     #[test]
     fn repair_is_offered_when_not_installed() {
-        assert!(offer_repair(false, false, &None));
+        assert!(offer_repair(false, false, &None, false));
     }
 
     #[test]
     fn repair_is_offered_when_an_update_is_ready() {
-        assert!(offer_repair(true, true, &None));
+        assert!(offer_repair(true, true, &None, false));
     }
 
     #[test]
     fn repair_is_offered_after_a_start_error() {
-        assert!(offer_repair(true, false, &Some("broken".into())));
+        assert!(offer_repair(true, false, &Some("broken".into()), false));
     }
 
     #[test]
     fn repair_is_not_offered_when_everything_is_fine() {
-        assert!(!offer_repair(true, false, &None));
+        assert!(!offer_repair(true, false, &None, false));
+    }
+
+    #[test]
+    fn repair_is_not_offered_for_a_decoder_or_gpu_error() {
+        // The installer cannot fix the phone's stream or this PC's graphics.
+        assert!(!offer_repair(
+            true,
+            false,
+            &Some("decode failed".into()),
+            true
+        ));
+    }
+
+    #[test]
+    fn repair_is_still_offered_when_missing_even_after_a_playback_error() {
+        assert!(offer_repair(
+            false,
+            false,
+            &Some("decode failed".into()),
+            true
+        ));
     }
 }

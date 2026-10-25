@@ -1078,6 +1078,12 @@ fn remove_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) {
 /// the reason is told to the user and kept for the camera window.
 async fn install_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) -> bool {
     use crate::camera_register::RegisterError;
+    let Some(_installing) = crate::camera::InstallGuard::try_new() else {
+        ui(UiEvent::Info(
+            "The phone camera is already being set up: answer the Windows prompt".into(),
+        ));
+        return false;
+    };
     ui(UiEvent::Info(
         "Setting up the phone camera: Windows will ask once for permission".into(),
     ));
@@ -1117,9 +1123,12 @@ fn show_camera(
     Box::pin(async move {
         if !again
             && (!crate::camera_register::is_registered() || crate::camera_register::needs_install())
-            && !install_camera(&log, &*ui).await
         {
-            return;
+            // Open during the install too, so the first start can be cancelled.
+            let _pending = crate::camera::PendingGuard::new();
+            if !install_camera(&log, &*ui).await {
+                return;
+            }
         }
         let codecs = crate::screen_decode::supported_codecs();
         let start = pb_protocol::control::CameraStart {

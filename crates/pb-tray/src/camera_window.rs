@@ -567,7 +567,13 @@ fn collect(
         let installed = crate::camera_register::is_registered();
         let update_ready = installed && crate::camera_register::needs_install();
         let start_error = crate::camera::last_error();
-        let repair = !streaming && offer_repair(installed, update_ready, &start_error);
+        let repair = !streaming
+            && offer_repair(
+                installed,
+                update_ready,
+                &start_error,
+                crate::camera::playback_error(),
+            );
         let inputs = Inputs {
             phone: phone(),
             installed,
