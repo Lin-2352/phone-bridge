@@ -1,13 +1,14 @@
 package dev.phonebridge.app
 
 /** The phone's settings groups; declaration order is display order. */
-enum class Group { Connection, Camera, Screen, Files, Settings }
+enum class Group { Connection, Camera, Screen, Notifications, Files, Settings }
 
 /** Which group a settings section (by its title) is shown under; unknown sections land in Settings. */
 fun groupFor(section: String): Group = when (section) {
     "Devices" -> Group.Connection
     "Camera" -> Group.Camera
     "Control from PC" -> Group.Screen
+    "Notifications" -> Group.Notifications
     "Sharing" -> Group.Files
     else -> Group.Settings
 }
@@ -23,7 +24,7 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Connection, "Pair a new PC", "Scan the QR code shown on your PC"),
     SettingEntry(Group.Camera, "PCs always allowed to use the camera", "Skip the question; Android's camera indicator still shows"),
     SettingEntry(Group.Screen, "Let my PC control this phone", "Use the PC's mouse and keyboard here"),
-    SettingEntry(Group.Screen, "Notifications on PC", "Show this phone's notifications on your PC"),
+    SettingEntry(Group.Notifications, "Notifications on PC", "Show this phone's notifications on your PC"),
     SettingEntry(Group.Screen, "Instant screen", "Skip Android's prompt after the first share"),
     SettingEntry(Group.Screen, "Show my screen on my PC without asking", "Skip the question before your screen is shared"),
     SettingEntry(Group.Screen, "Accessibility permission", "$APP_NAME control lets your PC tap and type here"),
@@ -44,11 +45,15 @@ fun searchSettings(query: String, entries: List<SettingEntry> = settingEntries):
     return entries.filter { it.title.contains(q, ignoreCase = true) || it.subtitle.contains(q, ignoreCase = true) }
 }
 
+/** Whether the home screen should warn that phone notifications cannot reach the PC (switch on, Android access missing). */
+fun notifyAccessMissing(notifyToPc: Boolean, access: Boolean): Boolean = notifyToPc && !access
+
 /** The one-line description under a group's entry in the settings list. */
 fun pageSummary(g: Group): String = when (g) {
     Group.Connection -> "Paired PCs and pairing a new one"
     Group.Camera -> "Which PCs may use this phone's camera"
-    Group.Screen -> "Control, notifications and screen sharing with your PC"
+    Group.Screen -> "Control and screen sharing with your PC"
+    Group.Notifications -> "Show this phone's notifications on your PC"
     Group.Files -> "Accepting files and where they are saved"
     Group.Settings -> "Theme, clipboard and running in the background"
 }

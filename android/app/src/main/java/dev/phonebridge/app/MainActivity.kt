@@ -381,24 +381,25 @@ class MainActivity : ComponentActivity() {
      * "Notifications on PC": phone notifications appear in the PC's
      * notification centre. Needs Notification access, granted in Settings.
      */
+    private fun openNotifyAccess() {
+        val i = if (Build.VERSION.SDK_INT >= 30) {
+            Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(
+                Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                android.content.ComponentName(this, NotifyListener::class.java).flattenToString(),
+            )
+        } else {
+            Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+        }
+        runCatching { startActivity(i) }
+            .onFailure { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+    }
+
     @Composable
     private fun NotificationsOnPc(modifier: Modifier = Modifier) {
         val prefs = remember { Prefs(this@MainActivity) }
         var on by remember { mutableStateOf(prefs.notifyToPc) }
         val access = remember(resumed.intValue) { hasNotifyAccess(this@MainActivity) }
-        val openAccess = {
-            val i = if (Build.VERSION.SDK_INT >= 30) {
-                Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS).putExtra(
-                    Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
-                    android.content.ComponentName(this@MainActivity, NotifyListener::class.java).flattenToString(),
-                )
-            } else {
-                Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
-            }
-            runCatching { startActivity(i) }
-                .onFailure { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
-            Unit
-        }
+        val openAccess = { openNotifyAccess() }
         ListItem(
             headlineContent = { Text("Notifications on PC") },
             supportingContent = {
@@ -432,6 +433,7 @@ class MainActivity : ComponentActivity() {
         val pc = Bridge.linked.value
         val running = Bridge.running.value
         val notificationsOn = remember(resumed.intValue) { getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled() }
+        val notifyMissing = remember(resumed.intValue) { notifyAccessMissing(prefs.notifyToPc, hasNotifyAccess(this@MainActivity)) }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -511,6 +513,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+                    }
+                }
+                if (notifyMissing) {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("Phone notifications are not reaching your PC") },
+                            supportingContent = { Text("$APP_NAME needs notification access. Tap, then turn on $APP_NAME") },
+                            modifier = Modifier.clickable { openNotifyAccess() },
+                        )
                     }
                 }
                 if (!notificationsOn) {
@@ -664,7 +675,6 @@ class MainActivity : ComponentActivity() {
                 Group.Screen -> item {
                     GroupCard(null) {
                         ControlFromPc()
-                        NotificationsOnPc()
                         ScreenToPc()
                         val on = remember(resumed.intValue) { ControlService.instance != null }
                         val stuck = remember(resumed.intValue) { !on && ControlService.enabledInSettings(this@MainActivity) }
@@ -674,6 +684,11 @@ class MainActivity : ComponentActivity() {
                             trailingContent = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary) },
                             modifier = Modifier.clickable { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                         )
+                    }
+                }
+                Group.Notifications -> item {
+                    GroupCard(null) {
+                        NotificationsOnPc()
                     }
                 }
                 Group.Files -> item {

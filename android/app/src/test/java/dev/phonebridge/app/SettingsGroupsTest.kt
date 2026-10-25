@@ -34,7 +34,7 @@ class SettingsGroupsTest {
     @Test
     fun groups_are_listed_in_display_order() {
         assertEquals(
-            listOf("Connection", "Camera", "Screen", "Files", "Settings"),
+            listOf("Connection", "Camera", "Screen", "Notifications", "Files", "Settings"),
             Group.entries.map(::groupTitle),
         )
     }
@@ -104,5 +104,21 @@ class SettingsNavTest {
     fun back_from_a_page_opened_by_search_keeps_the_query_on_the_list() {
         val n = SettingsNav(query = "cam").open(Group.Camera)
         assertEquals(SettingsNav(query = "cam"), n.back())
+    }
+}
+
+class NotificationsPageTest {
+    @Test
+    fun notifications_have_their_own_page_that_search_finds() {
+        assertEquals(Group.Notifications, groupFor("Notifications"))
+        val hit = searchSettings("notifications on pc").single()
+        assertEquals(Group.Notifications, hit.group)
+    }
+
+    @Test
+    fun the_home_warning_shows_only_when_the_switch_is_on_and_access_is_missing() {
+        assertEquals(true, notifyAccessMissing(notifyToPc = true, access = false))
+        assertEquals(false, notifyAccessMissing(notifyToPc = true, access = true))
+        assertEquals(false, notifyAccessMissing(notifyToPc = false, access = false))
     }
 }
