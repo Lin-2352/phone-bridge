@@ -33,6 +33,8 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Settings, "Theme", "System, Light or Dark"),
     SettingEntry(Group.Settings, "Share clipboard", "Share what you copy with your paired PC"),
     SettingEntry(Group.Settings, "Passwords and codes", "Whether text marked sensitive is sent"),
+    SettingEntry(Group.Settings, "Share copied images", "Put pictures copied on your PC on this phone's clipboard"),
+    SettingEntry(Group.Settings, "Send new screenshots to PC", "Each screenshot you take is copied to your PC's clipboard"),
     SettingEntry(Group.Settings, APP_NAME, "Turn it on or off; off means your PC cannot reach this phone"),
     SettingEntry(Group.Settings, "Keep running in background", "Let Android bring $APP_NAME back when memory is low"),
     SettingEntry(Group.Settings, "Hide the status notification", "Open the notification's Android settings"),

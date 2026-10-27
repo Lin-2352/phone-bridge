@@ -122,3 +122,13 @@ class NotificationsPageTest {
         assertEquals(false, notifyAccessMissing(notifyToPc = false, access = false))
     }
 }
+
+class ClipboardImagesSettingsTest {
+    @Test
+    fun the_two_image_switches_live_under_settings_and_search_finds_them() {
+        val copied = searchSettings("copied images").single()
+        assertEquals(Group.Settings, copied.group)
+        val shots = searchSettings("screenshots").single()
+        assertEquals(Group.Settings, shots.group)
+    }
+}

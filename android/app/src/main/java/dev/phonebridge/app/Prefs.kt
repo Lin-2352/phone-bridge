@@ -21,6 +21,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("send_sensitive", false)
         set(v) = sp.edit().putBoolean("send_sensitive", v).apply()
 
+    /** Apply pictures copied on the PC to this phone's clipboard. Off by default. */
+    var clipboardImages: Boolean
+        get() = sp.getBoolean("clipboard_images", false)
+        set(v) = sp.edit().putBoolean("clipboard_images", v).apply()
+
+    /** Send each new screenshot to the PC's clipboard. Off by default; needs picture access. */
+    var shareScreenshots: Boolean
+        get() = sp.getBoolean("share_screenshots", false)
+        set(v) = sp.edit().putBoolean("share_screenshots", v).apply()
+
     /** Fingerprint of the last clipboard text synced either way, so focus
      *  changes never re-send a clipboard that has not changed (survives restarts). */
     var lastClip: Int

@@ -252,6 +252,7 @@ class PbService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        ScreenshotWatcher.stop(this)
         ScreenShare.stop(userStopped = true)
         val n = synchronized(Bridge) {
             destroyed = true
@@ -313,6 +314,7 @@ class PbService : Service() {
             )
             val prefs = Prefs(this)
             n.setClipboardSync(prefs.clipboardSync)
+            n.setClipboardImages(prefs.clipboardImages)
             n.setAutoAccept(prefs.autoAccept)
             n.setAllowControl(prefs.allowControl)
             n.setNotifyEnabled(prefs.notifyToPc)
@@ -345,6 +347,7 @@ class PbService : Service() {
             }
             Bridge.linked.value = n.peers().firstOrNull()?.name
             Bridge.nodeReady.value = true
+            ScreenshotWatcher.sync(this)
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
             runCatching { EncoderCaps.get() }.onSuccess { c ->
@@ -375,6 +378,12 @@ class PbService : Service() {
                 Log.i(TAG, "CLIPSYNC received from ${e.peerName}${if (e.sensitive) " (sensitive)" else ""}")
                 val title = if (e.sensitive) "Password or code" else e.text.take(80)
                 Bridge.addRecent(RecentItem(title, "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+            }
+            is PbEvent.RemoteImage -> {
+                // Share copied images: a picture copied on the PC goes on the clipboard.
+                ClipImages.applyReceived(this, e.path)
+                Log.i(TAG, "CLIPIMG received from ${e.peerName}")
+                Bridge.addRecent(RecentItem("Picture", "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
             }
             is PbEvent.FileReceived -> {
                 cancelProgress(true)

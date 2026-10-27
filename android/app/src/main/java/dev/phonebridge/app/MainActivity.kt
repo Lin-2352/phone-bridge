@@ -132,6 +132,8 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumed.intValue++
+        // Picture access may have been granted or taken away in Android's settings.
+        ScreenshotWatcher.sync(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -434,6 +436,7 @@ class MainActivity : ComponentActivity() {
         val running = Bridge.running.value
         val notificationsOn = remember(resumed.intValue) { getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled() }
         val notifyMissing = remember(resumed.intValue) { notifyAccessMissing(prefs.notifyToPc, hasNotifyAccess(this@MainActivity)) }
+        val shotsMissing = remember(resumed.intValue) { screenshotAccessMissing(prefs.shareScreenshots, ClipImages.hasImageAccess(this@MainActivity)) }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -524,6 +527,17 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                if (shotsMissing) {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("Screenshots are not reaching your PC") },
+                            supportingContent = { Text("$APP_NAME needs access to your photos to see new screenshots. Tap, then allow Photos") },
+                            modifier = Modifier.clickable {
+                                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:$packageName")))
+                            },
+                        )
+                    }
+                }
                 if (!notificationsOn) {
                     item {
                         ListItem(
@@ -565,6 +579,14 @@ class MainActivity : ComponentActivity() {
         BackHandler(onBack = goBack)
         var clipOn by remember(resumed.intValue) { mutableStateOf(prefs.clipboardSync) }
         var sens by remember(resumed.intValue) { mutableStateOf(prefs.sendSensitive) }
+        var images by remember(resumed.intValue) { mutableStateOf(prefs.clipboardImages) }
+        var shots by remember(resumed.intValue) { mutableStateOf(prefs.shareScreenshots && ClipImages.hasImageAccess(this@MainActivity)) }
+        // Android's own picture-access prompt: the user answers it, the switch follows the answer.
+        val askPictures = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            shots = granted
+            prefs.shareScreenshots = granted
+            ScreenshotWatcher.sync(this@MainActivity)
+        }
         var auto by remember(resumed.intValue) { mutableStateOf(prefs.autoAccept) }
         var tree by remember { mutableStateOf(prefs.saveTree) }
         val peers = remember(resumed.intValue, Bridge.linked.value, Bridge.nodeReady.value) { Bridge.node?.peers().orEmpty() }
@@ -734,6 +756,33 @@ class MainActivity : ComponentActivity() {
                             headlineContent = { Text("Passwords and codes") },
                             supportingContent = { Text("Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC") },
                             trailingContent = { Switch(sens, { sens = it; prefs.sendSensitive = it }, enabled = clipOn) },
+                        )
+                        ListItem(
+                            headlineContent = { Text("Share copied images") },
+                            supportingContent = { Text("Pictures copied on your PC land on this phone's clipboard. Needs Share clipboard, and Share images on your PC") },
+                            trailingContent = { Switch(images, { images = it; prefs.clipboardImages = it; Bridge.node?.setClipboardImages(it) }, enabled = clipOn) },
+                        )
+                        ListItem(
+                            headlineContent = { Text("Send new screenshots to PC") },
+                            supportingContent = { Text("Each screenshot you take is copied to your PC's clipboard. Only screenshots are sent, never other photos. Needs Share images on your PC") },
+                            trailingContent = {
+                                Switch(
+                                    shots,
+                                    {
+                                        if (!it) {
+                                            shots = false
+                                            prefs.shareScreenshots = false
+                                            ScreenshotWatcher.sync(this@MainActivity)
+                                        } else if (ClipImages.hasImageAccess(this@MainActivity)) {
+                                            shots = true
+                                            prefs.shareScreenshots = true
+                                            ScreenshotWatcher.sync(this@MainActivity)
+                                        } else {
+                                            askPictures.launch(ClipImages.imagePermission)
+                                        }
+                                    },
+                                )
+                            },
                         )
                         Text(
                             "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open $APP_NAME or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
