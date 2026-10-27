@@ -33,11 +33,15 @@ class SendClipTileService : TileService() {
         if (Build.VERSION.SDK_INT >= 34) {
             startActivityAndCollapse(PendingIntent.getActivity(this, 1, i, PendingIntent.FLAG_IMMUTABLE))
         } else {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(i)
+            collapseAndStartLegacy(i)
         }
     }
 }
+
+/** The only form API 29..33 has; the PendingIntent one is API 34+. */
+@android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
+@Suppress("DEPRECATION")
+private fun TileService.collapseAndStartLegacy(i: Intent) = startActivityAndCollapse(i)
 
 /** Reads the clipboard once it has focus, sends it to the PC and disappears. */
 class SendClipboardActivity : Activity() {
