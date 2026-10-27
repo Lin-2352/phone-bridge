@@ -2,6 +2,7 @@
 
 #[cfg(windows)]
 pub mod clipboard;
+pub mod dib;
 #[cfg(windows)]
 mod dpapi;
 #[cfg(windows)]

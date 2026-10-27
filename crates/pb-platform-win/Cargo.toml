@@ -18,6 +18,7 @@ all = "warn"
 [dependencies]
 pb-identity = { path = "../pb-identity" }
 pb-protocol = { path = "../pb-protocol" }
+png = "0.18"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }

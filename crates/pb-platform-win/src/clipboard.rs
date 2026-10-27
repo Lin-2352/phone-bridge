@@ -17,13 +17,26 @@ use windows::{
                 OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
             },
             Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
-            Ole::CF_UNICODETEXT,
+            Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT},
         },
     },
 };
 
 /// Largest clipboard text we read (characters); larger content is refused.
 const MAX_CHARS: usize = 1 << 20;
+
+/// Largest image block we read from the clipboard (bytes); a 32 bpp DIB at
+/// the conversion limit is 128 MiB, anything bigger is refused unread.
+const MAX_IMAGE_BYTES: usize = 160 << 20;
+
+/// An image found on the clipboard, as the copying app put it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ClipImage {
+    /// The registered "PNG" format (keeps transparency).
+    Png(Vec<u8>),
+    /// `CF_DIBV5` or `CF_DIB` bytes, for `dib::dib_to_png`.
+    Dib(Vec<u8>),
+}
 
 /// What we found on the clipboard.
 #[derive(Debug, PartialEq, Eq)]
@@ -101,14 +114,7 @@ pub fn set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<
     unsafe { EmptyClipboard() }.map_err(io::Error::other)?;
     set(u32::from(CF_UNICODETEXT.0), &bytes)?;
     if sensitive {
-        let zero = 0u32.to_le_bytes();
-        let marked = set(
-            format(w!("ExcludeClipboardContentFromMonitorProcessing")),
-            &zero,
-        )
-        .and_then(|_| set(format(w!("CanIncludeInClipboardHistory")), &zero))
-        .and_then(|_| set(format(w!("CanUploadToCloudClipboard")), &zero));
-        if let Err(e) = marked {
+        if let Err(e) = mark_private() {
             // Never leave a password on the clipboard without its markers
             // (it would reach Win+V history and the cloud clipboard).
             // SAFETY: the clipboard is still open (guard above).
@@ -117,6 +123,98 @@ pub fn set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<
         }
     }
     Ok(())
+}
+
+fn mark_private() -> io::Result<()> {
+    let zero = 0u32.to_le_bytes();
+    set(
+        format(w!("ExcludeClipboardContentFromMonitorProcessing")),
+        &zero,
+    )
+    .and_then(|_| set(format(w!("CanIncludeInClipboardHistory")), &zero))
+    .and_then(|_| set(format(w!("CanUploadToCloudClipboard")), &zero))
+}
+
+/// Put an image on the clipboard as `CF_DIBV5` (Windows adds `CF_DIB` and
+/// `CF_BITMAP` itself) plus the registered "PNG" format. A private image is
+/// kept out of history, the cloud clipboard and monitors, like private text.
+pub fn set_image(png: &[u8], dibv5: &[u8], sensitive: bool, owner: Option<HWND>) -> io::Result<()> {
+    let _open = Open::new(owner)?;
+    // SAFETY: the clipboard is open (guard above).
+    unsafe { EmptyClipboard() }.map_err(io::Error::other)?;
+    let written = set(u32::from(CF_DIBV5.0), dibv5)
+        .and_then(|_| set(format(w!("PNG")), png))
+        .and_then(|_| if sensitive { mark_private() } else { Ok(()) });
+    if let Err(e) = written {
+        // Never leave half an image, or a private one without its markers.
+        // SAFETY: the clipboard is still open (guard above).
+        let _ = unsafe { EmptyClipboard() };
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Cut a clipboard "PNG" block (rounded up by `GlobalSize`) after its IEND
+/// chunk. Without an IEND the block is not a whole PNG.
+fn trim_png(block: &[u8]) -> Option<&[u8]> {
+    let at = block.windows(4).rposition(|w| w == b"IEND")?;
+    block.get(..at + 8) // "IEND" + its 4-byte CRC
+}
+
+/// Read an image from the clipboard and whether the copying app marked it
+/// private. Text on the clipboard means no image: a copy that carries both
+/// (a spreadsheet range) is text.
+pub fn get_image(owner: Option<HWND>) -> io::Result<(Option<ClipImage>, bool)> {
+    let _open = Open::new(owner)?;
+    // SAFETY: clipboard is open; handles are only read while locked.
+    unsafe {
+        if IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)).is_ok() {
+            return Ok((None, false));
+        }
+        let private =
+            IsClipboardFormatAvailable(format(w!("ExcludeClipboardContentFromMonitorProcessing")))
+                .is_ok();
+        let png = format(w!("PNG"));
+        if IsClipboardFormatAvailable(png).is_ok() {
+            if let Some(b) = read_block(png)? {
+                if let Some(t) = trim_png(&b) {
+                    return Ok((Some(ClipImage::Png(t.to_vec())), private));
+                }
+            }
+        }
+        for fmt in [CF_DIBV5, CF_DIB] {
+            if IsClipboardFormatAvailable(u32::from(fmt.0)).is_ok() {
+                if let Some(b) = read_block(u32::from(fmt.0))? {
+                    return Ok((Some(ClipImage::Dib(b)), private));
+                }
+            }
+        }
+        Ok((None, private))
+    }
+}
+
+/// The bytes of clipboard format `fmt`, or None if absent or empty.
+///
+/// # Safety
+/// The clipboard must be open on this thread.
+unsafe fn read_block(fmt: u32) -> io::Result<Option<Vec<u8>>> {
+    unsafe {
+        let Ok(h) = GetClipboardData(fmt) else {
+            return Ok(None);
+        };
+        let hg = HGLOBAL(h.0);
+        let n = GlobalSize(hg);
+        if n > MAX_IMAGE_BYTES {
+            return Err(io::Error::other("clipboard image is too large"));
+        }
+        let p = GlobalLock(hg) as *const u8;
+        if p.is_null() || n == 0 {
+            return Ok(None);
+        }
+        let bytes = std::slice::from_raw_parts(p, n).to_vec();
+        let _ = GlobalUnlock(hg);
+        Ok(Some(bytes))
+    }
 }
 
 /// Empty the clipboard (a copied one-time code that is no longer needed).
@@ -182,9 +280,58 @@ unsafe fn read_unicode() -> io::Result<ClipText> {
 mod tests {
     use super::*;
 
+    /// Tests share the one real clipboard, so they take turns.
+    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn tiny_png() -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut e = png::Encoder::new(std::io::Cursor::new(&mut out), 2, 1);
+        e.set_color(png::ColorType::Rgba);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header()
+            .unwrap()
+            .write_image_data(&[255, 0, 0, 255, 0, 0, 255, 128])
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn an_image_round_trips_and_private_images_are_marked() {
+        let _turn = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+        let png = tiny_png();
+        let dib = crate::dib::png_to_dibv5(&png).unwrap();
+        set_image(&png, &dib, false, None).unwrap();
+        // The PNG we wrote comes back byte for byte, unmarked.
+        assert_eq!(
+            get_image(None).unwrap(),
+            (Some(ClipImage::Png(png.clone())), false)
+        );
+        // Windows also offers it as a plain DIB for apps that only know that.
+        assert!(unsafe { IsClipboardFormatAvailable(u32::from(CF_DIB.0)) }.is_ok());
+        // Text on the clipboard means no image.
+        set_text("just text", false, None).unwrap();
+        assert_eq!(get_image(None).unwrap(), (None, false));
+        // A private image is reported as private.
+        set_image(&png, &dib, true, None).unwrap();
+        assert!(get_image(None).unwrap().1);
+        clear(None).unwrap();
+        assert_eq!(get_image(None).unwrap(), (None, false));
+    }
+
+    #[test]
+    fn a_padded_png_block_is_cut_after_iend_and_junk_is_refused() {
+        let png = tiny_png();
+        let mut padded = png.clone();
+        padded.extend([0u8; 13]);
+        assert_eq!(trim_png(&padded), Some(&png[..]));
+        assert_eq!(trim_png(b"no end chunk here"), None);
+        assert_eq!(trim_png(b""), None);
+    }
+
     // One test touches the real clipboard so steps cannot interleave.
     #[test]
     fn round_trip_and_sensitive_content_is_excluded() {
+        let _turn = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
         set_text("héllo from test", false, None).unwrap();
         assert_eq!(
             get_text(None).unwrap(),
