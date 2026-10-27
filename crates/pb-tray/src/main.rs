@@ -20,7 +20,7 @@ mod camera_fit;
 mod camera_preview;
 #[cfg(windows)]
 mod camera_register;
-#[cfg(windows)]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod camera_status;
 #[cfg(windows)]
 mod camera_window;
