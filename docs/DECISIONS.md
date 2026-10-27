@@ -344,3 +344,20 @@ Not tested on the device (need the user): Cancel and Repair on screen, the lens 
 - Fixed with tests first: the pending flag is a count (a quick Cancel then Start keeps the request open); Repair is not offered for decode/GPU errors; only one install prompt at a time; Cancel works during the first install; the memory step-down is decided once per session.
 - Left as they are: the phone's request window stays up to 30 s after the PC cancels (no wire message tells the phone; a new one is not worth it for a 30 s window); the lens decoder keeps `#[allow(deprecated)]` because `prost::DecodeError::new` is the only way to reject a value in a hand-written `Message`.
 - Portable folder: `scripts/make-portable.ps1` builds `dist\Relay` (Relay.exe, relay-cli.exe, pb_camera_source.dll, Relay.cmd, data\). Name chosen by the user: Relay. Only file and folder names changed; window titles, crate names, the Android package and the phone app label are unchanged.
+
+## Phase 7 (2026-10-28): clipboard pictures (branch `feature/clipboard-images`, not in v0.1.0)
+
+- **What it does.** A picture copied on the PC (Copy image, Snipping Tool) lands on the phone clipboard; each new phone screenshot lands on the PC clipboard; the phone's "Send clipboard" Quick Settings tile sends a copied picture (or text) to the PC. Off by default on both sides: PC "Share images" (needs Share clipboard), phone "Share copied images" and "Send new screenshots to PC".
+- **Wire.** `OfferKind::ClipboardImage = 3` over the file stream; PNG only, at most 10 MiB; the receiver keeps it in memory, so nothing is written to the save folder. An old peer would save it as a plain file. No new control message.
+- **Windows.** The PC reads "PNG", then DIBV5, then DIB; writes DIBV5 plus "PNG". DIB to PNG is safe Rust (`png` crate, 8192 px / 32M pixel cap). Password-manager (private) pictures are never sent; echo is stopped by hashes.
+- **Android.** A received PNG goes to `cacheDir/clips` behind a FileProvider (not the gallery), newest 5 kept, nothing older than a day. Screenshots come from a MediaStore observer that only accepts screenshot-looking rows added in the last 15 s; needs the READ_MEDIA_IMAGES prompt (the user's tap). Phone pictures are converted to PNG before sending.
+- **Device results (realme RMX3561, Android 13).**
+  - PC to phone: Copy image and Snipping Tool both paste on the phone (the user confirmed); 2.4 MB and 2.9 MB sent and received.
+  - Phone screenshot to PC: 1080x2412 arrives in about 2 s and pastes on the PC.
+  - Tile: a picture copied on the phone reaches the PC clipboard (322 KB, 678x452).
+  - Off switches: PC switch off sends nothing and refuses the phone's picture ("image sharing is off", the phone reports "declined"); phone "Share copied images" off refuses the PC's picture; phone screenshots switch off sends nothing, back on sends again.
+  - Not sent: a password-flagged PC picture; a non-screenshot picture saved in `Pictures/`; the same picture twice; a picture that just arrived (no echo between devices).
+  - Phone offline: the PC logs "timed out", stays responsive, and sends again once Relay is on.
+- **Not verified on the device:** a phone-side picture over 10 MB (covered by unit tests only); a revoked READ_MEDIA_IMAGES permission and the home banner (revoking would need a re-grant by the user); the tile after a phone restart.
+- **Found on the way.** The Linux CI job had been failing since the settings window work: `settings_rows.rs` (built everywhere) imports `camera_status`, which was gated to Windows. It is pure, so it now builds on every platform (`bb07dfe` on `phase3`, same change on this branch).
+- **Left alone.** An oversize picture copied on the PC is dropped without a log line.
