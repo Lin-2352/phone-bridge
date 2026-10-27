@@ -9,6 +9,10 @@ use crate::Hello;
 /// Largest clipboard text we send or accept in one message.
 pub const MAX_CLIPBOARD_TEXT: usize = 60 * 1024;
 
+/// Largest PNG a clipboard image may be. It travels as a file stream, not in
+/// a control frame.
+pub const MAX_CLIPBOARD_IMAGE: usize = 10 * 1024 * 1024;
+
 /// Envelope for every message on a session control stream.
 #[derive(Clone, PartialEq, Message)]
 pub struct Control {
@@ -385,6 +389,8 @@ pub enum OfferKind {
     File = 0,
     Text = 1,
     Link = 2,
+    /// A PNG that the receiver puts on its clipboard instead of saving it.
+    ClipboardImage = 3,
 }
 
 /// "I want to send you this." Files follow on their own QUIC stream after an
@@ -919,5 +925,27 @@ mod tests {
         let bytes = c.encode_to_vec();
         // Field 21, wire type 2: tag byte 0xAA 0x01.
         assert_eq!(&bytes[..2], &[0xAA, 0x01]);
+    }
+
+    #[test]
+    fn a_clipboard_image_offer_is_kind_3_and_round_trips() {
+        assert_eq!(OfferKind::ClipboardImage as i32, 3);
+        let offer = Offer {
+            id: 9,
+            kind: OfferKind::ClipboardImage as i32,
+            name: "clipboard.png".into(),
+            size: 1234,
+            mime: "image/png".into(),
+            text: String::new(),
+        };
+        let bytes = Control::from(ControlMsg::Offer(offer.clone())).encode_to_vec();
+        let got = Control::decode(bytes.as_slice()).unwrap();
+        assert_eq!(got.msg, Some(ControlMsg::Offer(offer)));
+        assert_eq!(OfferKind::try_from(3), Ok(OfferKind::ClipboardImage));
+    }
+
+    #[test]
+    fn the_image_cap_is_ten_mebibytes() {
+        assert_eq!(MAX_CLIPBOARD_IMAGE, 10 * 1024 * 1024);
     }
 }

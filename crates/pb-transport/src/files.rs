@@ -13,7 +13,9 @@ use std::{
 };
 
 use pb_identity::PeerId;
-use pb_protocol::control::{ControlMsg, FileHeader, Offer, OfferKind, OfferReply, TransferDone};
+use pb_protocol::control::{
+    ControlMsg, FileHeader, Offer, OfferKind, OfferReply, TransferDone, MAX_CLIPBOARD_IMAGE,
+};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -42,9 +44,15 @@ pub type Progress = Arc<dyn Fn(u64, u64) + Send + Sync>;
 /// What a completed receive produced.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Received {
-    File { path: PathBuf, size: u64 },
+    File {
+        path: PathBuf,
+        size: u64,
+    },
     Text(String),
     Link(String),
+    /// A clipboard image (PNG bytes), kept in memory: never written to the
+    /// receive folder.
+    Image(Vec<u8>),
 }
 
 /// Make a sender-supplied name safe for any file system: no directories, no
@@ -176,6 +184,41 @@ impl Node {
         name: &str,
         size: u64,
         mime: &str,
+        reader: R,
+        progress: Option<Progress>,
+    ) -> Result<[u8; 32], Error> {
+        self.send_stream(peer, OfferKind::File, name, size, mime, reader, progress)
+            .await
+    }
+
+    /// Send a PNG for the peer to put on its clipboard. Refuses anything over
+    /// [`MAX_CLIPBOARD_IMAGE`] before connecting.
+    pub async fn send_clipboard_image(&self, peer: &PeerId, png: Vec<u8>) -> Result<(), Error> {
+        if png.len() > MAX_CLIPBOARD_IMAGE {
+            return Err(Error::TooLarge);
+        }
+        let size = png.len() as u64;
+        self.send_stream(
+            peer,
+            OfferKind::ClipboardImage,
+            "clipboard.png",
+            size,
+            "image/png",
+            std::io::Cursor::new(png),
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_stream<R: AsyncRead + Unpin>(
+        &self,
+        peer: &PeerId,
+        kind: OfferKind,
+        name: &str,
+        size: u64,
+        mime: &str,
         mut reader: R,
         progress: Option<Progress>,
     ) -> Result<[u8; 32], Error> {
@@ -183,7 +226,7 @@ impl Node {
         let id = new_id();
         s.send(ControlMsg::Offer(Offer {
             id,
-            kind: OfferKind::File as i32,
+            kind: kind as i32,
             name: name.to_owned(),
             size,
             mime: mime.to_owned(),
@@ -310,7 +353,11 @@ pub async fn receive_offer(
     // Too big for the cap, or for the disk: the file is written once here and
     // may be copied once more by the app (Android moves it into MediaStore),
     // and the device must keep some room to stay usable.
-    let too_big = kind == OfferKind::File && (offer.size > max_size || !room_for(dir, offer.size));
+    let too_big = match kind {
+        OfferKind::File => offer.size > max_size || !room_for(dir, offer.size),
+        OfferKind::ClipboardImage => offer.size > MAX_CLIPBOARD_IMAGE as u64,
+        OfferKind::Text | OfferKind::Link => false,
+    };
     if !accept || too_big {
         session
             .send(ControlMsg::OfferReply(OfferReply {
@@ -344,7 +391,7 @@ pub async fn receive_offer(
                 Received::Text(offer.text)
             });
         }
-        OfferKind::File => {}
+        OfferKind::File | OfferKind::ClipboardImage => {}
     }
 
     let name = sanitize_file_name(&offer.name);
@@ -370,6 +417,23 @@ pub async fn receive_offer(
     }
     .await;
     match result {
+        Ok(dest) if kind == OfferKind::ClipboardImage => {
+            // An image stays in memory: read it back and remove the file.
+            let bytes = tokio::fs::read(&dest).await;
+            let _ = tokio::fs::remove_file(&dest).await;
+            match bytes {
+                Ok(png) => {
+                    session.conn.close(CLOSE_SAVED.into(), b"saved");
+                    Ok(Received::Image(png))
+                }
+                Err(e) => {
+                    session
+                        .conn
+                        .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
+                    Err(Error::Io(e.to_string()))
+                }
+            }
+        }
         Ok(dest) => {
             // We read the sender's TransferDone; closing now discards nothing.
             session.conn.close(CLOSE_SAVED.into(), b"saved");

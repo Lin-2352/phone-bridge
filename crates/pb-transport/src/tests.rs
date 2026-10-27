@@ -363,6 +363,48 @@ mod transfers {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_clipboard_image_arrives_in_memory_and_leaves_no_file() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("clipimg");
+        let png = pattern(300_000);
+        let (a, b) = tokio::join!(
+            phone.send_clipboard_image(&pcid, png.clone()),
+            receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE)
+        );
+        a.unwrap();
+        assert_eq!(b.unwrap(), Received::Image(png));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_oversized_clipboard_image_is_refused_on_both_ends() {
+        use pb_protocol::control::MAX_CLIPBOARD_IMAGE;
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("clipimg-big");
+        // The sender will not even offer it.
+        let big = vec![0u8; MAX_CLIPBOARD_IMAGE + 1];
+        let a = phone.send_clipboard_image(&pcid, big).await;
+        assert!(matches!(a, Err(Error::TooLarge)), "{a:?}");
+        // A sender that offers it anyway is told "too large".
+        let s = phone.connect(&pcid).await.unwrap();
+        s.send(ControlMsg::Offer(Offer {
+            id: 5,
+            kind: OfferKind::ClipboardImage as i32,
+            name: "clipboard.png".into(),
+            size: MAX_CLIPBOARD_IMAGE as u64 + 1,
+            mime: "image/png".into(),
+            text: String::new(),
+        }))
+        .await
+        .unwrap();
+        let got = receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE).await;
+        assert!(matches!(got, Err(Error::TooLarge)), "{got:?}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn declined_and_oversized_offers_save_nothing() {
         let (pc, mut pc_ev, phone, _pev) = paired().await;
         let pcid = pc.peer_id();
