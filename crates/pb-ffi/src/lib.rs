@@ -4,7 +4,9 @@
 use std::sync::{Arc, Mutex};
 
 use pb_identity::FilePeerStore;
-use pb_protocol::control::{ClipboardText, ControlMsg, PairingCode, MAX_CLIPBOARD_TEXT};
+use pb_protocol::control::{
+    ClipboardText, ControlMsg, PairingCode, MAX_CLIPBOARD_IMAGE, MAX_CLIPBOARD_TEXT,
+};
 use pb_transport::{Joining, Node, NodeConfig, Session, SharedStore};
 
 uniffi::setup_scaffolding!();
@@ -77,6 +79,13 @@ pub enum PbEvent {
         text: String,
         /// Marked private on the PC: keep it out of history, hide previews.
         sensitive: bool,
+    },
+    /// Universal Clipboard: a picture copied on the PC (only when image
+    /// sharing is on). `path` is a PNG in the app's private incoming folder;
+    /// Kotlin puts it on the clipboard and owns the file from here.
+    RemoteImage {
+        peer_name: String,
+        path: String,
     },
     /// A file finished arriving; Kotlin moves it into Downloads/Phone Bridge.
     FileReceived {
@@ -641,6 +650,8 @@ struct Shared {
     incoming_dir: std::path::PathBuf,
     auto_accept: std::sync::atomic::AtomicBool,
     clipboard_sync: std::sync::atomic::AtomicBool,
+    /// Apply pictures copied on the PC ("Share copied images").
+    clipboard_images: std::sync::atomic::AtomicBool,
     pending: Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<bool>>>,
     last_remote_clip: Mutex<[u8; 32]>,
     input: Mutex<Option<Arc<dyn InputListener>>>,
@@ -679,6 +690,21 @@ struct Shared {
     /// The user stopped sharing: requests from that PC are declined quietly
     /// for a while (the PC retries after a dropped link).
     screen_user_stop: Mutex<Option<Grace>>,
+}
+
+/// A picture from the PC is applied only when the user turned on clipboard
+/// sync and, separately, sharing of copied images (both default off).
+fn image_accepted(clipboard_sync: bool, clipboard_images: bool) -> bool {
+    clipboard_sync && clipboard_images
+}
+
+/// Name of a received picture inside the private incoming folder: safe
+/// characters only, and the same content gets the same name.
+fn image_file_name(png: &[u8]) -> String {
+    use sha2::Digest;
+    let h = sha2::Sha256::digest(png);
+    let hex: String = h[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("clipboard-{hex}.png")
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -721,6 +747,7 @@ pub async fn start_node(
         incoming_dir: dir.join("incoming"),
         auto_accept: std::sync::atomic::AtomicBool::new(true),
         clipboard_sync: std::sync::atomic::AtomicBool::new(false),
+        clipboard_images: std::sync::atomic::AtomicBool::new(false),
         pending: Mutex::default(),
         last_remote_clip: Mutex::new([0; 32]),
         input: Mutex::new(None),
@@ -924,7 +951,15 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 break "input done".to_owned();
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
-                let accept = if sh.auto_accept.load(std::sync::atomic::Ordering::Relaxed) {
+                let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
+                let accept = if is_image {
+                    // Governed by the clipboard switches, never by the file prompt.
+                    image_accepted(
+                        sh.clipboard_sync.load(std::sync::atomic::Ordering::Relaxed),
+                        sh.clipboard_images
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                } else if sh.auto_accept.load(std::sync::atomic::Ordering::Relaxed) {
                     true
                 } else {
                     let ask = sh
@@ -1000,6 +1035,24 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             is_link: true,
                         },
                     ),
+                    Ok(Received::Image(png)) => {
+                        let path = sh.incoming_dir.join(image_file_name(&png));
+                        let saved = std::fs::create_dir_all(&sh.incoming_dir)
+                            .and_then(|()| std::fs::write(&path, &png));
+                        push(
+                            &sh.events,
+                            match saved {
+                                Ok(()) => PbEvent::RemoteImage {
+                                    peer_name: name.clone(),
+                                    path: path.display().to_string(),
+                                },
+                                Err(e) => PbEvent::TransferFailed {
+                                    peer_name: name.clone(),
+                                    reason: e.to_string(),
+                                },
+                            },
+                        );
+                    }
                     Err(pb_transport::Error::Declined) => {}
                     Err(e) => push(
                         &sh.events,
@@ -1536,6 +1589,28 @@ impl PbNode {
             .map_err(fail)
     }
 
+    /// Send a picture (PNG, read from the detached `fd`) for the PC to put on
+    /// its clipboard. This call takes ownership of the fd. Refused over
+    /// `MAX_CLIPBOARD_IMAGE`; the PC declines it when its image switch is off.
+    pub async fn send_clipboard_image_fd(&self, peer_id: String, fd: i32) -> Result<(), PbError> {
+        use tokio::io::AsyncReadExt;
+        let file = fd_to_file(fd)?;
+        let peer = self.find(&peer_id)?;
+        let mut png = Vec::new();
+        tokio::fs::File::from_std(file)
+            .take(MAX_CLIPBOARD_IMAGE as u64 + 1)
+            .read_to_end(&mut png)
+            .await
+            .map_err(fail)?;
+        if png.len() > MAX_CLIPBOARD_IMAGE {
+            return Err(fail("the picture is over 10 MB"));
+        }
+        self.node
+            .send_clipboard_image(&peer, png)
+            .await
+            .map_err(fail)
+    }
+
     /// Share text or a link with a paired device.
     pub async fn send_text(
         &self,
@@ -1786,6 +1861,13 @@ impl PbNode {
     pub fn set_clipboard_sync(&self, on: bool) {
         self.shared
             .clipboard_sync
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Apply pictures copied on the PC to this phone's clipboard.
+    pub fn set_clipboard_images(&self, on: bool) {
+        self.shared
+            .clipboard_images
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -2098,5 +2180,29 @@ mod screen_tests {
         cam.send_lens(1);
         cam.send_lens(7);
         assert!(cam.sink.get().is_none());
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+
+    #[test]
+    fn a_pc_image_is_applied_only_with_clipboard_sync_and_the_image_switch() {
+        assert!(image_accepted(true, true));
+        assert!(!image_accepted(true, false));
+        assert!(!image_accepted(false, true));
+        assert!(!image_accepted(false, false));
+    }
+
+    #[test]
+    fn a_received_image_gets_a_safe_name_that_follows_its_content() {
+        let a = image_file_name(&[1, 2, 3]);
+        assert_eq!(a, image_file_name(&[1, 2, 3]));
+        assert_ne!(a, image_file_name(&[1, 2, 4]));
+        assert!(a.starts_with("clipboard-") && a.ends_with(".png"), "{a}");
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'));
     }
 }
