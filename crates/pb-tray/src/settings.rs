@@ -13,6 +13,9 @@ pub struct Settings {
     pub skip_private: bool,
     /// Keep received clipboard items in Win+V history / cloud clipboard.
     pub keep_in_history: bool,
+    /// Also share copied pictures and screenshots (needs `universal_clipboard`).
+    /// Off by default: pictures are as sensitive as text.
+    pub share_images: bool,
     /// Accept files from paired devices without asking.
     pub auto_accept: bool,
     pub save_dir: PathBuf,
@@ -57,6 +60,7 @@ impl Default for Settings {
             universal_clipboard: false,
             skip_private: true,
             keep_in_history: false,
+            share_images: false,
             auto_accept: true,
             save_dir: downloads,
             theme: 0,
@@ -110,6 +114,7 @@ impl Settings {
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
+                "share_images" => s.share_images = parse_bool(v).unwrap_or(s.share_images),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
                 "save_dir" if !v.is_empty() => s.save_dir = PathBuf::from(v),
                 "notify_enabled" => s.notify_enabled = parse_bool(v).unwrap_or(s.notify_enabled),
@@ -157,10 +162,11 @@ impl Settings {
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut text = format!(
-            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nauto_accept={}\ntheme={}\nallow_control={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
             self.keep_in_history,
+            self.share_images,
             self.auto_accept,
             ["system", "light", "dark"][self.theme.min(2) as usize],
             self.allow_control,
@@ -204,6 +210,7 @@ mod tests {
     fn defaults_are_private_by_default() {
         let s = Settings::default();
         assert!(!s.universal_clipboard, "clipboard sync must be opt-in");
+        assert!(!s.share_images, "image sync must be opt-in");
         assert!(s.skip_private);
         assert!(!s.keep_in_history);
     }
@@ -217,6 +224,7 @@ mod tests {
             universal_clipboard: true,
             skip_private: false,
             keep_in_history: true,
+            share_images: true,
             auto_accept: false,
             save_dir: PathBuf::from(r"D:\Inbox"),
             theme: 2,

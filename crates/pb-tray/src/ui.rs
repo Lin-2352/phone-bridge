@@ -183,6 +183,36 @@ fn set_clipboard_own(hwnd: HWND, text: &str, sensitive: bool) -> std::io::Result
     Ok(())
 }
 
+/// Put a received PNG on the clipboard (as a picture, plus the PNG format) and
+/// remember our own write so the listener does not send it straight back.
+/// `private` keeps it out of Win+V history and the cloud clipboard.
+fn set_clipboard_image_own(hwnd: HWND, png: &[u8], private: bool) -> Result<(), String> {
+    let dib = pb_platform_win::dib::png_to_dibv5(png)?;
+    clipboard::set_image(png, &dib, private, Some(hwnd)).map_err(|e| e.to_string())?;
+    OWN_SEQ.store(clipboard_seq(), std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+/// Send the image on the clipboard to the core as a PNG, converting a DIB on a worker
+/// thread (a large screenshot takes a moment to encode). Nothing happens if the
+/// clipboard has no shareable image.
+fn read_clipboard_png(hwnd: HWND, cmds: UnboundedSender<Cmd>) {
+    use clipboard::ClipImage;
+    // A private image (from a password manager) is never shared.
+    let Ok((Some(img), false)) = clipboard::get_image(Some(hwnd)) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let png = match img {
+            ClipImage::Png(p) => Some(p),
+            ClipImage::Dib(d) => pb_platform_win::dib::dib_to_png(&d).ok(),
+        };
+        if let Some(png) = png {
+            let _ = cmds.send(Cmd::ClipboardImageChanged { png });
+        }
+    });
+}
+
 fn sendto_folder() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA").map(|a| {
         std::path::PathBuf::from(a)
@@ -601,6 +631,17 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 ),
                 Ok(()) => balloon(hwnd, &format!("Copied on {from}"), "Ready to paste"),
                 Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
+            }
+        }
+        UiEvent::RemoteImage { from, png } => {
+            let keep = st
+                .settings
+                .lock()
+                .map(|s| s.keep_in_history)
+                .unwrap_or(false);
+            match set_clipboard_image_own(hwnd, &png, !keep) {
+                Ok(()) => balloon(hwnd, &format!("Copied on {from}"), "Picture ready to paste"),
+                Err(e) => balloon(hwnd, "Relay", &format!("Could not copy the picture: {e}")),
             }
         }
         UiEvent::ControlReady { name, sender } => {
@@ -1256,13 +1297,14 @@ fn show_menu(hwnd: HWND) {
 /// Snapshot of everything the settings window shows.
 fn settings_model(st: &State) -> crate::settings_window::Model {
     let n = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
-    let (theme, share, passwords, keep, auto, save_dir, control) = st
+    let (theme, share, share_images, passwords, keep, auto, save_dir, control) = st
         .settings
         .lock()
         .map(|s| {
             (
                 s.theme,
                 s.universal_clipboard,
+                s.share_images,
                 !s.skip_private,
                 s.keep_in_history,
                 s.auto_accept,
@@ -1274,6 +1316,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
     crate::settings_window::Model {
         theme,
         share,
+        share_images,
         passwords,
         keep,
         auto,
@@ -1430,6 +1473,13 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
                 let gone = ns.mirror.remove_package(&package);
                 forget(&mut ns, gone);
             }
+        }
+        Action::Toggle(Key::ShareImages) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.share_images = !s.share_images);
+            save_settings(st);
         }
         Action::Toggle(Key::Keep) => {
             let _ = st
@@ -1848,12 +1898,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let _ = unsafe {
                 windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_CLIP)
             };
-            if st
+            let (on, images) = st
                 .settings
                 .lock()
-                .map(|s| s.universal_clipboard)
-                .unwrap_or(false)
-            {
+                .map(|s| (s.universal_clipboard, s.share_images))
+                .unwrap_or((false, false));
+            if on {
                 // Private (password manager) content reads as Excluded and is skipped.
                 // Passing it along is the user's choice ("Send passwords and codes").
                 let skip = st.settings.lock().map(|s| s.skip_private).unwrap_or(true);
@@ -1863,6 +1913,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     if !(sensitive && skip) {
                         let _ = st.cmds.send(Cmd::ClipboardChanged { text, sensitive });
                     }
+                } else if crate::clip_image::enabled(on, images) {
+                    read_clipboard_png(hwnd, st.cmds.clone());
                 }
             }
             LRESULT(0)

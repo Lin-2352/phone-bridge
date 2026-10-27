@@ -6,6 +6,7 @@ use crate::camera_status::Summary;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Key {
     Share,
+    ShareImages,
     Passwords,
     Keep,
     Auto,
@@ -34,6 +35,7 @@ pub struct Model {
     /// 0 system, 1 light, 2 dark.
     pub theme: u8,
     pub share: bool,
+    pub share_images: bool,
     pub passwords: bool,
     pub keep: bool,
     pub auto: bool,
@@ -62,6 +64,7 @@ impl Model {
     pub fn get(&self, k: Key) -> bool {
         match k {
             Key::Share => self.share,
+            Key::ShareImages => self.share_images,
             Key::Passwords => self.passwords,
             Key::Keep => self.keep,
             Key::Auto => self.auto,
@@ -137,6 +140,11 @@ pub fn rows(m: &Model) -> Vec<Row> {
             Key::Share,
             "Share clipboard",
             "Copy on one device, paste on the other",
+        ),
+        Row::Toggle(
+            Key::ShareImages,
+            "Share images",
+            "Copied pictures and screenshots; never saved as files",
         ),
         Row::Toggle(
             Key::Passwords,
@@ -272,5 +280,18 @@ mod tests {
                 "app 0",
             ]
         );
+    }
+
+    #[test]
+    fn the_image_switch_sits_under_share_clipboard_and_mirrors_its_setting() {
+        let m = Model {
+            share_images: true,
+            ..Default::default()
+        };
+        assert!(m.get(Key::ShareImages));
+        assert!(!Model::default().get(Key::ShareImages));
+        let t: Vec<String> = rows(&Model::default()).iter().map(title).collect();
+        let at = t.iter().position(|x| x == "Share clipboard").unwrap();
+        assert_eq!(t[at + 1], "Share images");
     }
 }

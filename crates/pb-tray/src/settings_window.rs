@@ -298,7 +298,7 @@ fn paint(hwnd: HWND) {
                 Row::Toggle(k, title, sub) => {
                     fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let enabled = match k {
-                        Key::Passwords => m.share,
+                        Key::Passwords | Key::ShareImages => m.share,
                         Key::NotifyLock
                         | Key::NotifyClear
                         | Key::NotifyOpen

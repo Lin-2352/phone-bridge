@@ -29,6 +29,8 @@ pub type SharedSettings = Arc<Mutex<Settings>>;
 struct ClipSync {
     last_remote: [u8; 32],
     last_sent: [u8; 32],
+    /// The same guard for pictures.
+    image: crate::clip_image::ImageGuard,
 }
 
 fn clip_hash(text: &str) -> [u8; 32] {
@@ -71,6 +73,10 @@ pub enum Cmd {
     ClipboardChanged {
         text: String,
         sensitive: bool,
+    },
+    /// The local clipboard holds a new picture (PNG bytes).
+    ClipboardImageChanged {
+        png: Vec<u8>,
     },
     /// Start driving the phone with this PC's mouse and keyboard.
     ControlPhone,
@@ -143,6 +149,11 @@ pub enum UiEvent {
         from: String,
         text: String,
         sensitive: bool,
+    },
+    /// Universal Clipboard: a picture copied on the other device (PNG bytes).
+    RemoteImage {
+        from: String,
+        png: Vec<u8>,
     },
     FileReceived {
         from: String,
@@ -458,6 +469,32 @@ pub async fn run(
                                     if c.last_sent == h {
                                         c.last_sent = [0; 32];
                                     }
+                                }
+                            }
+                        }
+                    });
+                }
+                Some(Cmd::ClipboardImageChanged { png }) => {
+                    let on = settings
+                        .lock()
+                        .map(|s| crate::clip_image::enabled(s.universal_clipboard, s.share_images))
+                        .unwrap_or(false);
+                    if !on {
+                        continue;
+                    }
+                    let Some(h) = clip.lock().unwrap_or_else(|p| p.into_inner()).image.should_send(&png) else {
+                        continue;
+                    };
+                    let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
+                    let (node, log, clip) = (node.clone(), log.clone(), clip.clone());
+                    tokio::spawn(async move {
+                        for (id, name) in targets {
+                            match node.send_clipboard_image(&id, png.clone()).await {
+                                Ok(()) => log.line(&format!("CLIPSYNC sent an image ({} bytes) to \"{name}\"", png.len())),
+                                Err(e) => {
+                                    log.line(&format!("CLIPSYNC image to \"{name}\" failed: {e}"));
+                                    // Not delivered: copying the same picture again must retry.
+                                    clip.lock().unwrap_or_else(|p| p.into_inner()).image.send_failed(h);
                                 }
                             }
                         }
@@ -854,7 +891,19 @@ async fn pump(
                     .lock()
                     .map(|x| (x.auto_accept, x.save_dir.clone()))
                     .unwrap_or((false, std::env::temp_dir()));
-                let accept = if auto {
+                let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
+                let accept = if is_image {
+                    // A clipboard picture is governed by the sharing switches, not
+                    // the file prompt, and is never written to the save folder.
+                    let on = settings
+                        .lock()
+                        .map(|x| crate::clip_image::enabled(x.universal_clipboard, x.share_images))
+                        .unwrap_or(false);
+                    if !on {
+                        log.line("CLIPSYNC image ignored (image sharing is off)");
+                    }
+                    on
+                } else if auto {
                     true
                 } else {
                     let (tx, rx) = oneshot::channel();
@@ -889,6 +938,17 @@ async fn pump(
                     Ok(Received::Link(l)) => {
                         log.line(&format!("LINK from \"{from}\""));
                         ui(UiEvent::Link { from, url: l });
+                    }
+                    Ok(Received::Image(png)) => {
+                        log.line(&format!(
+                            "CLIPSYNC received an image ({} bytes) from \"{from}\"",
+                            png.len()
+                        ));
+                        clip.lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .image
+                            .received(&png);
+                        ui(UiEvent::RemoteImage { from, png });
                     }
                     Err(e) => log.line(&format!("OFFER from \"{from}\" not received: {e}")),
                 }

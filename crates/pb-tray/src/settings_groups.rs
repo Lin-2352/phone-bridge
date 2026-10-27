@@ -20,6 +20,7 @@ pub enum Page {
 pub const OPTIONS: &[&str] = &[
     "Theme",
     "Share clipboard",
+    "Share images",
     "Passwords and codes",
     "Keep received text in clipboard history",
     "Show phone notifications",
@@ -76,9 +77,10 @@ pub fn pages() -> [(Page, &'static str); 7] {
 pub fn page_of(option: &str) -> Page {
     match option {
         "Paired device" | "Pair device" => Page::Devices,
-        "Share clipboard" | "Passwords and codes" | "Keep received text in clipboard history" => {
-            Page::Clipboard
-        }
+        "Share clipboard"
+        | "Share images"
+        | "Passwords and codes"
+        | "Keep received text in clipboard history" => Page::Clipboard,
         "Show phone notifications"
         | "Content"
         | "Show on the lock screen"
@@ -291,6 +293,7 @@ mod tests {
     fn options_land_on_the_page_a_person_would_look_for() {
         assert_eq!(page_of("Pair device"), Page::Devices);
         assert_eq!(page_of("Share clipboard"), Page::Clipboard);
+        assert_eq!(page_of("Share images"), Page::Clipboard);
         assert_eq!(page_of("Content"), Page::Notifications);
         assert_eq!(
             page_of("Quiet while the phone screen is open"),

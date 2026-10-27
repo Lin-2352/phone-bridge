@@ -25,6 +25,8 @@ mod camera_status;
 #[cfg(windows)]
 mod camera_window;
 #[cfg(windows)]
+mod clip_image;
+#[cfg(windows)]
 mod control;
 #[cfg(windows)]
 mod core;
