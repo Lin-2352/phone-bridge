@@ -66,6 +66,9 @@ pub enum Error {
     Declined,
     /// The offer exceeds the size limit.
     TooLarge,
+    /// Something answers at the saved address but is not the paired device
+    /// (it was reinstalled or reset, so its identity is new).
+    PeerChanged,
     /// The received bytes do not match the sender's SHA-256.
     HashMismatch,
     Io(String),
@@ -84,6 +87,7 @@ impl fmt::Display for Error {
             Self::Closed => f.write_str("connection closed"),
             Self::Declined => f.write_str("the other device declined"),
             Self::TooLarge => f.write_str("too large to send"),
+            Self::PeerChanged => f.write_str("this device no longer answers as the one that was paired (reinstalled or reset): remove it and pair again"),
             Self::HashMismatch => f.write_str("file was corrupted in transit (hash mismatch); nothing was saved"),
             Self::Io(e) => write!(f, "file error: {e}"),
         }
@@ -100,6 +104,12 @@ impl From<PairError> for Error {
 
 fn tx<E: fmt::Display>(e: E) -> Error {
     Error::Transport(e.to_string())
+}
+
+/// A dial that failed because the device answering is not the paired one:
+/// TLS rejects its certificate (its key is not the saved peer's).
+fn is_identity_mismatch(e: &Error) -> bool {
+    matches!(e, Error::Transport(m) if m.contains("invalid peer certificate"))
 }
 
 pub type SharedStore = Arc<Mutex<dyn PeerStore + Send>>;
@@ -188,6 +198,8 @@ struct Inner {
     live: Mutex<Vec<(PeerId, iroh::endpoint::WeakConnectionHandle)>>,
     /// When a failed dial last probed the network (see `dial_known`).
     last_probe: Mutex<Option<Instant>>,
+    /// Paired peers whose last dial reached a device with a different identity.
+    changed: Mutex<Vec<PeerId>>,
 }
 
 fn lock<T: ?Sized>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -239,6 +251,7 @@ impl Node {
                 candidates: Mutex::default(),
                 live: Mutex::default(),
                 last_probe: Mutex::new(None),
+                changed: Mutex::new(Vec::new()),
             }),
         };
         tokio::spawn(node.clone().accept_loop());
@@ -283,9 +296,17 @@ impl Node {
         lock(&self.inner.store).list()
     }
 
+    /// True when the last attempt to reach this paired peer found a device
+    /// with a different identity: the other side was reinstalled or reset
+    /// and must be paired again.
+    pub fn peer_changed(&self, peer: &PeerId) -> bool {
+        lock(&self.inner.changed).contains(peer)
+    }
+
     /// Revoke a peer: removed from the store, so it can no longer connect,
     /// and anything it has open now (a transfer, a control session) ends.
     pub fn unpair(&self, peer: &PeerId) -> bool {
+        lock(&self.inner.changed).retain(|p| p != peer);
         let removed = lock(&self.inner.store).remove(peer);
         lock(&self.inner.live).retain(|(p, w)| {
             if p != peer {
@@ -391,7 +412,20 @@ impl Node {
         let known = lock(&self.inner.store)
             .get(peer)
             .ok_or(Error::UnknownPeer)?;
-        let conn = self.dial_known(*peer, &known.addrs).await?;
+        let conn = match self.dial_known(*peer, &known.addrs).await {
+            Ok(c) => {
+                lock(&self.inner.changed).retain(|p| p != peer);
+                c
+            }
+            Err(e) if is_identity_mismatch(&e) => {
+                let mut ch = lock(&self.inner.changed);
+                if !ch.contains(peer) {
+                    ch.push(*peer);
+                }
+                return Err(Error::PeerChanged);
+            }
+            Err(e) => return Err(e),
+        };
         self.track(*peer, &conn);
         // Unpaired while we were dialling: do not use the new connection.
         if lock(&self.inner.store).get(peer).is_none() {

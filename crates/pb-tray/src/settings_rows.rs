@@ -43,8 +43,8 @@ pub struct Model {
     pub sendto: bool,
     pub startup: bool,
     pub control: bool,
-    /// (name, fingerprint)
-    pub devices: Vec<(String, String)>,
+    /// (name, fingerprint, answers as a different device now)
+    pub devices: Vec<(String, String, bool)>,
     pub my_fingerprint: String,
     pub notify: bool,
     pub notify_lock: bool,
@@ -236,9 +236,30 @@ pub fn rows(m: &Model) -> Vec<Row> {
     v
 }
 
+/// The small line under a paired device: its fingerprint, or why it is no
+/// longer reachable when it answers with a new identity.
+pub fn device_note(fingerprint: &str, changed: bool) -> String {
+    if changed {
+        "Reinstalled or reset, so it is no longer paired. Remove it, then pair again.".into()
+    } else {
+        format!("Fingerprint {fingerprint}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_that_was_reinstalled_says_so_instead_of_showing_a_fingerprint() {
+        assert_eq!(device_note("18CF-F6D8", false), "Fingerprint 18CF-F6D8");
+        let n = device_note("18CF-F6D8", true);
+        assert!(
+            n.to_lowercase().contains("reinstalled") && n.contains("pair again"),
+            "{n}"
+        );
+        assert!(!n.contains("18CF"));
+    }
 
     fn title(r: &Row) -> String {
         match r {

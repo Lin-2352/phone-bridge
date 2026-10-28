@@ -752,6 +752,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 },
             );
         }
+        // Nothing to do here: the settings window is rebuilt after every event batch.
+        UiEvent::PeersChecked => {}
         UiEvent::Info(msg) => {
             if msg.starts_with("Sent ") {
                 note_activity(&format!("Last: {}", msg));
@@ -1329,7 +1331,13 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
             .lock()
             .map(|g| {
                 g.iter()
-                    .map(|(id, n)| (n.clone(), id.fingerprint()[..9].to_owned()))
+                    .map(|(id, n)| {
+                        (
+                            n.clone(),
+                            id.fingerprint()[..9].to_owned(),
+                            crate::core::is_changed(id),
+                        )
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -1381,6 +1389,8 @@ fn open_settings(hwnd: HWND, st: &State) {
     let raw = hwnd.0 as isize;
     // Runs inside the settings window procedure: queue and post, never call
     // back into the window from here.
+    // Which devices still answer as the paired one (the page updates when it ends).
+    let _ = st.cmds.send(Cmd::CheckPeers);
     crate::settings_window::open(
         settings_model(st),
         Box::new(move |a| {

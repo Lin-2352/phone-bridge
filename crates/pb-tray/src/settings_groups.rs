@@ -115,7 +115,7 @@ fn texts(row: &Row, m: &Model) -> Vec<String> {
         Row::Device(i) => m
             .devices
             .get(*i)
-            .map(|(n, _)| n.clone())
+            .map(|(n, _, _)| n.clone())
             .into_iter()
             .collect(),
         Row::Pair => vec!["Pair device".into(), "Add another device".into()],
@@ -194,7 +194,7 @@ mod tests {
     fn model() -> Model {
         Model {
             apps: vec![("WhatsApp".into(), true), ("Gmail".into(), true)],
-            devices: vec![("Pixel".into(), "f".into())],
+            devices: vec![("Pixel".into(), "f".into(), false)],
             ..Default::default()
         }
     }
@@ -280,7 +280,7 @@ mod tests {
         }
         let m = Model {
             apps: vec![("A".into(), true)],
-            devices: vec![("D".into(), "f".into())],
+            devices: vec![("D".into(), "f".into(), false)],
             ..Default::default()
         };
         for r in rows(&m) {
@@ -311,7 +311,7 @@ mod tests {
         // at most 6 rows (Apps holds the per-app list on its own page).
         let m = Model {
             apps: vec![("A".into(), true)],
-            devices: vec![("D".into(), "f".into())],
+            devices: vec![("D".into(), "f".into(), false)],
             ..Default::default()
         };
         for (page, title) in pages() {

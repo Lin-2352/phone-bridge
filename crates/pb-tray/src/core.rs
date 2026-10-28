@@ -45,6 +45,26 @@ const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(35);
 const ROUNDS: u32 = 4;
 
 /// A PC -> phone control request still waiting for the phone's answer.
+/// Paired devices that answered at their saved address as a different device
+/// (reinstalled or reset), refreshed by [`Cmd::CheckPeers`].
+static CHANGED: Mutex<Vec<PeerId>> = Mutex::new(Vec::new());
+
+pub fn is_changed(id: &PeerId) -> bool {
+    CHANGED.lock().map(|g| g.contains(id)).unwrap_or(false)
+}
+
+fn refresh_changed(node: &Node) {
+    let list: Vec<PeerId> = node
+        .paired_peers()
+        .into_iter()
+        .map(|p| p.id)
+        .filter(|id| node.peer_changed(id))
+        .collect();
+    if let Ok(mut g) = CHANGED.lock() {
+        *g = list;
+    }
+}
+
 static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The task that is setting up the camera or waiting for the phone's answer.
 static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
@@ -64,6 +84,8 @@ pub fn stop_phone_control() {
 
 pub enum Cmd {
     Pair,
+    /// Try each paired device once, to learn which ones answer as someone else now.
+    CheckPeers,
     /// The user closed the QR window: kill the current code now.
     CancelPair,
     SendClipboard(String),
@@ -172,6 +194,8 @@ pub enum UiEvent {
         size: u64,
         reply: oneshot::Sender<bool>,
     },
+    /// The check of paired devices finished: the Devices page may differ now.
+    PeersChecked,
     Info(String),
     /// A phone notification arrived (or was re-sent quietly).
     Notify {
@@ -375,8 +399,21 @@ pub async fn run(
                         });
                     }
                 }
+                Some(Cmd::CheckPeers) => {
+                    let targets: Vec<PeerId> = peers.lock().map(|g| g.iter().map(|(id, _)| *id).collect()).unwrap_or_default();
+                    let (node, ui) = (node.clone(), ui.clone());
+                    tokio::spawn(async move {
+                        for id in targets {
+                            // Only the outcome matters: the node records it.
+                            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), node.connect(&id)).await;
+                        }
+                        refresh_changed(&node);
+                        ui(UiEvent::PeersChecked);
+                    });
+                }
                 Some(Cmd::Unpair(id)) => {
                     node.unpair(&id);
+                    refresh_changed(&node);
                     log.line(&format!("UNPAIRED {id}"));
                     refresh(&node, &peers);
                     // Its toasts go with it.

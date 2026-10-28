@@ -440,7 +440,7 @@ fn paint(hwnd: HWND) {
                 }
                 Row::Device(i) => {
                     fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
-                    let (name, fp) = &m.devices[i];
+                    let (name, fp, changed) = &m.devices[i];
                     let ic = RECT {
                         left: inner_l,
                         top: y,
@@ -470,9 +470,9 @@ fn paint(hwnd: HWND) {
                     fluent::text(
                         hdc,
                         f.small,
-                        &format!("Fingerprint {fp}"),
+                        &crate::settings_rows::device_note(fp, *changed),
                         fr,
-                        p.text2,
+                        if *changed { p.danger } else { p.text2 },
                         DT_LEFT | DT_SINGLELINE | DT_VCENTER,
                     );
                     let rb = RECT {

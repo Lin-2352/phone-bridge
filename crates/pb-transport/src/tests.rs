@@ -1695,3 +1695,53 @@ mod camera {
         }
     }
 }
+
+mod identity_changed {
+    use super::*;
+
+    #[test]
+    fn the_handshake_failure_for_a_new_identity_is_recognised() {
+        let seen = Error::Transport(
+            "the cryptographic handshake failed: error 48: invalid peer certificate: UnknownIssuer"
+                .into(),
+        );
+        assert!(is_identity_mismatch(&seen));
+        assert!(!is_identity_mismatch(&Error::Timeout));
+        assert!(!is_identity_mismatch(&Error::Transport(
+            "connection reset".into()
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_reinstalled_phone_is_reported_and_clears_when_the_right_device_answers() {
+        let (pc, mut pc_ev, pc_store) = node(41, "PC").await;
+        let (phone, _phone_ev, _) = node(42, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let id = phone.peer_id();
+        assert!(!pc.peer_changed(&id));
+
+        // The phone is uninstalled (it no longer answers) and reinstalled:
+        // a node with a new identity answers at the saved address.
+        phone.shutdown().await;
+        let (impostor, _iev, _) = node(43, "Phone").await;
+        let mut p = lock(&pc_store).get(&id).unwrap();
+        p.addrs = loopback(&impostor);
+        lock(&pc_store).pin(p);
+        let r = pc.connect(&id).await;
+        assert!(
+            matches!(r, Err(Error::PeerChanged)),
+            "got {:?}",
+            r.err().map(|e| e.to_string())
+        );
+        assert!(pc.peer_changed(&id));
+
+        // The same identity answers again (a restart on a new port): cleared.
+        let (again, _aev, _) = node(42, "Phone").await;
+        let mut p = lock(&pc_store).get(&id).unwrap();
+        p.addrs = loopback(&again);
+        lock(&pc_store).pin(p);
+        let _ = pc.connect(&id).await;
+        assert!(!pc.peer_changed(&id));
+    }
+}
