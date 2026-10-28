@@ -540,6 +540,7 @@ object ScreenShare : ScreenListener {
         PbService.instance?.let { notifySharing(it, null) }
         ControlService.instance?.endDim()
         ControlService.instance?.resetKeys()
+        ControlService.instance?.maybeSwitchOff()
         if (keep && c != null) {
             c.idle()
             armed = c

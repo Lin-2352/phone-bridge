@@ -63,6 +63,9 @@ class ControlService : AccessibilityService(), InputListener {
     private var ctrl = false
     private var highSurrogate: Char? = null
 
+    /** A PC session has used this service since it was turned on. */
+    private var sessionSeen = false
+
     override fun onServiceConnected() {
         instance = this
         Bridge.node?.setInputListener(this)
@@ -137,6 +140,7 @@ class ControlService : AccessibilityService(), InputListener {
                 holdWifi(true)
                 stats.reset()
                 Bridge.controlledBy.value = peerName
+                sessionSeen = true
                 Toast.makeText(this, "$peerName is controlling this phone", Toast.LENGTH_SHORT).show()
             } else {
                 stopWheel()
@@ -148,7 +152,23 @@ class ControlService : AccessibilityService(), InputListener {
             }
             PbService.refresh(this)
             Log.i(TAG, "CONTROL ${if (active) "started" else "ended"} by $peerName")
+            if (!active) maybeSwitchOff()
         }
+    }
+
+    /**
+     * After a session: switch the accessibility service off (see [shouldSwitchOff]).
+     * Waits a moment and checks again, so a session that starts right after
+     * another (control, then the screen window) keeps it on.
+     */
+    fun maybeSwitchOff() {
+        main.postDelayed({
+            if (instance !== this) return@postDelayed
+            if (!shouldSwitchOff(sessionSeen, Bridge.controlledBy.value, ScreenShare.sharingWith.value)) return@postDelayed
+            Log.i(TAG, "CONTROL switching the accessibility service off after the session")
+            Toast.makeText(this, "$APP_NAME control switched off. Turn it on in Accessibility settings for the next session", Toast.LENGTH_LONG).show()
+            disableSelf()
+        }, 1500)
     }
 
     private val moveLock = Any()
@@ -192,6 +212,7 @@ class ControlService : AccessibilityService(), InputListener {
      * wheel scrolls there). Main thread.
      */
     fun touchAt(phase: Int, ax: Int, ay: Int) {
+        sessionSeen = true
         x = ax / 65535f * (w - 1)
         y = ay / 65535f * (h - 1)
         when (phase) {
