@@ -5,15 +5,15 @@
 //! a new message replaces the old one. Never takes focus.
 #![allow(unsafe_code)]
 
-use std::sync::Mutex;
+use std::{cell::RefCell, sync::Mutex};
 
 use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
         Graphics::Gdi::{
-            GetMonitorInfoW, InvalidateRect, MonitorFromPoint, DT_END_ELLIPSIS, DT_LEFT,
-            DT_SINGLELINE, DT_VCENTER, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+            GetMonitorInfoW, InvalidateRect, MonitorFromPoint, ValidateRect, MONITORINFO,
+            MONITOR_DEFAULTTOPRIMARY,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
@@ -25,7 +25,10 @@ use windows::{
     },
 };
 
-use crate::fluent::{self, px};
+use crate::{
+    d2d::{Backdrop, Surface},
+    fluent::{self, px, rectf, Align, Canvas, Font, RectF},
+};
 
 const CLASS: PCWSTR = w!("PhoneBridgeStatus");
 /// Logical (96-dpi) size.
@@ -40,31 +43,55 @@ struct Pill {
 
 static CURRENT: Mutex<Option<Pill>> = Mutex::new(None);
 
+thread_local! {
+    /// The pill's Direct2D surface (made at its first paint, on the UI
+    /// thread), with the window it belongs to.
+    static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
+}
+
+/// The message on one line, inset like the pill's layout, cut with "…".
+fn draw(c: &mut Canvas, client: RectF, text: &str) {
+    let r = rectf(
+        client.left + 18.0 * c.s,
+        client.top,
+        client.right - fluent::ROW_PAD as f32 * c.s,
+        client.bottom,
+    );
+    fluent::text(c, Font::Body, text, r, c.p.text, Align::Left);
+}
+
+fn paint(hwnd: HWND) {
+    let text = CURRENT
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.text.clone()))
+        .unwrap_or_default();
+    SURFACE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().map(|(h, _)| *h) != Some(hwnd.0 as isize) {
+            *slot = Surface::new(hwnd, Backdrop::Opaque)
+                .ok()
+                .map(|s| (hwnd.0 as isize, s));
+        }
+        match slot.as_mut() {
+            Some((_, surface)) => {
+                fluent::paint_with(surface, hwnd, |c, client| draw(c, client, &text))
+            }
+            // Nothing can draw (no Direct2D at all): validate so WM_PAINT
+            // does not repeat forever.
+            // SAFETY: our own window.
+            None => unsafe {
+                let _ = ValidateRect(Some(hwnd), None);
+            },
+        }
+    });
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => {
-            let text = CURRENT
-                .lock()
-                .ok()
-                .and_then(|g| g.as_ref().map(|p| p.text.clone()))
-                .unwrap_or_default();
-            let s = fluent::scale(hwnd);
-            let p = fluent::palette();
-            fluent::gdi_paint(hwnd, |hdc, c| {
-                let f = fluent::Fonts::new(s);
-                let mut r = c;
-                r.left += px(s, 18);
-                r.right -= px(s, fluent::ROW_PAD);
-                fluent::gdi_text(
-                    hdc,
-                    f.body,
-                    &text,
-                    r,
-                    p.text,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                );
-            });
+            paint(hwnd);
             LRESULT(0)
         }
         // Click to dismiss; it also goes away by itself.
@@ -73,6 +100,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_DESTROY => {
+            fluent::unregister_window(hwnd);
+            SURFACE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                if slot.as_ref().is_some_and(|(h, _)| *h == hwnd.0 as isize) {
+                    *slot = None;
+                }
+            });
             if let Ok(mut g) = CURRENT.lock() {
                 if g.as_ref().is_some_and(|p| p.hwnd == hwnd.0 as isize) {
                     *g = None;
@@ -159,6 +193,7 @@ pub fn show(text: &str, secs: u32) {
         };
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
         fluent::frame(hwnd, false);
+        fluent::register_window(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         SetTimer(Some(hwnd), TIMER_HIDE, secs * 1000, None);
     }
@@ -169,5 +204,34 @@ pub fn close() {
     if let Some(h) = h {
         // SAFETY: our own window.
         let _ = unsafe { DestroyWindow(HWND(h as *mut _)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_long_message_draws_in_a_hidden_window() {
+        let hwnd = crate::d2d::test_window();
+        let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        let msg = "Asking a phone with a very long name to share its screen\u{2026}";
+        surface
+            .draw(|dc| {
+                let mut c = Canvas {
+                    dc,
+                    s: 1.0,
+                    p: fluent::palette(),
+                };
+                draw(&mut c, rectf(0.0, 0.0, 200.0, 52.0), msg);
+                draw(&mut c, rectf(0.0, 0.0, 200.0, 52.0), "");
+            })
+            .expect("draw");
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 }

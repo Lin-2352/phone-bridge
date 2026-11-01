@@ -2,9 +2,15 @@
 //! status, Pin, Dim) and a bottom bar (Back, Home, Recents). Mouse and keys
 //! on the video drive the phone. Decoding and presenting run on their own
 //! thread; the window thread only handles input and layout.
+//!
+//! The video and each bar are child windows with their own swap chains, so
+//! the D3D11 video and the Direct2D bars never share one window. The bars
+//! are see-through to the mouse: clicks land on the main window, which
+//! hit-tests the bar buttons as before.
 #![allow(unsafe_code)]
 
 use std::{
+    cell::RefCell,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -23,9 +29,7 @@ use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        Graphics::Gdi::{
-            InvalidateRect, ScreenToClient, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
-        },
+        Graphics::Gdi::{InvalidateRect, ScreenToClient, ValidateRect},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
@@ -41,15 +45,16 @@ use windows::{
                 SWP_NOZORDER, SW_SHOW, WA_INACTIVE, WINDOW_EX_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
                 WM_CLOSE, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP,
                 WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SIZING, WNDCLASSW, WS_CHILD,
-                WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                WM_MOUSEWHEEL, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_SIZING, WNDCLASSW,
+                WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
             },
         },
     },
 };
 
 use crate::{
-    fluent::{self, px},
+    d2d::{Backdrop, Surface},
+    fluent::{self, from_rect, px, rectf, Align, Canvas, Font},
     screen_decode::{Decoder, Frame},
     screen_geom::{
         fit_window, map_point, on_decode_error, state_changed, video_rect, Edge, HeldKeys, Next,
@@ -59,6 +64,9 @@ use crate::{
 
 const CLASS: PCWSTR = w!("PhoneBridgeScreen");
 const VIDEO_CLASS: PCWSTR = w!("PhoneBridgeScreenVideo");
+const BAR_CLASS: PCWSTR = w!("PhoneBridgeScreenBar");
+/// WM_NCHITTEST: let the mouse through to the window underneath.
+const HTTRANSPARENT: isize = -1;
 const WM_REDRAW: u32 = WM_APP + 1;
 const WM_ENDED: u32 = WM_APP + 2;
 const WM_GIVE_UP: u32 = WM_APP + 3;
@@ -106,6 +114,8 @@ struct Shared {
     opts: Arc<WindowOpts>,
     hwnd: isize,
     video_hwnd: isize,
+    /// The top and bottom bar windows.
+    bars: [isize; 2],
     /// Current video size (changes with rotation).
     video: (u32, u32),
     pinned: bool,
@@ -126,6 +136,11 @@ static FOCUSED: AtomicBool = AtomicBool::new(false);
 /// Frames arrive: set on each decoded frame, cleared when the phone's
 /// stream ends ("Reconnecting…") and when a new window opens.
 static STREAMING: AtomicBool = AtomicBool::new(false);
+
+thread_local! {
+    /// The bars' Direct2D surfaces, by bar window (on the window thread).
+    static BAR_SURFACES: RefCell<Vec<(isize, Surface)>> = const { RefCell::new(Vec::new()) };
+}
 
 /// The window is open and the phone's picture is live (not reconnecting).
 pub fn is_streaming() -> bool {
@@ -218,6 +233,13 @@ fn ui_thread(
             hCursor: cursor,
             ..Default::default()
         });
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(bar_proc),
+            hInstance: module.into(),
+            lpszClassName: BAR_CLASS,
+            hCursor: cursor,
+            ..Default::default()
+        });
         // Video about 70% of the screen height, plus the bars.
         let vh = (GetSystemMetrics(SM_CYSCREEN) as f32 * 0.7) as i32;
         let vw = (vh as f32 * video.0 as f32 / video.1.max(1) as f32) as i32;
@@ -233,7 +255,7 @@ fn ui_thread(
             WINDOW_EX_STYLE(0),
             CLASS,
             PCWSTR(title.as_ptr()),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             120,
             60,
             r.right - r.left,
@@ -262,6 +284,27 @@ fn ui_thread(
             let _ = DestroyWindow(hwnd);
             return;
         };
+        // Sized and placed by `layout`.
+        let bar = || {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                BAR_CLASS,
+                w!(""),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                vw,
+                TOP,
+                Some(hwnd),
+                None,
+                Some(module.into()),
+                None,
+            )
+        };
+        let (Ok(top_bar), Ok(bottom_bar)) = (bar(), bar()) else {
+            let _ = DestroyWindow(hwnd);
+            return;
+        };
         let mut wr = RECT::default();
         let mut cr = RECT::default();
         let _ = GetWindowRect(hwnd, &mut wr);
@@ -272,6 +315,7 @@ fn ui_thread(
             opts: opts.clone(),
             hwnd: hwnd.0 as isize,
             video_hwnd: video_hwnd.0 as isize,
+            bars: [top_bar.0 as isize, bottom_bar.0 as isize],
             video,
             pinned: opts.pinned,
             dim: opts.dim,
@@ -287,6 +331,9 @@ fn ui_thread(
             ),
         });
         fluent::frame(hwnd, false);
+        for h in [hwnd, top_bar, bottom_bar] {
+            fluent::register_window(h);
+        }
         DragAcceptFiles(hwnd, true);
         if opts.pinned {
             let _ = SetWindowPos(
@@ -554,18 +601,156 @@ fn targets(c: RECT, s: f32) -> Vec<(RECT, Target)> {
 }
 
 fn layout(hwnd: HWND) {
-    let Some((video_hwnd, msgs)) = with(|s| (s.video_hwnd, s.msgs.clone())) else {
+    let Some((video_hwnd, bars, msgs)) = with(|s| (s.video_hwnd, s.bars, s.msgs.clone())) else {
         return;
     };
     let s = fluent::scale(hwnd);
     let mut c = RECT::default();
-    // SAFETY: sizing our own child window.
+    // SAFETY: sizing our own child windows.
     unsafe {
         let _ = GetClientRect(hwnd, &mut c);
         let (top, bottom) = (px(s, TOP), px(s, BOTTOM));
         let h = (c.bottom - top - bottom).max(1);
         let _ = MoveWindow(HWND(video_hwnd as *mut _), 0, top, c.right, h, true);
+        let _ = MoveWindow(HWND(bars[0] as *mut _), 0, 0, c.right, top, true);
+        let _ = MoveWindow(
+            HWND(bars[1] as *mut _),
+            0,
+            c.bottom - bottom,
+            c.right,
+            bottom,
+            true,
+        );
         let _ = msgs.send(Msg::Resize(c.right.max(1) as u32, h as u32));
+    }
+}
+
+/// Repaint both bars (what they show changed).
+fn redraw_bars() {
+    for h in with(|s| s.bars).unwrap_or_default() {
+        // SAFETY: invalidating our own child window (any thread may).
+        let _ = unsafe { InvalidateRect(Some(HWND(h as *mut _)), None, false) };
+    }
+}
+
+/// What the bars show.
+#[derive(Default)]
+struct BarView {
+    name: String,
+    status: String,
+    pinned: bool,
+    dim: bool,
+}
+
+/// Both bars as laid out in the main window's client area `c`; each bar
+/// window draws this shifted to its own place, and shows its part.
+fn draw_bars(cv: &mut Canvas, c: RECT, v: &BarView) {
+    let s = cv.s;
+    let p = cv.p;
+    let line = if v.status.is_empty() {
+        v.name.clone()
+    } else {
+        format!("{}  \u{00b7}  {}", v.name, v.status)
+    };
+    let right = targets(c, s).first().map_or(c.right, |(r, _)| r.left) - px(s, 8);
+    let tr = rectf(px(s, 12) as f32, 0.0, right as f32, px(s, TOP) as f32);
+    fluent::text(cv, Font::Body, &line, tr, p.text, Align::Left);
+    for (r, t) in targets(c, s) {
+        let narrow = r.right - r.left < px(s, 60);
+        let (label, on) = match t {
+            Target::Pin if narrow => ("\u{1F4CC}", v.pinned),
+            Target::Pin => (if v.pinned { "Pinned" } else { "Pin" }, v.pinned),
+            Target::Dim if narrow => ("\u{1F505}", v.dim),
+            Target::Dim => (if v.dim { "Dimmed" } else { "Dim" }, v.dim),
+            Target::Back => ("Back", false),
+            Target::Home => ("Home", false),
+            Target::Recents => ("Recents", false),
+        };
+        fluent::button(cv, from_rect(r), label, on);
+    }
+}
+
+fn paint_bar(bar: HWND) {
+    let Some((top, view)) = with(|sh| {
+        let view = BarView {
+            name: sh.opts.name.clone(),
+            status: sh.status.clone(),
+            pinned: sh.pinned,
+            dim: sh.dim,
+        };
+        (HWND(sh.hwnd as *mut _), view)
+    }) else {
+        // SAFETY: our own window; nothing to show yet.
+        let _ = unsafe { ValidateRect(Some(bar), None) };
+        return;
+    };
+    let mut c = RECT::default();
+    let mut br = RECT::default();
+    // SAFETY: plain queries on our own windows.
+    unsafe {
+        let _ = GetClientRect(top, &mut c);
+        let _ = GetWindowRect(bar, &mut br);
+    }
+    let mut origin = POINT {
+        x: br.left,
+        y: br.top,
+    };
+    // SAFETY: plain conversion on our own window.
+    let _ = unsafe { ScreenToClient(top, &mut origin) };
+    BAR_SURFACES.with(|cell| {
+        let mut list = cell.borrow_mut();
+        if !list.iter().any(|(h, _)| *h == bar.0 as isize) {
+            if let Ok(surface) = Surface::new(bar, Backdrop::Opaque) {
+                list.push((bar.0 as isize, surface));
+            }
+        }
+        match list.iter_mut().find(|(h, _)| *h == bar.0 as isize) {
+            Some((_, surface)) => fluent::paint_with(surface, bar, |cv, _| {
+                // SAFETY: a state call inside the surface's BeginDraw/EndDraw.
+                unsafe {
+                    cv.dc.SetTransform(&windows_numerics::Matrix3x2 {
+                        M11: 1.0,
+                        M12: 0.0,
+                        M21: 0.0,
+                        M22: 1.0,
+                        M31: -origin.x as f32,
+                        M32: -origin.y as f32,
+                    });
+                }
+                draw_bars(cv, c, &view);
+            }),
+            // Nothing can draw (no Direct2D at all): validate so WM_PAINT
+            // does not repeat forever.
+            // SAFETY: our own window.
+            None => unsafe {
+                let _ = ValidateRect(Some(bar), None);
+            },
+        }
+    });
+}
+
+/// A bar: drawn with Direct2D, see-through to the mouse.
+extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_NCHITTEST => LRESULT(HTTRANSPARENT),
+        WM_ERASEBKGND => LRESULT(1),
+        WM_PAINT => {
+            paint_bar(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            fluent::unregister_window(hwnd);
+            let gone = BAR_SURFACES.with(|cell| {
+                let mut list = cell.borrow_mut();
+                list.iter()
+                    .position(|(h, _)| *h == hwnd.0 as isize)
+                    .map(|i| list.remove(i))
+            });
+            drop(gone);
+            LRESULT(0)
+        }
+        // SAFETY: default handling.
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
@@ -639,7 +824,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 push_state();
                 if active {
                     layout(hwnd);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    redraw_bars();
                 }
                 LRESULT(0)
             }
@@ -701,50 +886,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_PAINT => {
-                let s = fluent::scale(hwnd);
-                let (name, status, pinned, dim) =
-                    with(|sh| (sh.opts.name.clone(), sh.status.clone(), sh.pinned, sh.dim))
-                        .unwrap_or_default();
-                fluent::gdi_paint(hwnd, |hdc, c| {
-                    let p = fluent::palette();
-                    let f = fluent::Fonts::new(s);
-                    let line = if status.is_empty() {
-                        name
-                    } else {
-                        format!("{name}  \u{00b7}  {status}")
-                    };
-                    let tr = RECT {
-                        left: px(s, 12),
-                        top: 0,
-                        right: targets(c, s).first().map_or(c.right, |(r, _)| r.left) - px(s, 8),
-                        bottom: px(s, TOP),
-                    };
-                    fluent::gdi_text(
-                        hdc,
-                        f.body,
-                        &line,
-                        tr,
-                        p.text,
-                        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-                    );
-                    for (r, t) in targets(c, s) {
-                        let narrow = r.right - r.left < px(s, 60);
-                        let (label, on) = match t {
-                            Target::Pin if narrow => ("\u{1F4CC}", pinned),
-                            Target::Pin => (if pinned { "Pinned" } else { "Pin" }, pinned),
-                            Target::Dim if narrow => ("\u{1F505}", dim),
-                            Target::Dim => (if dim { "Dimmed" } else { "Dim" }, dim),
-                            Target::Back => ("Back", false),
-                            Target::Home => ("Home", false),
-                            Target::Recents => ("Recents", false),
-                        };
-                        fluent::gdi_button(hdc, &f, &p, r, label, on, s);
-                    }
-                });
+                // Every pixel belongs to a child (video and bars).
+                let _ = ValidateRect(Some(hwnd), None);
                 LRESULT(0)
             }
             WM_REDRAW => {
-                let _ = InvalidateRect(Some(hwnd), None, false);
+                redraw_bars();
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -786,7 +933,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             push_state();
                         }
                     }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    redraw_bars();
                 }
                 LRESULT(0)
             }
@@ -842,6 +989,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_DESTROY => {
+                fluent::unregister_window(hwnd);
                 PostQuitMessage(0);
                 LRESULT(0)
             }
