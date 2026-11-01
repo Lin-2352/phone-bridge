@@ -35,7 +35,7 @@ use windows::{
                 IDCompositionVisual,
             },
             DirectWrite::{DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED},
-            Dwm::{DWMSBT_AUTO, DWMSBT_MAINWINDOW},
+            Dwm::{DwmExtendFrameIntoClientArea, DWMSBT_AUTO, DWMSBT_MAINWINDOW},
             Dxgi::{
                 Common::{
                     DXGI_ALPHA_MODE_IGNORE, DXGI_ALPHA_MODE_PREMULTIPLIED,
@@ -48,7 +48,12 @@ use windows::{
             },
             Gdi::InvalidateRect,
         },
-        UI::WindowsAndMessaging::GetClientRect,
+        UI::{
+            Controls::MARGINS,
+            WindowsAndMessaging::{
+                DestroyWindow, GetClientRect, WINDOW_EX_STYLE, WS_EX_NOREDIRECTIONBITMAP,
+            },
+        },
     },
 };
 
@@ -476,6 +481,70 @@ impl Surface {
     }
 }
 
+/// A window and its surface from `make_window`.
+pub struct Made {
+    pub hwnd: HWND,
+    pub surface: Surface,
+    /// How long the (final) surface took to build.
+    pub surface_ms: u128,
+}
+
+/// Creates a window with `create` (given the extra extended style it must
+/// add) and then its surface. A Mica window has no redirection bitmap, but
+/// an HWND swap chain needs one, so when Mica is unavailable (transparency
+/// effects off, or it fell through while building) the window is destroyed
+/// and remade plain with an opaque surface. On Mica the whole window
+/// becomes DWM frame so the backdrop shows wherever the swap chain is
+/// transparent. `create` must leave the window hidden and unregistered: a
+/// discarded first attempt is simply destroyed.
+pub fn make_window(
+    want: Backdrop,
+    create: impl Fn(WINDOW_EX_STYLE) -> Result<HWND, String>,
+) -> Result<Made, String> {
+    let mica = want == Backdrop::Mica && fluent::transparency_on();
+    let first = if mica {
+        Backdrop::Mica
+    } else {
+        Backdrop::Opaque
+    };
+    let ex = if mica {
+        WS_EX_NOREDIRECTIONBITMAP
+    } else {
+        WINDOW_EX_STYLE::default()
+    };
+    let hwnd = create(ex)?;
+    let t = std::time::Instant::now();
+    match Surface::new(hwnd, first) {
+        Ok(surface) if surface.backdrop() == first => {
+            if first == Backdrop::Mica {
+                let m = MARGINS {
+                    cxLeftWidth: -1,
+                    cxRightWidth: -1,
+                    cyTopHeight: -1,
+                    cyBottomHeight: -1,
+                };
+                // SAFETY: attribute call on the window made above.
+                let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &m) };
+            }
+            Ok(Made {
+                hwnd,
+                surface,
+                surface_ms: t.elapsed().as_millis(),
+            })
+        }
+        other => {
+            drop(other);
+            // SAFETY: the window made above, not yet shown or registered.
+            let _ = unsafe { DestroyWindow(hwnd) };
+            if first == Backdrop::Mica {
+                make_window(Backdrop::Opaque, create)
+            } else {
+                Err("no Direct2D surface".into())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 use windows::{
     core::w,
@@ -483,7 +552,7 @@ use windows::{
         Foundation::{LPARAM, LRESULT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, RegisterClassW, WINDOW_EX_STYLE, WNDCLASSW, WS_POPUP,
+            CreateWindowExW, DefWindowProcW, RegisterClassW, WNDCLASSW, WS_POPUP,
         },
     },
 };
@@ -529,9 +598,7 @@ pub(crate) fn test_window() -> HWND {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::{
-        Graphics::Direct2D::Common::D2D_RECT_F, UI::WindowsAndMessaging::DestroyWindow,
-    };
+    use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
     #[test]
     fn colour_converts_rgb_and_alpha() {

@@ -1,6 +1,7 @@
 //! Fluent modal dialog for the questions the tray asks (pair with this
 //! phone? allow control? accept this file?) and for plain notices. It
 //! replaces the classic Win32 message box so every window looks alike.
+//! Drawn with Direct2D on an opaque surface.
 //!
 //! Each dialog runs on its own thread with its own message loop, so the tray
 //! keeps working while one is open. It is topmost and brought to the front,
@@ -18,11 +19,7 @@ use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        Graphics::Gdi::{
-            CreateFontW, DeleteObject, GetDC, InvalidateRect, ReleaseDC, ScreenToClient,
-            SelectObject, SetTextCharacterExtra, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-            DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, HDC, HGDIOBJ,
-        },
+        Graphics::Gdi::{InvalidateRect, ScreenToClient, ValidateRect},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
@@ -44,8 +41,10 @@ use windows::{
 };
 
 use crate::{
+    d2d::{Backdrop, Surface},
     ease,
-    fluent::{self, px},
+    fluent::{self, px, rectf, round_rect, text, text_wrapped, Align, Canvas, Font, RectF},
+    tokens::RADIUS,
 };
 
 const CLASS: PCWSTR = w!("PhoneBridgeDialog");
@@ -172,6 +171,12 @@ fn next_focus(cur: Option<Button>, two: bool, back: bool) -> Option<Button> {
     }
 }
 
+/// The button focused when the dialog opens: a notice starts on its only
+/// button, a question on neither (so Space cannot approve it unseen).
+fn start_focus(d: &Dialog) -> Option<Button> {
+    (!d.is_question()).then_some(Button::Primary)
+}
+
 /// What Enter does: accepts only a notice, never a question.
 fn enter_presses(d: &Dialog) -> Option<Button> {
     (!d.is_question()).then_some(Button::Primary)
@@ -279,6 +284,8 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// The dialog's Direct2D surface (one dialog per thread).
+    static SURFACE: RefCell<Option<Surface>> = const { RefCell::new(None) };
 }
 
 fn idx(b: Button) -> usize {
@@ -288,170 +295,131 @@ fn idx(b: Button) -> usize {
     }
 }
 
-/// Height of `s` wrapped to `width` in `font`.
-fn text_height(hdc: HDC, font: HGDIOBJ, s: &str, width: i32) -> i32 {
-    if s.is_empty() {
+/// Height `s` takes wrapped to `width` in `font`, capped at `max` and cut
+/// to whole lines so a long text never shows half a line.
+fn text_height(font: Font, s: f32, t: &str, width: i32, max: i32) -> i32 {
+    let (h, line) = fluent::wrapped_height(font, s, t, width as f32);
+    if h <= 0.0 {
         return 0;
     }
-    let mut w: Vec<u16> = s.encode_utf16().collect();
-    let mut r = rect(0, 0, width, 0);
-    // SAFETY: valid DC; DT_CALCRECT only measures; the font is restored.
-    unsafe {
-        let old = SelectObject(hdc, font);
-        windows::Win32::Graphics::Gdi::DrawTextW(
-            hdc,
-            &mut w,
-            &mut r,
-            DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
-        );
-        SelectObject(hdc, old);
-    }
-    r.bottom - r.top
+    let max = max as f32;
+    let h = if h > max && line > 0.0 {
+        (max / line).floor().max(1.0) * line
+    } else {
+        h
+    };
+    h.ceil() as i32
 }
 
-fn measure(hdc: HDC, f: &fluent::Fonts, s: f32, d: &Dialog) -> Layout {
+/// The layout for `d` at scale `s`, with its texts measured. Needs the
+/// dialog's surface to exist (DirectWrite).
+fn measure(s: f32, d: &Dialog) -> Layout {
     let width = px(s, WIDTH - 2 * MARGIN);
     layout(
         s,
-        text_height(hdc, f.title, &d.heading, width),
-        text_height(hdc, f.body, &d.body, width),
+        text_height(Font::Subtitle, s, &d.heading, width, px(s, HEADING_MAX)),
+        text_height(Font::Body, s, &d.body, width, px(s, BODY_MAX)),
         d.code.is_some(),
         d.secondary.is_some(),
     )
 }
 
-fn big_font(s: f32) -> HGDIOBJ {
-    // SAFETY: plain font creation; the caller deletes it.
-    let f = unsafe {
-        CreateFontW(
-            -px(s, 32),
-            0,
-            0,
-            0,
-            600,
-            0,
-            0,
-            0,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            windows::Win32::Graphics::Gdi::FONT_QUALITY(5),
-            0,
-            w!("Consolas"),
-        )
+fn rf(r: RECT) -> RectF {
+    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
+}
+
+/// What one paint shows, copied out of the state.
+struct View<'a> {
+    dialog: &'a Dialog,
+    layout: Layout,
+    hover: [f32; 2],
+    focus: Option<Button>,
+    pressed: Option<Button>,
+}
+
+fn paint_dialog(c: &mut Canvas, v: &View) {
+    let (s, p) = (c.s, c.p);
+    let (l, d) = (&v.layout, v.dialog);
+    text_wrapped(c, Font::Subtitle, &d.heading, rf(l.heading), p.text);
+    text_wrapped(c, Font::Body, &d.body, rf(l.body), p.text2);
+    if let (Some(r), Some(code)) = (l.code, &d.code) {
+        let r = rf(r);
+        round_rect(
+            c,
+            &r,
+            Some((p.card, 1.0)),
+            Some(p.stroke),
+            RADIUS[1] * s,
+            false,
+        );
+        text(c, Font::Code, code, r, p.text, Align::Center);
+    }
+    let radius = RADIUS[0] * s;
+    let button = |c: &mut Canvas, b: Button, r: RECT, label: &str, accent: bool| {
+        let r = rf(r);
+        let t = v.hover[idx(b)];
+        let down = v.pressed == Some(b);
+        let (fill, stroke, ink) = if accent {
+            let fill = if down {
+                mix(p.accent, p.on_accent, 0.25)
+            } else {
+                mix(p.accent, p.on_accent, t * 0.12)
+            };
+            (fill, None, p.on_accent)
+        } else {
+            let fill = if down {
+                mix(p.hover, p.stroke, 0.5)
+            } else {
+                mix(p.card, p.hover, t)
+            };
+            (fill, Some(p.stroke), p.text)
+        };
+        if v.focus == Some(b) {
+            // A ring 2 px outside the button.
+            let g = 2.0 * s;
+            let ring = rectf(r.left - g, r.top - g, r.right + g, r.bottom + g);
+            round_rect(c, &ring, None, Some(p.text), radius + g, false);
+        }
+        round_rect(c, &r, Some((fill, 1.0)), stroke, radius, false);
+        text(c, Font::Body, label, r, ink, Align::Center);
     };
-    HGDIOBJ(f.0)
+    button(c, Button::Primary, l.primary, &d.primary, true);
+    if let (Some(r), Some(label)) = (l.secondary, &d.secondary) {
+        button(c, Button::Secondary, r, label, false);
+    }
 }
 
 fn draw(hwnd: HWND) {
-    let s = fluent::scale(hwnd);
-    let p = fluent::palette();
-    fluent::gdi_paint(hwnd, |hdc, _c| {
-        let f = fluent::Fonts::new(s);
-        let (l, d, hover, focus, pressed) = STATE.with(|st| {
-            let mut st = st.borrow_mut();
-            let Some(st) = st.as_mut() else {
-                return (Layout::default(), None, [0.0; 2], None, None);
-            };
-            st.layout = measure(hdc, &f, s, &st.dialog);
-            (
-                st.layout,
-                Some(st.dialog.clone()),
-                st.hover,
-                st.focus,
-                st.pressed,
-            )
-        });
-        let Some(d) = d else { return };
-        let wrap = DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX;
-        fluent::gdi_text(hdc, f.title, &d.heading, l.heading, p.text, wrap);
-        fluent::gdi_text(hdc, f.body, &d.body, l.body, p.text2, wrap);
-        if let (Some(r), Some(code)) = (l.code, &d.code) {
-            fluent::gdi_round_rect(
-                hdc,
-                &r,
-                p.card,
-                Some(p.stroke),
-                fluent::corner_radius(s, 8),
-                false,
-            );
-            let font = big_font(s);
-            // SAFETY: valid DC; spacing is reset right after drawing.
-            unsafe { SetTextCharacterExtra(hdc, px(s, 4)) };
-            fluent::gdi_text(
-                hdc,
-                font,
-                code,
-                r,
-                p.text,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-            );
-            // SAFETY: as above.
-            unsafe {
-                SetTextCharacterExtra(hdc, 0);
-                let _ = DeleteObject(font);
-            }
-        }
-        let button = |b: Button, r: RECT, label: &str, accent: bool| {
-            let t = hover[idx(b)];
-            let down = pressed == Some(b);
-            let (fill, stroke, ink) = if accent {
-                let base = mix(p.accent, p.on_accent, t * 0.12);
-                let fill = if down {
-                    mix(p.accent, p.on_accent, 0.25)
-                } else {
-                    base
-                };
-                (fill, None, p.on_accent)
-            } else {
-                let fill = if down {
-                    mix(p.hover, p.stroke, 0.5)
-                } else {
-                    mix(p.card, p.hover, t)
-                };
-                (fill, Some(p.stroke), p.text)
-            };
-            fluent::gdi_round_rect(hdc, &r, fill, stroke, fluent::corner_radius(s, 8), false);
-            fluent::gdi_text(
-                hdc,
-                f.body,
-                label,
-                r,
-                ink,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-            );
-            if focus == Some(b) {
-                let ring = RECT {
-                    left: r.left - px(s, 2),
-                    top: r.top - px(s, 2),
-                    right: r.right + px(s, 2),
-                    bottom: r.bottom + px(s, 2),
-                };
-                fluent::gdi_round_rect(
-                    hdc,
-                    &ring,
-                    p.bg,
-                    Some(p.text),
-                    fluent::corner_radius(s, 10),
-                    false,
-                );
-                // Redraw the button face inside the ring.
-                fluent::gdi_round_rect(hdc, &r, fill, stroke, fluent::corner_radius(s, 8), false);
-                fluent::gdi_text(
-                    hdc,
-                    f.body,
-                    label,
-                    r,
-                    ink,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-                );
-            }
+    let painted = SURFACE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let Some(surface) = slot.as_mut() else {
+            return false;
         };
-        button(Button::Primary, l.primary, &d.primary, true);
-        if let (Some(r), Some(label)) = (l.secondary, &d.secondary) {
-            button(Button::Secondary, r, label, false);
-        }
+        fluent::paint_with(surface, hwnd, |c, _| {
+            let snap = STATE.with(|st| {
+                let mut st = st.borrow_mut();
+                let st = st.as_mut()?;
+                // Re-measured each paint: the scale may have changed.
+                st.layout = measure(c.s, &st.dialog);
+                Some((st.dialog.clone(), st.layout, st.hover, st.focus, st.pressed))
+            });
+            if let Some((dialog, layout, hover, focus, pressed)) = snap {
+                let v = View {
+                    dialog: &dialog,
+                    layout,
+                    hover,
+                    focus,
+                    pressed,
+                };
+                paint_dialog(c, &v);
+            }
+        });
+        true
     });
+    if !painted {
+        // SAFETY: our own window; nothing to draw with.
+        let _ = unsafe { ValidateRect(Some(hwnd), None) };
+    }
 }
 
 /// Deliver the answer (once) and close.
@@ -616,6 +584,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if let Some(o) = outcome.as_mut() {
                 o.finish(false);
             }
+            fluent::unregister_window(hwnd);
+            drop(SURFACE.with(|cell| cell.borrow_mut().take()));
             // SAFETY: our own timer and thread.
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_ANIM);
@@ -662,6 +632,7 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
                 PCWSTR(std::ptr::without_provenance::<u16>(1)),
             )
             .unwrap_or_default(),
+            // No background brush: every pixel is ours (WM_ERASEBKGND).
             ..Default::default()
         };
         // Fails harmlessly when an earlier dialog registered it already.
@@ -686,20 +657,24 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
             done(false);
             return;
         };
+        match Surface::new(hwnd, Backdrop::Opaque) {
+            Ok(surface) => SURFACE.with(|cell| *cell.borrow_mut() = Some(surface)),
+            Err(_) => {
+                // Nothing can draw it: an unshown question is a "no".
+                let _ = DestroyWindow(hwnd);
+                done(false);
+                return;
+            }
+        }
         let s = fluent::scale(hwnd);
-        let dc = GetDC(Some(hwnd));
-        let fonts = fluent::Fonts::new(s);
-        let lay = measure(dc, &fonts, s, &d);
-        drop(fonts);
-        ReleaseDC(Some(hwnd), dc);
+        let lay = measure(s, &d);
         STATE.with(|st| {
             *st.borrow_mut() = Some(State {
                 dialog: d.clone(),
                 layout: lay,
                 hover: [0.0; 2],
                 pressed: None,
-                // A notice starts on its only button; a question starts on neither.
-                focus: (!d.is_question()).then_some(Button::Primary),
+                focus: start_focus(&d),
                 last_tick: Instant::now(),
                 outcome: Outcome::new(done),
             });
@@ -718,6 +693,7 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
             SWP_NOACTIVATE,
         );
         fluent::frame(hwnd, false);
+        fluent::register_window(hwnd);
         let _ = SetTimer(Some(hwnd), TIMER_ANIM, TICK_MS, None);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
@@ -729,6 +705,7 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
         }
     }
     STATE.with(|st| *st.borrow_mut() = None);
+    drop(SURFACE.with(|cell| cell.borrow_mut().take()));
 }
 
 #[cfg(test)]
@@ -888,5 +865,59 @@ mod tests {
             hit(&l, l.code.unwrap().left + 5, l.code.unwrap().top + 5),
             None
         );
+    }
+
+    #[test]
+    fn dialog_buttons_keep_their_order_and_default() {
+        // Primary (the answer that acts) on the left, the safe answer on the
+        // right; a notice starts focused on its only button, a question on
+        // neither.
+        let l = layout(1.5, 30, 50, true, true);
+        assert!(l.primary.right < l.secondary.unwrap().left);
+        assert_eq!(start_focus(&Dialog::pairing("X", "123456")), None);
+        assert_eq!(
+            start_focus(&Dialog::notice("Done".into(), String::new())),
+            Some(Button::Primary)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dialog_measures_whole_lines_and_draws_in_a_hidden_window() {
+        let hwnd = crate::d2d::test_window();
+        let mut surface =
+            crate::d2d::Surface::new(hwnd, crate::d2d::Backdrop::Opaque).expect("surface");
+        let mut d = Dialog::pairing("RMX3561", "628183");
+        d.body = "word ".repeat(200);
+        for s in [1.0, 1.5, 2.0] {
+            let l = measure(s, &d);
+            let body = l.body.bottom - l.body.top;
+            assert!(body > 0 && body <= px(s, BODY_MAX), "capped at {s}: {body}");
+            let (_, line) = fluent::wrapped_height(fluent::Font::Body, s, "", 1.0);
+            let lines = body as f32 / line;
+            assert!((lines - lines.round()).abs() < 0.2, "whole lines: {lines}");
+            assert!(l.height > l.primary.bottom);
+        }
+        let l = measure(1.0, &d);
+        surface
+            .draw(|dc| {
+                let mut c = fluent::Canvas {
+                    dc,
+                    s: 1.0,
+                    p: fluent::palette(),
+                };
+                let v = View {
+                    dialog: &d,
+                    layout: l,
+                    hover: [0.5, 0.0],
+                    focus: Some(Button::Secondary),
+                    pressed: None,
+                };
+                paint_dialog(&mut c, &v);
+            })
+            .expect("draw");
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        let _ = unsafe { DestroyWindow(hwnd) };
     }
 }

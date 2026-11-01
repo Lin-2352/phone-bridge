@@ -104,22 +104,37 @@ pub struct Inputs<'a> {
     pub now: u64,
 }
 
+/// Whether the sessions alone prove contact: a live screen, camera or
+/// control session is an open connection too; one that waits to reconnect
+/// is not.
+pub fn sessions_live(
+    screen: bool,
+    screen_live: bool,
+    camera: bool,
+    camera_live: bool,
+    control: bool,
+) -> bool {
+    (screen && screen_live) || (camera && camera_live) || control
+}
+
+/// The phone as the hero card (and the flyout header) shows it; `live`
+/// from [`sessions_live`].
+pub fn phone_card(p: PhoneIn, live: bool) -> PhoneCard {
+    let connected = !p.changed && (p.open || live);
+    PhoneCard {
+        connected,
+        // Shown only while not connected (it moves on every contact).
+        last_seen: p.last_seen.filter(|_| !connected),
+        path: p.path,
+        changed: p.changed,
+        name: p.name,
+        fingerprint: p.fingerprint,
+    }
+}
+
 pub fn build(i: Inputs) -> HomeModel {
-    // A live screen, camera or control session is an open connection too;
-    // one that waits to reconnect is not.
-    let live = (i.screen && i.screen_live) || (i.camera && i.camera_live) || i.control;
-    let phone = i.phone.map(|p| {
-        let connected = !p.changed && (p.open || live);
-        PhoneCard {
-            connected,
-            // Shown only while not connected (it moves on every contact).
-            last_seen: p.last_seen.filter(|_| !connected),
-            path: p.path,
-            changed: p.changed,
-            name: p.name,
-            fingerprint: p.fingerprint,
-        }
-    });
+    let live = sessions_live(i.screen, i.screen_live, i.camera, i.camera_live, i.control);
+    let phone = i.phone.map(|p| phone_card(p, live));
     let sessions = [
         (i.screen, i.screen_live, SessionKind::Screen),
         (i.camera, i.camera_live, SessionKind::Camera),

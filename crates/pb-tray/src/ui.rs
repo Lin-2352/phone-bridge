@@ -356,13 +356,65 @@ fn note_activity(s: &str) {
     }
 }
 
+/// The session flags Home and the flyout header read: the screen window is
+/// open and live, the camera runs and streams, control is active. A camera
+/// request still waiting for the phone is not a session (the Camera tile
+/// cancels it); the screen and camera stay open while they wait to
+/// reconnect, and only a live picture is contact.
+fn session_flags() -> (bool, bool, bool, bool, bool) {
+    (
+        crate::screen_window::is_open(),
+        crate::screen_window::is_streaming(),
+        crate::camera::is_running(),
+        crate::camera::is_streaming(),
+        crate::control::is_active(),
+    )
+}
+
+/// The paired phone as Home's builder takes it.
+fn phone_in((id, name): (pb_identity::PeerId, String)) -> crate::pages::home::PhoneIn {
+    let c = crate::core::contact(&id);
+    crate::pages::home::PhoneIn {
+        name,
+        fingerprint: id.fingerprint()[..9].to_owned(),
+        changed: crate::core::is_changed(&id),
+        open: c.open > 0,
+        last_seen: c.last_seen,
+        path: c.path,
+    }
+}
+
+/// The flyout's peer name and header card, from one look at the peers so
+/// the tiles and the header never disagree; built like Home's hero card.
+fn flyout_phone(st: &State) -> (Option<String>, Option<crate::pages::home::PhoneCard>) {
+    use crate::pages::home;
+    let first = st.peers.lock().ok().and_then(|g| g.first().cloned());
+    let (screen, screen_live, camera, camera_live, control) = session_flags();
+    let live = home::sessions_live(screen, screen_live, camera, camera_live, control);
+    let name = first.as_ref().map(|(_, n)| n.clone());
+    (name, first.map(|p| home::phone_card(phone_in(p), live)))
+}
+
+/// Unix seconds in whole minutes: "5 min ago" changes no faster, and an
+/// unchanged model is not repainted.
+fn minute_now() -> u64 {
+    crate::timeline::now_unix() / 60 * 60
+}
+
+/// Keeps an open flyout's header in step with the phone.
+fn refresh_flyout(st: &State) {
+    if crate::flyout::is_open() {
+        let (_, phone) = flyout_phone(st);
+        crate::flyout::update_phone(phone, minute_now());
+    }
+}
+
 fn open_flyout(hwnd: HWND, st: &State) {
+    let (peer, phone) = flyout_phone(st);
     let model = crate::flyout::Model {
-        peer: st
-            .peers
-            .lock()
-            .ok()
-            .and_then(|g| g.first().map(|(_, n)| n.clone())),
+        peer,
+        phone,
+        now: minute_now(),
         clipboard_on: st
             .settings
             .lock()
@@ -392,6 +444,8 @@ fn flyout_action(raw: isize, cmds: &UnboundedSender<Cmd>, a: crate::flyout::Acti
         crate::flyout::Action::ShowScreen => post_command(raw, ID_SCREEN),
         crate::flyout::Action::ToggleCamera => post_command(raw, ID_CAMERA),
         crate::flyout::Action::CameraWindow => post_command(raw, ID_CAMERA_WINDOW),
+        // Opens the main window on Home.
+        crate::flyout::Action::OpenRelay => post_command(raw, ID_OPEN_MAIN),
         crate::flyout::Action::Dropped(files) => {
             let _ = cmds.send(Cmd::SendFiles(files));
         }
@@ -635,16 +689,7 @@ fn page_model(st: &State) -> crate::pages::Model {
     use crate::pages::home;
     let phone = st.peers.lock().ok().and_then(|g| g.first().cloned());
     let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
-    // A camera request still waiting for the phone is not a session (the
-    // Camera tile cancels it, as on the flyout). The screen and camera stay
-    // open while they wait to reconnect; only a live picture is contact.
-    let (screen, screen_live, camera, camera_live, control) = (
-        crate::screen_window::is_open(),
-        crate::screen_window::is_streaming(),
-        crate::camera::is_running(),
-        crate::camera::is_streaming(),
-        crate::control::is_active(),
-    );
+    let (screen, screen_live, camera, camera_live, control) = session_flags();
     let (notes, locked) = {
         let ns = notify_ui();
         let notes: Vec<pb_protocol::control::Notification> = ns
@@ -657,17 +702,7 @@ fn page_model(st: &State) -> crate::pages::Model {
     };
     let now = crate::timeline::now_unix();
     let (timeline, recent) = timeline_model(settings.keep_history, now);
-    let phone = phone.map(|(id, name)| {
-        let c = crate::core::contact(&id);
-        home::PhoneIn {
-            name,
-            fingerprint: id.fingerprint()[..9].to_owned(),
-            changed: crate::core::is_changed(&id),
-            open: c.open > 0,
-            last_seen: c.last_seen,
-            path: c.path,
-        }
-    });
+    let phone = phone.map(phone_in);
     crate::pages::Model {
         home: home::build(home::Inputs {
             phone,
@@ -2240,6 +2275,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
             }
+            refresh_flyout(st);
             LRESULT(0)
         }
         WM_TOAST => {
@@ -2291,6 +2327,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
             }
+            refresh_flyout(st);
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_NOTIFY => {

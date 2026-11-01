@@ -25,7 +25,6 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             Direct2D::D2D1_ANTIALIAS_MODE_ALIASED,
-            Dwm::DwmExtendFrameIntoClientArea,
             Gdi::{
                 EnumDisplayMonitors, GetMonitorInfoW, InvalidateRect, MonitorFromPoint,
                 ScreenToClient, UpdateWindow, ValidateRect, HDC, HMONITOR, MONITORINFO,
@@ -34,26 +33,25 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
                 GetFocus, GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
                 TRACKMOUSEEVENT, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
             },
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
-                GetWindowRect, IsIconic, IsZoomed, KillTimer, LoadCursorW, LoadIconW, PostMessageW,
+                CreateWindowExW, DefWindowProcW, GetClientRect, GetCursorPos, GetWindowRect,
+                IsIconic, IsZoomed, KillTimer, LoadCursorW, LoadIconW, PostMessageW,
                 RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, EN_CHANGE,
                 EN_KILLFOCUS, EN_SETFOCUS, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
                 MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
                 SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
-                WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
-                WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
-                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
-                WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW,
-                WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WM_COMMAND,
+                WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+                WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
+                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
+                WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
+                WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -62,7 +60,7 @@ use windows::{
 use crate::{
     app_name::APP_NAME,
     core::{Log, SharedSettings},
-    d2d::{Backdrop, Surface},
+    d2d::{self, Backdrop, Surface},
     ease::Anim,
     fluent::{self, rectf, round_rect, text, Align, Canvas, Font, Palette, RectF},
     focus,
@@ -1251,97 +1249,75 @@ struct Timing {
 }
 
 /// Creates the window (hidden, title bar already dropped) and then its
-/// surface at the final client size. Without Mica the window must not lack a
-/// redirection bitmap (an HWND swap chain needs it), so a window made for
-/// Mica is remade plain, with an opaque surface, when Mica fell through.
+/// surface at the final client size, Mica when `for_mica` and available
+/// (`d2d::make_window` remakes it plain, with an opaque surface, otherwise).
 fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface, Timing), String> {
     let t0 = Instant::now();
-    // SAFETY: class registration (a repeat fails harmlessly), window creation
-    // on the UI thread, then a frame recalculation (our WM_NCCALCSIZE drops
-    // the standard title bar) before the surface measures the client area.
-    let hwnd = unsafe {
-        let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinstance.into(),
-            lpszClassName: CLASS,
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            // The app icon (resource 1) for the taskbar and Alt+Tab.
-            hIcon: LoadIconW(
-                Some(hinstance.into()),
-                PCWSTR(std::ptr::without_provenance::<u16>(1)),
-            )
-            .unwrap_or_default(),
-            // No background brush: every pixel is ours (WM_ERASEBKGND).
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let ex = if for_mica {
-            WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP
-        } else {
-            WS_EX_APPWINDOW | WINDOW_EX_STYLE::default()
-        };
-        let title: Vec<u16> = APP_NAME.encode_utf16().chain([0]).collect();
-        let h = CreateWindowExW(
-            ex,
-            CLASS,
-            PCWSTR(title.as_ptr()),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-            rect.0,
-            rect.1,
-            rect.2,
-            rect.3,
-            None,
-            None,
-            Some(hinstance.into()),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-        let _ = SetWindowPos(
-            h,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-        h
-    };
-    let window_ms = t0.elapsed().as_millis();
-    let t1 = Instant::now();
     let want = if for_mica {
         Backdrop::Mica
     } else {
         Backdrop::Opaque
     };
-    match Surface::new(hwnd, want) {
-        Ok(s) if s.backdrop() == want => {
-            let surface_ms = t1.elapsed().as_millis();
-            Ok((
-                hwnd,
-                s,
-                Timing {
-                    window_ms,
-                    surface_ms,
-                },
-            ))
+    let made = d2d::make_window(want, |extra| {
+        // SAFETY: class registration (a repeat fails harmlessly), window
+        // creation on the UI thread, then a frame recalculation (our
+        // WM_NCCALCSIZE drops the standard title bar) before the surface
+        // measures the client area.
+        unsafe {
+            let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(wndproc),
+                hInstance: hinstance.into(),
+                lpszClassName: CLASS,
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                // The app icon (resource 1) for the taskbar and Alt+Tab.
+                hIcon: LoadIconW(
+                    Some(hinstance.into()),
+                    PCWSTR(std::ptr::without_provenance::<u16>(1)),
+                )
+                .unwrap_or_default(),
+                // No background brush: every pixel is ours (WM_ERASEBKGND).
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            let title: Vec<u16> = APP_NAME.encode_utf16().chain([0]).collect();
+            let h = CreateWindowExW(
+                WS_EX_APPWINDOW | extra,
+                CLASS,
+                PCWSTR(title.as_ptr()),
+                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                rect.0,
+                rect.1,
+                rect.2,
+                rect.3,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            let _ = SetWindowPos(
+                h,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            Ok(h)
         }
-        other => {
-            drop(other);
-            // SAFETY: our own window, not yet shown or registered anywhere.
-            let _ = unsafe { DestroyWindow(hwnd) };
-            if for_mica {
-                make_window(rect, false).map(|(h, s, t)| {
-                    // The discarded attempt counts as window time.
-                    let window_ms = t0.elapsed().as_millis() - t.surface_ms;
-                    (h, s, Timing { window_ms, ..t })
-                })
-            } else {
-                Err("no Direct2D surface".into())
-            }
-        }
-    }
+    })?;
+    // A discarded Mica attempt counts as window time.
+    let window_ms = t0.elapsed().as_millis().saturating_sub(made.surface_ms);
+    Ok((
+        made.hwnd,
+        made.surface,
+        Timing {
+            window_ms,
+            surface_ms: made.surface_ms,
+        },
+    ))
 }
 
 fn create(page: Page, opened: Instant) {
@@ -1362,18 +1338,6 @@ fn create(page: Page, opened: Instant) {
             return;
         }
     };
-    if surface.backdrop() == Backdrop::Mica {
-        // The whole window is "frame", so Mica shows behind the
-        // composition swap chain wherever it is transparent.
-        let m = MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
-        };
-        // SAFETY: attribute call on our own window.
-        let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &m) };
-    }
     fluent::frame(hwnd, false);
     let now = Instant::now();
     SURFACE.with(|cell| *cell.borrow_mut() = Some((hwnd.0 as isize, surface)));
@@ -1475,7 +1439,7 @@ pub fn refresh() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, HTCLIENT};
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, HTCAPTION, HTCLIENT};
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
         RECT {

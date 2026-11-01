@@ -245,6 +245,8 @@ pub enum Font {
     IconLarge,
     /// 10 px glyphs: the caption buttons (the size Windows draws them at).
     IconSmall,
+    /// 32 px monospaced: the pairing code in its dialog card.
+    Code,
 }
 
 impl Font {
@@ -262,6 +264,7 @@ impl Font {
             Font::Icon => (w!("Segoe Fluent Icons"), 16.0, 400),
             Font::IconLarge => (w!("Segoe Fluent Icons"), 20.0, 400),
             Font::IconSmall => (w!("Segoe Fluent Icons"), 10.0, 400),
+            Font::Code => (w!("Consolas"), 32.0, 600),
         }
     }
 }
@@ -371,19 +374,15 @@ pub fn text(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32, align: Align) {
     }
 }
 
-/// `s` wrapped onto as many lines as fit in `r`, from its top-left; what
-/// does not fit is clipped.
-pub fn text_wrapped(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32) {
-    if s.is_empty() || r.right <= r.left || r.bottom <= r.top {
-        return;
-    }
-    let key = (font, c.s.to_bits());
-    let f = WRAPPED.with(|m| {
+/// The word-wrapping, top-aligned format for `font` at scale `s`.
+fn wrapped_format(font: Font, s: f32) -> Option<IDWriteTextFormat> {
+    let key = (font, s.to_bits());
+    WRAPPED.with(|m| {
         let mut m = m.borrow_mut();
         if let Some(f) = m.get(&key) {
             return Some(f.clone());
         }
-        let f = make_format(font, c.s, Align::Left).ok()?;
+        let f = make_format(font, s, Align::Left).ok()?;
         // SAFETY: setters on the fresh format made above (not shared yet).
         unsafe {
             f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP).ok()?;
@@ -392,8 +391,42 @@ pub fn text_wrapped(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32) {
         }
         m.insert(key, f.clone());
         Some(f)
-    });
-    let Some(f) = f else {
+    })
+}
+
+/// Height in pixels `text_wrapped` needs for `s` at `width`, and the
+/// height of one line (to cap a box at whole lines). Zero for empty text.
+/// Call only once a `Surface` exists (it needs the DirectWrite factory).
+pub fn wrapped_height(font: Font, s: f32, text: &str, width: f32) -> (f32, f32) {
+    let Some(f) = wrapped_format(font, s) else {
+        return (0.0, 0.0);
+    };
+    let (_, dwrite) = d2d::factories();
+    let measure = |t: &str| {
+        let mut m = DWRITE_TEXT_METRICS::default();
+        // SAFETY: a text layout made and measured here.
+        unsafe {
+            let layout = dwrite
+                .CreateTextLayout(&utf16(t), &f, width.max(1.0), f32::MAX / 4.0)
+                .ok()?;
+            layout.GetMetrics(&mut m).ok()?;
+        }
+        Some(m.height)
+    };
+    let line = measure("X").unwrap_or(0.0);
+    if text.is_empty() {
+        return (0.0, line);
+    }
+    (measure(text).unwrap_or(0.0), line)
+}
+
+/// `s` wrapped onto as many lines as fit in `r`, from its top-left; what
+/// does not fit is clipped.
+pub fn text_wrapped(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32) {
+    if s.is_empty() || r.right <= r.left || r.bottom <= r.top {
+        return;
+    }
+    let Some(f) = wrapped_format(font, c.s) else {
         return;
     };
     // SAFETY: drawing calls inside the surface's BeginDraw/EndDraw.
@@ -1070,6 +1103,28 @@ mod tests {
             .expect("draw");
         assert!(width > 40.0, "untrimmed width {width}");
         assert!(trimmed <= 40.5, "trimmed to the box: {trimmed}");
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wrapped_height_counts_the_lines() {
+        let hwnd = crate::d2d::test_window();
+        let surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        let (empty, line) = wrapped_height(Font::Body, 1.0, "", 200.0);
+        assert_eq!(empty, 0.0);
+        assert!(line > 14.0 && line < 30.0, "one Body line: {line}");
+        let (one, _) = wrapped_height(Font::Body, 1.0, "Accept", 200.0);
+        assert!((one - line).abs() < 0.5, "{one} vs {line}");
+        let long = "word ".repeat(60);
+        let (many, _) = wrapped_height(Font::Body, 1.0, &long, 200.0);
+        assert!(many > 5.0 * line, "wraps onto many lines: {many}");
+        let (big, big_line) = wrapped_height(Font::Body, 2.0, &long, 400.0);
+        assert!((big_line - 2.0 * line).abs() < 1.0 && big > 1.5 * many);
         drop(surface);
         // SAFETY: our own test window, made above on this thread.
         unsafe {

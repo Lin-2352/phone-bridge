@@ -1,23 +1,24 @@
-//! Fluent-style flyout opened by left-clicking the tray icon: link status,
-//! a drop zone for files, and Quick Settings style toggle tiles (Camera,
-//! Phone screen, Control phone or Pair device, Clipboard, Send files) under
-//! small group captions, a status line, plus settings and close. Hover and
-//! press fade in and out (`ease`). It stays open when another window is
-//! clicked, so files can be dragged in from Explorer; it closes with Esc, the
-//! close button, the tray icon, or after a drop.
+//! Fluent-style flyout opened by left-clicking the tray icon: a header with
+//! the phone's name and status (the Home hero card's builder), a drop zone
+//! for files, Quick Settings style toggle tiles (Camera, Phone screen,
+//! Control phone or Pair device, Clipboard, Send files) under small group
+//! captions, a status line with "Open Relay", plus settings and close.
+//! Drawn with Direct2D over Mica (opaque token surface when Mica is
+//! unavailable). Hover and press fade in and out (`ease`). It stays open
+//! when another window is clicked, so files can be dragged in from
+//! Explorer; it closes with Esc, the close button, the tray icon, or after
+//! a drop.
 #![allow(unsafe_code)]
 
-use std::sync::Mutex;
-use std::time::Instant;
+use std::{cell::RefCell, sync::Mutex, time::Instant};
 
 use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            GetMonitorInfoW, InvalidateRect, MonitorFromPoint, ScreenToClient, DT_END_ELLIPSIS,
-            DT_LEFT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, MONITORINFO,
-            MONITOR_DEFAULTTONEAREST,
+            GetMonitorInfoW, InvalidateRect, MonitorFromPoint, ScreenToClient, UpdateWindow,
+            ValidateRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -27,28 +28,37 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, GetWindowRect,
                 KillTimer, LoadCursorW, RegisterClassW, SetForegroundWindow, SetTimer,
                 SetWindowPos, ShowWindow, HTCLIENT, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
-                SW_SHOW, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSW,
-                WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                SWP_NOZORDER, SW_SHOW, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
+                WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
+                WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
     },
 };
 
-use crate::ease;
-use crate::fluent::{self, glyph, px};
-use crate::flyout_tiles::{release_target, status_line, tiles, TileKind};
+use crate::{
+    d2d::{self, Backdrop, Surface},
+    ease,
+    fluent::{self, glyph, px, rectf, round_rect, text, text_wrapped, Align, Canvas, Font, RectF},
+    flyout_tiles::{release_target, status_line, tiles, TileKind},
+    pages::home::{self, PhoneCard},
+    tokens::RADIUS,
+};
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const CLASS: PCWSTR = w!("PhoneBridgeFlyout");
 /// Logical (96-dpi) size of the flyout.
 const W: i32 = 360;
-const H: i32 = 404;
+const H: i32 = 412;
+/// Logical width of the "Open Relay" button.
+const OPEN_W: i32 = 112;
 /// Hover and press animation tick (about 60 fps); killed once settled.
 const ANIM_TIMER: usize = 1;
 const ANIM_MS: u32 = 16;
 /// Characters the status line keeps before it is clipped with an ellipsis.
 const STATUS_CHARS: usize = 56;
+/// Opacity of cards and tiles over Mica, so the backdrop shows through.
+const MICA_ALPHA: f32 = 0.6;
 const CAMERA: char = '\u{E722}';
 const CHEVRON: char = '\u{E76C}';
 
@@ -56,6 +66,10 @@ const CHEVRON: char = '\u{E76C}';
 #[derive(Clone, Default)]
 pub struct Model {
     pub peer: Option<String>,
+    /// The paired phone as Home's hero card shows it (`home::phone_card`).
+    pub phone: Option<PhoneCard>,
+    /// Unix seconds (whole minutes) for "Last seen 5 min ago".
+    pub now: u64,
     pub clipboard_on: bool,
     /// The phone-screen window is open.
     pub screen_on: bool,
@@ -76,6 +90,8 @@ pub enum Action {
     ToggleCamera,
     CameraWindow,
     Settings,
+    /// The main window on Home.
+    OpenRelay,
     Dropped(Vec<std::path::PathBuf>),
 }
 
@@ -95,7 +111,7 @@ struct State {
     on_action: Box<dyn Fn(Action) + Send>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Hit {
     Drop,
     Tile(TileKind),
@@ -103,9 +119,10 @@ enum Hit {
     CameraInfo,
     Settings,
     Close,
+    OpenRelay,
 }
 
-const SLOTS: usize = 9;
+const SLOTS: usize = 10;
 
 impl Hit {
     fn slot(self) -> usize {
@@ -119,6 +136,7 @@ impl Hit {
             Hit::CameraInfo => 6,
             Hit::Settings => 7,
             Hit::Close => 8,
+            Hit::OpenRelay => 9,
         }
     }
 }
@@ -141,8 +159,15 @@ const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
 const WM_EXITSIZEMOVE: u32 = 0x0232;
 const HTCAPTION: isize = 2;
 
+thread_local! {
+    /// The Direct2D surface (UI thread), keyed by the window it draws.
+    static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
+}
+
 /// Layout rectangles in physical pixels for a given DPI scale.
 struct Layout {
+    /// Phone badge, name and status; not a hit, so it drags the flyout.
+    header: RECT,
     badge: RECT,
     settings: RECT,
     close: RECT,
@@ -156,6 +181,7 @@ struct Layout {
     tiles: [RECT; 5],
     camera_info: RECT,
     status: RECT,
+    open_relay: RECT,
 }
 
 fn tile_index(k: TileKind) -> usize {
@@ -193,9 +219,20 @@ fn layout(s: f32) -> Layout {
         bottom: p(top + 18),
     };
     let camera = cell(0, 158);
+    let settings = sq(W - 16 - 32 - 36, 20, 32);
+    let open_relay = RECT {
+        left: p(W - 16 - OPEN_W),
+        ..row(364, 396)
+    };
     Layout {
+        header: RECT {
+            left: p(16),
+            top: p(16),
+            right: settings.left - p(4),
+            bottom: p(56),
+        },
         badge: sq(16, 16, 40),
-        settings: sq(W - 16 - 32 - 36, 20, 32),
+        settings,
         close: sq(W - 16 - 32, 20, 32),
         drop: row(72, 124),
         captions: [caption(0, 2, 136), caption(2, 1, 136), caption(0, 3, 256)],
@@ -213,8 +250,241 @@ fn layout(s: f32) -> Layout {
             right: camera.right - p(4),
             bottom: camera.top + p(32),
         },
-        status: row(364, 388),
+        status: RECT {
+            right: open_relay.left - p(8),
+            ..row(364, 396)
+        },
+        open_relay,
     }
+}
+
+fn rf(r: RECT) -> RectF {
+    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
+}
+
+/// What `paint` needs, copied out of the state.
+struct Snapshot {
+    model: Model,
+    hover_t: [f32; SLOTS],
+    press_t: [f32; SLOTS],
+}
+
+fn paint(hwnd: HWND) {
+    let snap = CURRENT.lock().ok().and_then(|g| {
+        g.as_ref()
+            .filter(|st| st.hwnd == hwnd.0 as isize)
+            .map(|st| Snapshot {
+                model: st.model.clone(),
+                hover_t: st.hover_t,
+                press_t: st.press_t,
+            })
+    });
+    let painted = SURFACE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match (snap.as_ref(), slot.as_mut()) {
+            (Some(snap), Some((h, surface))) if *h == hwnd.0 as isize => {
+                let mica = surface.backdrop() == Backdrop::Mica;
+                fluent::paint_with(surface, hwnd, |c, _| draw(c, snap, mica));
+                true
+            }
+            _ => false,
+        }
+    });
+    if !painted {
+        // Nothing to draw with: validate so WM_PAINT does not repeat.
+        // SAFETY: our own window.
+        let _ = unsafe { ValidateRect(Some(hwnd), None) };
+    }
+}
+
+/// Hover and press as translucent layers over whatever is below, so the
+/// same drawing works opaque and over Mica.
+fn states(c: &Canvas, r: &RectF, hov: f32, prs: f32, radius: f32, over: (u32, u32)) {
+    if hov > 0.0 {
+        round_rect(c, r, Some((over.0, hov)), None, radius, false);
+    }
+    if prs > 0.0 {
+        round_rect(c, r, Some((over.1, prs)), None, radius, false);
+    }
+}
+
+fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
+    let (s, p) = (c.s, c.p);
+    let l = layout(s);
+    let m = &snap.model;
+    let hov = |h: Hit| snap.hover_t[h.slot()];
+    let prs = |h: Hit| snap.press_t[h.slot()];
+    let a = if mica { MICA_ALPHA } else { 1.0 };
+    let (small, big) = (RADIUS[0] * s, RADIUS[1] * s);
+
+    // Header: the phone as Home's hero card shows it, settings and close.
+    let badge = rf(l.badge);
+    let (title, sub, sub_rgb, tint) = match &m.phone {
+        Some(card) => {
+            let tint = if card.connected { p.accent } else { p.text2 };
+            match home::warning(card) {
+                Some(w) => (card.name.clone(), w, p.warning, tint),
+                None => (
+                    card.name.clone(),
+                    home::status_line(card, m.now),
+                    p.text2,
+                    tint,
+                ),
+            }
+        }
+        None => (
+            "No device paired".to_owned(),
+            "Pair a phone to start".to_owned(),
+            p.text2,
+            p.text2,
+        ),
+    };
+    let half = (badge.right - badge.left) / 2.0;
+    round_rect(c, &badge, Some((tint, 0.14)), None, half, false);
+    fluent::icon_sized(c, Font::IconLarge, glyph::PHONE, badge, tint);
+    let h = rf(l.header);
+    let tx = badge.right + 12.0 * s;
+    let mid = (h.top + h.bottom) / 2.0;
+    text(
+        c,
+        Font::Subtitle,
+        &title,
+        rectf(tx, h.top, h.right, mid),
+        p.text,
+        Align::Left,
+    );
+    text(
+        c,
+        Font::Caption,
+        &sub,
+        rectf(tx, mid, h.right, h.bottom),
+        sub_rgb,
+        Align::Left,
+    );
+    for (r, g, hit) in [
+        (l.settings, glyph::SETTINGS, Hit::Settings),
+        (l.close, glyph::CLOSE, Hit::Close),
+    ] {
+        let r = rf(r);
+        states(c, &r, hov(hit), prs(hit), small, (p.hover, p.stroke));
+        fluent::icon(c, g, r, p.text2);
+    }
+
+    // Drop zone: icon and hint on one line.
+    let drop = rf(l.drop);
+    round_rect(c, &drop, Some((p.card, a)), None, big, false);
+    states(
+        c,
+        &drop,
+        hov(Hit::Drop),
+        prs(Hit::Drop),
+        big,
+        (p.hover, p.stroke),
+    );
+    round_rect(c, &drop, None, Some(p.text2), big, true);
+    let ic = rectf(
+        drop.left + 16.0 * s,
+        drop.top,
+        drop.left + 44.0 * s,
+        drop.bottom,
+    );
+    fluent::icon_sized(c, Font::IconLarge, glyph::UPLOAD, ic, p.text2);
+    let label = match &m.peer {
+        Some(n) => format!("Drop files here to send to {n}"),
+        None => "Pair a device to send files".to_owned(),
+    };
+    let lr = rectf(
+        ic.right + 8.0 * s,
+        drop.top,
+        drop.right - 12.0 * s,
+        drop.bottom,
+    );
+    text(c, Font::Caption, &label, lr, p.text2, Align::Left);
+
+    // Group captions and dividers.
+    for (r, cap) in l
+        .captions
+        .iter()
+        .zip(["Camera & Screen", "Connection", "Files"])
+    {
+        text(c, Font::Caption, cap, rf(*r), p.text2, Align::Left);
+    }
+    for r in &l.dividers {
+        round_rect(c, &rf(*r), Some((p.stroke, 1.0)), None, 0.0, false);
+    }
+
+    // Tiles.
+    for t in tiles(m) {
+        let hit = Hit::Tile(t.kind);
+        let r = rf(l.tiles[tile_index(t.kind)]);
+        let fg = if !t.enabled {
+            round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
+            mix(p.text, p.card, 0.6)
+        } else if t.on {
+            round_rect(c, &r, Some((p.accent, 1.0)), None, small, false);
+            states(c, &r, 0.12 * hov(hit), 0.25 * prs(hit), small, (p.bg, p.bg));
+            p.on_accent
+        } else {
+            round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
+            states(c, &r, hov(hit), prs(hit), small, (p.hover, p.stroke));
+            p.text
+        };
+        let g = match t.kind {
+            TileKind::Camera => CAMERA,
+            TileKind::Screen => glyph::PHONE,
+            TileKind::Clipboard => glyph::CLIPBOARD,
+            TileKind::SendFile => glyph::SEND,
+            TileKind::Pair if m.peer.is_some() => glyph::KEYBOARD,
+            TileKind::Pair => glyph::ADD,
+        };
+        let ir = rectf(
+            r.left + 12.0 * s,
+            r.top + 10.0 * s,
+            r.left + 36.0 * s,
+            r.top + 34.0 * s,
+        );
+        fluent::icon(c, g, ir, fg);
+        if t.kind == TileKind::Camera {
+            // The camera status window stays reachable even while the
+            // tile itself is dimmed.
+            let ci = rf(l.camera_info);
+            let over = if t.on { p.on_accent } else { p.stroke };
+            let k = 0.2 * hov(Hit::CameraInfo) + 0.2 * prs(Hit::CameraInfo);
+            if k > 0.0 {
+                round_rect(c, &ci, Some((over, k)), None, small, false);
+            }
+            let cf = if t.enabled { fg } else { p.text2 };
+            fluent::icon_sized(c, Font::IconSmall, CHEVRON, ci, cf);
+        }
+        let tr = rectf(
+            r.left + 12.0 * s,
+            r.top + 38.0 * s,
+            r.right - 6.0 * s,
+            r.bottom - 4.0 * s,
+        );
+        text_wrapped(c, Font::Caption, &t.label, tr, fg);
+    }
+
+    // Footer: the phone and the last activity, and "Open Relay".
+    text(
+        c,
+        Font::Caption,
+        &status_line(m, STATUS_CHARS),
+        rf(l.status),
+        p.text2,
+        Align::Left,
+    );
+    let o = rf(l.open_relay);
+    round_rect(c, &o, Some((p.card, 1.0)), Some(p.stroke), small, false);
+    states(
+        c,
+        &o,
+        hov(Hit::OpenRelay),
+        prs(Hit::OpenRelay),
+        small,
+        (p.hover, p.stroke),
+    );
+    text(c, Font::Body, "Open Relay", o, p.text, Align::Center);
 }
 
 /// Blend two 0xRRGGBB colours: `t` = 0 gives `a`, 1 gives `b`.
@@ -227,180 +497,8 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
     ch(0) | ch(8) | ch(16)
 }
 
-fn paint(hwnd: HWND) {
-    let Ok(guard) = CURRENT.lock() else { return };
-    let Some(st) = guard.as_ref() else { return };
-    let s = fluent::scale(hwnd);
-    let p = fluent::palette();
-    let f = fluent::Fonts::new(s);
-    let l = layout(s);
-    let hov = |h: Hit| st.hover_t[h.slot()];
-    let prs = |h: Hit| st.press_t[h.slot()];
-    let radius = fluent::corner_radius(s, 8);
-    fluent::gdi_paint(hwnd, |hdc, _| {
-        // Header: device badge, name, status, settings and close.
-        fluent::gdi_round_rect(hdc, &l.badge, p.card, Some(p.stroke), px(s, 10), false);
-        fluent::gdi_icon(hdc, f.icon_big, glyph::PHONE, l.badge, p.accent);
-        let (title, sub) = match &st.model.peer {
-            Some(n) => (n.clone(), "Paired".to_owned()),
-            None => (
-                "No device paired".to_owned(),
-                "Pair a phone to start".to_owned(),
-            ),
-        };
-        let tx = l.badge.right + px(s, 12);
-        fluent::gdi_text(
-            hdc,
-            f.title,
-            &title,
-            RECT {
-                left: tx,
-                top: px(s, 16),
-                right: l.settings.left - px(s, 4),
-                bottom: px(s, 36),
-            },
-            p.text,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-        );
-        fluent::gdi_text(
-            hdc,
-            f.small,
-            &sub,
-            RECT {
-                left: tx,
-                top: px(s, 36),
-                right: l.settings.left,
-                bottom: px(s, 56),
-            },
-            p.text2,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER,
-        );
-        for (r, g, h) in [
-            (l.settings, glyph::SETTINGS, Hit::Settings),
-            (l.close, glyph::CLOSE, Hit::Close),
-        ] {
-            if hov(h) > 0.0 || prs(h) > 0.0 {
-                let fill = mix(mix(p.bg, p.hover, hov(h)), p.stroke, prs(h));
-                fluent::gdi_round_rect(hdc, &r, fill, None, px(s, 6), false);
-            }
-            fluent::gdi_icon(hdc, f.icon, g, r, p.text2);
-        }
-
-        // Drop zone: icon and hint on one line.
-        let drop_fill = mix(
-            mix(p.card, p.hover, hov(Hit::Drop)),
-            p.stroke,
-            prs(Hit::Drop),
-        );
-        fluent::gdi_round_rect(hdc, &l.drop, drop_fill, Some(p.text2), px(s, 10), true);
-        let ic = RECT {
-            left: l.drop.left + px(s, 16),
-            top: l.drop.top,
-            right: l.drop.left + px(s, 44),
-            bottom: l.drop.bottom,
-        };
-        fluent::gdi_icon(hdc, f.icon_big, glyph::UPLOAD, ic, p.text2);
-        let label = match &st.model.peer {
-            Some(n) => format!("Drop files here to send to {n}"),
-            None => "Pair a device to send files".to_owned(),
-        };
-        let lr = RECT {
-            left: ic.right + px(s, 8),
-            right: l.drop.right - px(s, 12),
-            ..l.drop
-        };
-        fluent::gdi_text(
-            hdc,
-            f.small,
-            &label,
-            lr,
-            p.text2,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-        );
-
-        // Group captions and dividers.
-        for (r, c) in l
-            .captions
-            .iter()
-            .zip(["Camera & Screen", "Connection", "Files"])
-        {
-            fluent::gdi_text(
-                hdc,
-                f.small,
-                c,
-                *r,
-                p.text2,
-                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-            );
-        }
-        for r in &l.dividers {
-            fluent::gdi_round_rect(hdc, r, p.stroke, None, 0, false);
-        }
-
-        // Tiles.
-        for t in tiles(&st.model) {
-            let h = Hit::Tile(t.kind);
-            let r = l.tiles[tile_index(t.kind)];
-            let (fill, stroke, fg) = if !t.enabled {
-                (p.card, Some(p.stroke), mix(p.text, p.card, 0.6))
-            } else if t.on {
-                let base = mix(p.accent, p.bg, 0.12 * hov(h));
-                (mix(base, p.bg, 0.25 * prs(h)), None, p.on_accent)
-            } else {
-                let base = mix(p.card, p.hover, hov(h));
-                (mix(base, p.stroke, prs(h)), Some(p.stroke), p.text)
-            };
-            fluent::gdi_round_rect(hdc, &r, fill, stroke, radius, false);
-            let g = match t.kind {
-                TileKind::Camera => CAMERA,
-                TileKind::Screen => glyph::PHONE,
-                TileKind::Clipboard => glyph::CLIPBOARD,
-                TileKind::SendFile => glyph::SEND,
-                TileKind::Pair if st.model.peer.is_some() => glyph::KEYBOARD,
-                TileKind::Pair => glyph::ADD,
-            };
-            let ir = RECT {
-                left: r.left + px(s, 12),
-                top: r.top + px(s, 10),
-                right: r.left + px(s, 36),
-                bottom: r.top + px(s, 34),
-            };
-            fluent::gdi_icon(hdc, f.icon, g, ir, fg);
-            if t.kind == TileKind::Camera {
-                // The camera status window stays reachable even while the
-                // tile itself is dimmed.
-                let c = Hit::CameraInfo;
-                let over = if t.on { p.on_accent } else { p.stroke };
-                if hov(c) > 0.0 || prs(c) > 0.0 {
-                    let f2 = mix(fill, over, 0.2 * hov(c) + 0.2 * prs(c));
-                    fluent::gdi_round_rect(hdc, &l.camera_info, f2, None, px(s, 6), false);
-                }
-                let cf = if t.enabled { fg } else { p.text2 };
-                fluent::gdi_icon(hdc, f.small, CHEVRON, l.camera_info, cf);
-            }
-            let tr = RECT {
-                left: r.left + px(s, 12),
-                top: r.top + px(s, 38),
-                right: r.right - px(s, 6),
-                bottom: r.bottom - px(s, 4),
-            };
-            fluent::gdi_text(hdc, f.small, &t.label, tr, fg, DT_LEFT | DT_WORDBREAK);
-        }
-
-        // Status line: the phone and the last activity.
-        fluent::gdi_text(
-            hdc,
-            f.small,
-            &status_line(&st.model, STATUS_CHARS),
-            l.status,
-            p.text2,
-            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
-        );
-    });
-}
-
-fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Hit> {
-    let l = layout(fluent::scale(hwnd));
+/// What is under client point (`x`, `y`); `None` is drag area.
+fn hit_at(l: &Layout, x: i32, y: i32) -> Option<Hit> {
     let t = |k: TileKind| (l.tiles[tile_index(k)], Hit::Tile(k));
     [
         (l.settings, Hit::Settings),
@@ -413,10 +511,15 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Hit> {
         t(TileKind::Clipboard),
         t(TileKind::SendFile),
         t(TileKind::Pair),
+        (l.open_relay, Hit::OpenRelay),
     ]
     .into_iter()
     .find(|(r, _)| fluent::inside(r, x, y))
     .map(|(_, h)| h)
+}
+
+fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Hit> {
+    hit_at(&layout(fluent::scale(hwnd)), x, y)
 }
 
 /// Where each eased value is heading: hovered and pressed targets are 1.
@@ -499,6 +602,35 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        // Resize and present in the same message: no stale or black edges.
+        WM_SIZE => {
+            // SAFETY: synchronous repaint of our own window.
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                let _ = UpdateWindow(hwnd);
+            }
+            LRESULT(0)
+        }
+        // Dragged onto a monitor with another scale: take the size Windows
+        // suggests, so the scaled layout fits the window.
+        WM_DPICHANGED => {
+            // SAFETY: lParam is the suggested RECT Windows passes for this message.
+            let r = unsafe { *(lparam.0 as *const RECT) };
+            // SAFETY: moves our own window to the rect Windows suggested.
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+            repaint(hwnd);
+            LRESULT(0)
+        }
         // Empty areas act as a title bar: drag the flyout anywhere.
         WM_NCHITTEST => {
             let mut pt = POINT {
@@ -648,6 +780,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     act(Action::Settings);
                     close();
                 }
+                Some(Hit::OpenRelay) => {
+                    act(Action::OpenRelay);
+                    close();
+                }
                 Some(Hit::Close) => close(),
                 None => {}
             }
@@ -681,8 +817,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_DESTROY => {
+            fluent::unregister_window(hwnd);
             // SAFETY: our own timer; harmless if it is not running.
             let _ = unsafe { KillTimer(Some(hwnd), ANIM_TIMER) };
+            // The surface's composition target refers to this window.
+            let surface = SURFACE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                if slot.as_ref().is_some_and(|(h, _)| *h == hwnd.0 as isize) {
+                    slot.take()
+                } else {
+                    None
+                }
+            });
+            drop(surface);
             if let Ok(mut g) = CURRENT.lock() {
                 if g.as_ref().is_some_and(|s| s.hwnd == hwnd.0 as isize) {
                     *g = None;
@@ -697,54 +844,64 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
 /// Open the flyout near the cursor (the tray icon), or close it if open.
 pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
-    if CURRENT.lock().map(|g| g.is_some()).unwrap_or(false) {
+    if is_open() {
         close();
         return;
     }
-    // SAFETY: window creation and positioning on the UI thread.
-    unsafe {
-        let Ok(hinstance) = GetModuleHandleW(None) else {
-            return;
-        };
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinstance.into(),
-            lpszClassName: CLASS,
-            // Without a class cursor Windows keeps showing the busy cursor.
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let Ok(hwnd) = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            CLASS,
-            w!("Relay"),
-            WS_POPUP,
-            0,
-            0,
-            W,
-            H,
-            None,
-            None,
-            Some(hinstance.into()),
-            None,
-        ) else {
-            return;
-        };
-        if let Ok(mut g) = CURRENT.lock() {
-            *g = Some(State {
-                hwnd: hwnd.0 as isize,
-                model,
-                hover: None,
-                pressed: None,
-                tracking: false,
-                hover_t: [0.0; SLOTS],
-                press_t: [0.0; SLOTS],
-                animating: false,
-                last_tick: Instant::now(),
-                on_action,
-            });
+    let made = d2d::make_window(Backdrop::Mica, |extra| {
+        // SAFETY: class registration (a repeat fails harmlessly) and window
+        // creation on the UI thread; the window stays hidden.
+        unsafe {
+            let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(wndproc),
+                hInstance: hinstance.into(),
+                lpszClassName: CLASS,
+                // Without a class cursor Windows keeps showing the busy cursor.
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                // No background brush: every pixel is ours (WM_ERASEBKGND).
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_TOPMOST | extra,
+                CLASS,
+                w!("Relay"),
+                WS_POPUP,
+                0,
+                0,
+                W,
+                H,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+            .map_err(|e| e.to_string())
         }
+    });
+    // Nothing can draw (no Direct2D at all): no flyout.
+    let Ok(d2d::Made { hwnd, surface, .. }) = made else {
+        return;
+    };
+    // Only the final window: a discarded Mica attempt never gets here.
+    SURFACE.with(|cell| *cell.borrow_mut() = Some((hwnd.0 as isize, surface)));
+    if let Ok(mut g) = CURRENT.lock() {
+        *g = Some(State {
+            hwnd: hwnd.0 as isize,
+            model,
+            hover: None,
+            pressed: None,
+            tracking: false,
+            hover_t: [0.0; SLOTS],
+            press_t: [0.0; SLOTS],
+            animating: false,
+            last_tick: Instant::now(),
+            on_action,
+        });
+    }
+    // SAFETY: positioning and showing our own window on the UI thread.
+    unsafe {
         let s = fluent::scale(hwnd);
         let (w, h) = (px(s, W), px(s, H));
         let mut pt = POINT::default();
@@ -776,8 +933,28 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
         fluent::frame(hwnd, false);
         DragAcceptFiles(hwnd, true);
+        fluent::register_window(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+pub fn is_open() -> bool {
+    CURRENT.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// The phone's status changed while the flyout is open: redraw the header,
+/// only when it really changed. UI thread only.
+pub fn update_phone(phone: Option<PhoneCard>, now: u64) {
+    let changed = CURRENT.lock().ok().and_then(|mut g| {
+        let st = g.as_mut()?;
+        let changed = st.model.phone != phone || st.model.now != now;
+        st.model.phone = phone;
+        st.model.now = now;
+        changed.then_some(st.hwnd)
+    });
+    if let Some(h) = changed {
+        repaint(HWND(h as *mut _));
     }
 }
 
@@ -786,5 +963,134 @@ pub fn close() {
     if let Some(h) = h {
         // SAFETY: our own window.
         let _ = unsafe { DestroyWindow(HWND(h as *mut _)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn overlaps(a: &RECT, b: &RECT) -> bool {
+        a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+    }
+
+    #[test]
+    fn flyout_has_open_relay_and_header() {
+        for s in [1.0, 1.5, 2.0] {
+            let l = layout(s);
+            let (h, o) = (l.header, l.open_relay);
+            assert!(h.right > h.left && h.bottom > h.top, "header at {s}");
+            assert!(o.right > o.left && o.bottom > o.top, "Open Relay at {s}");
+            let (w, ht) = (px(s, W), px(s, H));
+            for r in [h, o] {
+                assert!(r.left >= 0 && r.right <= w, "{r:?} fits the width at {s}");
+                assert!(r.top >= 0 && r.bottom <= ht, "{r:?} fits the height at {s}");
+                for t in l.tiles.iter().chain([&l.drop, &l.settings, &l.close]) {
+                    assert!(!overlaps(&r, t), "{r:?} overlaps {t:?} at {s}");
+                }
+            }
+            assert!(
+                !overlaps(&o, &l.status),
+                "Open Relay beside the status line"
+            );
+            assert!(!overlaps(&h, &o));
+            assert!(l.tiles.iter().all(|t| t.bottom <= ht));
+            // The button is a hit; the header stays a drag area.
+            let (x, y) = ((o.left + o.right) / 2, (o.top + o.bottom) / 2);
+            assert!(matches!(hit_at(&l, x, y), Some(Hit::OpenRelay)));
+            let (x, y) = (l.badge.right + px(s, 20), (h.top + h.bottom) / 2);
+            assert!(fluent::inside(&h, x, y));
+            assert!(hit_at(&l, x, y).is_none(), "header text drags the flyout");
+        }
+    }
+
+    #[test]
+    fn every_hit_has_its_own_slot() {
+        let hits = [
+            Hit::Drop,
+            Hit::Tile(TileKind::Camera),
+            Hit::Tile(TileKind::Screen),
+            Hit::Tile(TileKind::Clipboard),
+            Hit::Tile(TileKind::SendFile),
+            Hit::Tile(TileKind::Pair),
+            Hit::CameraInfo,
+            Hit::Settings,
+            Hit::Close,
+            Hit::OpenRelay,
+        ];
+        let mut slots: Vec<usize> = hits.iter().map(|h| h.slot()).collect();
+        slots.sort();
+        slots.dedup();
+        assert_eq!(slots.len(), SLOTS);
+        assert!(slots.iter().all(|&i| i < SLOTS));
+    }
+
+    #[test]
+    fn hit_testing_finds_tiles_and_the_camera_chevron() {
+        let l = layout(1.5);
+        let cam = l.tiles[tile_index(TileKind::Camera)];
+        assert!(matches!(
+            hit_at(&l, cam.left + 2, cam.bottom - 2),
+            Some(Hit::Tile(TileKind::Camera))
+        ));
+        let ci = l.camera_info;
+        assert!(matches!(
+            hit_at(&l, ci.left + 2, ci.top + 2),
+            Some(Hit::CameraInfo)
+        ));
+        assert!(hit_at(&l, 1, 1).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn flyout_draws_into_a_hidden_window_with_and_without_a_phone() {
+        use crate::pages::home::Path;
+        let hwnd = crate::d2d::test_window();
+        let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        let card = PhoneCard {
+            name: "RMX3561".into(),
+            fingerprint: "abcd 1234".into(),
+            connected: true,
+            last_seen: None,
+            path: Path::Usb,
+            changed: false,
+        };
+        let phones = [
+            None,
+            Some(card.clone()),
+            Some(PhoneCard {
+                changed: true,
+                connected: false,
+                ..card
+            }),
+        ];
+        for phone in phones {
+            let snap = Snapshot {
+                model: Model {
+                    peer: phone.as_ref().map(|c| c.name.clone()),
+                    phone,
+                    camera_on: true,
+                    camera_fps: 30,
+                    ..Default::default()
+                },
+                hover_t: [0.5; SLOTS],
+                press_t: [0.25; SLOTS],
+            };
+            for mica in [false, true] {
+                surface
+                    .draw(|dc| {
+                        let mut c = Canvas {
+                            dc,
+                            s: 1.5,
+                            p: fluent::palette(),
+                        };
+                        draw(&mut c, &snap, mica);
+                    })
+                    .expect("draw");
+            }
+        }
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        let _ = unsafe { DestroyWindow(hwnd) };
     }
 }

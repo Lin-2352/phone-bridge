@@ -1,15 +1,16 @@
-//! Right-click menu for the tray icon, drawn in the Fluent style (icons,
-//! rounded corners, hover, light/dark). A few verbs only; everything else
-//! lives in the flyout and the settings window.
+//! Right-click menu for the tray icon, drawn in the Fluent style with
+//! Direct2D on an opaque surface (icons, rounded corners, hover,
+//! light/dark). A few verbs only; everything else lives in the flyout and
+//! the main window.
 #![allow(unsafe_code)]
 
-use std::sync::Mutex;
+use std::{cell::RefCell, sync::Mutex};
 
 use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        Graphics::Gdi::{InvalidateRect, DT_LEFT, DT_SINGLELINE, DT_VCENTER},
+        Graphics::Gdi::{InvalidateRect, ValidateRect},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE},
@@ -24,7 +25,11 @@ use windows::{
     },
 };
 
-use crate::fluent::{self, px};
+use crate::{
+    d2d::{Backdrop, Surface},
+    fluent::{self, px, rectf, round_rect, text, Align, Canvas, Font, RectF},
+    tokens::RADIUS,
+};
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const CLASS: PCWSTR = w!("PhoneBridgeMenu");
@@ -34,6 +39,7 @@ const SEP: i32 = 9;
 const PAD: i32 = 4;
 
 /// One entry; `id: 0` is a separator.
+#[derive(Clone)]
 pub struct Item {
     pub glyph: char,
     pub label: String,
@@ -67,6 +73,11 @@ struct State {
 
 static CURRENT: Mutex<Option<State>> = Mutex::new(None);
 
+thread_local! {
+    /// The Direct2D surface (UI thread), keyed by the window it draws.
+    static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
+}
+
 fn rows(s: f32, items: &[Item]) -> Vec<RECT> {
     let mut y = px(s, PAD);
     items
@@ -89,47 +100,56 @@ fn height(s: f32, items: &[Item]) -> i32 {
     rows(s, items).last().map_or(0, |r| r.bottom) + px(s, PAD)
 }
 
+fn rf(r: RECT) -> RectF {
+    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
+}
+
 fn paint(hwnd: HWND) {
-    let Ok(g) = CURRENT.lock() else { return };
-    let Some(st) = g.as_ref() else { return };
-    let s = fluent::scale(hwnd);
-    let p = fluent::palette();
-    let f = fluent::Fonts::new(s);
-    fluent::gdi_paint(hwnd, |hdc, _| {
-        for (i, (item, r)) in st.items.iter().zip(rows(s, &st.items)).enumerate() {
-            if item.id == 0 {
-                let line = RECT {
-                    left: r.left + px(s, 8),
-                    top: r.top + px(s, 4),
-                    right: r.right - px(s, 8),
-                    bottom: r.top + px(s, 5),
-                };
-                fluent::gdi_round_rect(hdc, &line, p.stroke, None, 0, false);
-                continue;
+    // Copied out so the lock is not held while drawing.
+    let snap = CURRENT.lock().ok().and_then(|g| {
+        g.as_ref()
+            .filter(|st| st.hwnd == hwnd.0 as isize)
+            .map(|st| (st.items.clone(), st.hover))
+    });
+    let painted = SURFACE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match (snap, slot.as_mut()) {
+            (Some((items, hover)), Some((h, surface))) if *h == hwnd.0 as isize => {
+                fluent::paint_with(surface, hwnd, |c, _| draw(c, &items, hover));
+                true
             }
-            if st.hover == Some(i) {
-                fluent::gdi_round_rect(hdc, &r, p.hover, None, px(s, 6), false);
-            }
-            let ic = RECT {
-                left: r.left + px(s, 8),
-                right: r.left + px(s, 36),
-                ..r
-            };
-            fluent::gdi_icon(hdc, f.icon, item.glyph, ic, p.text);
-            let tr = RECT {
-                left: r.left + px(s, 44),
-                ..r
-            };
-            fluent::gdi_text(
-                hdc,
-                f.body,
-                &item.label,
-                tr,
-                p.text,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-            );
+            _ => false,
         }
     });
+    if !painted {
+        // Nothing to draw with: validate so WM_PAINT does not repeat.
+        // SAFETY: our own window.
+        let _ = unsafe { ValidateRect(Some(hwnd), None) };
+    }
+}
+
+fn draw(c: &mut Canvas, items: &[Item], hover: Option<usize>) {
+    let (s, p) = (c.s, c.p);
+    for (i, (item, r)) in items.iter().zip(rows(s, items)).enumerate() {
+        let r = rf(r);
+        if item.id == 0 {
+            let line = rectf(
+                r.left + 8.0 * s,
+                r.top + (4.0 * s).round(),
+                r.right - 8.0 * s,
+                r.top + (4.0 * s).round() + 1.0,
+            );
+            round_rect(c, &line, Some((p.stroke, 1.0)), None, 0.0, false);
+            continue;
+        }
+        if hover == Some(i) {
+            round_rect(c, &r, Some((p.hover, 1.0)), None, RADIUS[0] * s, false);
+        }
+        let ic = rectf(r.left + 8.0 * s, r.top, r.left + 36.0 * s, r.bottom);
+        fluent::icon(c, item.glyph, ic, p.text);
+        let tr = rectf(r.left + 44.0 * s, r.top, r.right - 8.0 * s, r.bottom);
+        text(c, Font::Body, &item.label, tr, p.text, Align::Left);
+    }
 }
 
 fn hit(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
@@ -226,6 +246,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_DESTROY => {
+            fluent::unregister_window(hwnd);
+            let surface = SURFACE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                if slot.as_ref().is_some_and(|(h, _)| *h == hwnd.0 as isize) {
+                    slot.take()
+                } else {
+                    None
+                }
+            });
+            drop(surface);
             if let Ok(mut g) = CURRENT.lock() {
                 if g.as_ref().is_some_and(|s| s.hwnd == hwnd.0 as isize) {
                     *g = None;
@@ -251,6 +281,7 @@ pub fn show(owner: HWND, items: Vec<Item>) {
             hInstance: hinstance.into(),
             lpszClassName: CLASS,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // No background brush: every pixel is ours (WM_ERASEBKGND).
             ..Default::default()
         };
         RegisterClassW(&wc);
@@ -270,6 +301,12 @@ pub fn show(owner: HWND, items: Vec<Item>) {
         ) else {
             return;
         };
+        let Ok(surface) = Surface::new(hwnd, Backdrop::Opaque) else {
+            // Nothing can draw (no Direct2D at all): no menu.
+            let _ = DestroyWindow(hwnd);
+            return;
+        };
+        SURFACE.with(|cell| *cell.borrow_mut() = Some((hwnd.0 as isize, surface)));
         let s = fluent::scale(hwnd);
         let (w, h) = (px(s, W), height(s, &items));
         if let Ok(mut g) = CURRENT.lock() {
@@ -295,6 +332,7 @@ pub fn show(owner: HWND, items: Vec<Item>) {
             SWP_NOACTIVATE,
         );
         fluent::frame(hwnd, false);
+        fluent::register_window(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
     }
@@ -305,5 +343,49 @@ pub fn close() {
     if let Some(h) = h {
         // SAFETY: our own window.
         let _ = unsafe { DestroyWindow(HWND(h as *mut _)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn items() -> Vec<Item> {
+        vec![
+            Item::new(fluent::glyph::PHONE, "Open Relay", 24),
+            Item::separator(),
+            Item::new(fluent::glyph::POWER, "Quit Relay", 2),
+        ]
+    }
+
+    #[test]
+    fn menu_rows_stack_and_separators_are_thin() {
+        for s in [1.0, 1.5, 2.0] {
+            let r = rows(s, &items());
+            assert_eq!(r.len(), 3);
+            assert!(r.windows(2).all(|w| w[0].bottom == w[1].top));
+            assert!(r[1].bottom - r[1].top < r[0].bottom - r[0].top);
+            assert_eq!(height(s, &items()), r[2].bottom + px(s, PAD));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn menu_draws_into_a_hidden_window() {
+        let hwnd = crate::d2d::test_window();
+        let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        surface
+            .draw(|dc| {
+                let mut c = Canvas {
+                    dc,
+                    s: 1.5,
+                    p: fluent::palette(),
+                };
+                draw(&mut c, &items(), Some(0));
+            })
+            .expect("draw");
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        let _ = unsafe { DestroyWindow(hwnd) };
     }
 }
