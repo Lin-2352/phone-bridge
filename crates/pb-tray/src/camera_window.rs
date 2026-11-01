@@ -684,7 +684,7 @@ mod tests {
         let picture = Snapshot {
             width: 4,
             height: 2,
-            bgra: vec![0x40, 0x80, 0xC0, 0x00].repeat(8),
+            bgra: [0x40, 0x80, 0xC0, 0x00].repeat(8),
             fps: Some(30),
         };
         for (snapshot, hover) in [
