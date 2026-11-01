@@ -31,18 +31,18 @@ pub fn settled(current: f32, target: f32) -> bool {
 /// Control points of the standard easing curve, cubic-bezier(x1, y1, x2, y2)
 /// from (0, 0) to (1, 1): quick start, long gentle settle.
 /// `design/tokens.toml` names no curve yet, so it lives here.
-#[allow(dead_code)] // the widgets animate with it from Task 4 on
+#[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 pub const STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
 
 /// One coordinate of a cubic bezier from 0 to 1 with inner controls `a`, `b`.
-#[allow(dead_code)] // the widgets animate with it from Task 4 on
+#[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 fn bezier(a: f32, b: f32, t: f32) -> f32 {
     let u = 1.0 - t;
     3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
 }
 
 /// The standard curve at progress `p` in 0..=1 (time in, value out).
-#[allow(dead_code)] // the widgets animate with it from Task 4 on
+#[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 pub fn standard(p: f32) -> f32 {
     let (x1, y1, x2, y2) = STANDARD;
     // x(t) rises monotonically, so bisection finds the t with x(t) = p.
@@ -60,7 +60,7 @@ pub fn standard(p: f32) -> f32 {
 
 /// A timed animation from `from` to `to` over `dur_ms`, eased with the
 /// standard curve. A window keeps its frame timer only while one runs.
-#[allow(dead_code)] // the widgets animate with it from Task 4 on
+#[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 #[derive(Clone, Copy, Debug)]
 pub struct Anim {
     pub from: f32,
@@ -69,7 +69,7 @@ pub struct Anim {
     pub dur_ms: u32,
 }
 
-#[allow(dead_code)] // the widgets animate with it from Task 4 on
+#[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 impl Anim {
     pub fn new(from: f32, to: f32, start: Instant, dur_ms: u32) -> Self {
         Self {

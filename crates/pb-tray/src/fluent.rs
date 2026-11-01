@@ -223,7 +223,7 @@ pub struct Canvas<'a> {
 
 impl Canvas<'_> {
     /// Logical px to pixels at this canvas's scale.
-    #[allow(dead_code)] // used from Task 4 on
+    #[allow(dead_code)] // used by the widgets (pages use them from Task 8 on)
     pub fn px(&self, v: f32) -> f32 {
         v * self.s
     }
@@ -264,7 +264,7 @@ impl Font {
 
 /// Horizontal placement of a line of text; it is always centred vertically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // Right is used from Task 4 on
+#[allow(dead_code)] // Right is used by the widgets (pages use them from Task 8 on)
 pub enum Align {
     Left,
     Center,
@@ -365,7 +365,7 @@ pub fn text(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32, align: Align) {
 }
 
 /// Laid-out metrics of `s` in a `w` x `h` box (`None` if DirectWrite fails).
-#[allow(dead_code)] // used from Task 4 on (and by the tests)
+#[allow(dead_code)] // used by the widgets, and by the tests
 fn metrics(
     c: &Canvas,
     font: Font,
@@ -386,7 +386,7 @@ fn metrics(
 }
 
 /// Width in pixels `s` takes in `font` on one line.
-#[allow(dead_code)] // used from Task 4 on (and by the tests)
+#[allow(dead_code)] // used by the widgets, and by the tests
 pub fn text_width(c: &Canvas, font: Font, s: &str) -> f32 {
     if s.is_empty() {
         return 0.0;
@@ -397,12 +397,12 @@ pub fn text_width(c: &Canvas, font: Font, s: &str) -> f32 {
 
 /// Width `s` actually takes when laid out (and trimmed) in `r`.
 #[cfg(test)]
-fn laid_out_width(c: &Canvas, font: Font, s: &str, r: RectF, align: Align) -> f32 {
+pub(crate) fn laid_out_width(c: &Canvas, font: Font, s: &str, r: RectF, align: Align) -> f32 {
     metrics(c, font, s, r.right - r.left, r.bottom - r.top, align).map_or(0.0, |m| m.width)
 }
 
 /// A Segoe Fluent Icons glyph centred in `r`.
-#[allow(dead_code)] // used from Task 4 on
+#[allow(dead_code)] // used by the widgets (pages use them from Task 8 on)
 pub fn icon(c: &Canvas, g: char, r: RectF, rgb: u32) {
     icon_sized(c, Font::Icon, g, r, rgb);
 }
@@ -488,7 +488,7 @@ pub fn round_rect(
 
 /// Windows 11 toggle switch (40x20 logical) whose right edge is at `right`,
 /// vertically centred on `cy`. Returns its rectangle for hit-testing.
-#[allow(dead_code)] // used from Task 4 on
+#[allow(dead_code)] // used by the widgets (pages use them from Task 8 on)
 pub fn toggle(c: &Canvas, right: f32, cy: f32, on: bool, enabled: bool) -> RectF {
     let (w, h) = (40.0 * c.s, 20.0 * c.s);
     let r = rectf(right - w, cy - h / 2.0, right, cy + h / 2.0);
@@ -512,7 +512,7 @@ pub fn toggle(c: &Canvas, right: f32, cy: f32, on: bool, enabled: bool) -> RectF
 }
 
 /// Standard button (accent or neutral) with a centred label.
-#[allow(dead_code)] // used from Task 4 on
+#[allow(dead_code)] // used by the widgets (pages use them from Task 8 on)
 pub fn button(c: &Canvas, r: RectF, label: &str, accent: bool) {
     let radius = tokens::RADIUS[0] * c.s;
     let p = c.p;

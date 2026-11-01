@@ -51,7 +51,17 @@ impl Scroll {
     pub fn wheel(&mut self, delta: i32, now: Instant) {
         let base = self.anim.map_or(self.offset, |a| a.to);
         let target = (base - delta as f32 / 120.0 * WHEEL_STEP).clamp(0.0, self.max_offset());
+        if target == self.offset {
+            // At a limit: nothing to ease, so no frame timer is needed.
+            self.anim = None;
+            return;
+        }
         self.anim = Some(Anim::new(self.offset, target, now, motion::FAST_MS));
+    }
+
+    /// True while a wheel ease still runs at `now` (read-only; `tick` advances).
+    pub fn animating(&self, now: Instant) -> bool {
+        self.anim.is_some_and(|a| a.running(now))
     }
 
     /// Advances the ease to `now`; true while it still runs (keep the timer).
@@ -147,13 +157,17 @@ pub fn row_layout(r: RectF, s: f32, trailing_w: f32) -> (RectF, RectF, RectF, Re
         cy + icon_sz / 2.0,
     );
     let trail_right = r.right - pad;
-    let trail_left = (trail_right - trailing_w.max(0.0)).max(icon_r.right);
-    let text_left = icon_r.right + gap;
+    // The trailing column shrinks before it may touch the icon's gap; the
+    // text then stops `gap` short of it (zero width if there is no room).
+    let min_left = icon_r.right + gap;
+    let trail_left = (trail_right - trailing_w.max(0.0)).max(min_left);
+    let trail_right = trail_right.max(trail_left);
     let text_right = if trailing_w > 0.0 {
-        (trail_left - gap).max(text_left)
+        trail_left - gap
     } else {
-        trail_right.max(text_left)
+        trail_right
     };
+    let text_left = min_left.min(text_right);
     let (title_h, meta_h) = (20.0 * s, 16.0 * s);
     let top = cy - (title_h + meta_h) / 2.0;
     let title = rectf(text_left, top, text_right, top + title_h);
@@ -245,6 +259,10 @@ fn pulse_alpha(ms: u128) -> f32 {
     0.06 + 0.08 * tri
 }
 
+/// A page showing a skeleton must keep its frame timer running, because the
+/// placeholder pulses until real content replaces it.
+pub const SKELETON_ANIMATES: bool = true;
+
 /// Loading placeholder block that pulses with `now` (it needs frames until
 /// replaced by real content).
 pub fn skeleton(c: &Canvas, r: RectF, now: Instant) {
@@ -327,6 +345,77 @@ mod tests {
         for ms in (0..2400).step_by(50) {
             let a = pulse_alpha(ms);
             assert!((0.06..=0.14 + 1e-6).contains(&a), "{ms}: {a}");
+        }
+    }
+
+    #[test]
+    fn trailing_column_shrinks_instead_of_overlapping_the_text() {
+        let gap = SPACE[2];
+        for (w, h, trailing) in [
+            (360.0, 48.0, 360.0),
+            (40.0, 48.0, 90.0),
+            (120.0, 48.0, 500.0),
+        ] {
+            let (icon, title, meta, trail) = row_layout(rectf(0., 0., w, h), 1.0, trailing);
+            for t in [title, meta] {
+                assert!(t.right >= t.left, "width >= 0 in {w}px row");
+                assert!(
+                    t.right <= trail.left - gap,
+                    "{w}px row, trailing {trailing}"
+                );
+            }
+            assert!(trail.right >= trail.left);
+            assert!(trail.left >= icon.right, "trailing stays off the icon");
+        }
+    }
+
+    #[test]
+    fn scroll_animation_is_read_only_and_idle_at_the_limits() {
+        let t0 = Instant::now();
+        let mut s = Scroll::new(2000.0, 400.0);
+        s.wheel(120, t0); // up at the top: nothing to ease
+        assert!(!s.animating(t0));
+        s.wheel(-120, t0);
+        assert!(s.animating(t0 + Duration::from_millis(10)));
+        assert_eq!(s.offset, 0.0, "animating() does not advance the ease");
+        assert!(!s.animating(t0 + Duration::from_millis(500)));
+        let mut end = Scroll::new(2000.0, 400.0);
+        end.offset = 1600.0;
+        end.wheel(-120, t0); // down at the bottom
+        assert!(!end.animating(t0));
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn long_mixed_titles_stay_inside_their_rect() {
+        let hwnd = crate::d2d::test_window();
+        let mut surface =
+            crate::d2d::Surface::new(hwnd, crate::d2d::Backdrop::Opaque).expect("surface");
+        let title = "photo \u{1F4F7} \u{05E9}\u{05DC}\u{05D5}\u{05DD} ".repeat(16);
+        assert!(title.chars().count() >= 200);
+        let mut widths = (0.0, f32::MAX);
+        surface
+            .draw(|dc| {
+                let c = Canvas {
+                    dc,
+                    s: 1.0,
+                    p: fluent::palette(),
+                };
+                let r = rectf(0.0, 0.0, 200.0, 48.0);
+                let tw = text_width(&c, Font::Caption, "12:04").ceil() + 1.0;
+                let (_, title_r, _, _) = row_layout(r, 1.0, tw);
+                row(&c, r, '\u{E8A5}', &title, "meta", "12:04");
+                widths = (
+                    title_r.right - title_r.left,
+                    fluent::laid_out_width(&c, Font::Body, &title, title_r, Align::Left),
+                );
+            })
+            .expect("draw");
+        assert!(widths.1 <= widths.0 + 0.5, "{} > {}", widths.1, widths.0);
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
         }
     }
 
