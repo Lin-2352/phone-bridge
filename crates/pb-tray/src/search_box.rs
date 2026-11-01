@@ -10,16 +10,16 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM},
         Graphics::Gdi::{
-            CreateFontW, CreateSolidBrush, DeleteObject, SetBkColor, SetTextColor, FONT_QUALITY,
-            HBRUSH, HDC, HFONT, HGDIOBJ,
+            CreateFontW, CreateSolidBrush, DeleteObject, InvalidateRect, SetBkColor, SetTextColor,
+            FONT_QUALITY, HBRUSH, HDC, HFONT, HGDIOBJ,
         },
         UI::{
-            Input::KeyboardAndMouse::SetFocus,
+            Input::KeyboardAndMouse::{GetFocus, SetFocus},
             WindowsAndMessaging::{
-                CreateWindowExW, DestroyWindow, GetWindowLongW, GetWindowTextLengthW,
+                CreateWindowExW, DestroyWindow, GetParent, GetWindowLongW, GetWindowTextLengthW,
                 GetWindowTextW, MoveWindow, SendMessageW, SetWindowLongW, SetWindowTextW,
-                ES_AUTOHSCROLL, GWL_STYLE, HMENU, WINDOW_EX_STYLE, WINDOW_STYLE, WM_SETFONT,
-                WS_CHILD, WS_CLIPCHILDREN, WS_TABSTOP, WS_VISIBLE,
+                ShowWindow, ES_AUTOHSCROLL, GWL_STYLE, HMENU, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_SETFONT, WS_CHILD, WS_CLIPCHILDREN, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -155,9 +155,51 @@ impl SearchBox {
         let _ = unsafe { SetWindowTextW(self.edit, PCWSTR(wide.as_ptr())) };
     }
 
+    #[allow(dead_code)] // part of the box's interface; nothing focuses it by code yet
     pub fn focus(&self) {
         // SAFETY: focuses our own child.
         let _ = unsafe { SetFocus(Some(self.edit)) };
+    }
+
+    /// Typing (and pasting) stops at `units` UTF-16 units.
+    pub fn limit(&self, units: usize) {
+        // SAFETY: a plain message to our own edit.
+        unsafe {
+            SendMessageW(
+                self.edit,
+                windows::Win32::UI::Controls::EM_SETLIMITTEXT,
+                Some(WPARAM(units)),
+                None,
+            );
+        }
+    }
+
+    /// Shows the edit (without activating it) or hides it; a hidden edit
+    /// hands the keyboard focus back to its parent.
+    pub fn show(&self, on: bool) {
+        // SAFETY: focus and visibility of our own child; may send focus
+        // notifications to the parent, so the caller holds no borrow of it.
+        unsafe {
+            if !on && GetFocus() == self.edit {
+                if let Ok(parent) = GetParent(self.edit) {
+                    let _ = SetFocus(Some(parent));
+                }
+            }
+            let _ = ShowWindow(self.edit, if on { SW_SHOWNA } else { SW_HIDE });
+        }
+    }
+
+    /// Whether the edit has the keyboard focus.
+    pub fn focused(&self) -> bool {
+        // SAFETY: plain query.
+        unsafe { GetFocus() == self.edit }
+    }
+
+    /// Repaints the edit (its colours come from `on_ctl_color`, so after a
+    /// theme change).
+    pub fn redraw(&self) {
+        // SAFETY: repaint request on our own child.
+        let _ = unsafe { InvalidateRect(Some(self.edit), None, true) };
     }
 
     /// The parent's answer to `WM_CTLCOLOREDIT`: text and background colours

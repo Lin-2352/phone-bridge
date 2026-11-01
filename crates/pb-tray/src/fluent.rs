@@ -28,10 +28,11 @@ use windows::{
             DirectWrite::{
                 IDWriteFontCollection, IDWriteTextFormat, DWRITE_FONT_STRETCH_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_MEASURING_MODE_NATURAL,
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT,
-                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+                DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+                DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
                 DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
                 DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+                DWRITE_WORD_WRAPPING_WRAP,
             },
             Dwm::{
                 DwmSetWindowAttribute, DWMSBT_MAINWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
@@ -41,9 +42,9 @@ use windows::{
             Gdi::{
                 BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
                 CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-                RoundRect, SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CALCRECT,
-                DT_CENTER, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, PS_DASH, PS_NULL,
-                PS_SOLID, SRCCOPY, TRANSPARENT,
+                RoundRect, SelectObject, SetBkMode, SetTextColor, DRAW_TEXT_FORMAT, DT_CENTER,
+                DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, PAINTSTRUCT, PS_DASH, PS_NULL, PS_SOLID,
+                SRCCOPY, TRANSPARENT,
             },
             GdiPlus::{
                 DashStyleDash, FillModeAlternate, GdipAddPathArc, GdipAddPathRectangle,
@@ -293,6 +294,9 @@ thread_local! {
         RefCell::new(HashMap::new());
     /// The dashed outline style per scale.
     static DASHES: RefCell<HashMap<u32, ID2D1StrokeStyle>> = RefCell::new(HashMap::new());
+    /// Word-wrapping, top-aligned formats per (font, scale).
+    static WRAPPED: RefCell<HashMap<(Font, u32), IDWriteTextFormat>> =
+        RefCell::new(HashMap::new());
 }
 
 /// A single-line format: no wrapping, ellipsis trimming, centred vertically.
@@ -356,6 +360,47 @@ pub fn text(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32, align: Align) {
             return;
         };
         // Colour fonts so emoji draw in colour; clipped to the box.
+        c.dc.DrawText(
+            &utf16(s),
+            &f,
+            &r,
+            &brush,
+            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_CLIP,
+            DWRITE_MEASURING_MODE_NATURAL,
+        );
+    }
+}
+
+/// `s` wrapped onto as many lines as fit in `r`, from its top-left; what
+/// does not fit is clipped.
+pub fn text_wrapped(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32) {
+    if s.is_empty() || r.right <= r.left || r.bottom <= r.top {
+        return;
+    }
+    let key = (font, c.s.to_bits());
+    let f = WRAPPED.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some(f) = m.get(&key) {
+            return Some(f.clone());
+        }
+        let f = make_format(font, c.s, Align::Left).ok()?;
+        // SAFETY: setters on the fresh format made above (not shared yet).
+        unsafe {
+            f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP).ok()?;
+            f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)
+                .ok()?;
+        }
+        m.insert(key, f.clone());
+        Some(f)
+    });
+    let Some(f) = f else {
+        return;
+    };
+    // SAFETY: drawing calls inside the surface's BeginDraw/EndDraw.
+    unsafe {
+        let Ok(brush) = c.dc.CreateSolidColorBrush(&color(rgb, 1.0), None) else {
+            return;
+        };
         c.dc.DrawText(
             &utf16(s),
             &f,
@@ -705,22 +750,6 @@ pub fn gdi_text(hdc: HDC, font: HGDIOBJ, s: &str, r: RECT, color: u32, flags: DR
     }
 }
 
-/// Width in pixels `s` takes in `font` on one line (GDI).
-pub fn gdi_text_width(hdc: HDC, font: HGDIOBJ, s: &str) -> i32 {
-    if s.is_empty() {
-        return 0;
-    }
-    let mut w: Vec<u16> = s.encode_utf16().collect();
-    let mut r = RECT::default();
-    // SAFETY: valid DC; DT_CALCRECT only measures; the font is restored.
-    unsafe {
-        let old = SelectObject(hdc, font);
-        DrawTextW(hdc, &mut w, &mut r, DT_CALCRECT | DT_SINGLELINE);
-        SelectObject(hdc, old);
-    }
-    r.right - r.left
-}
-
 pub fn gdi_icon(hdc: HDC, font: HGDIOBJ, g: char, r: RECT, color: u32) {
     gdi_text(
         hdc,
@@ -873,46 +902,6 @@ fn jagged_round_rect(
         let _ = DeleteObject(HGDIOBJ(brush.0));
         let _ = DeleteObject(HGDIOBJ(pen.0));
     }
-}
-
-/// Windows 11 toggle switch (GDI), as `toggle`.
-pub fn gdi_toggle(
-    hdc: HDC,
-    s: f32,
-    p: &Palette,
-    right: i32,
-    cy: i32,
-    on: bool,
-    enabled: bool,
-) -> RECT {
-    let (w, h) = (px(s, 40), px(s, 20));
-    let r = RECT {
-        left: right - w,
-        top: cy - h / 2,
-        right,
-        bottom: cy + h / 2,
-    };
-    let knob = px(s, 12);
-    let inset = (h - knob) / 2;
-    let (track, edge, dot) = match (on, enabled) {
-        (true, true) => (p.accent, None, p.on_accent),
-        (false, true) => (p.card, Some(p.text2), p.text2),
-        (_, false) => (p.card, Some(p.stroke), p.stroke),
-    };
-    gdi_round_rect(hdc, &r, track, edge.or(Some(track)), h, false);
-    let kx = if on {
-        r.right - inset - knob
-    } else {
-        r.left + inset
-    };
-    let k = RECT {
-        left: kx,
-        top: r.top + inset,
-        right: kx + knob,
-        bottom: r.top + inset + knob,
-    };
-    gdi_round_rect(hdc, &k, dot, None, knob, false);
-    r
 }
 
 /// Standard button (GDI), as `button`.

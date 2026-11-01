@@ -1,7 +1,9 @@
 //! The Relay main window: Mica backdrop (opaque token surface when Mica is
 //! unavailable), a custom title bar with the standard caption buttons, a
 //! nav rail (Home, Timeline, Devices, Settings) and a content pane drawn by
-//! `pages`. Size and position are remembered in the settings. Everything
+//! `pages`. The Settings page's search box is a native edit (`search_box`)
+//! shown only on that page. Size and position are remembered in the
+//! settings. Everything
 //! here runs on the UI thread (the tray's message loop), so the window's
 //! state lives in thread-locals; a borrow is never held across a call that
 //! can send messages back into `wndproc`.
@@ -35,17 +37,18 @@ use windows::{
             Controls::MARGINS,
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
-                GetKeyState, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_RETURN,
-                VK_SHIFT, VK_SPACE, VK_TAB,
+                GetFocus, GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
+                TRACKMOUSEEVENT, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
                 GetWindowRect, IsIconic, IsZoomed, KillTimer, LoadCursorW, LoadIconW, PostMessageW,
-                RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, HTCLOSE,
-                HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE,
-                SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
-                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
-                SW_SHOW, WINDOW_EX_STYLE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+                RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, EN_CHANGE,
+                EN_KILLFOCUS, EN_SETFOCUS, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
+                MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
+                SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WINDOW_EX_STYLE,
+                WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
                 WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
                 WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
                 WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
@@ -61,9 +64,10 @@ use crate::{
     core::{Log, SharedSettings},
     d2d::{Backdrop, Surface},
     ease::Anim,
-    fluent::{self, rectf, round_rect, text, Align, Canvas, Font, RectF},
+    fluent::{self, rectf, round_rect, text, Align, Canvas, Font, Palette, RectF},
     focus,
-    pages::{self, Hit, Model},
+    pages::{self, settings, Hit, Model},
+    search_box::{self, SearchBox},
     titlebar::{self, Caption},
     tokens::{motion, RADIUS, SPACE},
     widgets::{self, Scroll},
@@ -86,6 +90,8 @@ const HIT_BASE: u32 = 100;
 const MIN_VISIBLE_W: i32 = 64;
 const MIN_VISIBLE_H: i32 = 20;
 const CAPTION_STRIP: i32 = 40;
+/// Control id of the Settings search box.
+const ID_SEARCH: u16 = 1;
 
 /// A saved window rectangle: x, y, width, height in screen pixels.
 pub type SavedRect = (i32, i32, i32, i32);
@@ -289,6 +295,10 @@ struct State {
     normal: Option<SavedRect>,
     opened: Instant,
     timing: Timing,
+    /// The Settings page picked in its second column, and the search text.
+    sub: settings::Page,
+    query: String,
+    search_focused: bool,
 }
 
 impl State {
@@ -302,6 +312,17 @@ thread_local! {
     /// The Direct2D surface, apart from `STATE` so painting never needs both
     /// borrowed (COM objects stay on the UI thread).
     static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
+    /// The Settings search box, apart from `STATE` because its calls send
+    /// notifications back into `wndproc`: only `borrow()` it around a call.
+    static SEARCH: RefCell<Option<SearchBox>> = const { RefCell::new(None) };
+    /// The palette of the last paint, to repaint the search box on a theme change.
+    static PAINTED: std::cell::Cell<Option<Palette>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` on the search box, if there is one. `f` may send messages to
+/// the window (the box is only borrowed shared).
+fn with_search<R>(f: impl FnOnce(&SearchBox) -> R) -> Option<R> {
+    SEARCH.with(|cell| cell.borrow().as_ref().map(f))
 }
 
 /// Runs `f` on the window's state if `hwnd` is the main window. `f` must not
@@ -319,6 +340,77 @@ fn current() -> Option<HWND> {
 
 pub fn is_open() -> bool {
     current().is_some()
+}
+
+/// Whether the window shows something that needs the camera status (the
+/// Settings page on Camera, or a search that may list it): measuring it
+/// costs a little.
+pub fn wants_camera() -> bool {
+    STATE.with(|cell| {
+        cell.try_borrow().ok().is_some_and(|g| {
+            g.as_ref().is_some_and(|st| {
+                st.page == Page::Settings
+                    && (st.sub == settings::Page::Camera || !st.query.trim().is_empty())
+            })
+        })
+    })
+}
+
+/// Shows the search box where the Settings page wants it, or hides it on
+/// the other pages. Call with no borrow of the state held.
+fn sync_search(hwnd: HWND) {
+    let (w, h) = client_size(hwnd);
+    let Some(place) = with(hwnd, |st| {
+        (st.page == Page::Settings).then(|| {
+            let f = frame(w, h, st.scale);
+            (settings::search_rect(f.content, f.pane, st.scale), st.scale)
+        })
+    }) else {
+        return;
+    };
+    with_search(|sb| match place {
+        Some((r, s)) => {
+            sb.place(r, s);
+            sb.show(true);
+        }
+        None => sb.show(false),
+    });
+}
+
+/// Starts the Settings rows from the top (a new page or a new search).
+fn rewind_settings(st: &mut State) {
+    let sc = &mut st.scroll[Page::Settings.index()];
+    *sc = Scroll::new(sc.content, sc.view);
+}
+
+/// The search box's notifications: the text changed, or it gained or lost
+/// the focus.
+fn on_search(hwnd: HWND, code: u32) {
+    match code {
+        EN_CHANGE => {
+            let q = with_search(|sb| settings::clamp_query(&sb.text())).unwrap_or_default();
+            let changed = with(hwnd, |st| {
+                if st.query == q {
+                    return false;
+                }
+                st.query = q.clone();
+                st.model.settings.query = q;
+                rewind_settings(st);
+                true
+            });
+            if changed == Some(true) {
+                // A search may list the camera card: fetch its status now.
+                refresh();
+                fit_scroll(hwnd);
+                repaint(hwnd);
+            }
+        }
+        EN_SETFOCUS | EN_KILLFOCUS => {
+            with(hwnd, |st| st.search_focused = code == EN_SETFOCUS);
+            repaint(hwnd);
+        }
+        _ => {}
+    }
 }
 
 fn client_size(hwnd: HWND) -> (f32, f32) {
@@ -436,9 +528,34 @@ fn activate(hwnd: HWND, t: Target) {
         }
     })
     .flatten();
-    // Outside the state borrow: the host posts to the tray window.
-    if let (Some(a), Some(host)) = (action, HOST.get()) {
-        (host.act)(a);
+    // Outside the state borrow: the host posts to the tray window, and the
+    // search box sends notifications back here.
+    match action {
+        Some(pages::Action::SettingsPage(p)) => {
+            with(hwnd, |st| {
+                st.sub = p;
+                st.model.settings.sub = p;
+                rewind_settings(st);
+            });
+            // Picking a page ends a search (EN_CHANGE clears the query).
+            with_search(|sb| {
+                if !sb.text().is_empty() {
+                    sb.set_text("");
+                }
+            });
+            fit_scroll(hwnd);
+        }
+        Some(a) => {
+            if let Some(host) = HOST.get() {
+                (host.act)(a);
+            }
+        }
+        None => {}
+    }
+    sync_search(hwnd);
+    if with(hwnd, |st| st.page == Page::Settings) == Some(true) {
+        // The camera card's status is measured only while it may show.
+        refresh();
     }
     repaint(hwnd);
 }
@@ -454,6 +571,7 @@ struct Snapshot {
     nav_t: [f32; 4],
     focus: Option<u32>,
     scroll: Scroll,
+    search_focused: bool,
 }
 
 fn paint(hwnd: HWND) {
@@ -470,7 +588,14 @@ fn paint(hwnd: HWND) {
         nav_t: st.nav_fade.map(|a| a.value(now)),
         focus: st.focus,
         scroll: st.scroll[st.page.index()].clone(),
+        search_focused: st.search_focused,
     });
+    // The search box takes its colours at its own paint: repaint it when
+    // the theme changed.
+    let p = fluent::palette();
+    if PAINTED.with(|c| c.replace(Some(p))) != Some(p) {
+        with_search(|sb| sb.redraw());
+    }
     let t_draw = Instant::now();
     let painted = SURFACE.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -573,6 +698,11 @@ fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
         c.dc.PushAxisAlignedClip(&f.pane, D2D1_ANTIALIAS_MODE_ALIASED)
     };
     pages::draw(snap.page, c, pr, f.pane, &snap.model, &hits);
+    if snap.page == Page::Settings {
+        // The frame around the native edit, which draws itself on top.
+        let sb = settings::search_rect(f.content, f.pane, s);
+        search_box::draw_frame(c, sb, snap.search_focused);
+    }
     if let Some(id) = snap.focus.filter(|&id| id >= HIT_BASE) {
         if let Some(h) = hits.iter().find(|h| focus_id(Target::Hit(h.id)) == id) {
             focus_ring(c, h.r);
@@ -797,6 +927,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 )
             };
             fit_scroll(hwnd);
+            sync_search(hwnd);
             repaint(hwnd);
             LRESULT(0)
         }
@@ -807,6 +938,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 note_normal(hwnd);
             }
             fit_scroll(hwnd);
+            sync_search(hwnd);
             // SAFETY: synchronous repaint of our own window.
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -873,6 +1005,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // The pointer took over: hide the keyboard focus ring.
                 st.focus = None;
             });
+            // A click outside the search box takes the keyboard back from it
+            // (after the borrow: it notifies us of the focus change).
+            // SAFETY: focus queries and change on our own window.
+            unsafe {
+                if GetFocus() != hwnd {
+                    let _ = SetFocus(Some(hwnd));
+                }
+            }
             repaint(hwnd);
             LRESULT(0)
         }
@@ -915,7 +1055,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
+        WM_COMMAND if lo(wparam.0 as isize) as u16 == ID_SEARCH && lparam.0 != 0 => {
+            on_search(hwnd, hi(wparam.0 as isize) as u16 as u32);
+            LRESULT(0)
+        }
+        WM_CTLCOLOREDIT => {
+            let p = fluent::palette();
+            let hdc = windows::Win32::Graphics::Gdi::HDC(wparam.0 as *mut _);
+            with_search(|sb| sb.on_ctl_color(hdc, &p))
+                // SAFETY: default handling.
+                .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
+        }
         WM_DESTROY => {
+            // The edit goes first, outside every borrow (it may notify us).
+            let search = SEARCH.with(|cell| cell.borrow_mut().take());
+            drop(search);
             save_rect(hwnd);
             fluent::unregister_window(hwnd);
             // SAFETY: our own timer; harmless if it is not running.
@@ -1168,8 +1322,20 @@ fn create(page: Page, opened: Instant) {
             normal: Some(rect),
             opened,
             timing,
+            sub: settings::Page::Devices,
+            query: String::new(),
+            search_focused: false,
         })
     });
+    match SearchBox::new(hwnd, ID_SEARCH) {
+        Ok(sb) => {
+            // UTF-16 units: never more characters than the query keeps.
+            sb.limit(settings::QUERY_MAX);
+            SEARCH.with(|cell| *cell.borrow_mut() = Some(sb));
+        }
+        Err(e) => host.log.line(&format!("UI search box failed: {e}")),
+    }
+    sync_search(hwnd);
     fluent::register_window(hwnd);
     // SAFETY: show and raise our own window.
     unsafe {
@@ -1187,6 +1353,10 @@ pub fn open(page: Page) {
         return;
     };
     with(hwnd, |st| switch(st, page));
+    sync_search(hwnd);
+    if page == Page::Settings {
+        refresh();
+    }
     // SAFETY: restore and raise our own window.
     unsafe {
         if IsIconic(hwnd).as_bool() {
@@ -1210,9 +1380,12 @@ pub fn refresh() {
     let Some(hwnd) = current() else {
         return;
     };
-    let model = HOST.get().map(|h| (h.model)()).unwrap_or_default();
+    let mut model = HOST.get().map(|h| (h.model)()).unwrap_or_default();
     // Called every second by the tray: repaint only on a real change.
     let changed = with(hwnd, |st| {
+        // The Settings sub-page and query are the window's own.
+        model.settings.sub = st.sub;
+        model.settings.query = st.query.clone();
         let changed = st.model != model;
         st.model = model;
         changed
@@ -1368,6 +1541,7 @@ mod tests {
                 nav_t: [0.0; 4],
                 focus: None,
                 scroll: Scroll::new(0.0, 0.0),
+                search_focused: false,
             };
             surface.resize(w as u32, h as u32);
             surface

@@ -1,5 +1,5 @@
-//! Which sidebar page each settings option sits on (pure, tested);
-//! `settings_window` shows one page at a time.
+//! Which settings page each option sits on (pure, tested); the main
+//! window's Settings page (`pages::settings`) shows one at a time.
 
 use crate::settings_rows::{Model, Row};
 
@@ -39,6 +39,8 @@ pub const OPTIONS: &[&str] = &[
     "Show in Explorer \u{201c}Send to\u{201d}",
     "Start with Windows",
     "Let my phone control this PC",
+    "Keep history",
+    "Clear history",
     "Paired device",
     "Pair device",
     "About",
@@ -56,6 +58,7 @@ pub fn label_of(row: &Row) -> Option<&'static str> {
         Row::About => "About",
         Row::CameraStatus => "Camera status",
         Row::CameraWindow => "Camera window",
+        Row::ClearHistory => "Clear history",
         Row::Header(_) => return None,
     })
 }
@@ -94,6 +97,7 @@ pub fn page_of(option: &str) -> Page {
         "Accept files automatically"
         | "Save received files to"
         | "Show in Explorer \u{201c}Send to\u{201d}" => Page::Files,
+        // "Keep history", "Clear history", "Theme", "Start with Windows" ...
         _ => Page::General,
     }
 }
@@ -135,6 +139,10 @@ fn texts(row: &Row, m: &Model) -> Vec<String> {
         Row::CameraWindow => vec![
             "Camera window".into(),
             "Preview and the full checklist".into(),
+        ],
+        Row::ClearHistory => vec![
+            "Clear history".into(),
+            "Delete everything in the Timeline".into(),
         ],
     }
 }
@@ -303,6 +311,8 @@ mod tests {
         assert_eq!(page_of("Accept files automatically"), Page::Files);
         assert_eq!(page_of("Theme"), Page::General);
         assert_eq!(page_of("Start with Windows"), Page::General);
+        assert_eq!(page_of("Keep history"), Page::General);
+        assert_eq!(page_of("Clear history"), Page::General);
     }
 
     #[test]

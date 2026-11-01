@@ -1,9 +1,9 @@
-//! What the settings window shows, as plain data (tested on every
-//! platform); `settings_window` paints it.
+//! What the Settings page shows, as plain data (tested on every
+//! platform); `pages::settings` draws it.
 
 use crate::camera_status::Summary;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
     Share,
     ShareImages,
@@ -19,10 +19,12 @@ pub enum Key {
     NotifyOpen,
     NotifyOtp,
     NotifyQuietMirror,
+    /// Record the Timeline; off deletes it.
+    KeepHistory,
 }
 
 /// Three-way choices, painted as segmented buttons.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChoiceKey {
     /// Full / hidden while locked / sender only.
     Content,
@@ -30,7 +32,7 @@ pub enum ChoiceKey {
     Sound,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct Model {
     /// 0 system, 1 light, 2 dark.
     pub theme: u8,
@@ -43,6 +45,7 @@ pub struct Model {
     pub sendto: bool,
     pub startup: bool,
     pub control: bool,
+    pub keep_history: bool,
     /// (name, fingerprint, answers as a different device now)
     pub devices: Vec<(String, String, bool)>,
     pub my_fingerprint: String,
@@ -77,6 +80,7 @@ impl Model {
             Key::NotifyOpen => self.notify_open,
             Key::NotifyOtp => self.notify_otp,
             Key::NotifyQuietMirror => self.notify_quiet_mirror,
+            Key::KeepHistory => self.keep_history,
         }
     }
 
@@ -90,7 +94,7 @@ impl Model {
 
 /// What the Camera page asks for; each is what the camera window and the
 /// tray entry already do.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CameraAct {
     /// Start, Cancel or Stop, whichever the status card offers.
     Toggle,
@@ -98,10 +102,9 @@ pub enum CameraAct {
     OpenWindow,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Camera(CameraAct),
-    /// Ask for a fresh snapshot (the camera changes on its own).
-    Refresh,
     Theme(u8),
     Toggle(Key),
     ChangeFolder,
@@ -111,9 +114,11 @@ pub enum Action {
     Choice(ChoiceKey, u8),
     /// Flip the phone app at this index between shown and muted.
     Mute(usize),
+    /// Delete the Timeline (the tray asks first).
+    ClearHistory,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Row {
     Header(&'static str),
     Theme,
@@ -129,6 +134,8 @@ pub enum Row {
     CameraStatus,
     /// Opens the camera window (preview and the full checklist).
     CameraWindow,
+    /// Deletes the Timeline.
+    ClearHistory,
 }
 
 pub fn rows(m: &Model) -> Vec<Row> {
@@ -227,6 +234,13 @@ pub fn rows(m: &Model) -> Vec<Row> {
             "Let my phone control this PC",
             "Use the phone as a touchpad and keyboard",
         ),
+        Row::Header("History"),
+        Row::Toggle(
+            Key::KeepHistory,
+            "Keep history",
+            "Remember what moved in the Timeline; off deletes it",
+        ),
+        Row::ClearHistory,
         Row::Header("Devices"),
     ]);
     v.extend((0..m.devices.len()).map(Row::Device));

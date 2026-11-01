@@ -77,7 +77,6 @@ mod settings_groups;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings_rows;
 #[cfg(windows)]
-mod settings_window;
 #[cfg(windows)]
 mod share;
 #[cfg(windows)]

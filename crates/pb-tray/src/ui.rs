@@ -82,7 +82,8 @@ static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsiz
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
-static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_window::Action>> =
+/// Settings page controls, applied on the UI thread (`WM_SETTINGS_ACTION`).
+static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_rows::Action>> =
     Mutex::new(VecDeque::new());
 /// A Timeline file action finished (toasts queued in `PAGE_FILES`), or a
 /// file's state changed: toast and repaint the main window.
@@ -386,7 +387,30 @@ fn page_action(a: crate::pages::Action) {
         // On a worker: the check and the shell may wait on a slow share.
         Action::OpenFile(path) => page_file(raw, path, true),
         Action::ShowInFolder(path) => page_file(raw, path, false),
+        // Queued for the tray window, as the settings window's were.
+        Action::Settings(a) => {
+            if let Ok(mut q) = SETTINGS_ACTIONS.lock() {
+                q.push_back(a);
+            }
+            post_settings_action(raw);
+        }
+        // The window switches its own Settings page.
+        Action::SettingsPage(_) => {}
     }
+}
+
+/// Wakes the tray window to apply queued Settings actions (or just to
+/// refresh the main window when the queue is empty).
+fn post_settings_action(raw: isize) {
+    // SAFETY: posting to our own message window.
+    let _ = unsafe {
+        PostMessageW(
+            Some(HWND(raw as *mut _)),
+            WM_SETTINGS_ACTION,
+            WPARAM(0),
+            LPARAM(0),
+        )
+    };
 }
 
 /// Open or Show in folder on a Timeline file, on a worker thread so a slow
@@ -631,6 +655,11 @@ fn page_model(st: &State) -> crate::pages::Model {
         timeline,
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
+        },
+        // The window adds its own sub-page and query.
+        settings: crate::pages::settings::SettingsModel {
+            rows: settings_model(st),
+            ..Default::default()
         },
     }
 }
@@ -1613,8 +1642,8 @@ fn show_menu(hwnd: HWND) {
     crate::menu::show(hwnd, items);
 }
 
-/// Snapshot of everything the settings window shows.
-fn settings_model(st: &State) -> crate::settings_window::Model {
+/// Snapshot of everything the Settings page shows.
+fn settings_model(st: &State) -> crate::settings_rows::Model {
     let n = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
     let (theme, share, share_images, passwords, keep, auto, save_dir, control) = st
         .settings
@@ -1632,7 +1661,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
             )
         })
         .unwrap_or_default();
-    crate::settings_window::Model {
+    crate::settings_rows::Model {
         theme,
         share,
         share_images,
@@ -1643,6 +1672,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
         sendto: sendto_enabled(),
         startup: startup_enabled(),
         control,
+        keep_history: n.keep_history,
         devices: paired_devices(st),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
         notify: n.notify_enabled,
@@ -1658,7 +1688,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
             .iter()
             .map(|(_, name, muted)| (name.clone(), !muted))
             .collect(),
-        camera: crate::settings_window::wants_camera().then(|| camera_summary(st)),
+        camera: crate::main_window::wants_camera().then(|| camera_summary(st)),
     }
 }
 
@@ -1688,33 +1718,8 @@ fn camera_summary(st: &State) -> crate::camera_status::Summary {
     crate::camera_status::summary(&inputs, crate::camera::playback_error())
 }
 
-fn open_settings(hwnd: HWND, st: &State) {
-    let raw = hwnd.0 as isize;
-    // Runs inside the settings window procedure: queue and post, never call
-    // back into the window from here.
-    // Which devices still answer as the paired one (the page updates when it ends).
-    let _ = st.cmds.send(Cmd::CheckPeers);
-    crate::settings_window::open(
-        settings_model(st),
-        Box::new(move |a| {
-            if let Ok(mut q) = SETTINGS_ACTIONS.lock() {
-                q.push_back(a);
-            }
-            // SAFETY: posting to our own message window.
-            let _ = unsafe {
-                PostMessageW(
-                    Some(HWND(raw as *mut _)),
-                    WM_SETTINGS_ACTION,
-                    WPARAM(0),
-                    LPARAM(0),
-                )
-            };
-        }),
-    );
-}
-
-fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Action) {
-    use crate::settings_window::{Action, CameraAct, Key};
+fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action) {
+    use crate::settings_rows::{Action, CameraAct, ChoiceKey, Key};
     match a {
         Action::Theme(t) => {
             let _ = st.settings.lock().map(|mut s| s.theme = t);
@@ -1763,8 +1768,8 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
         }
         Action::Choice(k, i) => {
             let _ = st.settings.lock().map(|mut s| match k {
-                crate::settings_window::ChoiceKey::Content => s.notify_content = i.min(2),
-                crate::settings_window::ChoiceKey::Sound => s.notify_sound = i.min(2),
+                ChoiceKey::Content => s.notify_content = i.min(2),
+                ChoiceKey::Sound => s.notify_sound = i.min(2),
             });
             save_settings(st);
         }
@@ -1802,6 +1807,37 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
                 .map(|mut s| s.keep_in_history = !s.keep_in_history);
             save_settings(st);
         }
+        // Off stops recording and deletes the stored history.
+        Action::Toggle(Key::KeepHistory) => {
+            let on = st
+                .settings
+                .lock()
+                .map(|mut s| {
+                    s.keep_history = !s.keep_history;
+                    s.keep_history
+                })
+                .unwrap_or(true);
+            save_settings(st);
+            crate::timeline::with(|t| t.set_enabled(on));
+        }
+        Action::ClearHistory => {
+            let raw = hwnd.0 as isize;
+            ask_yes_no(
+                Dialog::question(
+                    "Clear history?".into(),
+                    "Everything in the Timeline will be deleted.".into(),
+                    "Clear",
+                    "Cancel",
+                ),
+                move |yes| {
+                    if yes {
+                        crate::timeline::with(|t| t.clear());
+                        // The Timeline page shows it now.
+                        post_settings_action(raw);
+                    }
+                },
+            );
+        }
         Action::Toggle(Key::Startup) => {
             if let Err(e) = set_startup(!startup_enabled()) {
                 balloon(hwnd, "Relay", &format!("Could not change startup: {e}"));
@@ -1815,22 +1851,12 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
                     let _ = st.settings.lock().map(|mut s| s.save_dir = dir);
                     save_settings(st);
                 }
-                // SAFETY: posting to our own message window.
-                let _ = unsafe {
-                    PostMessageW(
-                        Some(HWND(raw as *mut _)),
-                        WM_SETTINGS_ACTION,
-                        WPARAM(0),
-                        LPARAM(0),
-                    )
-                };
+                post_settings_action(raw);
             });
         }
         Action::OpenFolder => command(hwnd, st, ID_OPEN_FOLDER),
         Action::Remove(i) => command(hwnd, st, ID_UNPAIR_BASE + i),
         Action::Pair => command(hwnd, st, ID_PAIR),
-        // The caller refreshes the window after every action.
-        Action::Refresh => {}
         // The same commands as the tray entry and the camera window.
         Action::Camera(CameraAct::Toggle) => command(hwnd, st, ID_CAMERA),
         Action::Camera(CameraAct::Repair) => {
@@ -2001,7 +2027,12 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         }
         ID_OPEN_FLYOUT => open_flyout(hwnd, st),
         ID_OPEN_MAIN => crate::main_window::open(crate::main_window::Page::Home),
-        ID_SETTINGS => open_settings(hwnd, st),
+        ID_SETTINGS => {
+            // Which devices still answer as the paired one (the page updates
+            // when it ends).
+            let _ = st.cmds.send(Cmd::CheckPeers);
+            crate::main_window::open(crate::main_window::Page::Settings);
+        }
         ID_MENU => show_menu(hwnd),
         ID_CONTROL => toggle_control(hwnd, st),
         ID_CONTROL_STOP => {
@@ -2149,9 +2180,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             for e in drained {
                 handle_event(hwnd, st, e);
             }
-            if crate::settings_window::is_open() {
-                crate::settings_window::update(settings_model(st));
-            }
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
             }
@@ -2164,9 +2192,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_default();
             for ev in drained {
                 on_toast(hwnd, st, ev);
-            }
-            if crate::settings_window::is_open() {
-                crate::settings_window::update(settings_model(st));
             }
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
@@ -2274,9 +2299,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_COMMAND => {
             command(hwnd, st, wparam.0 & 0xffff);
-            if crate::settings_window::is_open() {
-                crate::settings_window::update(settings_model(st));
-            }
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
             }
@@ -2316,7 +2338,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             for a in drained {
                 apply_settings_action(hwnd, st, a);
             }
-            crate::settings_window::update(settings_model(st));
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
             }
