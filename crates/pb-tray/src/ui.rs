@@ -1011,6 +1011,19 @@ fn show_phone_notification(
     // keep it in step, so its absence is never taken for a clear.
     let shown = crate::toast::enabled() && crate::toast::show(&spec).is_ok();
     if shown {
+        // A refresh at unlock re-shows a toast already counted. App name only.
+        if !refresh {
+            let from = st
+                .peers
+                .lock()
+                .ok()
+                .and_then(|g| g.iter().find(|(id, _)| *id == peer).map(|(_, n)| n.clone()))
+                .unwrap_or_default();
+            crate::core::record(
+                &st.settings,
+                crate::timeline::notification_entry(&from, &app),
+            );
+        }
         let old_picture = {
             let mut ns = notify_ui();
             if crate::notify::hidden_now(&p) {
@@ -1981,11 +1994,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_ENDSESSION => {
             if wparam.0 != 0 {
                 crate::camera::stop();
+                crate::timeline::with(|t| t.flush());
             }
             LRESULT(0)
         }
         WM_DESTROY => {
             crate::camera::stop();
+            crate::timeline::with(|t| t.flush());
             let nid = icon_data(hwnd);
             // SAFETY: removes our icon; then ends the message loop.
             unsafe {

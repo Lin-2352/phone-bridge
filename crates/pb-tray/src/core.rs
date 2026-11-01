@@ -23,6 +23,14 @@ use crate::settings::Settings;
 
 pub type SharedSettings = Arc<Mutex<Settings>>;
 
+/// Adds an entry to the PC timeline when "Keep history" is on. Metadata only:
+/// callers build the entry with the `timeline::*_entry` helpers.
+pub fn record(settings: &SharedSettings, e: crate::timeline::Entry) {
+    if settings.lock().map(|s| s.keep_history).unwrap_or(false) {
+        crate::timeline::with(|t| t.add(e));
+    }
+}
+
 /// Universal Clipboard echo guard: the hash of the last text we received and
 /// the last we sent, so neither side bounces the same text back and forth.
 #[derive(Default)]
@@ -459,7 +467,8 @@ pub async fn run(
                     });
                 }
                 Some(Cmd::SendFiles(paths)) => {
-                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    let (node, log, ui, settings) =
+                        (node.clone(), log.clone(), ui.clone(), settings.clone());
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
@@ -467,7 +476,7 @@ pub async fn run(
                             return;
                         };
                         for path in paths {
-                            send_one_file(&node, &id, &name, &path, &log, &*ui).await;
+                            send_one_file(&node, &id, &name, &path, &log, &*ui, &settings).await;
                         }
                     });
                 }
@@ -486,7 +495,8 @@ pub async fn run(
                         c.last_sent = h;
                     }
                     let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
-                    let (node, log, clip) = (node.clone(), log.clone(), clip.clone());
+                    let (node, log, clip, settings) =
+                        (node.clone(), log.clone(), clip.clone(), settings.clone());
                     tokio::spawn(async move {
                         for (id, name) in targets {
                             let r = async {
@@ -496,6 +506,12 @@ pub async fn run(
                                 Ok::<_, pb_transport::Error>(())
                             }
                             .await;
+                            if r.is_ok() {
+                                record(
+                                    &settings,
+                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
+                                );
+                            }
                             match r {
                                 Ok(()) if sensitive => log.line(&format!("CLIPSYNC sent a sensitive clip to \"{name}\"")),
                                 Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
@@ -523,11 +539,18 @@ pub async fn run(
                         continue;
                     };
                     let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
-                    let (node, log, clip) = (node.clone(), log.clone(), clip.clone());
+                    let (node, log, clip, settings) =
+                        (node.clone(), log.clone(), clip.clone(), settings.clone());
                     tokio::spawn(async move {
                         for (id, name) in targets {
                             match node.send_clipboard_image(&id, png.clone()).await {
-                                Ok(()) => log.line(&format!("CLIPSYNC sent an image ({} bytes) to \"{name}\"", png.len())),
+                                Ok(()) => {
+                                    record(
+                                        &settings,
+                                        crate::timeline::clip_image_entry(&name, crate::timeline::Dir::ToPhone, &png),
+                                    );
+                                    log.line(&format!("CLIPSYNC sent an image ({} bytes) to \"{name}\"", png.len()))
+                                }
                                 Err(e) => {
                                     log.line(&format!("CLIPSYNC image to \"{name}\" failed: {e}"));
                                     // Not delivered: copying the same picture again must retry.
@@ -746,6 +769,7 @@ async fn send_one_file(
     path: &std::path::Path,
     log: &Log,
     ui: &(impl Fn(UiEvent) + ?Sized),
+    settings: &SharedSettings,
 ) {
     let file_name = path
         .file_name()
@@ -772,6 +796,16 @@ async fn send_one_file(
                 "FILE sent \"{file_name}\" {size} bytes to \"{name}\" in {:.2}s ({mbps:.1} MB/s)",
                 took.as_secs_f64()
             ));
+            record(
+                settings,
+                crate::timeline::file_entry(
+                    name,
+                    crate::timeline::Dir::ToPhone,
+                    &file_name,
+                    size,
+                    Some(path),
+                ),
+            );
             ui(UiEvent::Info(format!("Sent {file_name} to {name}")));
         }
         Err(e) => {
@@ -851,6 +885,14 @@ async fn pump(
                         c.text.chars().count()
                     ));
                 }
+                record(
+                    &settings,
+                    crate::timeline::clip_text_entry(
+                        &s.peer_name,
+                        crate::timeline::Dir::ToPc,
+                        &c.text,
+                    ),
+                );
                 ui(UiEvent::Clipboard {
                     from: s.peer_name.clone(),
                     text: c.text,
@@ -872,6 +914,14 @@ async fn pump(
                     u.text.chars().count(),
                     s.peer_name
                 ));
+                record(
+                    &settings,
+                    crate::timeline::clip_text_entry(
+                        &s.peer_name,
+                        crate::timeline::Dir::ToPc,
+                        &u.text,
+                    ),
+                );
                 ui(UiEvent::RemoteClipboard {
                     from: s.peer_name.clone(),
                     text: u.text,
@@ -965,13 +1015,33 @@ async fn pump(
                             "FILE received {} ({size} bytes, {mbps:.1} MB/s) from \"{from}\"",
                             path.display()
                         ));
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "file".into());
+                        record(
+                            &settings,
+                            crate::timeline::file_entry(
+                                &from,
+                                crate::timeline::Dir::ToPc,
+                                &name,
+                                size,
+                                Some(&path),
+                            ),
+                        );
                         ui(UiEvent::FileReceived { from, path, size });
                     }
-                    Ok(Received::Text(t)) => ui(UiEvent::Clipboard {
-                        from,
-                        text: t,
-                        sensitive: false,
-                    }),
+                    Ok(Received::Text(t)) => {
+                        record(
+                            &settings,
+                            crate::timeline::clip_text_entry(&from, crate::timeline::Dir::ToPc, &t),
+                        );
+                        ui(UiEvent::Clipboard {
+                            from,
+                            text: t,
+                            sensitive: false,
+                        })
+                    }
                     Ok(Received::Link(l)) => {
                         log.line(&format!("LINK from \"{from}\""));
                         ui(UiEvent::Link { from, url: l });
@@ -981,6 +1051,14 @@ async fn pump(
                             "CLIPSYNC received an image ({} bytes) from \"{from}\"",
                             png.len()
                         ));
+                        record(
+                            &settings,
+                            crate::timeline::clip_image_entry(
+                                &from,
+                                crate::timeline::Dir::ToPc,
+                                &png,
+                            ),
+                        );
                         clip.lock()
                             .unwrap_or_else(|p| p.into_inner())
                             .image

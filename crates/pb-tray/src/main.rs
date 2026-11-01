@@ -74,6 +74,8 @@ mod settings_window;
 mod share;
 #[cfg(windows)]
 mod status;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod timeline;
 #[cfg(windows)]
 #[allow(dead_code)] // used from Task 8 (the main window)
 mod titlebar;
@@ -264,6 +266,16 @@ fn main() {
     let settings: core::SharedSettings =
         Arc::new(Mutex::new(settings::Settings::load(&settings_path)));
     fluent::set_theme(settings.lock().map(|s| s.theme).unwrap_or(0));
+    {
+        let keep = settings.lock().map(|s| s.keep_history).unwrap_or(true);
+        let tl_log = log.clone();
+        timeline::init(
+            &opts.dir,
+            Box::new(pb_platform_win::Dpapi),
+            keep,
+            move |m| tl_log.line(m),
+        );
+    }
     let hwnd = match ui::create(
         cmd_tx.clone(),
         peers.clone(),

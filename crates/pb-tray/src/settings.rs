@@ -47,6 +47,8 @@ pub struct Settings {
     pub screen_dim: bool,
     /// Native resolution instead of a 1920 long side.
     pub screen_sharp: bool,
+    /// Record what moved in the PC timeline (metadata only).
+    pub keep_history: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +79,7 @@ impl Default for Settings {
             screen_pinned: false,
             screen_dim: false,
             screen_sharp: false,
+            keep_history: true,
         }
     }
 }
@@ -146,6 +149,7 @@ impl Settings {
                 "screen_pinned" => s.screen_pinned = parse_bool(v).unwrap_or(s.screen_pinned),
                 "screen_dim" => s.screen_dim = parse_bool(v).unwrap_or(s.screen_dim),
                 "screen_sharp" => s.screen_sharp = parse_bool(v).unwrap_or(s.screen_sharp),
+                "keep_history" => s.keep_history = parse_bool(v).unwrap_or(s.keep_history),
                 "notify_app" => {
                     let mut f = v.splitn(3, '\t');
                     if let (Some(m), Some(pkg), Some(name)) = (f.next(), f.next(), f.next()) {
@@ -184,8 +188,8 @@ impl Settings {
             self.notify_quiet_mirroring
         );
         text += &format!(
-            "screen_pinned={}\nscreen_dim={}\nscreen_sharp={}\n",
-            self.screen_pinned, self.screen_dim, self.screen_sharp
+            "screen_pinned={}\nscreen_dim={}\nscreen_sharp={}\nkeep_history={}\n",
+            self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
         let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
         for (pkg, name, muted) in &self.notify_apps {
@@ -213,6 +217,7 @@ mod tests {
         assert!(!s.share_images, "image sync must be opt-in");
         assert!(s.skip_private);
         assert!(!s.keep_in_history);
+        assert!(s.keep_history, "the timeline records by default");
     }
 
     #[test]
@@ -244,6 +249,7 @@ mod tests {
             screen_pinned: true,
             screen_dim: true,
             screen_sharp: true,
+            keep_history: false,
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
