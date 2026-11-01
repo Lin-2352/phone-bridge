@@ -157,10 +157,12 @@ fn leftover_tmp_is_removed_on_open() {
 fn exit_inside_the_debounce_still_saves_the_last_entry() {
     let d = tmpdir("debounce");
     let mut s = Store::open(&d, Box::new(Plain));
-    s.add(clip_text_entry("p", Dir::ToPc, "one")); // written now
+    s.add(clip_text_entry("p", Dir::ToPc, "one"));
+    s.flush_if_due(Instant::now()); // written now
     let mut last = clip_text_entry("p", Dir::ToPc, "two");
     last.chars = Some(777);
-    s.add(last); // inside the second: held back
+    s.add(last);
+    s.flush_if_due(Instant::now()); // inside the second: held back
     assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
     s.flush();
     let r = Store::open(&d, Box::new(Plain));
@@ -172,13 +174,46 @@ fn exit_inside_the_debounce_still_saves_the_last_entry() {
 fn at_most_one_write_per_second() {
     let d = tmpdir("rate");
     let mut s = Store::open(&d, Box::new(Plain));
-    s.add(clip_text_entry("p", Dir::ToPc, "a"));
-    s.add(clip_text_entry("p", Dir::ToPc, "b"));
     let t0 = Instant::now();
+    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    assert!(!d.join(FILE).exists(), "add does no file I/O");
     s.flush_if_due(t0);
     assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
+    s.add(clip_text_entry("p", Dir::ToPc, "b"));
+    std::thread::sleep(Duration::from_millis(10));
+    s.add(clip_text_entry("p", Dir::ToPc, "c"));
+    s.flush_if_due(t0 + Duration::from_millis(500));
+    assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
+    // The trailing write: held-back entries land once a second has passed.
     s.flush_if_due(t0 + Duration::from_millis(1100));
-    assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 2);
+    assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 3);
+}
+
+#[test]
+fn flush_when_clean_does_not_touch_the_file() {
+    let d = tmpdir("clean");
+    let mut s = Store::open(&d, Box::new(Plain));
+    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.flush();
+    std::fs::remove_file(d.join(FILE)).unwrap();
+    s.flush_if_due(Instant::now() + Duration::from_secs(5));
+    s.flush();
+    assert!(!d.join(FILE).exists());
+}
+
+#[test]
+fn a_read_error_keeps_the_file_and_never_overwrites_it() {
+    let d = tmpdir("readerr");
+    // A directory where the file should be: reading it fails, not NotFound.
+    std::fs::create_dir_all(d.join(FILE)).unwrap();
+    let mut s = Store::open(&d, Box::new(Plain));
+    let msgs = collect_log(&mut s);
+    assert!(msgs.lock().unwrap()[0].starts_with("TIMELINE read failed: "));
+    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.flush();
+    assert_eq!(s.entries().len(), 1, "still recorded in memory");
+    assert!(d.join(FILE).is_dir(), "not replaced");
+    assert_eq!(msgs.lock().unwrap().len(), 1, "no write attempted");
 }
 
 #[test]

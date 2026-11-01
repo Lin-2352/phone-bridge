@@ -661,7 +661,8 @@ pub async fn run(
                     *CONTROL_REQUEST.lock().unwrap_or_else(|p| p.into_inner()) = Some(task.abort_handle());
                 }
                 Some(Cmd::SendText { text, link }) => {
-                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    let (node, log, ui, settings) =
+                        (node.clone(), log.clone(), ui.clone(), settings.clone());
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
@@ -670,6 +671,12 @@ pub async fn run(
                         };
                         match node.send_text(&id, &text, link).await {
                             Ok(()) => {
+                                if !link {
+                                    record(
+                                        &settings,
+                                        crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
+                                    );
+                                }
                                 log.line(&format!("SHARE sent {} to \"{name}\"", if link { "link" } else { "text" }));
                                 ui(UiEvent::Info(format!("Sent to {name}")));
                             }
@@ -681,7 +688,8 @@ pub async fn run(
                     });
                 }
                 Some(Cmd::SendClipboard(text)) => {
-                    let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
+                    let (node, log, ui, settings) =
+                        (node.clone(), log.clone(), ui.clone(), settings.clone());
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
@@ -701,6 +709,10 @@ pub async fn run(
                         .await;
                         match result {
                             Ok(()) => {
+                                record(
+                                    &settings,
+                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
+                                );
                                 log.line(&format!("SENT {} bytes to \"{name}\"", text.len()));
                                 ui(UiEvent::Info(format!("Sent to {name}")));
                             }

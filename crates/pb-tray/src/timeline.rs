@@ -357,6 +357,8 @@ pub struct Store {
     wrapper: Box<dyn SeedWrapper>,
     entries: Vec<Entry>,
     enabled: bool,
+    /// The file could not be read (not just unsealed): never overwrite it this session.
+    write_locked: bool,
     dirty: bool,
     last_write: Option<Instant>,
     log: Box<dyn Fn(&str) + Send>,
@@ -372,6 +374,7 @@ impl Store {
             wrapper: w,
             entries: Vec::new(),
             enabled: true,
+            write_locked: false,
             dirty: false,
             last_write: None,
             log: Box::new(|_| {}),
@@ -397,9 +400,11 @@ impl Store {
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => s
-                .pending_log
-                .push(format!("TIMELINE unreadable, starting empty: {e}")),
+            // A sharing violation or similar: the history may be fine on disk.
+            Err(e) => {
+                s.write_locked = true;
+                s.pending_log.push(format!("TIMELINE read failed: {e}"));
+            }
         }
         s
     }
@@ -424,9 +429,10 @@ impl Store {
         self.entries.insert(0, e);
         prune(&mut self.entries, now_unix());
         self.dirty = true;
-        self.flush_if_due(Instant::now());
     }
 
+    /// `add` only marks the entry; the file is written by this (from the
+    /// tray's 1 s timer) or by `flush`, never on the caller's thread.
     /// Writes if something changed and the last write was over a second ago.
     pub fn flush_if_due(&mut self, now: Instant) {
         if self.dirty
@@ -439,7 +445,7 @@ impl Store {
     }
 
     pub fn flush(&mut self) {
-        if !self.dirty || !self.enabled {
+        if !self.dirty || !self.enabled || self.write_locked {
             return;
         }
         self.last_write = Some(Instant::now());
@@ -457,6 +463,7 @@ impl Store {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.dirty = false;
+        self.write_locked = false; // the user asked for it gone
         let _ = std::fs::remove_file(&self.path);
         let _ = std::fs::remove_file(tmp_path(&self.path));
     }
