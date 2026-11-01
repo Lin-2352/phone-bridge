@@ -61,9 +61,12 @@ dependencies {
     // UI: Jetpack Compose + Material 3 (design v2).
     implementation(platform("androidx.compose:compose-bom:2025.06.01"))
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.navigation:navigation-compose:2.9.0")
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+    implementation("androidx.core:core-ktx:1.16.0")
 
     // QR scanning: CameraX preview + on-device ZXing decoding (Apache-2.0, no Play Services).
     implementation("androidx.activity:activity-ktx:1.10.1")
@@ -73,4 +76,6 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
 
     testImplementation("junit:junit:4.13.2")
+    // android.jar's org.json is a stub in JVM tests; the real one for Timeline encode/decode.
+    testImplementation("org.json:json:20240303")
 }

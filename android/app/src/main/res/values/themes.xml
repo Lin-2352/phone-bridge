@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- One window theme for every screen; the colours come from PbTheme in Compose. DayNight follows the system. -->
+    <!-- One window theme for every screen; the colours come from RelayTheme in Compose. DayNight follows the system. -->
     <style name="Theme.Relay" parent="android:Theme.DeviceDefault.DayNight">
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
