@@ -57,6 +57,32 @@ pub fn make_thread_responsive() -> windows::core::Result<()> {
     }
 }
 
+/// Exempt the calling thread from the process's EcoQoS (`true`, at normal
+/// priority), or let it follow the process again (`false`): for the UI
+/// thread while a window people interact with is open.
+pub fn set_thread_eco_exempt(exempt: bool) -> windows::core::Result<()> {
+    let state = THREAD_POWER_THROTTLING_STATE {
+        Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+        // Control set with state clear: never throttled. Control clear: the
+        // system (and so the process setting) decides.
+        ControlMask: if exempt {
+            THREAD_POWER_THROTTLING_EXECUTION_SPEED
+        } else {
+            0
+        },
+        StateMask: 0,
+    };
+    // SAFETY: valid pseudo-handle and a correctly sized, initialised struct.
+    unsafe {
+        SetThreadInformation(
+            GetCurrentThread(),
+            ThreadPowerThrottling,
+            &state as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
+        )
+    }
+}
+
 /// Turn EcoQoS on (`true`) or let Windows decide (`false`).
 pub fn set_eco_qos(on: bool) -> windows::core::Result<()> {
     let state = PROCESS_POWER_THROTTLING_STATE {
@@ -85,5 +111,11 @@ mod tests {
     fn eco_qos_can_be_toggled() {
         super::set_eco_qos(true).unwrap();
         super::set_eco_qos(false).unwrap();
+    }
+
+    #[test]
+    fn ui_thread_can_leave_and_rejoin_eco_qos() {
+        super::set_thread_eco_exempt(true).unwrap();
+        super::set_thread_eco_exempt(false).unwrap();
     }
 }

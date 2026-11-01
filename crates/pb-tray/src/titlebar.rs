@@ -119,7 +119,7 @@ pub fn draw(
         if let Some(f) = fill {
             fluent::round_rect(c, r, Some(f), None, 0.0, false);
         }
-        fluent::icon_sized(c, Font::Icon, glyph, *r, glyph_rgb);
+        fluent::icon_sized(c, Font::IconSmall, glyph, *r, glyph_rgb);
     }
 }
 

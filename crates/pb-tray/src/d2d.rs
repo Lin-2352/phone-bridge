@@ -5,7 +5,7 @@
 //! Mica when it is unavailable) uses an opaque HWND swap chain.
 #![allow(unsafe_code)]
 
-use std::sync::OnceLock;
+use std::{cell::RefCell, sync::OnceLock};
 
 use windows::{
     core::{Interface, HRESULT},
@@ -17,7 +17,7 @@ use windows::{
                     D2D1_ALPHA_MODE, D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED,
                     D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
                 },
-                D2D1CreateFactory, ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Factory1,
+                D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
                 D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
                 D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
                 D2D1_FACTORY_TYPE_MULTI_THREADED,
@@ -222,18 +222,79 @@ fn composition(
     }
 }
 
-/// Builds the device, the context and the swap chain for `want`.
-fn build(hwnd: HWND, want: Backdrop, size: (u32, u32)) -> Result<(Gfx, Backdrop), String> {
-    let (d2d, _) = try_factories()?;
+/// The GPU objects every window on a thread shares: making a D3D11 and a
+/// Direct2D device costs far more than a swap chain, so only the first
+/// window pays for it.
+#[derive(Clone)]
+struct Shared {
+    d3d: ID3D11Device,
+    dxgi: IDXGIDevice,
+    d2d: ID2D1Device,
+    factory: IDXGIFactory2,
+}
+
+thread_local! {
+    static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
+}
+
+/// The thread's shared device, made on first use (on `hwnd`'s GPU).
+fn shared(hwnd: HWND) -> Result<Shared, String> {
+    if let Some(s) = SHARED.with(|c| c.borrow().clone()) {
+        return Ok(s);
+    }
+    let (d2d_factory, _) = try_factories()?;
     let d3d = device(hwnd)?;
+    // SAFETY: COM calls on objects owned here.
+    let s = unsafe {
+        let dxgi: IDXGIDevice = d3d.cast().map_err(err)?;
+        let d2d = d2d_factory.CreateDevice(&dxgi).map_err(err)?;
+        let factory: IDXGIFactory2 = dxgi.GetAdapter().map_err(err)?.GetParent().map_err(err)?;
+        Shared {
+            d3d,
+            dxgi,
+            d2d,
+            factory,
+        }
+    };
+    SHARED.with(|c| *c.borrow_mut() = Some(s.clone()));
+    Ok(s)
+}
+
+/// Makes the thread's shared device ahead of the first window (on idle,
+/// shortly after the tray starts), so opening a window pays only for its
+/// swap chain.
+pub fn warm(hwnd: HWND) -> Result<(), String> {
+    shared(hwnd).map(|_| ())
+}
+
+/// Forgets the shared device if the GPU removed or reset it, so the next
+/// surface (re)build makes a new one; other windows follow on their own
+/// next device-loss error.
+fn drop_shared_if_lost() {
+    SHARED.with(|c| {
+        let mut g = c.borrow_mut();
+        // SAFETY: plain query on a live device.
+        if g.as_ref()
+            .is_some_and(|s| unsafe { s.d3d.GetDeviceRemovedReason() }.is_err())
+        {
+            *g = None;
+        }
+    });
+}
+
+/// Builds the context and the swap chain for `want` on the shared device.
+fn build(hwnd: HWND, want: Backdrop, size: (u32, u32)) -> Result<(Gfx, Backdrop), String> {
+    let Shared {
+        d3d,
+        dxgi,
+        d2d,
+        factory,
+    } = shared(hwnd)?;
     // SAFETY: COM calls on objects owned here, for our own window.
     unsafe {
-        let dxgi: IDXGIDevice = d3d.cast().map_err(err)?;
         let dc = d2d
-            .CreateDevice(&dxgi)
-            .and_then(|d| d.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE))
+            .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
             .map_err(err)?;
-        let factory: IDXGIFactory2 = dxgi.GetAdapter().map_err(err)?.GetParent().map_err(err)?;
         let mut comp = None;
         if want == Backdrop::Mica {
             let mica_supported =
@@ -403,6 +464,7 @@ impl Surface {
         // Release the old swap chain and DirectComposition target first: a
         // window can hold only one composition target.
         self.gfx = None;
+        drop_shared_if_lost();
         let (gfx, backdrop) = build(self.hwnd, self.want, self.size)?;
         self.gfx = Some(gfx);
         self.backdrop = backdrop;
@@ -496,6 +558,23 @@ mod tests {
             choose(Backdrop::Opaque, true, true),
             Backdrop::Opaque
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_on_a_thread_share_one_device() {
+        let device = || SHARED.with(|c| c.borrow().as_ref().map(|s| s.d3d.as_raw()));
+        let (h1, h2) = (test_window(), test_window());
+        let s1 = Surface::new(h1, Backdrop::Opaque).expect("surface");
+        let first = device().expect("shared device made");
+        let s2 = Surface::new(h2, Backdrop::Opaque).expect("surface");
+        assert_eq!(device(), Some(first), "the second window reuses it");
+        drop((s1, s2));
+        // SAFETY: our own test windows, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(h1);
+            let _ = DestroyWindow(h2);
+        }
     }
 
     #[cfg(windows)]

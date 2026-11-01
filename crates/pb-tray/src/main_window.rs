@@ -286,6 +286,7 @@ struct State {
     /// The last restored (not maximized or minimized) window rect.
     normal: Option<SavedRect>,
     opened: Instant,
+    timing: Timing,
 }
 
 impl State {
@@ -455,6 +456,7 @@ fn paint(hwnd: HWND) {
         focus: st.focus,
         scroll: st.scroll[st.page.index()].clone(),
     });
+    let t_draw = Instant::now();
     let painted = SURFACE.with(|cell| {
         let mut slot = cell.borrow_mut();
         match (snap.as_ref(), slot.as_mut()) {
@@ -473,10 +475,14 @@ fn paint(hwnd: HWND) {
         return;
     }
     if !FIRST_PAINT.swap(true, Ordering::Relaxed) {
-        let ms = with(hwnd, |st| st.opened.elapsed().as_millis()).unwrap_or(0);
+        let draw_ms = t_draw.elapsed().as_millis();
+        let (ms, t) =
+            with(hwnd, |st| (st.opened.elapsed().as_millis(), st.timing)).unwrap_or_default();
         if let Some(host) = HOST.get() {
-            host.log
-                .line(&format!("UI main window first paint {ms} ms"));
+            host.log.line(&format!(
+                "UI main window first paint {ms} ms (window {} ms, surface {} ms, draw {draw_ms} ms)",
+                t.window_ms, t.surface_ms
+            ));
         }
     }
 }
@@ -909,12 +915,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
             });
             drop(surface);
-            STATE.with(|cell| {
+            let was_main = STATE.with(|cell| {
                 let mut g = cell.borrow_mut();
-                if g.as_ref().is_some_and(|st| st.hwnd == hwnd.0 as isize) {
+                let main = g.as_ref().is_some_and(|st| st.hwnd == hwnd.0 as isize);
+                if main {
                     *g = None;
                 }
+                main
             });
+            if was_main {
+                // Idle again: back under the process's EcoQoS.
+                let _ = pb_platform_win::power::set_thread_eco_exempt(false);
+            }
             LRESULT(0)
         }
         // SAFETY: default handling.
@@ -987,12 +999,22 @@ fn default_rect() -> SavedRect {
     )
 }
 
-/// Creates the window and its surface. Without Mica the window must not
-/// lack a redirection bitmap (an HWND swap chain needs it), so a window made
-/// for Mica is remade plain when the surface fell back to opaque.
-fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface), String> {
-    // SAFETY: class registration (a repeat fails harmlessly) and window
-    // creation on the UI thread.
+/// How long making the window and its surface took (first-paint log).
+#[derive(Clone, Copy, Debug, Default)]
+struct Timing {
+    window_ms: u128,
+    surface_ms: u128,
+}
+
+/// Creates the window (hidden, title bar already dropped) and then its
+/// surface at the final client size. Without Mica the window must not lack a
+/// redirection bitmap (an HWND swap chain needs it), so a window made for
+/// Mica is remade plain, with an opaque surface, when Mica fell through.
+fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface, Timing), String> {
+    let t0 = Instant::now();
+    // SAFETY: class registration (a repeat fails harmlessly), window creation
+    // on the UI thread, then a frame recalculation (our WM_NCCALCSIZE drops
+    // the standard title bar) before the surface measures the client area.
     let hwnd = unsafe {
         let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         let wc = WNDCLASSW {
@@ -1016,7 +1038,7 @@ fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface), Strin
             WS_EX_APPWINDOW | WINDOW_EX_STYLE::default()
         };
         let title: Vec<u16> = APP_NAME.encode_utf16().chain([0]).collect();
-        CreateWindowExW(
+        let h = CreateWindowExW(
             ex,
             CLASS,
             PCWSTR(title.as_ptr()),
@@ -1030,16 +1052,47 @@ fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface), Strin
             Some(hinstance.into()),
             None,
         )
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        let _ = SetWindowPos(
+            h,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        h
     };
-    match Surface::new(hwnd, Backdrop::Mica) {
-        Ok(s) if s.backdrop() == Backdrop::Mica || !for_mica => Ok((hwnd, s)),
+    let window_ms = t0.elapsed().as_millis();
+    let t1 = Instant::now();
+    let want = if for_mica {
+        Backdrop::Mica
+    } else {
+        Backdrop::Opaque
+    };
+    match Surface::new(hwnd, want) {
+        Ok(s) if s.backdrop() == want => {
+            let surface_ms = t1.elapsed().as_millis();
+            Ok((
+                hwnd,
+                s,
+                Timing {
+                    window_ms,
+                    surface_ms,
+                },
+            ))
+        }
         other => {
             drop(other);
             // SAFETY: our own window, not yet shown or registered anywhere.
             let _ = unsafe { DestroyWindow(hwnd) };
             if for_mica {
-                make_window(rect, false)
+                make_window(rect, false).map(|(h, s, t)| {
+                    // The discarded attempt counts as window time.
+                    let window_ms = t0.elapsed().as_millis() - t.surface_ms;
+                    (h, s, Timing { window_ms, ..t })
+                })
             } else {
                 Err("no Direct2D surface".into())
             }
@@ -1051,13 +1104,17 @@ fn create(page: Page, opened: Instant) {
     let Some(host) = HOST.get() else {
         return;
     };
+    // The tray idles under EcoQoS (efficient cores, low clock); while this
+    // window is open the UI thread runs at full speed (undone on WM_DESTROY).
+    let _ = pb_platform_win::power::set_thread_eco_exempt(true);
     let model = (host.model)();
     let saved = host.settings.lock().ok().and_then(|s| s.main_window_rect);
     let rect = restore_rect(saved, &monitors()).unwrap_or_else(default_rect);
-    let (hwnd, surface) = match make_window(rect, fluent::transparency_on()) {
+    let (hwnd, surface, timing) = match make_window(rect, fluent::transparency_on()) {
         Ok(v) => v,
         Err(e) => {
             host.log.line(&format!("UI main window failed: {e}"));
+            let _ = pb_platform_win::power::set_thread_eco_exempt(false);
             return;
         }
     };
@@ -1095,21 +1152,12 @@ fn create(page: Page, opened: Instant) {
             timer: false,
             normal: Some(rect),
             opened,
+            timing,
         })
     });
     fluent::register_window(hwnd);
-    // SAFETY: frame recalculation (our WM_NCCALCSIZE drops the standard title
-    // bar before the first frame), then show and raise our own window.
+    // SAFETY: show and raise our own window.
     unsafe {
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-        );
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
     }
@@ -1255,13 +1303,58 @@ mod tests {
     #[test]
     fn window_and_surface_are_made_hidden_either_way() {
         for for_mica in [true, false] {
-            let (hwnd, mut surface) = make_window((0, 0, 800, 600), for_mica).expect("window");
+            let (hwnd, mut surface, _) = make_window((0, 0, 800, 600), for_mica).expect("window");
             println!("for_mica {for_mica}: got {:?}", surface.backdrop());
             if !for_mica {
                 assert_eq!(surface.backdrop(), Backdrop::Opaque);
             }
             surface.resize(900, 650);
             surface.draw(|_| {}).expect("draw");
+            drop(surface);
+            // SAFETY: our own hidden test window.
+            let _ = unsafe { DestroyWindow(hwnd) };
+        }
+    }
+
+    /// Cost of opening the window, split like the first-paint log line; the
+    /// second round shows what the shared device and caches save. Run with
+    /// `cargo test -p pb-tray -- --ignored first_paint_timing --nocapture`.
+    #[test]
+    #[ignore]
+    fn first_paint_timing() {
+        for round in 1..=2 {
+            let t0 = Instant::now();
+            let (hwnd, mut surface, t) = make_window((100, 100, 1000, 700), false).expect("window");
+            let (window_ms, surface_ms) = (t.window_ms, t.surface_ms);
+            let t1 = Instant::now();
+            let (w, h) = client_size(hwnd);
+            let snap = Snapshot {
+                page: Page::Home,
+                model: Model::default(),
+                active: true,
+                maximized: false,
+                cap_hover: None,
+                cap_pressed: None,
+                nav_t: [0.0; 4],
+                focus: None,
+                scroll: Scroll::new(0.0, 0.0),
+            };
+            surface.resize(w as u32, h as u32);
+            surface
+                .draw(|dc| {
+                    let mut c = Canvas {
+                        dc,
+                        s: 1.0,
+                        p: fluent::palette(),
+                    };
+                    draw(&mut c, rectf(0.0, 0.0, w, h), &snap, false);
+                })
+                .expect("draw");
+            let draw_ms = t1.elapsed().as_millis();
+            println!(
+                "round {round}: total {} ms (window {window_ms} ms, surface {surface_ms} ms, draw {draw_ms} ms)",
+                t0.elapsed().as_millis()
+            );
             drop(surface);
             // SAFETY: our own hidden test window.
             let _ = unsafe { DestroyWindow(hwnd) };

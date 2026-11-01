@@ -24,6 +24,16 @@ fn pipe_name() -> String {
     format!(r"\\.\pipe\PhoneBridgeTray-{user}")
 }
 
+/// The window request a second launch forwards: what its flags asked for,
+/// or, when it asked for nothing at all (a plain launch from the Start menu
+/// or a shortcut), the main window, so a second launch brings Relay forward.
+pub fn second_launch_ui(asked: Option<Request>, other_request: bool) -> Option<Request> {
+    match asked {
+        None if !other_request => Some(Request::Open),
+        a => a,
+    }
+}
+
 /// What a second instance can ask for.
 pub enum Request {
     Pair,
@@ -265,6 +275,18 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plain_second_launch_opens_the_main_window() {
+        assert!(matches!(second_launch_ui(None, false), Some(Request::Open)));
+        // A flag's own request wins.
+        assert!(matches!(
+            second_launch_ui(Some(Request::Settings), false),
+            Some(Request::Settings)
+        ));
+        // --pair, --send-clipboard or --send: no window on top of that.
+        assert!(second_launch_ui(None, true).is_none());
+    }
 
     #[test]
     fn requests_round_trip_and_garbage_is_rejected() {

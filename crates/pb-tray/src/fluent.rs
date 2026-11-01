@@ -242,6 +242,8 @@ pub enum Font {
     Icon,
     /// 20 px glyphs: empty states and the nav rail.
     IconLarge,
+    /// 10 px glyphs: the caption buttons (the size Windows draws them at).
+    IconSmall,
 }
 
 impl Font {
@@ -258,6 +260,7 @@ impl Font {
             Font::Display => (display, ty::DISPLAY, 600),
             Font::Icon => (w!("Segoe Fluent Icons"), 16.0, 400),
             Font::IconLarge => (w!("Segoe Fluent Icons"), 20.0, 400),
+            Font::IconSmall => (w!("Segoe Fluent Icons"), 10.0, 400),
         }
     }
 }
@@ -1013,6 +1016,14 @@ pub fn set_cursor(hand: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_glyphs_are_ten_px_like_windows() {
+        let (face, size, _) = Font::IconSmall.spec();
+        assert_eq!(size, 10.0);
+        // SAFETY: a static wide string literal.
+        assert_eq!(unsafe { face.to_string() }.unwrap(), "Segoe Fluent Icons");
+    }
 
     #[test]
     fn palette_comes_from_tokens() {

@@ -93,6 +93,9 @@ const TIMER_NOTIFY: usize = 9;
 const TIMER_OTP: usize = 10;
 /// Writes held-back timeline entries (a trailing write within about a second).
 const TIMER_TIMELINE: usize = 11;
+/// Once, a few seconds after start: build the shared Direct2D device so the
+/// first window opens fast.
+const TIMER_WARM: usize = 12;
 const WM_TOAST: u32 = WM_APP + 7;
 const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 const WTS_SESSION_LOCK: usize = 7;
@@ -1894,6 +1897,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_WARM => {
+            kill_timer(hwnd, TIMER_WARM);
+            let t = std::time::Instant::now();
+            let r = crate::d2d::warm(hwnd);
+            st.log.line(&format!(
+                "UI device warmed in {} ms{}",
+                t.elapsed().as_millis(),
+                r.err()
+                    .map(|e| format!(" (failed: {e})"))
+                    .unwrap_or_default()
+            ));
+            LRESULT(0)
+        }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_TIMELINE => {
             crate::timeline::with(|t| t.flush_if_due(std::time::Instant::now()));
             LRESULT(0)
@@ -2129,6 +2145,7 @@ pub fn create(
             arm_timer(hwnd, TIMER_NOTIFY, 5000);
         }
         arm_timer(hwnd, TIMER_TIMELINE, 1000);
+        arm_timer(hwnd, TIMER_WARM, 3000);
         // Session lock and unlock (content hidden while locked).
         let _ = windows::Win32::System::RemoteDesktop::WTSRegisterSessionNotification(
             hwnd,

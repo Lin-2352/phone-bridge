@@ -243,6 +243,8 @@ fn main() {
     }
     if !single_instance() {
         // Hand the request to the running tray over its local pipe.
+        let other = opts.pair_on_start || send_clipboard || !send_files.is_empty();
+        let ui_request = ipc::second_launch_ui(ui_request, other);
         let mut ok = true;
         if opts.pair_on_start {
             ok &= ipc::send_request(&ipc::Request::Pair);
