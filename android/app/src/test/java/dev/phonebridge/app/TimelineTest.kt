@@ -103,12 +103,15 @@ class TimelineTest {
     }
 
     @Test fun corrupt_json_reads_as_empty() {
-        for (bad in listOf("", "not json", "{", "[]", "{\"v\":2,\"e\":[]}", "{\"v\":1,\"e\":[{\"k\":\"Nope\",\"d\":\"ToPc\",\"peer\":\"p\",\"at\":1}]}",
-            "{\"v\":1,\"e\":[{\"k\":\"File\",\"d\":\"ToPc\",\"peer\":\"p\"}]}", "{\"v\":1,\"e\":[{\"k\":\"ClipImage\",\"d\":\"ToPc\",\"peer\":\"p\",\"at\":1,\"w\":3}]}")) {
+        for (bad in listOf("", "not json", "{", "[]", "{\"v\":2,\"e\":[]}", "{\"v\":1,\"e\":[{\"k\":\"Nope\",\"d\":\"c\",\"peer\":\"p\",\"at\":1}]}", "{\"v\":1,\"e\":[{\"k\":\"F\",\"d\":\"ToPc\",\"peer\":\"p\",\"at\":1}]}",
+            "{\"v\":1,\"e\":[{\"k\":\"F\",\"d\":\"c\",\"peer\":\"p\"}]}", "{\"v\":1,\"e\":[{\"k\":\"I\",\"d\":\"c\",\"peer\":\"p\",\"at\":1,\"w\":3}]}")) {
             assertEquals(bad, emptyList<TlEntry>(), decode(bad))
             assertNull(bad, decodeOrNull(bad))
         }
         assertTrue(decodeOrNull(encode(emptyList())) != null)
+        // The stable on-disk codes, not enum names.
+        assertEquals(listOf(TlEntry(TlKind.Link, TlDir.ToPhone, "p", 1, chars = 3)),
+            decodeOrNull("{\"v\":1,\"e\":[{\"k\":\"L\",\"d\":\"p\",\"peer\":\"p\",\"at\":1,\"chars\":3}]}"))
     }
 
     @Test fun home_recent_rows_show_the_summary_not_content() {

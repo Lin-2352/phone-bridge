@@ -56,6 +56,22 @@ const val TL_MAX_ENTRIES = 1000
 const val TL_MAX_AGE_MS = 30L * 24 * 3600 * 1000
 private const val TL_VERSION = 1
 
+// On-disk codes, as on the PC; never enum names, which R8 may rename in a release build.
+private fun kindCode(k: TlKind) = when (k) {
+    TlKind.File -> "F"
+    TlKind.ClipText -> "T"
+    TlKind.ClipImage -> "I"
+    TlKind.Link -> "L"
+    TlKind.Notification -> "N"
+}
+private fun kindOf(c: String) = TlKind.entries.firstOrNull { kindCode(it) == c } ?: throw IllegalArgumentException("bad kind")
+private fun dirCode(d: TlDir) = if (d == TlDir.ToPc) "c" else "p"
+private fun dirOf(c: String) = when (c) {
+    "c" -> TlDir.ToPc
+    "p" -> TlDir.ToPhone
+    else -> throw IllegalArgumentException("bad direction")
+}
+
 fun fileEntry(peer: String, dir: TlDir, name: String, size: Long, uri: String?, at: Long = System.currentTimeMillis()) =
     TlEntry(TlKind.File, dir, peer, at, name = name, size = size, uri = uri)
 
@@ -131,8 +147,8 @@ fun encode(list: List<TlEntry>): String {
     val arr = JSONArray()
     for (e in list) {
         val o = JSONObject()
-            .put("k", e.kind.name)
-            .put("d", e.dir.name)
+            .put("k", kindCode(e.kind))
+            .put("d", dirCode(e.dir))
             .put("peer", e.peer)
             .put("at", e.at)
         e.name?.let { o.put("name", it) }
@@ -162,8 +178,8 @@ fun decodeOrNull(s: String): List<TlEntry>? = try {
             val h = int("h")
             require((w == null) == (h == null)) { "half a size" }
             TlEntry(
-                kind = TlKind.valueOf(o.getString("k")),
-                dir = TlDir.valueOf(o.getString("d")),
+                kind = kindOf(o.getString("k")),
+                dir = dirOf(o.getString("d")),
                 peer = o.getString("peer"),
                 at = o.getLong("at"),
                 name = str("name"),
