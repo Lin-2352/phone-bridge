@@ -75,6 +75,10 @@ pub const ID_CAMERA_WINDOW: usize = 22;
 pub const ID_CAMERA_REPAIR: usize = 23;
 /// The main window on Home (menu "Open Relay", IPC `--open`).
 pub const ID_OPEN_MAIN: usize = 24;
+/// Ends PC -> phone control if it still runs (Home's Stop; never starts it).
+const ID_CONTROL_STOP: usize = 25;
+/// The tray's hidden window, for the main window's actions.
+static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -336,22 +340,100 @@ fn open_flyout(hwnd: HWND, st: &State) {
     let cmds = st.cmds.clone();
     // Runs on the UI thread from the flyout's window procedure: only post
     // messages here, never call back into the flyout.
-    crate::flyout::toggle(
-        model,
-        Box::new(move |a| match a {
-            crate::flyout::Action::ToggleClipboard => post_command(raw, ID_TOGGLE_CLIP),
-            crate::flyout::Action::SendFiles => post_command(raw, ID_SEND_FILES),
-            crate::flyout::Action::Pair => post_command(raw, ID_PAIR),
-            crate::flyout::Action::Settings => post_command(raw, ID_SETTINGS),
-            crate::flyout::Action::ControlPhone => post_command(raw, ID_CONTROL),
-            crate::flyout::Action::ShowScreen => post_command(raw, ID_SCREEN),
-            crate::flyout::Action::ToggleCamera => post_command(raw, ID_CAMERA),
-            crate::flyout::Action::CameraWindow => post_command(raw, ID_CAMERA_WINDOW),
-            crate::flyout::Action::Dropped(files) => {
-                let _ = cmds.send(Cmd::SendFiles(files));
-            }
-        }),
+    crate::flyout::toggle(model, Box::new(move |a| flyout_action(raw, &cmds, a)));
+}
+
+/// Runs a flyout command (from the flyout or Home's quick actions). Only
+/// posts: the caller may be inside another window's procedure.
+fn flyout_action(raw: isize, cmds: &UnboundedSender<Cmd>, a: crate::flyout::Action) {
+    match a {
+        crate::flyout::Action::ToggleClipboard => post_command(raw, ID_TOGGLE_CLIP),
+        crate::flyout::Action::SendFiles => post_command(raw, ID_SEND_FILES),
+        crate::flyout::Action::Pair => post_command(raw, ID_PAIR),
+        crate::flyout::Action::Settings => post_command(raw, ID_SETTINGS),
+        crate::flyout::Action::ControlPhone => post_command(raw, ID_CONTROL),
+        crate::flyout::Action::ShowScreen => post_command(raw, ID_SCREEN),
+        crate::flyout::Action::ToggleCamera => post_command(raw, ID_CAMERA),
+        crate::flyout::Action::CameraWindow => post_command(raw, ID_CAMERA_WINDOW),
+        crate::flyout::Action::Dropped(files) => {
+            let _ = cmds.send(Cmd::SendFiles(files));
+        }
+    }
+}
+
+/// A main window page action other than switching pages. Stop takes the
+/// same path as the tray menu's stop items.
+fn page_action(a: crate::pages::Action) {
+    use crate::pages::{home::SessionKind, Action};
+    let raw = TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed);
+    let Some(st) = STATE.get().filter(|_| raw != 0) else {
+        return;
+    };
+    match a {
+        Action::Go(_) => {}
+        Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
+        Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
+        Action::Stop(SessionKind::Camera) => post_command(raw, ID_CAMERA_STOP),
+        Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
+    }
+}
+
+/// Everything the main window's pages show. Each lock is taken and
+/// released on its own.
+fn page_model(st: &State) -> crate::pages::Model {
+    use crate::pages::home;
+    let phone = st.peers.lock().ok().and_then(|g| g.first().cloned());
+    let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
+    let (screen, camera, control) = (
+        crate::screen_window::is_open(),
+        crate::camera::is_running() || crate::camera::pending(),
+        crate::control::is_active(),
     );
+    if let Some((id, _)) = &phone {
+        // A live session is contact with the phone right now.
+        if screen || camera || control {
+            crate::core::touch(id);
+        }
+    }
+    let (notes, locked) = {
+        let ns = notify_ui();
+        let notes: Vec<pb_protocol::control::Notification> = ns
+            .mirror
+            .recent(usize::MAX)
+            .into_iter()
+            .filter_map(|e| ns.mirror.note(e).cloned())
+            .collect();
+        (notes, ns.locked)
+    };
+    let mut recent = Vec::new();
+    crate::timeline::with(|t| recent = t.entries().iter().take(home::RECENT).cloned().collect());
+    let phone = phone.map(|(id, name)| {
+        let c = crate::core::contact(&id);
+        home::PhoneIn {
+            name,
+            fingerprint: id.fingerprint()[..9].to_owned(),
+            changed: crate::core::is_changed(&id),
+            open: c.open > 0,
+            last_seen: c.last_seen,
+            addr: c.addr,
+        }
+    });
+    crate::pages::Model {
+        home: home::build(home::Inputs {
+            phone,
+            clipboard_on: settings.universal_clipboard,
+            screen,
+            camera,
+            control,
+            notes: &notes,
+            settings: &settings,
+            locked,
+            recent: &recent,
+            // Whole minutes: the labels change no faster, and an unchanged
+            // model is not repainted.
+            now: crate::timeline::now_unix() / 60 * 60,
+        }),
+    }
 }
 
 fn save_settings(st: &State) {
@@ -1050,6 +1132,8 @@ fn show_phone_notification(
                     otp: n.otp.clone(),
                 },
             );
+            // Home presents it again under the settings of the moment.
+            ns.mirror.set_note(&tag, n.clone());
             ns.meta
                 .insert(tag, (group, reply_index, picture.clone()))
                 .and_then(|(_, _, old)| old)
@@ -1722,6 +1806,11 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_SETTINGS => open_settings(hwnd, st),
         ID_MENU => show_menu(hwnd),
         ID_CONTROL => toggle_control(hwnd, st),
+        ID_CONTROL_STOP => {
+            if crate::control::is_active() {
+                end_control(hwnd, "Back to this PC");
+            }
+        }
         ID_SCREEN_SHOW => {
             if !crate::screen_window::is_open() {
                 let _ = st.cmds.send(Cmd::ShowScreen);
@@ -1895,6 +1984,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 _ => {}
             }
+            // Home lists notifications only while their content may show.
+            if crate::main_window::is_open() {
+                crate::main_window::refresh();
+            }
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_WARM => {
@@ -1912,6 +2005,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_TIMELINE => {
             crate::timeline::with(|t| t.flush_if_due(std::time::Instant::now()));
+            // Catches what changes without a message (a session or
+            // connection ending, timeline adds from the core, "5 min ago");
+            // the window repaints only if its model changed.
+            if crate::main_window::is_open() {
+                crate::main_window::refresh();
+            }
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_NOTIFY => {
@@ -2069,8 +2168,8 @@ pub fn create(
         log: log.clone(),
         settings: settings.clone(),
         settings_path: settings_path.clone(),
-        // The pages fill their model from Task 9 on.
-        model: Box::new(crate::pages::Model::default),
+        model: Box::new(|| STATE.get().map(page_model).unwrap_or_default()),
+        act: Box::new(page_action),
     });
     let _ = STATE.set(State {
         cmds,
@@ -2111,6 +2210,7 @@ pub fn create(
             windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(w!("TaskbarCreated")),
             std::sync::atomic::Ordering::Relaxed,
         );
+        TRAY_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
         add_icon(hwnd, "Relay (starting)");
         // Real toasts with Phone Bridge's identity; balloons if that fails.
         let raw = hwnd.0 as isize;

@@ -126,12 +126,14 @@ impl Page {
 }
 
 /// What the window needs from the tray: the log, the settings (for the
-/// saved rect) and a way to build the page model.
+/// saved rect), a way to build the page model and a handler for page
+/// actions other than switching pages (it must only post messages).
 pub struct Host {
     pub log: Log,
     pub settings: SharedSettings,
     pub settings_path: PathBuf,
     pub model: Box<dyn Fn() -> Model + Send + Sync>,
+    pub act: Box<dyn Fn(pages::Action) + Send + Sync>,
 }
 
 static HOST: OnceLock<Host> = OnceLock::new();
@@ -412,19 +414,31 @@ fn switch(st: &mut State, page: Page) {
 
 /// A click, Enter or Space on `t`.
 fn activate(hwnd: HWND, t: Target) {
-    with(hwnd, |st| match t {
-        Target::Nav(p) => switch(st, p),
+    let action = with(hwnd, |st| match t {
+        Target::Nav(p) => {
+            switch(st, p);
+            None
+        }
         Target::Hit(id) => {
             let (_, hits) = layout_now(hwnd, st);
-            let action = hits
+            match hits
                 .iter()
                 .find(|h| h.id == id)
-                .and_then(|h| pages::click(st.page, h, &st.model));
-            if let Some(pages::Action::Go(p)) = action {
-                switch(st, p);
+                .and_then(|h| pages::click(st.page, h, &st.model))
+            {
+                Some(pages::Action::Go(p)) => {
+                    switch(st, p);
+                    None
+                }
+                other => other,
             }
         }
-    });
+    })
+    .flatten();
+    // Outside the state borrow: the host posts to the tray window.
+    if let (Some(a), Some(host)) = (action, HOST.get()) {
+        (host.act)(a);
+    }
     repaint(hwnd);
 }
 
@@ -1188,9 +1202,16 @@ pub fn refresh() {
         return;
     };
     let model = HOST.get().map(|h| (h.model)()).unwrap_or_default();
-    with(hwnd, |st| st.model = model);
-    fit_scroll(hwnd);
-    repaint(hwnd);
+    // Called every second by the tray: repaint only on a real change.
+    let changed = with(hwnd, |st| {
+        let changed = st.model != model;
+        st.model = model;
+        changed
+    });
+    if changed == Some(true) {
+        fit_scroll(hwnd);
+        repaint(hwnd);
+    }
 }
 
 #[cfg(test)]

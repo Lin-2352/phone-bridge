@@ -66,6 +66,7 @@ pub struct Model {
 }
 
 /// User actions the flyout reports back to the UI thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     ToggleClipboard,
     SendFiles,

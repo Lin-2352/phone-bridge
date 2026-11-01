@@ -73,6 +73,78 @@ fn refresh_changed(node: &Node) {
     }
 }
 
+/// What the tray knows about reaching a paired device this run (in memory).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Contact {
+    /// Sessions from it open now (each `pump`).
+    pub open: u32,
+    /// Unix seconds of the last successful exchange.
+    pub last_seen: Option<u64>,
+    /// The address the node last reached it at (`ip:port`): a successful
+    /// dial moves the address it used to the front of the saved list.
+    pub addr: Option<String>,
+}
+
+static CONTACT: Mutex<Vec<(PeerId, Contact)>> = Mutex::new(Vec::new());
+
+pub fn contact(id: &PeerId) -> Contact {
+    CONTACT
+        .lock()
+        .ok()
+        .and_then(|g| g.iter().find(|(p, _)| p == id).map(|(_, c)| c.clone()))
+        .unwrap_or_default()
+}
+
+fn with_contact(id: &PeerId, f: impl FnOnce(&mut Contact)) {
+    let mut g = CONTACT.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((_, c)) = g.iter_mut().find(|(p, _)| p == id) {
+        f(c);
+    } else {
+        let mut c = Contact::default();
+        f(&mut c);
+        g.push((*id, c));
+    }
+}
+
+/// `id` is in contact now (an exchange worked, or a session runs).
+pub fn touch(id: &PeerId) {
+    let now = crate::timeline::now_unix();
+    with_contact(id, |c| c.last_seen = Some(now));
+}
+
+/// An exchange with `id` worked: stamp it and note the address used.
+fn seen(node: &Node, id: &PeerId) {
+    touch(id);
+    note_addr(node, id);
+}
+
+fn note_addr(node: &Node, id: &PeerId) {
+    let addr = node
+        .paired_peers()
+        .into_iter()
+        .find(|p| p.id == *id)
+        .and_then(|p| p.addrs.into_iter().next());
+    with_contact(id, |c| c.addr = addr);
+}
+
+/// Counts a session from a phone as open for as long as it lives.
+struct OpenSession(PeerId);
+
+impl OpenSession {
+    fn new(id: PeerId) -> Self {
+        touch(&id);
+        with_contact(&id, |c| c.open += 1);
+        Self(id)
+    }
+}
+
+impl Drop for OpenSession {
+    fn drop(&mut self) {
+        touch(&self.0);
+        with_contact(&self.0, |c| c.open = c.open.saturating_sub(1));
+    }
+}
+
 static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The task that is setting up the camera or waiting for the phone's answer.
 static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
@@ -271,11 +343,14 @@ impl Log {
 }
 
 fn refresh(node: &Node, peers: &Peers) {
-    let list = node
-        .paired_peers()
-        .into_iter()
-        .map(|p| (p.id, p.name))
-        .collect();
+    let paired = node.paired_peers();
+    if let Ok(mut g) = CONTACT.lock() {
+        g.retain(|(id, _)| paired.iter().any(|p| p.id == *id));
+    }
+    for p in &paired {
+        note_addr(node, &p.id);
+    }
+    let list = paired.into_iter().map(|p| (p.id, p.name)).collect();
     if let Ok(mut g) = peers.lock() {
         *g = list;
     }
@@ -352,6 +427,7 @@ pub async fn run(
                 // An older phone app never answers: do not keep the session
                 // (and its heartbeats) open.
                 Ok(s) => {
+                    seen(&node, &p.id);
                     let closer = s.closer();
                     let pumped = pump(s, log, ui, settings, clip, images);
                     if tokio::time::timeout(std::time::Duration::from_secs(30), pumped)
@@ -413,7 +489,9 @@ pub async fn run(
                     tokio::spawn(async move {
                         for id in targets {
                             // Only the outcome matters: the node records it.
-                            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), node.connect(&id)).await;
+                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), node.connect(&id)).await {
+                                seen(&node, &id);
+                            }
                         }
                         refresh_changed(&node);
                         ui(UiEvent::PeersChecked);
@@ -446,6 +524,9 @@ pub async fn run(
                         };
                         let r = node.notify_action(&peer, action).await;
                         let hash = pb_transport::notify::key_hash(&key);
+                        if r.is_ok() {
+                            seen(&node, &peer);
+                        }
                         match r {
                             Ok(res) if res.ok => log.line(&format!("NOTIFY action {kind:?} key={hash} ok=true")),
                             Ok(res) => {
@@ -507,6 +588,7 @@ pub async fn run(
                             }
                             .await;
                             if r.is_ok() {
+                                seen(&node, &id);
                                 record(
                                     &settings,
                                     crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
@@ -545,6 +627,7 @@ pub async fn run(
                         for (id, name) in targets {
                             match node.send_clipboard_image(&id, png.clone()).await {
                                 Ok(()) => {
+                                    seen(&node, &id);
                                     record(
                                         &settings,
                                         crate::timeline::clip_image_entry(&name, crate::timeline::Dir::ToPhone, &png),
@@ -640,6 +723,7 @@ pub async fn run(
                         };
                         match node.open_input_with(&id, asked).await {
                             Ok(sender) => {
+                                seen(&node, &id);
                                 log.line(&format!("CONTROL phone \"{name}\" started"));
                                 ui(UiEvent::ControlReady { name, sender });
                             }
@@ -671,6 +755,7 @@ pub async fn run(
                         };
                         match node.send_text(&id, &text, link).await {
                             Ok(()) => {
+                                seen(&node, &id);
                                 if !link {
                                     record(
                                         &settings,
@@ -709,6 +794,7 @@ pub async fn run(
                         .await;
                         match result {
                             Ok(()) => {
+                                seen(&node, &id);
                                 record(
                                     &settings,
                                     crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
@@ -803,6 +889,7 @@ async fn send_one_file(
     .await;
     match result {
         Ok((size, took)) => {
+            seen(node, id);
             let mbps = size as f64 / 1e6 / took.as_secs_f64().max(1e-3);
             log.line(&format!(
                 "FILE sent \"{file_name}\" {size} bytes to \"{name}\" in {:.2}s ({mbps:.1} MB/s)",
@@ -836,6 +923,7 @@ async fn pump(
     images: Arc<ToastImages>,
 ) {
     log.line(&format!("SESSION \"{}\"", s.peer_name));
+    let _open = OpenSession::new(s.peer);
     let mut notify_rate =
         pb_transport::notify::RateWindow::new(pb_transport::notify::MAX_NOTIFY_PER_SEC);
     loop {
@@ -1146,6 +1234,7 @@ fn show_screen(
             };
             match node.open_screen(&id, start.clone(), asked).await {
                 Ok(view) => {
+                    seen(&node, &id);
                     log.line(&format!(
                         "SCREEN \"{name}\" sharing ({}x{}) accepted after {} ms",
                         view.accept.width,
@@ -1167,6 +1256,7 @@ fn show_screen(
                         );
                         let rt = tokio::runtime::Handle::current();
                         move |why: String| {
+                            touch(&id);
                             log.line(&format!("SCREEN ended: {why}"));
                             if why.starts_with("Phone stopped") {
                                 // Maybe only the link: try again for 30 s.
@@ -1361,6 +1451,7 @@ fn show_camera(
             drop(pending);
             match opened {
                 Ok(view) => {
+                    seen(&node, &id);
                     log.line(&format!(
                         "CAMERA \"{name}\" streaming ({}x{}, rotation {}) accepted after {} ms",
                         view.accept.width,
@@ -1380,6 +1471,7 @@ fn show_camera(
                             (node.clone(), log.clone(), ui.clone(), name.clone());
                         let rt = tokio::runtime::Handle::current();
                         move |why: String| {
+                            touch(&id);
                             log.line(&format!("CAMERA ended: {why}"));
                             if why.starts_with("Phone camera stopped") {
                                 // Maybe only the link: try again for 30 s.
@@ -1446,4 +1538,26 @@ fn show_camera(
 #[cfg(windows)]
 fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {
     pb_platform_win::Dpapi
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_sessions_are_counted_and_stamp_the_last_contact() {
+        let id = pb_identity::Identity::from_seed([77; 32]).peer_id();
+        assert_eq!(contact(&id), Contact::default());
+        let a = OpenSession::new(id);
+        let b = OpenSession::new(id);
+        assert_eq!(contact(&id).open, 2);
+        drop(a);
+        assert_eq!(contact(&id).open, 1);
+        drop(b);
+        let c = contact(&id);
+        assert_eq!(c.open, 0);
+        assert!(c
+            .last_seen
+            .is_some_and(|t| t + 5 >= crate::timeline::now_unix()));
+    }
 }

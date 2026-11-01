@@ -121,35 +121,52 @@ struct Shown {
     /// cleared it.
     seen: bool,
     misses: u8,
+    /// Insertion order: higher is newer.
+    seq: u64,
+    /// The notification's content (in memory only), so Home can present it
+    /// again under the current settings. Dropped with the entry.
+    note: Option<Box<Notification>>,
 }
 
 /// Toasts currently shown for phone notifications, by tag.
 #[derive(Default)]
 pub struct Mirror {
     by_tag: HashMap<String, Shown>,
+    next_seq: u64,
 }
 
 impl Mirror {
+    fn bump(&mut self) -> u64 {
+        self.next_seq += 1;
+        self.next_seq
+    }
+
     pub fn insert(&mut self, tag: String, e: Entry) {
         let seen = self.by_tag.get(&tag).is_some_and(|s| s.seen);
+        let seq = self.bump();
         self.by_tag.insert(
             tag,
             Shown {
                 entry: e,
                 seen,
                 misses: 0,
+                seq,
+                note: None,
             },
         );
     }
 
     /// An entry rebuilt from the notification centre at start.
     pub fn restore(&mut self, tag: String, e: Entry) {
+        let seq = self.bump();
         self.by_tag.insert(
             tag,
             Shown {
                 entry: e,
                 seen: true,
                 misses: 0,
+                seq,
+                note: None,
             },
         );
     }
@@ -209,6 +226,26 @@ impl Mirror {
         gone.iter()
             .filter_map(|t| self.by_tag.remove(t).map(|s| s.entry))
             .collect()
+    }
+
+    /// Keeps the notification's content beside its entry (in memory only),
+    /// so Home can present it again under the current settings.
+    pub fn set_note(&mut self, tag: &str, n: Notification) {
+        if let Some(s) = self.by_tag.get_mut(tag) {
+            s.note = Some(Box::new(n));
+        }
+    }
+
+    /// The `n` most recently mirrored entries, newest first.
+    pub fn recent(&self, n: usize) -> Vec<&Entry> {
+        let mut v: Vec<&Shown> = self.by_tag.values().collect();
+        v.sort_by_key(|s| std::cmp::Reverse(s.seq));
+        v.into_iter().take(n).map(|s| &s.entry).collect()
+    }
+
+    /// The content kept for `e` by `set_note` (none for restored toasts).
+    pub fn note(&self, e: &Entry) -> Option<&Notification> {
+        self.by_tag.get(&tag(&e.peer, &e.key))?.note.as_deref()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -496,6 +533,28 @@ mod tests {
             package: package.into(),
             otp: String::new(),
         }
+    }
+
+    #[test]
+    fn recent_is_newest_first_and_drops_content_with_the_entry() {
+        let mut m = Mirror::default();
+        for k in ["a", "b", "c"] {
+            m.insert(tag(&peer(1), k), entry(peer(1), k, "p"));
+            m.set_note(&tag(&peer(1), k), note());
+        }
+        // An update moves it to the top.
+        m.insert(tag(&peer(1), "a"), entry(peer(1), "a", "p"));
+        let keys: Vec<&str> = m.recent(10).iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["a", "c", "b"]);
+        assert_eq!(m.recent(2).len(), 2);
+        // The update came without content: none is kept from before.
+        assert!(m.note(m.recent(1)[0]).is_none());
+        assert_eq!(m.note(m.recent(2)[1]), Some(&note()));
+        m.remove_key(&peer(1), "c");
+        assert!(m.recent(10).iter().all(|e| e.key != "c"));
+        // A note for a tag that is not mirrored is ignored.
+        m.set_note(&tag(&peer(1), "zz"), note());
+        assert_eq!(m.recent(10).len(), 2);
     }
 
     #[test]
