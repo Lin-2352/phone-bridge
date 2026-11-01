@@ -1,4 +1,7 @@
-//! Exponential easing for the hover and press animation of PC-side widgets.
+//! Easing for PC-side widgets: exponential approach for hover and press, and
+//! timed animations on the standard curve.
+
+use std::time::{Duration, Instant};
 
 /// Time constant of the ease: about 63% of the gap closes in this long.
 const TIME_CONSTANT_MS: f32 = 90.0;
@@ -25,6 +28,76 @@ pub fn settled(current: f32, target: f32) -> bool {
     (target - current).abs() <= SNAP
 }
 
+/// Control points of the standard easing curve, cubic-bezier(x1, y1, x2, y2)
+/// from (0, 0) to (1, 1): quick start, long gentle settle.
+/// `design/tokens.toml` names no curve yet, so it lives here.
+#[allow(dead_code)] // the widgets animate with it from Task 4 on
+pub const STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
+
+/// One coordinate of a cubic bezier from 0 to 1 with inner controls `a`, `b`.
+#[allow(dead_code)] // the widgets animate with it from Task 4 on
+fn bezier(a: f32, b: f32, t: f32) -> f32 {
+    let u = 1.0 - t;
+    3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
+}
+
+/// The standard curve at progress `p` in 0..=1 (time in, value out).
+#[allow(dead_code)] // the widgets animate with it from Task 4 on
+pub fn standard(p: f32) -> f32 {
+    let (x1, y1, x2, y2) = STANDARD;
+    // x(t) rises monotonically, so bisection finds the t with x(t) = p.
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if bezier(x1, x2, mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bezier(y1, y2, (lo + hi) / 2.0)
+}
+
+/// A timed animation from `from` to `to` over `dur_ms`, eased with the
+/// standard curve. A window keeps its frame timer only while one runs.
+#[allow(dead_code)] // the widgets animate with it from Task 4 on
+#[derive(Clone, Copy, Debug)]
+pub struct Anim {
+    pub from: f32,
+    pub to: f32,
+    pub start: Instant,
+    pub dur_ms: u32,
+}
+
+#[allow(dead_code)] // the widgets animate with it from Task 4 on
+impl Anim {
+    pub fn new(from: f32, to: f32, start: Instant, dur_ms: u32) -> Self {
+        Self {
+            from,
+            to,
+            start,
+            dur_ms,
+        }
+    }
+
+    /// The value at `now`: exactly `from` at the start, exactly `to` at the end.
+    pub fn value(&self, now: Instant) -> f32 {
+        let elapsed = now.saturating_duration_since(self.start).as_secs_f32() * 1000.0;
+        if elapsed <= 0.0 {
+            return self.from;
+        }
+        if self.dur_ms == 0 || elapsed >= self.dur_ms as f32 {
+            return self.to;
+        }
+        self.from + (self.to - self.from) * standard(elapsed / self.dur_ms as f32)
+    }
+
+    /// True until the animation has run its full duration.
+    pub fn running(&self, now: Instant) -> bool {
+        now < self.start + Duration::from_millis(self.dur_ms as u64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,6 +119,22 @@ mod tests {
     fn snaps_when_close() {
         assert_eq!(approach(0.995, 1.0, 16), 1.0);
         assert_eq!(approach(0.005, 0.0, 16), 0.0);
+    }
+
+    #[test]
+    fn anim_eases_from_start_to_end_and_stops() {
+        use crate::tokens::motion;
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let a = Anim::new(0.0, 1.0, t0, motion::NORMAL_MS);
+        assert_eq!(a.value(t0), 0.0);
+        assert_eq!(a.value(t0 + Duration::from_millis(200)), 1.0);
+        assert!(a.running(t0 + Duration::from_millis(100)));
+        assert!(!a.running(t0 + Duration::from_millis(201)));
+        // Eased: in between, and still moving.
+        let mid = a.value(t0 + Duration::from_millis(100));
+        assert!(mid > 0.0 && mid < 1.0);
+        assert!(a.value(t0 + Duration::from_millis(150)) > mid);
     }
 
     #[test]

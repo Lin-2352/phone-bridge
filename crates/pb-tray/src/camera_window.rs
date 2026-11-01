@@ -166,11 +166,11 @@ fn button_label(b: Button, streaming: bool, pending: bool) -> &'static str {
 }
 
 fn mark_glyph(m: Mark, idle: u32) -> (char, u32) {
-    // COLORREF is 0x00BBGGRR.
+    // 0xRRGGBB.
     match m {
-        Mark::Ok => ('\u{E73E}', 0x0050_B000),
-        Mark::Bad => (glyph::CLOSE, 0x0023_11E8),
-        Mark::Wait => ('\u{E916}', 0x0000_B9FF),
+        Mark::Ok => ('\u{E73E}', 0x00B050),
+        Mark::Bad => (glyph::CLOSE, 0xE81123),
+        Mark::Wait => ('\u{E916}', 0xFFB900),
         Mark::Idle => ('\u{E739}', idle),
     }
 }
@@ -183,8 +183,8 @@ fn paint(hwnd: HWND) {
     let f = fluent::Fonts::new(s);
     let l = layout(s);
     let snapshot = st.preview.as_ref().map(Preview::snapshot);
-    fluent::paint(hwnd, |hdc, _c| {
-        fluent::text(
+    fluent::gdi_paint(hwnd, |hdc, _c| {
+        fluent::gdi_text(
             hdc,
             f.title,
             "Phone camera",
@@ -204,7 +204,7 @@ fn paint(hwnd: HWND) {
         } else {
             "Not working yet: see the marks below"
         };
-        fluent::text(
+        fluent::gdi_text(
             hdc,
             f.small,
             verdict,
@@ -220,7 +220,7 @@ fn paint(hwnd: HWND) {
         for (i, r) in st.rows.iter().enumerate() {
             let top = l.rows.top + i as i32 * px(s, ROW_H);
             let (g, color) = mark_glyph(r.mark, p.text2);
-            fluent::icon(
+            fluent::gdi_icon(
                 hdc,
                 f.icon,
                 g,
@@ -232,7 +232,7 @@ fn paint(hwnd: HWND) {
                 },
                 color,
             );
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.body,
                 r.label,
@@ -245,7 +245,7 @@ fn paint(hwnd: HWND) {
                 p.text,
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER,
             );
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.small,
                 &r.detail,
@@ -256,7 +256,7 @@ fn paint(hwnd: HWND) {
                     bottom: top + px(s, ROW_H),
                 },
                 if r.mark == Mark::Bad {
-                    0x0023_11E8
+                    0xE81123
                 } else {
                     p.text2
                 },
@@ -264,7 +264,7 @@ fn paint(hwnd: HWND) {
             );
         }
         // Preview: what an app gets (or a hint why not).
-        fluent::round_rect(hdc, &l.preview, p.card, Some(p.stroke), px(s, 8), false);
+        fluent::gdi_round_rect(hdc, &l.preview, p.card, Some(p.stroke), px(s, 8), false);
         match snapshot
             .as_ref()
             .filter(|x| x.width > 0 && !x.bgra.is_empty())
@@ -301,7 +301,7 @@ fn paint(hwnd: HWND) {
                     );
                 }
             }
-            None => fluent::text(
+            None => fluent::gdi_text(
                 hdc,
                 f.small,
                 if st.streaming {
@@ -318,8 +318,8 @@ fn paint(hwnd: HWND) {
             let b = shown(b, st.repair);
             let accent = b == Button::Toggle;
             if st.hover == Some(b) && !accent {
-                fluent::round_rect(hdc, r, p.hover, Some(p.stroke), px(s, 6), false);
-                fluent::text(
+                fluent::gdi_round_rect(hdc, r, p.hover, Some(p.stroke), px(s, 6), false);
+                fluent::gdi_text(
                     hdc,
                     f.small,
                     button_label(b, st.streaming, st.pending),
@@ -328,7 +328,7 @@ fn paint(hwnd: HWND) {
                     DT_CENTER | DT_SINGLELINE | DT_VCENTER,
                 );
             } else {
-                fluent::button(
+                fluent::gdi_button(
                     hdc,
                     &f,
                     &p,

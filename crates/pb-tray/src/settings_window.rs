@@ -173,7 +173,7 @@ fn paint(hwnd: HWND) {
     let page = st.page;
     let query = st.query.clone();
     let mut targets = Vec::new();
-    fluent::paint(hwnd, |hdc, c| {
+    fluent::gdi_paint(hwnd, |hdc, c| {
         let (l, r) = (px(s, SIDEBAR + MARGIN), c.right - px(s, MARGIN));
         let mut y = px(s, SEARCH_H) - scroll;
         for item in items(&m, page, &query) {
@@ -194,7 +194,7 @@ fn paint(hwnd: HWND) {
                             left: l + px(s, 2),
                             ..card
                         };
-                        fluent::text(
+                        fluent::gdi_text(
                             hdc,
                             f.title,
                             t,
@@ -213,7 +213,7 @@ fn paint(hwnd: HWND) {
                             top: y + px(s, 8),
                             ..card
                         };
-                        fluent::text(
+                        fluent::gdi_text(
                             hdc,
                             f.small,
                             t,
@@ -231,7 +231,7 @@ fn paint(hwnd: HWND) {
                             left: l + px(s, 2),
                             ..card
                         };
-                        fluent::text(
+                        fluent::gdi_text(
                             hdc,
                             f.body,
                             t,
@@ -253,7 +253,7 @@ fn paint(hwnd: HWND) {
                             top: y + px(s, 14),
                             ..card
                         };
-                        fluent::text(
+                        fluent::gdi_text(
                             hdc,
                             f.body,
                             t,
@@ -265,13 +265,13 @@ fn paint(hwnd: HWND) {
                 }
                 _ if !visible => {}
                 Row::Theme => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let tr = RECT {
                         left: inner_l,
                         right: inner_l + px(s, 160),
                         ..card
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         "Theme",
@@ -290,13 +290,13 @@ fn paint(hwnd: HWND) {
                             right: x + seg_w - px(s, 4),
                             bottom: sy + px(s, 32),
                         };
-                        fluent::button(hdc, &f, &p, br, label, m.theme == i as u8, s);
+                        fluent::gdi_button(hdc, &f, &p, br, label, m.theme == i as u8, s);
                         targets.push((br, Target::Theme(i as u8)));
                         x += seg_w;
                     }
                 }
                 Row::Toggle(k, title, sub) => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let enabled = match k {
                         Key::Passwords | Key::ShareImages => m.share,
                         Key::NotifyLock
@@ -312,7 +312,7 @@ fn paint(hwnd: HWND) {
                         right: inner_r - px(s, 56),
                         bottom: y + px(s, 35),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         title,
@@ -325,7 +325,7 @@ fn paint(hwnd: HWND) {
                         bottom: y + px(s, 55),
                         ..tr
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.small,
                         sub,
@@ -333,20 +333,20 @@ fn paint(hwnd: HWND) {
                         p.text2,
                         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                     );
-                    fluent::toggle(hdc, s, &p, inner_r, y + h / 2, m.get(k), enabled);
+                    fluent::gdi_toggle(hdc, s, &p, inner_r, y + h / 2, m.get(k), enabled);
                     if enabled {
                         targets.push((card, Target::Toggle(k)));
                     }
                 }
                 Row::Choice(k, title, labels) => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let tr = RECT {
                         left: inner_l,
                         top: y + px(s, 12),
                         right: inner_r,
                         bottom: y + px(s, 38),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         title,
@@ -364,7 +364,7 @@ fn paint(hwnd: HWND) {
                             right: x + seg_w - px(s, 6),
                             bottom: sy + px(s, 34),
                         };
-                        fluent::button(hdc, &f, &p, br, label, m.choice(k) == i as u8, s);
+                        fluent::gdi_button(hdc, &f, &p, br, label, m.choice(k) == i as u8, s);
                         if m.notify {
                             targets.push((br, Target::Choice(k, i as u8)));
                         }
@@ -372,14 +372,14 @@ fn paint(hwnd: HWND) {
                     }
                 }
                 Row::App(i) => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let (name, shown) = &m.apps[i];
                     let tr = RECT {
                         left: inner_l,
                         right: inner_r - px(s, 56),
                         ..card
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         name,
@@ -387,13 +387,13 @@ fn paint(hwnd: HWND) {
                         if m.notify { p.text } else { p.text2 },
                         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                     );
-                    fluent::toggle(hdc, s, &p, inner_r, y + h / 2, *shown, m.notify);
+                    fluent::gdi_toggle(hdc, s, &p, inner_r, y + h / 2, *shown, m.notify);
                     if m.notify {
                         targets.push((card, Target::Mute(i)));
                     }
                 }
                 Row::Folder => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let btn_w = px(s, 76);
                     let change = RECT {
                         left: inner_r - btn_w,
@@ -412,7 +412,7 @@ fn paint(hwnd: HWND) {
                         right: open.left - px(s, 12),
                         bottom: y + px(s, 36),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         "Save received files to",
@@ -425,7 +425,7 @@ fn paint(hwnd: HWND) {
                         bottom: y + px(s, 58),
                         ..tr
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.small,
                         &m.save_dir,
@@ -433,13 +433,13 @@ fn paint(hwnd: HWND) {
                         p.text2,
                         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS,
                     );
-                    fluent::button(hdc, &f, &p, open, "Open", false, s);
-                    fluent::button(hdc, &f, &p, change, "Change", true, s);
+                    fluent::gdi_button(hdc, &f, &p, open, "Open", false, s);
+                    fluent::gdi_button(hdc, &f, &p, change, "Change", true, s);
                     targets.push((open, Target::Open));
                     targets.push((change, Target::Change));
                 }
                 Row::Device(i) => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let (name, fp, changed) = &m.devices[i];
                     let ic = RECT {
                         left: inner_l,
@@ -447,14 +447,14 @@ fn paint(hwnd: HWND) {
                         right: inner_l + px(s, 28),
                         bottom: y + h,
                     };
-                    fluent::icon(hdc, f.icon_big, fluent::glyph::PHONE, ic, p.accent);
+                    fluent::gdi_icon(hdc, f.icon_big, fluent::glyph::PHONE, ic, p.accent);
                     let tr = RECT {
                         left: inner_l + px(s, 40),
                         top: y + px(s, 11),
                         right: inner_r - px(s, 100),
                         bottom: y + px(s, 33),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         name,
@@ -467,7 +467,7 @@ fn paint(hwnd: HWND) {
                         bottom: y + px(s, 53),
                         ..tr
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.small,
                         &crate::settings_rows::device_note(fp, *changed),
@@ -481,8 +481,8 @@ fn paint(hwnd: HWND) {
                         right: inner_r,
                         bottom: y + px(s, 48),
                     };
-                    fluent::round_rect(hdc, &rb, p.card, Some(p.stroke), px(s, 8), false);
-                    fluent::text(
+                    fluent::gdi_round_rect(hdc, &rb, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         "Remove",
@@ -493,7 +493,7 @@ fn paint(hwnd: HWND) {
                     targets.push((rb, Target::Remove(i)));
                 }
                 Row::Pair => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let tr = RECT {
                         left: inner_l,
                         right: inner_r - px(s, 140),
@@ -504,7 +504,7 @@ fn paint(hwnd: HWND) {
                     } else {
                         "Add another device"
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         label,
@@ -518,18 +518,18 @@ fn paint(hwnd: HWND) {
                         right: inner_r,
                         bottom: y + px(s, 46),
                     };
-                    fluent::button(hdc, &f, &p, b, "Pair device", true, s);
+                    fluent::gdi_button(hdc, &f, &p, b, "Pair device", true, s);
                     targets.push((b, Target::Pair));
                 }
                 Row::About => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let tr = RECT {
                         left: inner_l,
                         top: y + px(s, 13),
                         right: inner_r,
                         bottom: y + px(s, 35),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         &format!("{} {}", APP_NAME, env!("CARGO_PKG_VERSION")),
@@ -542,7 +542,7 @@ fn paint(hwnd: HWND) {
                         bottom: y + px(s, 55),
                         ..tr
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.small,
                         &format!("This PC's fingerprint {}", m.my_fingerprint),
@@ -552,7 +552,7 @@ fn paint(hwnd: HWND) {
                     );
                 }
                 Row::CameraStatus => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let (mark, title, detail, button, repair) = match &m.camera {
                         Some(c) => (
                             c.mark,
@@ -580,14 +580,14 @@ fn paint(hwnd: HWND) {
                         Mark::Bad => p.danger,
                         Mark::Wait | Mark::Idle => p.text2,
                     };
-                    fluent::round_rect(hdc, &dot, colour, None, px(s, 10), false);
+                    fluent::gdi_round_rect(hdc, &dot, colour, None, px(s, 10), false);
                     let tr = RECT {
                         left: inner_l + px(s, 22),
                         top: y + px(s, 12),
                         right: inner_r - px(s, 150),
                         bottom: y + px(s, 36),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         title,
@@ -600,7 +600,7 @@ fn paint(hwnd: HWND) {
                         bottom: y + px(s, 100),
                         ..tr
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.small,
                         detail,
@@ -621,7 +621,7 @@ fn paint(hwnd: HWND) {
                         right: inner_r,
                         bottom: y + px(s, top + 32),
                     };
-                    fluent::button(hdc, &f, &p, b, label, true, s);
+                    fluent::gdi_button(hdc, &f, &p, b, label, true, s);
                     targets.push((b, Target::Camera(CameraAct::Toggle)));
                     if repair {
                         let rb = RECT {
@@ -629,19 +629,19 @@ fn paint(hwnd: HWND) {
                             bottom: y + px(s, 98),
                             ..b
                         };
-                        fluent::button(hdc, &f, &p, rb, "Repair camera", false, s);
+                        fluent::gdi_button(hdc, &f, &p, rb, "Repair camera", false, s);
                         targets.push((rb, Target::Camera(CameraAct::Repair)));
                     }
                 }
                 Row::CameraWindow => {
-                    fluent::round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
+                    fluent::gdi_round_rect(hdc, &card, p.card, Some(p.stroke), px(s, 8), false);
                     let tr = RECT {
                         left: inner_l,
                         top: y + px(s, 13),
                         right: inner_r - px(s, 112),
                         bottom: y + px(s, 35),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         "Camera window",
@@ -654,7 +654,7 @@ fn paint(hwnd: HWND) {
                         bottom: y + px(s, 55),
                         ..tr
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.small,
                         "Preview and the full checklist",
@@ -668,7 +668,7 @@ fn paint(hwnd: HWND) {
                         right: inner_r,
                         bottom: y + px(s, 50),
                     };
-                    fluent::button(hdc, &f, &p, b, "Open", false, s);
+                    fluent::gdi_button(hdc, &f, &p, b, "Open", false, s);
                     targets.push((b, Target::Camera(CameraAct::OpenWindow)));
                 }
             }
@@ -681,20 +681,20 @@ fn paint(hwnd: HWND) {
             right: c.right,
             bottom: px(s, SEARCH_H),
         };
-        fluent::round_rect(hdc, &strip, p.bg, None, 0, false);
+        fluent::gdi_round_rect(hdc, &strip, p.bg, None, 0, false);
         let sb = RECT {
             left: l,
             top: px(s, 12),
             right: r,
             bottom: px(s, 48),
         };
-        fluent::round_rect(hdc, &sb, p.card, Some(p.stroke), px(s, 8), false);
+        fluent::gdi_round_rect(hdc, &sb, p.card, Some(p.stroke), px(s, 8), false);
         let ic = RECT {
             left: sb.left + px(s, 8),
             right: sb.left + px(s, 36),
             ..sb
         };
-        fluent::icon(hdc, f.icon_big, fluent::glyph::SEARCH, ic, p.text2);
+        fluent::gdi_icon(hdc, f.icon_big, fluent::glyph::SEARCH, ic, p.text2);
         let tx = sb.left + px(s, 42);
         let tr = RECT {
             left: tx,
@@ -702,7 +702,7 @@ fn paint(hwnd: HWND) {
             ..sb
         };
         if query.is_empty() {
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.body,
                 "Search settings",
@@ -711,7 +711,7 @@ fn paint(hwnd: HWND) {
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER,
             );
         } else {
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.body,
                 &query,
@@ -720,14 +720,14 @@ fn paint(hwnd: HWND) {
                 DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
             );
         }
-        let cx = (tx + fluent::text_width(hdc, f.body, &query)).min(sb.right - px(s, 10));
+        let cx = (tx + fluent::gdi_text_width(hdc, f.body, &query)).min(sb.right - px(s, 10));
         let caret = RECT {
             left: cx,
             top: sb.top + px(s, 9),
             right: cx + px(s, 1).max(1),
             bottom: sb.bottom - px(s, 9),
         };
-        fluent::round_rect(hdc, &caret, p.text, None, 0, false);
+        fluent::gdi_round_rect(hdc, &caret, p.text, None, 0, false);
         // Sidebar, drawn last so it stays put while the page scrolls.
         let bar = RECT {
             left: 0,
@@ -735,12 +735,12 @@ fn paint(hwnd: HWND) {
             right: px(s, SIDEBAR),
             bottom: c.bottom,
         };
-        fluent::round_rect(hdc, &bar, p.bg, None, 0, false);
+        fluent::gdi_round_rect(hdc, &bar, p.bg, None, 0, false);
         let edge = RECT {
             left: bar.right - px(s, 1).max(1),
             ..bar
         };
-        fluent::round_rect(hdc, &edge, p.stroke, None, 0, false);
+        fluent::gdi_round_rect(hdc, &edge, p.stroke, None, 0, false);
         let mut ny = px(s, 16);
         for (pg, title) in pages() {
             let item = RECT {
@@ -750,20 +750,20 @@ fn paint(hwnd: HWND) {
                 bottom: ny + px(s, 40),
             };
             if pg == page {
-                fluent::round_rect(hdc, &item, p.card, Some(p.stroke), px(s, 8), false);
+                fluent::gdi_round_rect(hdc, &item, p.card, Some(p.stroke), px(s, 8), false);
                 let pill = RECT {
                     left: item.left + px(s, 2),
                     top: item.top + px(s, 10),
                     right: item.left + px(s, 5),
                     bottom: item.bottom - px(s, 10),
                 };
-                fluent::round_rect(hdc, &pill, p.accent, None, px(s, 2), false);
+                fluent::gdi_round_rect(hdc, &pill, p.accent, None, px(s, 2), false);
             }
             let tr = RECT {
                 left: item.left + px(s, 16),
                 ..item
             };
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.body,
                 title,

@@ -216,7 +216,7 @@ fn layout(s: f32) -> Layout {
     }
 }
 
-/// Blend two COLORREFs: `t` = 0 gives `a`, 1 gives `b`.
+/// Blend two 0xRRGGBB colours: `t` = 0 gives `a`, 1 gives `b`.
 fn mix(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
     let ch = |sh: u32| {
@@ -236,10 +236,10 @@ fn paint(hwnd: HWND) {
     let hov = |h: Hit| st.hover_t[h.slot()];
     let prs = |h: Hit| st.press_t[h.slot()];
     let radius = fluent::corner_radius(s, 8);
-    fluent::paint(hwnd, |hdc, _| {
+    fluent::gdi_paint(hwnd, |hdc, _| {
         // Header: device badge, name, status, settings and close.
-        fluent::round_rect(hdc, &l.badge, p.card, Some(p.stroke), px(s, 10), false);
-        fluent::icon(hdc, f.icon_big, glyph::PHONE, l.badge, p.accent);
+        fluent::gdi_round_rect(hdc, &l.badge, p.card, Some(p.stroke), px(s, 10), false);
+        fluent::gdi_icon(hdc, f.icon_big, glyph::PHONE, l.badge, p.accent);
         let (title, sub) = match &st.model.peer {
             Some(n) => (n.clone(), "Paired".to_owned()),
             None => (
@@ -248,7 +248,7 @@ fn paint(hwnd: HWND) {
             ),
         };
         let tx = l.badge.right + px(s, 12);
-        fluent::text(
+        fluent::gdi_text(
             hdc,
             f.title,
             &title,
@@ -261,7 +261,7 @@ fn paint(hwnd: HWND) {
             p.text,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
-        fluent::text(
+        fluent::gdi_text(
             hdc,
             f.small,
             &sub,
@@ -280,9 +280,9 @@ fn paint(hwnd: HWND) {
         ] {
             if hov(h) > 0.0 || prs(h) > 0.0 {
                 let fill = mix(mix(p.bg, p.hover, hov(h)), p.stroke, prs(h));
-                fluent::round_rect(hdc, &r, fill, None, px(s, 6), false);
+                fluent::gdi_round_rect(hdc, &r, fill, None, px(s, 6), false);
             }
-            fluent::icon(hdc, f.icon, g, r, p.text2);
+            fluent::gdi_icon(hdc, f.icon, g, r, p.text2);
         }
 
         // Drop zone: icon and hint on one line.
@@ -291,14 +291,14 @@ fn paint(hwnd: HWND) {
             p.stroke,
             prs(Hit::Drop),
         );
-        fluent::round_rect(hdc, &l.drop, drop_fill, Some(p.text2), px(s, 10), true);
+        fluent::gdi_round_rect(hdc, &l.drop, drop_fill, Some(p.text2), px(s, 10), true);
         let ic = RECT {
             left: l.drop.left + px(s, 16),
             top: l.drop.top,
             right: l.drop.left + px(s, 44),
             bottom: l.drop.bottom,
         };
-        fluent::icon(hdc, f.icon_big, glyph::UPLOAD, ic, p.text2);
+        fluent::gdi_icon(hdc, f.icon_big, glyph::UPLOAD, ic, p.text2);
         let label = match &st.model.peer {
             Some(n) => format!("Drop files here to send to {n}"),
             None => "Pair a device to send files".to_owned(),
@@ -308,7 +308,7 @@ fn paint(hwnd: HWND) {
             right: l.drop.right - px(s, 12),
             ..l.drop
         };
-        fluent::text(
+        fluent::gdi_text(
             hdc,
             f.small,
             &label,
@@ -323,7 +323,7 @@ fn paint(hwnd: HWND) {
             .iter()
             .zip(["Camera & Screen", "Connection", "Files"])
         {
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.small,
                 c,
@@ -333,7 +333,7 @@ fn paint(hwnd: HWND) {
             );
         }
         for r in &l.dividers {
-            fluent::round_rect(hdc, r, p.stroke, None, 0, false);
+            fluent::gdi_round_rect(hdc, r, p.stroke, None, 0, false);
         }
 
         // Tiles.
@@ -349,7 +349,7 @@ fn paint(hwnd: HWND) {
                 let base = mix(p.card, p.hover, hov(h));
                 (mix(base, p.stroke, prs(h)), Some(p.stroke), p.text)
             };
-            fluent::round_rect(hdc, &r, fill, stroke, radius, false);
+            fluent::gdi_round_rect(hdc, &r, fill, stroke, radius, false);
             let g = match t.kind {
                 TileKind::Camera => CAMERA,
                 TileKind::Screen => glyph::PHONE,
@@ -364,7 +364,7 @@ fn paint(hwnd: HWND) {
                 right: r.left + px(s, 36),
                 bottom: r.top + px(s, 34),
             };
-            fluent::icon(hdc, f.icon, g, ir, fg);
+            fluent::gdi_icon(hdc, f.icon, g, ir, fg);
             if t.kind == TileKind::Camera {
                 // The camera status window stays reachable even while the
                 // tile itself is dimmed.
@@ -372,10 +372,10 @@ fn paint(hwnd: HWND) {
                 let over = if t.on { p.on_accent } else { p.stroke };
                 if hov(c) > 0.0 || prs(c) > 0.0 {
                     let f2 = mix(fill, over, 0.2 * hov(c) + 0.2 * prs(c));
-                    fluent::round_rect(hdc, &l.camera_info, f2, None, px(s, 6), false);
+                    fluent::gdi_round_rect(hdc, &l.camera_info, f2, None, px(s, 6), false);
                 }
                 let cf = if t.enabled { fg } else { p.text2 };
-                fluent::icon(hdc, f.small, CHEVRON, l.camera_info, cf);
+                fluent::gdi_icon(hdc, f.small, CHEVRON, l.camera_info, cf);
             }
             let tr = RECT {
                 left: r.left + px(s, 12),
@@ -383,11 +383,11 @@ fn paint(hwnd: HWND) {
                 right: r.right - px(s, 6),
                 bottom: r.bottom - px(s, 4),
             };
-            fluent::text(hdc, f.small, &t.label, tr, fg, DT_LEFT | DT_WORDBREAK);
+            fluent::gdi_text(hdc, f.small, &t.label, tr, fg, DT_LEFT | DT_WORDBREAK);
         }
 
         // Status line: the phone and the last activity.
-        fluent::text(
+        fluent::gdi_text(
             hdc,
             f.small,
             &status_line(&st.model, STATUS_CHARS),

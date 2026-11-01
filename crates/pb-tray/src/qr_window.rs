@@ -4,6 +4,7 @@
 #![allow(unsafe_code)]
 
 use std::{
+    cell::RefCell,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -11,27 +12,32 @@ use std::{
 use windows::{
     core::{w, PCWSTR},
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Gdi::{
-            BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-            DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect, SelectObject,
-            SetBkMode, DT_CENTER, DT_WORDBREAK, HGDIOBJ, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Graphics::{
+            Direct2D::{D2D1_ANTIALIAS_MODE_ALIASED, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE},
+            Gdi::{InvalidateRect, ValidateRect},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, KillTimer,
-            RegisterClassW, SetForegroundWindow, SetTimer, ShowWindow, CW_USEDEFAULT, SW_SHOW,
-            WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_TIMER, WNDCLASSW,
-            WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, RegisterClassW,
+            SetForegroundWindow, SetTimer, ShowWindow, CW_USEDEFAULT, SW_SHOW, WINDOW_EX_STYLE,
+            WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION,
+            WS_OVERLAPPED, WS_SYSMENU,
         },
     },
 };
 
-use crate::qr::{self, Matrix};
+use crate::{
+    d2d::{color, Backdrop, Surface},
+    fluent::{self, rectf, Align, Canvas, Font, RectF},
+    qr::{self, Matrix},
+};
 
 const CLASS: PCWSTR = w!("PhoneBridgePairQr");
 const QUIET: usize = 4;
 const TEXT_H: i32 = 120;
+/// Height of one text line under the code, logical px.
+const LINE_H: f32 = 24.0;
 const TIMER_ID: usize = 1;
 
 struct Shown {
@@ -44,6 +50,12 @@ struct Shown {
 
 static CURRENT: Mutex<Option<Shown>> = Mutex::new(None);
 static ON_USER_CLOSE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+thread_local! {
+    /// The window's Direct2D surface (COM objects stay on the UI thread),
+    /// with the window it belongs to.
+    static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
+}
 
 fn sys_scale() -> f32 {
     // SAFETY: plain query.
@@ -61,7 +73,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             paint(hwnd);
             LRESULT(0)
         }
-        // We paint every pixel ourselves (double-buffered): skipping the
+        // We paint every pixel ourselves (Direct2D): skipping the
         // background erase is what removes the once-a-second flicker.
         WM_ERASEBKGND => LRESULT(1),
         WM_TIMER => {
@@ -80,6 +92,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_DESTROY => {
             // SAFETY: timer created in `show` for this window.
             let _ = unsafe { KillTimer(Some(hwnd), TIMER_ID) };
+            fluent::unregister_window(hwnd);
+            SURFACE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                if slot.as_ref().is_some_and(|(h, _)| *h == hwnd.0 as isize) {
+                    *slot = None;
+                }
+            });
             if let Ok(mut g) = CURRENT.lock() {
                 if g.as_ref().is_some_and(|s| s.hwnd == hwnd.0 as isize) {
                     *g = None;
@@ -93,94 +112,85 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 }
 
 fn paint(hwnd: HWND) {
+    SURFACE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().map(|(h, _)| *h) != Some(hwnd.0 as isize) {
+            *slot = Surface::new(hwnd, Backdrop::Opaque)
+                .ok()
+                .map(|s| (hwnd.0 as isize, s));
+        }
+        match slot.as_mut() {
+            Some((_, surface)) => fluent::paint_with(surface, hwnd, draw),
+            // Nothing can draw (no Direct2D at all): validate so WM_PAINT
+            // does not repeat forever.
+            // SAFETY: our own window.
+            None => unsafe {
+                let _ = ValidateRect(Some(hwnd), None);
+            },
+        }
+    });
+}
+
+/// The three lines under the code: what to do, the countdowns, the rules.
+fn lines(new_code_in: Duration, closes_in: Duration) -> [String; 3] {
+    let secs = closes_in.as_secs();
+    [
+        "Scan with Relay on your phone (\u{201c}Scan QR\u{201d}).".to_owned(),
+        format!(
+            "New code in {} s \u{2022} pairing closes in {}:{:02}",
+            new_code_in.as_secs() + 1,
+            secs / 60,
+            secs % 60
+        ),
+        "Each code works once. Closing this window cancels pairing.".to_owned(),
+    ]
+}
+
+fn draw(c: &mut Canvas, client: RectF) {
     let Ok(guard) = CURRENT.lock() else { return };
-    let mut ps = PAINTSTRUCT::default();
-    // SAFETY: standard WM_PAINT sequence on the owning thread; brushes are
-    // created and deleted here.
+    let Some(s) = guard.as_ref() else { return };
+    // The window was sized with the system scale; lay out with the same.
+    c.s = sys_scale();
+    let width = client.right as i32;
+    let text_h = (TEXT_H as f32 * c.s) as i32;
+    let avail = width.min(client.bottom as i32 - text_h).max(1) as usize;
+    let total = s.matrix.size + 2 * QUIET;
+    let scale = (avail / total).max(1) as i32;
+    let off_x = (width - scale * total as i32) / 2;
+    let side = scale * total as i32;
+    let px = |v: i32| v as f32;
+    // SAFETY: drawing calls inside the surface's BeginDraw/EndDraw.
     unsafe {
-        let screen = BeginPaint(hwnd, &mut ps);
-        let mut client = RECT::default();
-        let _ = GetClientRect(hwnd, &mut client);
-        let (w, h) = (client.right - client.left, client.bottom - client.top);
-        let hdc = CreateCompatibleDC(Some(screen));
-        let bmp = CreateCompatibleBitmap(screen, w, h);
-        let old = SelectObject(hdc, HGDIOBJ(bmp.0));
-        SetBkMode(hdc, TRANSPARENT);
-        let ui_font = windows::Win32::Graphics::Gdi::CreateFontW(
-            -((15.0 * sys_scale()) as i32),
-            0,
-            0,
-            0,
-            400,
-            0,
-            0,
-            0,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            0,
-            w!("Segoe UI Variable Text"),
-        );
-        let old_font = SelectObject(hdc, HGDIOBJ(ui_font.0));
-        let white = CreateSolidBrush(COLORREF(0x00FF_FFFF));
-        let black = CreateSolidBrush(COLORREF(0));
-        FillRect(hdc, &client, white);
-        if let Some(s) = guard.as_ref() {
-            let width = client.right - client.left;
-            let text_h = (TEXT_H as f32 * sys_scale()) as i32;
-            let avail = width.min(client.bottom - client.top - text_h).max(1) as usize;
-            let total = s.matrix.size + 2 * QUIET;
-            let scale = (avail / total).max(1) as i32;
-            let off_x = (width - scale * total as i32) / 2;
+        // Always dark on white with its quiet zone, whatever the theme:
+        // phone scanners expect that. Aliased on whole pixels, so the
+        // modules meet without seams.
+        c.dc.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+        if let Ok(white) = c.dc.CreateSolidColorBrush(&color(0xFFFFFF, 1.0), None) {
+            c.dc.FillRectangle(&rectf(px(off_x), 0.0, px(off_x + side), px(side)), &white);
+        }
+        if let Ok(black) = c.dc.CreateSolidColorBrush(&color(0x000000, 1.0), None) {
             for y in 0..s.matrix.size {
                 for x in 0..s.matrix.size {
                     if s.matrix.is_dark(x, y) {
                         let l = off_x + scale * (x + QUIET) as i32;
                         let t = scale * (y + QUIET) as i32;
-                        FillRect(
-                            hdc,
-                            &RECT {
-                                left: l,
-                                top: t,
-                                right: l + scale,
-                                bottom: t + scale,
-                            },
-                            black,
-                        );
+                        let r = rectf(px(l), px(t), px(l + scale), px(t + scale));
+                        c.dc.FillRectangle(&r, &black);
                     }
                 }
             }
-            let now = Instant::now();
-            let left = s.refresh_in.saturating_sub(now.duration_since(s.shown_at));
-            let bar_top = scale * total as i32;
-            let window_left = s.closes_at.saturating_duration_since(now).as_secs();
-            let mut text: Vec<u16> = format!(
-                "Scan with Relay on your phone (\u{201c}Scan QR\u{201d}).\nNew code in {} s \u{2022} pairing closes in {}:{:02}\nEach code works once. Closing this window cancels pairing.",
-                left.as_secs() + 1,
-                window_left / 60,
-                window_left % 60
-            )
-            .encode_utf16()
-            .collect();
-            let mut tr = RECT {
-                left: 12,
-                top: bar_top + 10,
-                right: client.right - 12,
-                bottom: client.bottom - 6,
-            };
-            DrawTextW(hdc, &mut text, &mut tr, DT_CENTER | DT_WORDBREAK);
         }
-        for b in [white, black] {
-            let _ = DeleteObject(HGDIOBJ(b.0));
-        }
-        let _ = BitBlt(screen, 0, 0, w, h, Some(hdc), 0, 0, SRCCOPY);
-        SelectObject(hdc, old_font);
-        let _ = DeleteObject(HGDIOBJ(ui_font.0));
-        SelectObject(hdc, old);
-        let _ = DeleteObject(HGDIOBJ(bmp.0));
-        let _ = DeleteDC(hdc);
-        let _ = EndPaint(hwnd, &ps);
+        c.dc.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    }
+    let now = Instant::now();
+    let new_code_in = s.refresh_in.saturating_sub(now.duration_since(s.shown_at));
+    let closes_in = s.closes_at.saturating_duration_since(now);
+    let line_h = LINE_H * c.s;
+    let mut top = side as f32 + 10.0 * c.s;
+    for line in lines(new_code_in, closes_in) {
+        let r = rectf(12.0 * c.s, top, client.right - 12.0 * c.s, top + line_h);
+        fluent::text(c, Font::Body, &line, r, c.p.text, Align::Center);
+        top += line_h;
     }
 }
 
@@ -217,6 +227,8 @@ pub fn show(code: &str, refresh_in: Duration, closes_in: Duration) -> Result<(),
             )
             .map_err(|e| e.to_string())?;
             SetTimer(Some(h), TIMER_ID, 1000, None);
+            fluent::frame(h, false);
+            fluent::register_window(h);
             let _ = ShowWindow(h, SW_SHOW);
             h
         },
@@ -245,5 +257,50 @@ pub fn close() {
         // SAFETY: our own window; DestroyWindow does not send WM_CLOSE, so the
         // user-close callback is not triggered.
         let _ = unsafe { DestroyWindow(HWND(h as *mut _)) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::d2d::test_window;
+
+    /// Each line is drawn on one row and cut with "…" if too wide, so all
+    /// three (with the widest countdown) must fit the client area.
+    #[cfg(windows)]
+    #[test]
+    fn every_line_fits_the_window_at_100_percent() {
+        let hwnd = test_window();
+        let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        // 460 px window minus the fixed frame (about 8 px a side) and the
+        // 12 px margins.
+        let room = 460.0 - 2.0 * 8.0 - 2.0 * 12.0;
+        let mut widths = Vec::new();
+        surface
+            .draw(|dc| {
+                let c = Canvas {
+                    dc,
+                    s: 1.0,
+                    p: fluent::palette(),
+                };
+                for line in lines(Duration::from_secs(59), Duration::from_secs(599)) {
+                    widths.push((fluent::text_width(&c, Font::Body, &line), line));
+                }
+            })
+            .expect("draw");
+        for (w, line) in widths {
+            assert!(w > 0.0 && w <= room, "{line:?} is {w} px, room {room}");
+        }
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    #[test]
+    fn countdown_line_counts_up_to_the_next_second() {
+        let [_, l, _] = lines(Duration::from_millis(29_400), Duration::from_secs(125));
+        assert_eq!(l, "New code in 30 s \u{2022} pairing closes in 2:05");
     }
 }

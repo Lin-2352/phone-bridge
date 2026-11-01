@@ -51,12 +51,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_default();
             let s = fluent::scale(hwnd);
             let p = fluent::palette();
-            fluent::paint(hwnd, |hdc, c| {
+            fluent::gdi_paint(hwnd, |hdc, c| {
                 let f = fluent::Fonts::new(s);
                 let mut r = c;
                 r.left += px(s, 18);
                 r.right -= px(s, fluent::ROW_PAD);
-                fluent::text(
+                fluent::gdi_text(
                     hdc,
                     f.body,
                     &text,

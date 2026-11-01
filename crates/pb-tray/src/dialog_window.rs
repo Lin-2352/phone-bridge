@@ -152,7 +152,7 @@ impl<F: FnOnce(bool)> Outcome<F> {
     }
 }
 
-/// Blend `a` toward `b` (COLORREF 0x00BBGGRR), `t` in 0..=1.
+/// Blend `a` toward `b` (0xRRGGBB), `t` in 0..=1.
 fn mix(a: u32, b: u32, t: f32) -> u32 {
     let ch = |shift: u32| {
         let (x, y) = (((a >> shift) & 0xff) as f32, ((b >> shift) & 0xff) as f32);
@@ -346,7 +346,7 @@ fn big_font(s: f32) -> HGDIOBJ {
 fn draw(hwnd: HWND) {
     let s = fluent::scale(hwnd);
     let p = fluent::palette();
-    fluent::paint(hwnd, |hdc, _c| {
+    fluent::gdi_paint(hwnd, |hdc, _c| {
         let f = fluent::Fonts::new(s);
         let (l, d, hover, focus, pressed) = STATE.with(|st| {
             let mut st = st.borrow_mut();
@@ -364,10 +364,10 @@ fn draw(hwnd: HWND) {
         });
         let Some(d) = d else { return };
         let wrap = DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX;
-        fluent::text(hdc, f.title, &d.heading, l.heading, p.text, wrap);
-        fluent::text(hdc, f.body, &d.body, l.body, p.text2, wrap);
+        fluent::gdi_text(hdc, f.title, &d.heading, l.heading, p.text, wrap);
+        fluent::gdi_text(hdc, f.body, &d.body, l.body, p.text2, wrap);
         if let (Some(r), Some(code)) = (l.code, &d.code) {
-            fluent::round_rect(
+            fluent::gdi_round_rect(
                 hdc,
                 &r,
                 p.card,
@@ -378,7 +378,7 @@ fn draw(hwnd: HWND) {
             let font = big_font(s);
             // SAFETY: valid DC; spacing is reset right after drawing.
             unsafe { SetTextCharacterExtra(hdc, px(s, 4)) };
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 font,
                 code,
@@ -411,8 +411,8 @@ fn draw(hwnd: HWND) {
                 };
                 (fill, Some(p.stroke), p.text)
             };
-            fluent::round_rect(hdc, &r, fill, stroke, fluent::corner_radius(s, 8), false);
-            fluent::text(
+            fluent::gdi_round_rect(hdc, &r, fill, stroke, fluent::corner_radius(s, 8), false);
+            fluent::gdi_text(
                 hdc,
                 f.body,
                 label,
@@ -427,7 +427,7 @@ fn draw(hwnd: HWND) {
                     right: r.right + px(s, 2),
                     bottom: r.bottom + px(s, 2),
                 };
-                fluent::round_rect(
+                fluent::gdi_round_rect(
                     hdc,
                     &ring,
                     p.bg,
@@ -436,8 +436,8 @@ fn draw(hwnd: HWND) {
                     false,
                 );
                 // Redraw the button face inside the ring.
-                fluent::round_rect(hdc, &r, fill, stroke, fluent::corner_radius(s, 8), false);
-                fluent::text(
+                fluent::gdi_round_rect(hdc, &r, fill, stroke, fluent::corner_radius(s, 8), false);
+                fluent::gdi_text(
                     hdc,
                     f.body,
                     label,

@@ -95,7 +95,7 @@ fn paint(hwnd: HWND) {
     let s = fluent::scale(hwnd);
     let p = fluent::palette();
     let f = fluent::Fonts::new(s);
-    fluent::paint(hwnd, |hdc, _| {
+    fluent::gdi_paint(hwnd, |hdc, _| {
         for (i, (item, r)) in st.items.iter().zip(rows(s, &st.items)).enumerate() {
             if item.id == 0 {
                 let line = RECT {
@@ -104,23 +104,23 @@ fn paint(hwnd: HWND) {
                     right: r.right - px(s, 8),
                     bottom: r.top + px(s, 5),
                 };
-                fluent::round_rect(hdc, &line, p.stroke, None, 0, false);
+                fluent::gdi_round_rect(hdc, &line, p.stroke, None, 0, false);
                 continue;
             }
             if st.hover == Some(i) {
-                fluent::round_rect(hdc, &r, p.hover, None, px(s, 6), false);
+                fluent::gdi_round_rect(hdc, &r, p.hover, None, px(s, 6), false);
             }
             let ic = RECT {
                 left: r.left + px(s, 8),
                 right: r.left + px(s, 36),
                 ..r
             };
-            fluent::icon(hdc, f.icon, item.glyph, ic, p.text);
+            fluent::gdi_icon(hdc, f.icon, item.glyph, ic, p.text);
             let tr = RECT {
                 left: r.left + px(s, 44),
                 ..r
             };
-            fluent::text(
+            fluent::gdi_text(
                 hdc,
                 f.body,
                 &item.label,

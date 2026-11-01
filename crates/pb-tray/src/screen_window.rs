@@ -692,7 +692,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let (name, status, pinned, dim) =
                     with(|sh| (sh.opts.name.clone(), sh.status.clone(), sh.pinned, sh.dim))
                         .unwrap_or_default();
-                fluent::paint(hwnd, |hdc, c| {
+                fluent::gdi_paint(hwnd, |hdc, c| {
                     let p = fluent::palette();
                     let f = fluent::Fonts::new(s);
                     let line = if status.is_empty() {
@@ -706,7 +706,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         right: targets(c, s).first().map_or(c.right, |(r, _)| r.left) - px(s, 8),
                         bottom: px(s, TOP),
                     };
-                    fluent::text(
+                    fluent::gdi_text(
                         hdc,
                         f.body,
                         &line,
@@ -725,7 +725,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             Target::Home => ("Home", false),
                             Target::Recents => ("Recents", false),
                         };
-                        fluent::button(hdc, &f, &p, r, label, on, s);
+                        fluent::gdi_button(hdc, &f, &p, r, label, on, s);
                     }
                 });
                 LRESULT(0)

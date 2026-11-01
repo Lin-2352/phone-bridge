@@ -30,9 +30,7 @@ mod clip_image;
 mod control;
 #[cfg(windows)]
 mod core;
-// Used from Task 3 (Canvas).
 #[cfg(windows)]
-#[allow(dead_code)]
 mod d2d;
 #[cfg(windows)]
 mod dialog_window;
@@ -82,6 +80,7 @@ mod toast;
 mod toast_images;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod toast_xml;
+// Generated; some tokens (spacing, other durations) are used from Task 4 on.
 #[allow(dead_code)]
 mod tokens;
 #[cfg(windows)]

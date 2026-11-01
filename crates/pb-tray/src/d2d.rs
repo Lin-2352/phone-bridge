@@ -415,19 +415,60 @@ impl Surface {
 }
 
 #[cfg(test)]
+use windows::{
+    core::w,
+    Win32::{
+        Foundation::{LPARAM, LRESULT, WPARAM},
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, RegisterClassW, WINDOW_EX_STYLE, WNDCLASSW, WS_POPUP,
+        },
+    },
+};
+
+#[cfg(test)]
+unsafe extern "system" fn test_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    // SAFETY: default handling for the test window's messages.
+    unsafe { DefWindowProcW(hwnd, msg, w, l) }
+}
+
+/// A hidden 200x100 popup (client area = window size) of a test class.
+#[cfg(test)]
+pub(crate) fn test_window() -> HWND {
+    // SAFETY: registers a throwaway class (a second registration just
+    // fails harmlessly) and creates a hidden window on this thread.
+    unsafe {
+        let instance = GetModuleHandleW(None).expect("module").into();
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(test_proc),
+            hInstance: instance,
+            lpszClassName: w!("RelayD2dTest"),
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("RelayD2dTest"),
+            w!("d2d test"),
+            WS_POPUP,
+            0,
+            0,
+            200,
+            100,
+            None,
+            None,
+            Some(instance),
+            None,
+        )
+        .expect("test window")
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use windows::{
-        core::w,
-        Win32::{
-            Foundation::{LPARAM, LRESULT, WPARAM},
-            Graphics::Direct2D::Common::D2D_RECT_F,
-            System::LibraryLoader::GetModuleHandleW,
-            UI::WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, WINDOW_EX_STYLE,
-                WNDCLASSW, WS_POPUP,
-            },
-        },
+    use windows::Win32::{
+        Graphics::Direct2D::Common::D2D_RECT_F, UI::WindowsAndMessaging::DestroyWindow,
     };
 
     #[test]
@@ -455,42 +496,6 @@ mod tests {
             choose(Backdrop::Opaque, true, true),
             Backdrop::Opaque
         ));
-    }
-
-    unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-        // SAFETY: default handling for the test window's messages.
-        unsafe { DefWindowProcW(hwnd, msg, w, l) }
-    }
-
-    /// A hidden 200x100 popup (client area = window size) of a test class.
-    fn test_window() -> HWND {
-        // SAFETY: registers a throwaway class (a second registration just
-        // fails harmlessly) and creates a hidden window on this thread.
-        unsafe {
-            let instance = GetModuleHandleW(None).expect("module").into();
-            let class = WNDCLASSW {
-                lpfnWndProc: Some(proc),
-                hInstance: instance,
-                lpszClassName: w!("RelayD2dTest"),
-                ..Default::default()
-            };
-            RegisterClassW(&class);
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                w!("RelayD2dTest"),
-                w!("d2d test"),
-                WS_POPUP,
-                0,
-                0,
-                200,
-                100,
-                None,
-                None,
-                Some(instance),
-                None,
-            )
-            .expect("test window")
-        }
     }
 
     #[cfg(windows)]

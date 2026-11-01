@@ -22,7 +22,8 @@ use windows::{
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
                 PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, IDI_APPLICATION,
-                MSG, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WNDCLASSW,
+                MSG, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION,
+                WM_SETTINGCHANGE, WNDCLASSW,
             },
         },
     },
@@ -1416,6 +1417,7 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_window::Acti
         Action::Theme(t) => {
             let _ = st.settings.lock().map(|mut s| s.theme = t);
             crate::fluent::set_theme(t);
+            crate::fluent::on_theme_change();
             save_settings(st);
         }
         Action::Toggle(Key::Share) => command(hwnd, st, ID_TOGGLE_CLIP),
@@ -1960,6 +1962,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             crate::settings_window::update(settings_model(st));
             LRESULT(0)
+        }
+        // Windows switched light/dark (or accent): repaint the themed windows.
+        WM_SETTINGCHANGE => {
+            if lparam.0 != 0 {
+                // SAFETY: for WM_SETTINGCHANGE a non-null lParam is a
+                // NUL-terminated string naming the changed area.
+                let area = unsafe { PCWSTR(lparam.0 as *const u16).to_string() };
+                if area.is_ok_and(|a| a == "ImmersiveColorSet") {
+                    crate::fluent::on_theme_change();
+                }
+            }
+            // SAFETY: default handling.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         // Windows sign-out or shutdown: Stop, Remove, Shutdown now (Session
         // lifetime would also remove the device, but nothing is left to chance).
