@@ -80,6 +80,8 @@ pub struct WindowOpts {
     pub on_files: Box<dyn Fn(Vec<PathBuf>) + Send + Sync>,
     /// The session ended; the text says why (for the status pill).
     pub on_ended: Box<dyn Fn(String) + Send + Sync>,
+    /// The user closed the window while the picture was live.
+    pub on_closed: Box<dyn Fn() + Send + Sync>,
 }
 
 enum Msg {
@@ -121,6 +123,14 @@ struct Shared {
 
 static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
 static FOCUSED: AtomicBool = AtomicBool::new(false);
+/// Frames arrive: set on each decoded frame, cleared when the phone's
+/// stream ends ("Reconnecting…") and when a new window opens.
+static STREAMING: AtomicBool = AtomicBool::new(false);
+
+/// The window is open and the phone's picture is live (not reconnecting).
+pub fn is_streaming() -> bool {
+    is_open() && STREAMING.load(Ordering::Relaxed)
+}
 
 fn with<R>(f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
     SHARED.lock().ok()?.as_mut().map(f)
@@ -156,6 +166,7 @@ fn set_status(text: &str) {
 /// Open the window for a running session (replaces an open one).
 pub fn open(view: ScreenView, opts: WindowOpts, rt: &tokio::runtime::Handle) {
     close();
+    STREAMING.store(false, Ordering::Relaxed);
     let (remote, mut records, mut state) = view.into_parts();
     let remote = Arc::new(remote);
     let (tx, rx) = mpsc::channel::<Msg>();
@@ -385,6 +396,7 @@ fn decode_thread(
                 }
                 match decoder.push(&r) {
                     Ok(Some(f)) => {
+                        STREAMING.store(true, Ordering::Relaxed);
                         // Every frame is decoded (later ones refer to it),
                         // but a present waits for the monitor's refresh: with
                         // newer frames already waiting only the newest is
@@ -469,6 +481,7 @@ fn decode_thread(
                 }
             }
             Ok(Msg::Ended) => {
+                STREAMING.store(false, Ordering::Relaxed);
                 dimmed = true;
                 if let Some(f) = &last {
                     present(&mut renderer, f, size, video, true);
@@ -816,6 +829,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_CLOSE => {
                 release_input();
+                if STREAMING.swap(false, Ordering::Relaxed) {
+                    if let Some(opts) = with(|s| s.opts.clone()) {
+                        (opts.on_closed)();
+                    }
+                }
                 if let Some((r, msgs)) = with(|s| (s.remote.clone(), s.msgs.clone())) {
                     r.close();
                     let _ = msgs.send(Msg::Stop);

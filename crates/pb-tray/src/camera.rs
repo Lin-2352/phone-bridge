@@ -172,6 +172,12 @@ pub fn is_running() -> bool {
     lock(&ACTIVE).is_some() || lock(&DEVICE).is_some()
 }
 
+/// A session is live (not the reconnect wait, where only the device is
+/// kept).
+pub fn is_streaming() -> bool {
+    lock(&ACTIVE).is_some()
+}
+
 /// The user asked for the other lens.
 pub fn switch_lens() {
     if let Some(a) = lock(&ACTIVE).as_ref() {

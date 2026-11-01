@@ -372,6 +372,8 @@ fn page_action(a: crate::pages::Action) {
     match a {
         Action::Go(_) => {}
         Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
+        // The same path as the hotkey and IPC: private clips are refused.
+        Action::SendClipboard => post_command(raw, ID_SEND_CLIPBOARD),
         Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
         Action::Stop(SessionKind::Camera) => post_command(raw, ID_CAMERA_STOP),
         Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
@@ -384,19 +386,16 @@ fn page_model(st: &State) -> crate::pages::Model {
     use crate::pages::home;
     let phone = st.peers.lock().ok().and_then(|g| g.first().cloned());
     let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
-    // Streaming only: a camera request still waiting for the phone is not
-    // contact (the Camera tile cancels it, as on the flyout).
-    let (screen, camera, control) = (
+    // A camera request still waiting for the phone is not a session (the
+    // Camera tile cancels it, as on the flyout). The screen and camera stay
+    // open while they wait to reconnect; only a live picture is contact.
+    let (screen, screen_live, camera, camera_live, control) = (
         crate::screen_window::is_open(),
+        crate::screen_window::is_streaming(),
         crate::camera::is_running(),
+        crate::camera::is_streaming(),
         crate::control::is_active(),
     );
-    if let Some((id, _)) = &phone {
-        // A live session is contact with the phone right now.
-        if screen || camera || control {
-            crate::core::touch(id);
-        }
-    }
     let (notes, locked) = {
         let ns = notify_ui();
         let notes: Vec<pb_protocol::control::Notification> = ns
@@ -417,15 +416,16 @@ fn page_model(st: &State) -> crate::pages::Model {
             changed: crate::core::is_changed(&id),
             open: c.open > 0,
             last_seen: c.last_seen,
-            addr: c.addr,
+            path: c.path,
         }
     });
     crate::pages::Model {
         home: home::build(home::Inputs {
             phone,
-            clipboard_on: settings.universal_clipboard,
             screen,
+            screen_live,
             camera,
+            camera_live,
             control,
             notes: &notes,
             settings: &settings,
@@ -1364,6 +1364,14 @@ fn toggle_control(hwnd: HWND, st: &State) {
 }
 
 fn end_control(hwnd: HWND, why: &str) {
+    // Control ran until now (every caller ends a session that was set up):
+    // that was contact with the phone, whether or not Home is open.
+    if let Some((id, _)) = STATE
+        .get()
+        .and_then(|st| st.peers.lock().ok().and_then(|g| g.first().cloned()))
+    {
+        crate::core::touch(&id);
+    }
     crate::control::stop();
     // SAFETY: timer on our own window.
     let _ =

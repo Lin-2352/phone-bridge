@@ -37,6 +37,8 @@ pub enum Action {
     /// Run a flyout command (Home's quick actions and Pair), through the
     /// same handler the flyout uses.
     Flyout(crate::flyout::Action),
+    /// Send the clipboard's text once (the tray's "Send clipboard").
+    SendClipboard,
     /// End a running session the way the tray menu does.
     Stop(home::SessionKind),
 }

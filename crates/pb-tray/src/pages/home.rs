@@ -1,10 +1,12 @@
 //! Home: the paired phone at a glance (hero card), quick actions that run
-//! the flyout's commands, the live sessions with Stop, the phone's recent
-//! notifications and the last few Timeline items. `build` turns plain inputs
-//! into a [`HomeModel`] (pure); layout, draw and click work on that model.
+//! the flyout's commands (and Send clipboard), the live sessions with Stop,
+//! the phone's recent notifications and the last few Timeline items.
+//! `build` turns plain inputs into a [`HomeModel`] (pure); layout, draw and
+//! click work on that model.
 
 use pb_protocol::control::Notification;
 
+pub use crate::netpath::Path;
 use crate::{
     fluent::{self, rectf, round_rect, text, Align, Canvas, Font, RectF},
     flyout,
@@ -20,15 +22,6 @@ use crate::{
 /// At most this many notifications and Timeline items are listed.
 pub const RECENT: usize = 5;
 
-/// How the PC last reached the phone.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Path {
-    Wifi,
-    Usb,
-    #[default]
-    Unknown,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhoneCard {
     pub name: String,
@@ -37,6 +30,7 @@ pub struct PhoneCard {
     pub connected: bool,
     /// Unix seconds of the last contact this run.
     pub last_seen: Option<u64>,
+    /// How the PC reaches it; shown only while connected.
     pub path: Path,
     /// Answered as a different device: reinstalled or reset.
     pub changed: bool,
@@ -53,6 +47,9 @@ pub enum SessionKind {
 pub struct Session {
     pub kind: SessionKind,
     pub stop: Action,
+    /// The picture is live; false while it waits for the phone again
+    /// ("Reconnecting…").
+    pub live: bool,
 }
 
 /// A phone notification as the toast would show it right now.
@@ -66,10 +63,10 @@ pub struct NoteRow {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HomeModel {
     pub phone: Option<PhoneCard>,
-    /// "Share clipboard" is on (the quick action shows it).
-    pub clipboard_on: bool,
     pub sessions: Vec<Session>,
     pub notes: Vec<NoteRow>,
+    /// Some notifications are held back because the PC is locked.
+    pub notes_hidden: bool,
     pub recent: Vec<timeline::Entry>,
     /// Unix seconds when the model was built, for "5 min ago" (whole
     /// minutes, so the model only changes when a label can).
@@ -84,16 +81,19 @@ pub struct PhoneIn {
     /// A session with it is open now.
     pub open: bool,
     pub last_seen: Option<u64>,
-    /// The address it was last reached at (`ip:port`).
-    pub addr: Option<String>,
+    /// How it was last reached this run.
+    pub path: Path,
 }
 
 /// Everything `build` reads, gathered by the UI thread.
 pub struct Inputs<'a> {
     pub phone: Option<PhoneIn>,
-    pub clipboard_on: bool,
+    /// The screen window is open, and its picture is live.
     pub screen: bool,
+    pub screen_live: bool,
+    /// The camera runs (or waits to reconnect), and is streaming.
     pub camera: bool,
+    pub camera_live: bool,
     pub control: bool,
     /// Mirrored phone notifications, newest first.
     pub notes: &'a [Notification],
@@ -105,36 +105,39 @@ pub struct Inputs<'a> {
 }
 
 pub fn build(i: Inputs) -> HomeModel {
-    let running = i.screen || i.camera || i.control;
+    // A live screen, camera or control session is an open connection too;
+    // one that waits to reconnect is not.
+    let live = (i.screen && i.screen_live) || (i.camera && i.camera_live) || i.control;
     let phone = i.phone.map(|p| {
-        // A screen, camera or control session is an open connection too.
-        let connected = !p.changed && (p.open || running);
+        let connected = !p.changed && (p.open || live);
         PhoneCard {
             connected,
             // Shown only while not connected (it moves on every contact).
             last_seen: p.last_seen.filter(|_| !connected),
-            path: p.addr.as_deref().map(path_for).unwrap_or_default(),
+            path: p.path,
             changed: p.changed,
             name: p.name,
             fingerprint: p.fingerprint,
         }
     });
     let sessions = [
-        (i.screen, SessionKind::Screen),
-        (i.camera, SessionKind::Camera),
-        (i.control, SessionKind::Control),
+        (i.screen, i.screen_live, SessionKind::Screen),
+        (i.camera, i.camera_live, SessionKind::Camera),
+        (i.control, true, SessionKind::Control),
     ]
     .into_iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, kind)| Session {
+    .filter(|(on, _, _)| *on)
+    .map(|(_, live, kind)| Session {
         kind,
         stop: Action::Stop(kind),
+        live,
     })
     .collect();
     let ctx = notify::Ctx {
         locked: i.locked,
         mirroring_focused: false,
     };
+    let mut notes_hidden = false;
     let notes = i
         .notes
         .iter()
@@ -143,6 +146,7 @@ pub fn build(i: Inputs) -> HomeModel {
             // held back for the lock screen.
             let p = notify::present(n, i.settings, &ctx)?;
             if notify::hidden_now(&p) {
+                notes_hidden = true;
                 return None;
             }
             let app = if n.app_name.is_empty() {
@@ -165,62 +169,11 @@ pub fn build(i: Inputs) -> HomeModel {
         .collect();
     HomeModel {
         phone,
-        clipboard_on: i.clipboard_on,
         sessions,
         notes,
+        notes_hidden,
         recent: i.recent.iter().take(RECENT).cloned().collect(),
         now: i.now,
-    }
-}
-
-/// The connection path for the address the phone was last reached at
-/// (`ip:port`, `[v6]:port` or a bare IP). USB tethering hands out
-/// 192.168.42.x and 192.0.0.x; other private and link-local addresses are
-/// the local network. 10.x shared over USB cannot be told apart and reads
-/// as Wi-Fi.
-pub fn path_for(addr: &str) -> Path {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    // A zone (`fe80::1%12`) is dropped: only the address matters here.
-    let unzoned = match (addr.find('%'), addr.find(']')) {
-        (Some(p), Some(b)) if p < b => format!("{}{}", &addr[..p], &addr[b..]),
-        (Some(p), None) => addr[..p].to_owned(),
-        _ => addr.to_owned(),
-    };
-    let ip = match unzoned.parse::<SocketAddr>() {
-        Ok(a) => a.ip(),
-        Err(_) => match unzoned.parse::<IpAddr>() {
-            Ok(ip) => ip,
-            Err(_) => return Path::Unknown,
-        },
-    };
-    let v4 = |a: Ipv4Addr| {
-        let o = a.octets();
-        if o[..3] == [192, 168, 42] || o[..3] == [192, 0, 0] {
-            Path::Usb
-        } else if o[0] == 10
-            || (o[0] == 172 && (16..=31).contains(&o[1]))
-            || o[..2] == [192, 168]
-            || o[..2] == [169, 254]
-        {
-            Path::Wifi
-        } else {
-            Path::Unknown
-        }
-    };
-    match ip {
-        IpAddr::V4(a) => v4(a),
-        IpAddr::V6(a) => {
-            if let Some(m) = a.to_ipv4_mapped() {
-                return v4(m);
-            }
-            let first = a.segments()[0];
-            // Unique local fc00::/7 or link-local fe80::/10.
-            if first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80 {
-                Path::Wifi
-            } else {
-                Path::Unknown
-            }
-        }
     }
 }
 
@@ -242,22 +195,33 @@ fn ago(at: u64, now: u64) -> String {
     }
 }
 
-/// "Connected · Wi-Fi", "Last seen 5 min ago · USB" and the like.
+/// "Connected · USB", "Last seen 5 min ago" and the like. The path is
+/// only named while connected: an old one may no longer be true.
 pub fn status_line(c: &PhoneCard, now: u64) -> String {
-    let state = if c.connected {
-        "Connected".to_owned()
-    } else if c.changed {
-        "Not connected".to_owned()
-    } else {
-        match c.last_seen {
-            Some(at) => format!("Last seen {}", ago(at, now)),
-            None => "Not seen since Relay started".to_owned(),
-        }
-    };
+    if !c.connected {
+        return if c.changed {
+            "Not connected".to_owned()
+        } else {
+            match c.last_seen {
+                Some(at) => format!("Last seen {}", ago(at, now)),
+                None => "Not seen since Relay started".to_owned(),
+            }
+        };
+    }
     match c.path {
-        Path::Wifi => format!("{state} \u{b7} Wi-Fi"),
-        Path::Usb => format!("{state} \u{b7} USB"),
-        Path::Unknown => state,
+        Path::Wifi => "Connected \u{b7} Wi-Fi".to_owned(),
+        Path::Usb => "Connected \u{b7} USB".to_owned(),
+        Path::Network => "Connected \u{b7} Network".to_owned(),
+        Path::Unknown => "Connected".to_owned(),
+    }
+}
+
+/// What the notifications card says when it lists nothing.
+pub fn notes_empty_text(m: &HomeModel) -> &'static str {
+    if m.notes_hidden {
+        "Hidden while this PC is locked"
+    } else {
+        "No notifications from your phone right now"
     }
 }
 
@@ -280,22 +244,22 @@ impl Quick {
         Quick::Control,
     ];
 
-    /// The flyout command this runs (the flyout tile's action).
-    pub fn action(self) -> flyout::Action {
+    /// What this runs: the flyout tile's command, or for Send clipboard the
+    /// tray's one-off send.
+    pub fn action(self) -> Action {
         match self {
-            Quick::SendFile => flyout::Action::SendFiles,
-            Quick::Clipboard => flyout::Action::ToggleClipboard,
-            Quick::Screen => flyout::Action::ShowScreen,
-            Quick::Camera => flyout::Action::ToggleCamera,
-            Quick::Control => flyout::Action::ControlPhone,
+            Quick::SendFile => Action::Flyout(flyout::Action::SendFiles),
+            Quick::Clipboard => Action::SendClipboard,
+            Quick::Screen => Action::Flyout(flyout::Action::ShowScreen),
+            Quick::Camera => Action::Flyout(flyout::Action::ToggleCamera),
+            Quick::Control => Action::Flyout(flyout::Action::ControlPhone),
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Quick::SendFile => "Send files",
-            // A switch, as on the flyout tile: what is copied is shared.
-            Quick::Clipboard => "Share clipboard",
+            Quick::Clipboard => "Send clipboard",
             Quick::Screen => "Phone screen",
             Quick::Camera => "Camera",
             Quick::Control => "Control phone",
@@ -312,22 +276,21 @@ impl Quick {
         }
     }
 
-    /// Drawn in the accent fill: the switch or session is on.
+    /// Drawn in the accent fill: its session runs.
     fn on(self, m: &HomeModel) -> bool {
         let running = |k| m.sessions.iter().any(|x| x.kind == k);
         match self {
-            Quick::Clipboard => m.clipboard_on,
             Quick::Screen => running(SessionKind::Screen),
             Quick::Camera => running(SessionKind::Camera),
             Quick::Control => running(SessionKind::Control),
-            Quick::SendFile => false,
+            Quick::SendFile | Quick::Clipboard => false,
         }
     }
 }
 
-impl SessionKind {
-    fn text(self) -> (char, &'static str, &'static str) {
-        match self {
+impl Session {
+    fn text(&self) -> (char, &'static str, &'static str) {
+        let (glyph, title, meta) = match self.kind {
             SessionKind::Screen => ('\u{E7F4}', "Phone screen", "Showing in a window"),
             SessionKind::Camera => ('\u{E714}', "Phone camera", "In use as this PC's webcam"),
             SessionKind::Control => (
@@ -335,7 +298,16 @@ impl SessionKind {
                 "Control phone",
                 "This PC's mouse and keyboard drive the phone",
             ),
-        }
+        };
+        (
+            glyph,
+            title,
+            if self.live {
+                meta
+            } else {
+                "Reconnecting\u{2026}"
+            },
+        )
     }
 }
 
@@ -627,7 +599,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
         heading(c, h, "Live now");
         widgets::card(c, card);
         for (x, (row, b)) in m.sessions.iter().zip(&p.stops) {
-            let (glyph, title, meta) = x.kind.text();
+            let (glyph, title, meta) = x.text();
             let text_row = rectf(row.left, row.top, b.left, row.bottom);
             widgets::row(c, text_row, glyph, title, meta, "");
             fluent::button(c, *b, "Stop", false);
@@ -647,7 +619,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
         text(
             c,
             Font::Body,
-            "No notifications from your phone right now",
+            notes_empty_text(m),
             t,
             pal.text2,
             Align::Left,
@@ -716,7 +688,7 @@ pub fn click(hit: &Hit, m: &HomeModel) -> Option<Action> {
         PAIR if m.phone.is_none() => Some(Action::Flyout(flyout::Action::Pair)),
         SEE_ALL => Some(Action::Go(Page::Timeline)),
         id if (QUICK..QUICK + Quick::ALL.len() as u32).contains(&id) && m.phone.is_some() => {
-            Some(Action::Flyout(Quick::ALL[(id - QUICK) as usize].action()))
+            Some(Quick::ALL[(id - QUICK) as usize].action())
         }
         id if (STOP..STOP + 3).contains(&id) => {
             m.sessions.get((id - STOP) as usize).map(|x| x.stop.clone())
@@ -738,16 +710,17 @@ mod tests {
             changed,
             open,
             last_seen: Some(NOW - 300),
-            addr: Some("192.168.1.20:47100".into()),
+            path: Path::Wifi,
         }
     }
 
     fn inputs<'a>(settings: &'a Settings, notes: &'a [Notification]) -> Inputs<'a> {
         Inputs {
             phone: Some(phone(false, true)),
-            clipboard_on: false,
             screen: false,
+            screen_live: false,
             camera: false,
+            camera_live: false,
             control: false,
             notes,
             settings,
@@ -818,7 +791,8 @@ mod tests {
         i.phone = Some(phone(false, false));
         let card = build(i).phone.unwrap();
         assert!(!card.connected);
-        assert_eq!(status_line(&card, NOW), "Last seen 5 min ago \u{b7} Wi-Fi");
+        // The path is named only while connected.
+        assert_eq!(status_line(&card, NOW), "Last seen 5 min ago");
         let never = PhoneCard {
             last_seen: None,
             path: Path::Unknown,
@@ -828,16 +802,57 @@ mod tests {
     }
 
     #[test]
+    fn connected_names_the_path_of_the_adapter() {
+        let s = Settings::default();
+        for (path, want) in [
+            (Path::Usb, "Connected \u{b7} USB"),
+            (Path::Wifi, "Connected \u{b7} Wi-Fi"),
+            (Path::Network, "Connected \u{b7} Network"),
+            (Path::Unknown, "Connected"),
+        ] {
+            let mut i = inputs(&s, &[]);
+            i.phone = Some(PhoneIn {
+                path,
+                ..phone(false, true)
+            });
+            assert_eq!(status_line(&build(i).phone.unwrap(), NOW), want);
+        }
+    }
+
+    #[test]
     fn a_running_session_counts_as_connected() {
         let s = Settings::default();
         let mut i = inputs(&s, &[]);
         i.phone = Some(phone(false, false));
         i.screen = true;
+        i.screen_live = true;
         let card = build(i).phone.unwrap();
         assert!(card.connected);
         // "Last seen" is not kept while connected, so contact stamps made
         // during a session do not change the model.
         assert_eq!(card.last_seen, None);
+    }
+
+    #[test]
+    fn a_reconnecting_session_is_not_connected() {
+        let s = Settings::default();
+        for camera in [false, true] {
+            let mut i = inputs(&s, &[]);
+            i.phone = Some(phone(false, false));
+            // Open, but the phone stopped sending: waiting to reconnect.
+            if camera {
+                i.camera = true;
+            } else {
+                i.screen = true;
+            }
+            let m = build(i);
+            let card = m.phone.clone().unwrap();
+            assert!(!card.connected);
+            assert_eq!(status_line(&card, NOW), "Last seen 5 min ago");
+            assert_eq!(m.sessions.len(), 1);
+            assert!(!m.sessions[0].live);
+            assert_eq!(m.sessions[0].text().2, "Reconnecting\u{2026}");
+        }
     }
 
     #[test]
@@ -893,17 +908,20 @@ mod tests {
         let s = Settings::default();
         let m = build(inputs(&s, &[]));
         let want = [
-            flyout::Action::SendFiles,
-            flyout::Action::ToggleClipboard,
-            flyout::Action::ShowScreen,
-            flyout::Action::ToggleCamera,
-            flyout::Action::ControlPhone,
+            Action::Flyout(flyout::Action::SendFiles),
+            // A one-off send (the tray's Send clipboard), not the switch.
+            Action::SendClipboard,
+            Action::Flyout(flyout::Action::ShowScreen),
+            Action::Flyout(flyout::Action::ToggleCamera),
+            Action::Flyout(flyout::Action::ControlPhone),
         ];
         for (k, (q, a)) in Quick::ALL.iter().zip(want).enumerate() {
             assert_eq!(q.action(), a);
             let h = hit(&m, QUICK + k as u32).expect("a quick action");
-            assert_eq!(click(&h, &m), Some(Action::Flyout(a)));
+            assert_eq!(click(&h, &m), Some(a));
         }
+        assert_eq!(Quick::Clipboard.label(), "Send clipboard");
+        assert!(!Quick::Clipboard.on(&m));
     }
 
     #[test]
@@ -927,7 +945,16 @@ mod tests {
         };
         let mut i = inputs(&hide, &notes);
         i.locked = true;
-        assert!(build(i).notes.is_empty());
+        let m = build(i);
+        assert!(m.notes.is_empty());
+        // The card says why it is empty.
+        assert!(m.notes_hidden);
+        assert_eq!(notes_empty_text(&m), "Hidden while this PC is locked");
+        let none = build(inputs(&hide, &[]));
+        assert_eq!(
+            notes_empty_text(&none),
+            "No notifications from your phone right now"
+        );
         // Sender only: the title, never the text.
         let sender = Settings {
             notify_content: 2,
@@ -938,37 +965,6 @@ mod tests {
         assert_eq!(m.notes[0].title, "Mom");
         assert!(m.notes[0].line.is_empty());
         assert!(!format!("{:?}", m).contains("See you"));
-    }
-
-    #[test]
-    fn usb_tether_and_lan_addresses_map_to_paths() {
-        for a in ["192.168.42.129:47100", "192.0.0.4:47100", "192.0.0.2"] {
-            assert_eq!(path_for(a), Path::Usb, "{a}");
-        }
-        for a in [
-            "10.0.0.5:1",
-            "172.16.0.1:1",
-            "172.31.255.1:1",
-            "192.168.1.20:47100",
-            "169.254.3.4:1",
-            "[fd12:3456::1]:47100",
-            "[fe80::1]:47100",
-            "[fe80::1%12]:47100",
-            "[::ffff:192.168.1.2]:1",
-        ] {
-            assert_eq!(path_for(a), Path::Wifi, "{a}");
-        }
-        for a in [
-            "8.8.8.8:53",
-            "172.32.0.1:1",
-            "[2001:db8::1]:1",
-            "",
-            "not an address",
-        ] {
-            assert_eq!(path_for(a), Path::Unknown, "{a}");
-        }
-        // Only 192.0.0.x is the tether range, not its neighbours.
-        assert_eq!(path_for("192.0.1.4:1"), Path::Unknown);
     }
 
     #[test]

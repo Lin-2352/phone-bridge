@@ -51,6 +51,8 @@ mod main_window;
 #[cfg(windows)]
 mod menu;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod netpath;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod notify;
 #[cfg(windows)]
 mod pages;

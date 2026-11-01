@@ -80,9 +80,9 @@ pub struct Contact {
     pub open: u32,
     /// Unix seconds of the last successful exchange.
     pub last_seen: Option<u64>,
-    /// The address the node last reached it at (`ip:port`): a successful
-    /// dial moves the address it used to the front of the saved list.
-    pub addr: Option<String>,
+    /// How this PC reached it last this run (from the adapter that routes
+    /// to the address the exchange used).
+    pub path: crate::netpath::Path,
 }
 
 static CONTACT: Mutex<Vec<(PeerId, Contact)>> = Mutex::new(Vec::new());
@@ -112,27 +112,35 @@ pub fn touch(id: &PeerId) {
     with_contact(id, |c| c.last_seen = Some(now));
 }
 
-/// An exchange with `id` worked: stamp it and note the address used.
+/// An outgoing exchange with `id` worked: stamp it and note the path. A
+/// successful dial moves the address it used to the front of the saved
+/// list, so that is the address used now.
 fn seen(node: &Node, id: &PeerId) {
-    touch(id);
-    note_addr(node, id);
-}
-
-fn note_addr(node: &Node, id: &PeerId) {
     let addr = node
         .paired_peers()
         .into_iter()
         .find(|p| p.id == *id)
-        .and_then(|p| p.addrs.into_iter().next());
-    with_contact(id, |c| c.addr = addr);
+        .and_then(|p| p.addrs.into_iter().next())
+        .and_then(|a| a.parse().ok());
+    seen_at(id, addr);
+}
+
+/// Contact with `id` over `addr` (when known): stamp it and note the path.
+fn seen_at(id: &PeerId, addr: Option<std::net::SocketAddr>) {
+    touch(id);
+    if let Some(a) = addr {
+        // Outside the lock: a quick routing-table query.
+        let path = crate::netpath::path_to(a);
+        with_contact(id, |c| c.path = path);
+    }
 }
 
 /// Counts a session from a phone as open for as long as it lives.
 struct OpenSession(PeerId);
 
 impl OpenSession {
-    fn new(id: PeerId) -> Self {
-        touch(&id);
+    fn new(id: PeerId, addr: Option<std::net::SocketAddr>) -> Self {
+        seen_at(&id, addr);
         with_contact(&id, |c| c.open += 1);
         Self(id)
     }
@@ -346,9 +354,6 @@ fn refresh(node: &Node, peers: &Peers) {
     let paired = node.paired_peers();
     if let Ok(mut g) = CONTACT.lock() {
         g.retain(|(id, _)| paired.iter().any(|p| p.id == *id));
-    }
-    for p in &paired {
-        note_addr(node, &p.id);
     }
     let list = paired.into_iter().map(|p| (p.id, p.name)).collect();
     if let Ok(mut g) = peers.lock() {
@@ -676,6 +681,11 @@ pub async fn run(
                         }
                     }
                     log.line("CAMERA stopped by the user");
+                    if crate::camera::is_streaming() {
+                        if let Some((id, _)) = peers.lock().ok().and_then(|g| g.first().cloned()) {
+                            touch(&id);
+                        }
+                    }
                     tokio::task::spawn_blocking(crate::camera::stop);
                 }
                 Some(Cmd::SwitchCameraLens) => crate::camera::switch_lens(),
@@ -923,7 +933,7 @@ async fn pump(
     images: Arc<ToastImages>,
 ) {
     log.line(&format!("SESSION \"{}\"", s.peer_name));
-    let _open = OpenSession::new(s.peer);
+    let _open = OpenSession::new(s.peer, s.remote_addr());
     let mut notify_rate =
         pb_transport::notify::RateWindow::new(pb_transport::notify::MAX_NOTIFY_PER_SEC);
     loop {
@@ -1292,6 +1302,7 @@ fn show_screen(
                             move |f| ui(UiEvent::ScreenFiles(f))
                         }),
                         on_ended: Box::new(ended),
+                        on_closed: Box::new(move || touch(&id)),
                     };
                     crate::screen_window::open(view, opts, &tokio::runtime::Handle::current());
                     return;
@@ -1548,8 +1559,8 @@ mod tests {
     fn open_sessions_are_counted_and_stamp_the_last_contact() {
         let id = pb_identity::Identity::from_seed([77; 32]).peer_id();
         assert_eq!(contact(&id), Contact::default());
-        let a = OpenSession::new(id);
-        let b = OpenSession::new(id);
+        let a = OpenSession::new(id, None);
+        let b = OpenSession::new(id, None);
         assert_eq!(contact(&id).open, 2);
         drop(a);
         assert_eq!(contact(&id).open, 1);

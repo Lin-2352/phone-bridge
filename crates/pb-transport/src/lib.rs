@@ -861,6 +861,11 @@ impl Session {
         let _ = self.conn.closed().await;
     }
 
+    /// The peer's address on the path this session uses now.
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
+        used_addr(&self.conn)
+    }
+
     /// A handle that can end this session from another task.
     pub fn closer(&self) -> SessionCloser {
         SessionCloser(self.conn.weak_handle())
