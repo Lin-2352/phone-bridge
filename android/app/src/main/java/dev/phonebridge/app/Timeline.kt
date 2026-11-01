@@ -6,8 +6,6 @@ import android.util.Log
 import androidx.core.util.AtomicFile
 import java.io.File
 import java.io.FileNotFoundException
-import java.io.FileOutputStream
-import java.io.IOException
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.concurrent.Executors
@@ -16,7 +14,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -126,7 +123,7 @@ private fun count(label: String, n: Int?) = when (n) {
     else -> "$label, $n characters"
 }
 
-/** One line for a timeline row, worded as on the PC. Links (the PC has none) read like text. */
+/** One line for a timeline row, worded as on the PC. Links (the PC has none) read "Link, N characters". */
 fun summary(e: TlEntry): String = when (e.kind) {
     TlKind.File -> {
         val name = e.name ?: "File"
@@ -193,7 +190,9 @@ fun decodeOrNull(s: String): List<TlEntry>? = try {
         }
     }
 } catch (e: Exception) {
-    // JSONException, an unknown kind or direction, half a size.
+    // JSONException, an unknown kind or direction, half a size. The whole file
+    // counts as unreadable and is replaced, as on the PC (`parse` fails on any
+    // bad line), rather than half loaded.
     null
 }
 
@@ -219,94 +218,132 @@ fun fileState(ctx: Context, uri: String): Boolean = try {
     false // provider gone, bad uri
 }
 
+/** The timeline file's three operations; [Timeline] uses AtomicFile, tests a fake. */
+interface TlFile {
+    /** The whole file; throws FileNotFoundException when there is none. */
+    fun read(): ByteArray
+    /** Replaces the file atomically: on any failure the previous file stays. */
+    fun write(b: ByteArray)
+    fun delete()
+}
+
+/** [TlFile] over `androidx.core.util.AtomicFile`. */
+private class AtomicTlFile(private val af: AtomicFile) : TlFile {
+    override fun read(): ByteArray = af.readFully()
+    override fun write(b: ByteArray) {
+        val out = af.startWrite()
+        try {
+            out.write(b)
+            af.finishWrite(out)
+        } catch (t: Throwable) {
+            af.failWrite(out) // closes the stream, keeps the previous file
+            throw t
+        }
+    }
+    override fun delete() = af.delete()
+}
+
 /**
- * The process-wide store. [init] loads the file once (from the service or
- * the UI, whichever starts first); [add] updates [entries] at once and writes
- * the file shortly after on a single I/O thread, so bursts coalesce into one
- * write. Every file operation runs on that thread, in order, so a write
- * queued before [clear] can never bring the history back.
+ * The store's logic, with the file and the I/O thread injected so tests can
+ * run it in a fixed order. [exec] runs a task on the I/O thread, [later] runs
+ * one there after a short delay (the coalesced write). Every file operation
+ * goes through them, in order.
  *
- * Read errors: a missing file is empty; unparsable content is logged and
- * replaced; any other read failure keeps the file untouched for this session
+ * Read errors: a missing file is empty; unparsable content (bad JSON, an
+ * unknown version, kind or direction) is logged and replaced, as on the PC;
+ * any other read failure keeps the file untouched for this session
  * (recording continues in memory only), as on the PC.
  */
-object Timeline {
-    private const val FILE = "timeline.json"
-    private const val WRITE_DELAY_MS = 300L
-
+class TimelineStore(
+    private val exec: (Runnable) -> Unit,
+    private val later: (Runnable) -> Unit,
+    private val log: (String) -> Unit,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+    private val lock = Any()
     private val _entries = MutableStateFlow<List<TlEntry>>(emptyList())
     /** Newest first. */
     val entries: StateFlow<List<TlEntry>> = _entries.asStateFlow()
 
-    private val io = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "timeline-io").apply { isDaemon = true } }
-    private val writeQueued = AtomicBoolean(false)
-    @Volatile private var file: AtomicFile? = null
-    @Volatile private var app: Context? = null
-    /** "Keep history". Before [init] entries are kept in memory and merged with the file. */
+    @Volatile private var file: TlFile? = null
+    /** "Keep history". Changed only under [lock]. */
     @Volatile private var enabled = true
+    /** Bumped by every clear: a load queued before it must not bring the history back. Under [lock]. */
+    private var generation = 0
+    private val writeQueued = AtomicBoolean(false)
     /** The file could not be read (not just parsed): never overwrite it this session. I/O thread only. */
     private var writeLocked = false
 
-    fun init(ctx: Context) {
-        synchronized(this) {
-            if (file != null) return
-            app = ctx.applicationContext
-            file = AtomicFile(File(ctx.applicationContext.filesDir, FILE))
-            enabled = Prefs(ctx).keepHistory
+    /** Loads [f] (or deletes it if history is off). Entries added before this are kept and merged. */
+    fun start(f: TlFile, on: Boolean) {
+        file = f
+        if (!on) {
+            setEnabled(false)
+            return
         }
-        if (!enabled) clear() else io.execute { load() }
+        val gen = synchronized(lock) { generation }
+        exec(Runnable { load(f, gen) })
     }
 
     fun add(e: TlEntry) {
-        if (!enabled) return
-        _entries.update { prune(listOf(e) + it, System.currentTimeMillis()) }
+        synchronized(lock) {
+            // Checked under the lock setEnabled(false) takes: an add can never land after it.
+            if (!enabled) return
+            _entries.value = prune(listOf(e) + _entries.value, now())
+        }
         scheduleWrite()
     }
 
     /** Deletes the history (memory and file). */
     fun clear() {
-        _entries.value = emptyList()
-        io.execute {
+        synchronized(lock) {
+            generation++
+            _entries.value = emptyList()
+        }
+        exec(Runnable {
             writeLocked = false // the user asked for it gone
             file?.delete()
-        }
+        })
     }
 
-    /** "Keep history": off deletes the history and stops recording; on starts again. */
+    /** Off deletes the history and stops recording; on starts again. */
     fun setEnabled(on: Boolean) {
-        enabled = on
-        app?.let { Prefs(it).keepHistory = on }
+        synchronized(lock) { enabled = on }
         if (!on) clear()
     }
 
-    private fun scheduleWrite() {
-        if (writeQueued.compareAndSet(false, true)) {
-            io.schedule({ writeQueued.set(false); write() }, WRITE_DELAY_MS, TimeUnit.MILLISECONDS)
-        }
+    /** On the I/O thread: write now if a write is waiting (the delayed write, or on exit). */
+    fun flushNow() {
+        if (writeQueued.getAndSet(false)) write()
     }
 
-    private fun load() {
-        val f = file ?: return
+    fun hasPendingWrite() = writeQueued.get()
+
+    private fun scheduleWrite() {
+        if (writeQueued.compareAndSet(false, true)) later(Runnable { flushNow() })
+    }
+
+    private fun load(f: TlFile, gen: Int) {
         val loaded = try {
-            val text = f.readFully().toString(Charsets.UTF_8)
-            decodeOrNull(text) ?: run {
-                Log.e(TAG, "TIMELINE unreadable, starting empty")
+            decodeOrNull(f.read().toString(Charsets.UTF_8)) ?: run {
+                log("TIMELINE unreadable, starting empty")
                 f.delete()
                 emptyList()
             }
         } catch (e: FileNotFoundException) {
             emptyList()
-        } catch (e: IOException) {
+        } catch (e: Exception) {
             // The history may be fine on disk: leave it alone this session.
             writeLocked = true
-            Log.e(TAG, "TIMELINE read failed: $e")
+            log("TIMELINE read failed: ${e.javaClass.simpleName}")
             emptyList()
         }
-        if (!enabled) return
-        var pending = false
-        _entries.update { cur ->
-            pending = cur.isNotEmpty()
-            prune(cur + loaded, System.currentTimeMillis())
+        val pending = synchronized(lock) {
+            // Cleared or turned off since this load was queued: the file's entries are gone.
+            if (gen != generation || !enabled) return
+            val cur = _entries.value
+            _entries.value = prune(cur + loaded, now())
+            cur.isNotEmpty()
         }
         // Entries added before the load finished are not on disk yet.
         if (pending) scheduleWrite()
@@ -314,17 +351,68 @@ object Timeline {
 
     private fun write() {
         val f = file ?: return
-        if (!enabled || writeLocked) return
-        val snapshot = _entries.value
-        var out: FileOutputStream? = null
+        if (writeLocked) return
+        val snapshot = synchronized(lock) { if (enabled) _entries.value else return }
         try {
-            out = f.startWrite()
-            out.write(encode(snapshot).toByteArray(Charsets.UTF_8))
-            f.finishWrite(out)
-        } catch (e: IOException) {
+            f.write(encode(snapshot).toByteArray(Charsets.UTF_8))
+        } catch (e: Exception) {
             // The previous file stays; the entries stay in memory for the next write.
-            out?.let { f.failWrite(it) }
-            Log.e(TAG, "TIMELINE write failed: $e")
+            // Only the error's type is logged, never anything that could hold content.
+            log("TIMELINE write failed: ${e.javaClass.simpleName}")
+        }
+    }
+}
+
+/**
+ * The process-wide store: `filesDir/timeline.json` through AtomicFile, on
+ * one daemon I/O thread. [init] loads the file once (from the service or the
+ * UI, whichever starts first); [add] updates [entries] at once and writes the
+ * file shortly after, so bursts coalesce into one write.
+ */
+object Timeline {
+    private const val FILE = "timeline.json"
+    private const val WRITE_DELAY_MS = 300L
+
+    private val io = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "timeline-io").apply { isDaemon = true } }
+    private val store = TimelineStore(
+        exec = { io.execute(it) },
+        later = { io.schedule(it, WRITE_DELAY_MS, TimeUnit.MILLISECONDS) },
+        log = { Log.e(TAG, it) },
+    )
+    @Volatile private var app: Context? = null
+
+    /** Newest first. */
+    val entries: StateFlow<List<TlEntry>> get() = store.entries
+
+    fun init(ctx: Context) {
+        synchronized(this) {
+            if (app != null) return
+            app = ctx.applicationContext
+        }
+        store.start(AtomicTlFile(AtomicFile(File(ctx.applicationContext.filesDir, FILE))), Prefs(ctx).keepHistory)
+    }
+
+    fun add(e: TlEntry) = store.add(e)
+
+    /** Deletes the history (memory and file). */
+    fun clear() = store.clear()
+
+    /** "Keep history": off deletes the history and stops recording; on starts again. */
+    fun setEnabled(on: Boolean) {
+        app?.let { Prefs(it).keepHistory = on }
+        store.setEnabled(on)
+    }
+
+    /**
+     * Writes a waiting entry now (the app is quitting, e.g. right after a
+     * transfer), waiting at most [maxMs]. Never blocks longer.
+     */
+    fun flush(maxMs: Long = 500) {
+        if (!store.hasPendingWrite()) return
+        try {
+            io.submit { store.flushNow() }.get(maxMs, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            Log.e(TAG, "TIMELINE flush on exit did not finish: ${e.javaClass.simpleName}")
         }
     }
 }

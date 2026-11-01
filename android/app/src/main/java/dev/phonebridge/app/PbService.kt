@@ -263,6 +263,9 @@ class PbService : Service() {
         Bridge.running.value = false
         Bridge.startingSince = 0L
         refreshTile(this)
+        // Quitting right after a transfer: its timeline entry is still waiting
+        // for the delayed write. Write it now, bounded (at most 500 ms).
+        Timeline.flush(500)
         super.onDestroy()
     }
 

@@ -121,4 +121,125 @@ class TimelineTest {
         assertEquals(RecentItem("Text, 12 characters", "Sent to Lin's PC", RecentItem.Kind.Clipboard), t)
         assertEquals(RecentItem.Kind.Link, recentItem(linkEntry("p", "https://a")).kind)
     }
+
+    // --- The store, with a fake file and hand-run I/O queue (deterministic ordering). ---
+
+    private class FakeFile(var bytes: ByteArray? = null) : TlFile {
+        var readError: java.io.IOException? = null
+        var writeError: Exception? = null
+        var writes = 0
+        override fun read(): ByteArray = readError?.let { throw it } ?: bytes ?: throw java.io.FileNotFoundException()
+        override fun write(b: ByteArray) {
+            writes++
+            writeError?.let { throw it }
+            bytes = b
+        }
+        override fun delete() { bytes = null }
+        val text get() = bytes?.toString(Charsets.UTF_8)
+    }
+
+    private class Rig(val file: FakeFile, enabled: Boolean = true) {
+        val io = ArrayDeque<Runnable>()
+        val later = ArrayDeque<Runnable>()
+        val log = mutableListOf<String>()
+        val store = TimelineStore(exec = { io.add(it) }, later = { later.add(it) }, log = { log.add(it) }, now = { 1_800_000_000_000L })
+        init { store.start(file, enabled) }
+        fun runIo() { while (io.isNotEmpty()) io.removeFirst().run() }
+        fun runAll() { runIo(); while (later.isNotEmpty()) { later.removeFirst().run(); runIo() } }
+    }
+
+    private val onDisk = encode(listOf(fileEntry("PC", TlDir.ToPhone, "old.jpg", 5, null, at = now - 10)))
+
+    @Test fun store_loads_and_writes_newest_first() {
+        val r = Rig(FakeFile(onDisk.toByteArray()))
+        r.runAll()
+        assertEquals(1, r.store.entries.value.size)
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        r.runAll()
+        assertEquals(listOf(TlKind.ClipText, TlKind.File), decode(r.file.text!!).map { it.kind })
+    }
+
+    @Test fun clear_before_the_first_load_does_not_bring_history_back() {
+        val r = Rig(FakeFile(onDisk.toByteArray()))
+        r.store.clear() // the load is still queued
+        r.runAll()
+        assertEquals(emptyList<TlEntry>(), r.store.entries.value)
+        assertNull(r.file.bytes)
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        r.runAll()
+        assertEquals(listOf(TlKind.ClipText), decode(r.file.text!!).map { it.kind })
+    }
+
+    @Test fun history_off_before_the_first_load_does_not_bring_it_back() {
+        val r = Rig(FakeFile(onDisk.toByteArray()))
+        r.store.setEnabled(false)
+        r.runAll()
+        r.store.setEnabled(true)
+        r.runAll()
+        assertEquals(emptyList<TlEntry>(), r.store.entries.value)
+        assertNull(r.file.bytes)
+    }
+
+    @Test fun add_while_history_is_off_never_reaches_disk() {
+        val r = Rig(FakeFile())
+        r.runAll()
+        r.store.setEnabled(false)
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        assertEquals(emptyList<TlEntry>(), r.store.entries.value)
+        r.store.setEnabled(true)
+        r.store.add(notificationEntry("PC", "Mail", at = now))
+        r.runAll()
+        assertEquals(listOf(TlKind.Notification), decode(r.file.text!!).map { it.kind })
+    }
+
+    @Test fun any_write_failure_is_caught_logged_without_content_and_retried() {
+        val r = Rig(FakeFile())
+        r.runAll()
+        r.file.writeError = IllegalStateException("secret words")
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        r.runAll() // must not throw
+        assertEquals(1, r.file.writes)
+        assertTrue(r.log.any { it.startsWith("TIMELINE write failed") })
+        assertFalse(r.log.any { it.contains("secret") })
+        // Not stuck: the next add schedules another write, which succeeds.
+        r.file.writeError = null
+        r.store.add(clipTextEntry("PC", "abcd", at = now))
+        assertEquals(1, r.later.size)
+        r.runAll()
+        assertEquals(2, decode(r.file.text!!).size)
+    }
+
+    @Test fun flush_now_writes_a_queued_write_at_once_and_only_once() {
+        val r = Rig(FakeFile())
+        r.runAll()
+        r.store.flushNow()
+        assertEquals(0, r.file.writes)
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        r.store.flushNow()
+        assertEquals(1, r.file.writes)
+        r.runAll() // the delayed write finds nothing left to do
+        assertEquals(1, r.file.writes)
+    }
+
+    @Test fun unknown_kind_on_disk_is_replaced_without_crashing() {
+        val r = Rig(FakeFile("{\"v\":1,\"e\":[{\"k\":\"Z\",\"d\":\"c\",\"peer\":\"p\",\"at\":1}]}".toByteArray()))
+        r.runAll()
+        assertEquals(emptyList<TlEntry>(), r.store.entries.value)
+        assertNull("replaced, as on the PC", r.file.bytes)
+        assertTrue(r.log.any { it.startsWith("TIMELINE unreadable") })
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        r.runAll()
+        assertEquals(1, decode(r.file.text!!).size)
+    }
+
+    @Test fun a_read_error_keeps_the_file_for_the_session() {
+        val f = FakeFile(onDisk.toByteArray()).apply { readError = java.io.IOException("busy") }
+        val r = Rig(f)
+        r.runAll()
+        r.store.add(clipTextEntry("PC", "abc", at = now))
+        r.runAll()
+        assertEquals(1, r.store.entries.value.size)
+        assertEquals(onDisk, f.text)
+        assertEquals(0, f.writes)
+    }
 }
