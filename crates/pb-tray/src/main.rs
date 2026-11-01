@@ -75,6 +75,9 @@ mod share;
 #[cfg(windows)]
 mod status;
 #[cfg(windows)]
+#[allow(dead_code)] // used from Task 8 (the main window)
+mod titlebar;
+#[cfg(windows)]
 mod toast;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod toast_images;
