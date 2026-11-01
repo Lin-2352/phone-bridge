@@ -6,7 +6,6 @@
 //! the same sealing the identity uses. Rewrites are atomic and at most once a
 //! second, plus on exit. `encode` / `parse` / `prune` / `summary` are pure.
 #![allow(unsafe_code)] // only `replace`'s MoveFileExW, below.
-#![allow(dead_code)] // summary and entries are read by the Home and Timeline pages (Tasks 9-10)
 
 use std::{
     io,

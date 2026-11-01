@@ -4,7 +4,7 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use pb_platform_win::clipboard::{self, ClipText};
@@ -84,6 +84,9 @@ const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
 static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_window::Action>> =
     Mutex::new(VecDeque::new());
+/// Open / Show in folder from the Timeline, queued for the tray window.
+const WM_PAGE_FILE: u32 = WM_APP + 8;
+static PAGE_FILES: Mutex<VecDeque<crate::pages::Action>> = Mutex::new(VecDeque::new());
 static MY_FINGERPRINT: Mutex<String> = Mutex::new(String::new());
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
@@ -377,7 +380,158 @@ fn page_action(a: crate::pages::Action) {
         Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
         Action::Stop(SessionKind::Camera) => post_command(raw, ID_CAMERA_STOP),
         Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
+        // The tray's own Remove: it asks first, then unpairs.
+        Action::Unpair(i) => post_command(raw, ID_UNPAIR_BASE + i),
+        // A path does not fit in a command id: queue it, then post.
+        a @ (Action::OpenFile(_) | Action::ShowInFolder(_)) => {
+            if let Ok(mut q) = PAGE_FILES.lock() {
+                q.push_back(a);
+            }
+            // SAFETY: posting to our own message window.
+            let _ = unsafe {
+                PostMessageW(
+                    Some(HWND(raw as *mut _)),
+                    WM_PAGE_FILE,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            };
+        }
     }
+}
+
+/// Open or Show in folder on a Timeline file, if it is still there; a
+/// toast says so when it is not (it may have gone since the row was drawn).
+fn page_file(hwnd: HWND, a: crate::pages::Action) {
+    use crate::pages::{timeline::still_there, Action};
+    use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let (Action::OpenFile(path) | Action::ShowInFolder(path)) = &a else {
+        return;
+    };
+    if let Err(msg) = still_there(path) {
+        balloon(hwnd, "Relay", msg);
+        return;
+    }
+    // Explorer gets `/select,"<path>"` as its parameters.
+    let (file, params) = match &a {
+        Action::OpenFile(_) => (wide(path), None),
+        _ => match select_arg(path) {
+            Some(p) => (wide("explorer.exe"), Some(wide(&p))),
+            None => return,
+        },
+    };
+    let params = params
+        .as_ref()
+        .map_or(PCWSTR::null(), |p| PCWSTR(p.as_ptr()));
+    // SAFETY: valid NUL-terminated strings for the duration of the call.
+    unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(file.as_ptr()),
+            params,
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// Explorer's `/select,"<path>"`. Windows paths cannot hold a quote, so one
+/// that does is refused rather than allowed to end the quoting early.
+fn select_arg(path: &str) -> Option<String> {
+    (!path.contains('"')).then(|| format!("/select,\"{path}\""))
+}
+
+/// This PC's offset from UTC now (DST included), in seconds.
+fn local_offset_s() -> i64 {
+    use windows::Win32::{Foundation::FILETIME, Storage::FileSystem::FileTimeToLocalFileTime};
+    // 100 ns ticks since 1601.
+    let utc = (crate::timeline::now_unix() + 11_644_473_600) * 10_000_000;
+    let ft = FILETIME {
+        dwLowDateTime: utc as u32,
+        dwHighDateTime: (utc >> 32) as u32,
+    };
+    let mut local = FILETIME::default();
+    // SAFETY: both point to live FILETIMEs for the duration of the call.
+    if unsafe { FileTimeToLocalFileTime(&ft, &mut local) }.is_err() {
+        return 0;
+    }
+    let local = (u64::from(local.dwHighDateTime) << 32) | u64::from(local.dwLowDateTime);
+    (local as i64 - utc as i64) / 10_000_000
+}
+
+/// The paired devices as (name, short fingerprint, reinstalled or reset),
+/// in peer order (Remove names one by its index).
+fn paired_devices(st: &State) -> Vec<(String, String, bool)> {
+    st.peers
+        .lock()
+        .map(|g| {
+            g.iter()
+                .map(|(id, n)| {
+                    (
+                        n.clone(),
+                        id.fingerprint()[..9].to_owned(),
+                        crate::core::is_changed(id),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What the Timeline model was built from: the entries, history on, the
+/// local day, the time zone and which entries' files are missing.
+type TimelineKey = (Vec<crate::timeline::Entry>, bool, i64, i64, Vec<bool>);
+type TimelineCache = Option<(TimelineKey, Arc<crate::pages::timeline::TimelineModel>)>;
+/// The last Timeline model: rebuilt only when its inputs change, so the
+/// main window's once-a-second model check is cheap.
+static TIMELINE_MODEL: Mutex<TimelineCache> = Mutex::new(None);
+
+fn timeline_model(
+    entries: Vec<crate::timeline::Entry>,
+    history_on: bool,
+    now: u64,
+) -> Arc<crate::pages::timeline::TimelineModel> {
+    use crate::pages::timeline::{build, file_state, FileState};
+    let tz = local_offset_s();
+    // Files are checked only while the Timeline is on screen (a save
+    // folder on a network share can be slow); switching to it refreshes.
+    let check = crate::main_window::shown() == Some(crate::main_window::Page::Timeline);
+    let missing: Vec<bool> = entries
+        .iter()
+        .map(|e| {
+            check
+                && e.kind == crate::timeline::Kind::File
+                && e.path
+                    .as_deref()
+                    .is_some_and(|p| file_state(p) == FileState::Missing)
+        })
+        .collect();
+    let today = (now as i64 + tz).div_euclid(86_400);
+    let key = (entries, history_on, today, tz, missing);
+    let mut cache = TIMELINE_MODEL.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((k, m)) = cache.as_ref() {
+        if *k == key {
+            return m.clone();
+        }
+    }
+    let (entries, _, _, _, missing) = &key;
+    let gone: std::collections::HashSet<&str> = entries
+        .iter()
+        .zip(missing)
+        .filter(|(_, &m)| m)
+        .filter_map(|(e, _)| e.path.as_deref())
+        .collect();
+    let state = |p: &str| {
+        if gone.contains(p) {
+            FileState::Missing
+        } else {
+            FileState::Present
+        }
+    };
+    let m = Arc::new(build(entries, history_on, now, tz, state));
+    *cache = Some((key, m.clone()));
+    m
 }
 
 /// Everything the main window's pages show. Each lock is taken and
@@ -406,8 +560,10 @@ fn page_model(st: &State) -> crate::pages::Model {
             .collect();
         (notes, ns.locked)
     };
-    let mut recent = Vec::new();
-    crate::timeline::with(|t| recent = t.entries().iter().take(home::RECENT).cloned().collect());
+    let mut entries = Vec::new();
+    crate::timeline::with(|t| entries = t.entries().to_vec());
+    let recent = &entries[..entries.len().min(home::RECENT)];
+    let now = crate::timeline::now_unix();
     let phone = phone.map(|(id, name)| {
         let c = crate::core::contact(&id);
         home::PhoneIn {
@@ -430,11 +586,15 @@ fn page_model(st: &State) -> crate::pages::Model {
             notes: &notes,
             settings: &settings,
             locked,
-            recent: &recent,
+            recent,
             // Whole minutes: the labels change no faster, and an unchanged
             // model is not repainted.
-            now: crate::timeline::now_unix() / 60 * 60,
+            now: now / 60 * 60,
         }),
+        timeline: timeline_model(entries, settings.keep_history, now),
+        devices: crate::pages::devices::DevicesModel {
+            devices: paired_devices(st),
+        },
     }
 }
 
@@ -1448,21 +1608,7 @@ fn settings_model(st: &State) -> crate::settings_window::Model {
         sendto: sendto_enabled(),
         startup: startup_enabled(),
         control,
-        devices: st
-            .peers
-            .lock()
-            .map(|g| {
-                g.iter()
-                    .map(|(id, n)| {
-                        (
-                            n.clone(),
-                            id.fingerprint()[..9].to_owned(),
-                            crate::core::is_changed(id),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        devices: paired_devices(st),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
         notify: n.notify_enabled,
         notify_lock: n.notify_lock_screen,
@@ -2115,6 +2261,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
+        WM_PAGE_FILE => {
+            let drained: Vec<_> = PAGE_FILES
+                .lock()
+                .map(|mut q| q.drain(..).collect())
+                .unwrap_or_default();
+            for a in drained {
+                page_file(hwnd, a);
+            }
+            // A file found missing on click shows so on its row now.
+            crate::main_window::refresh();
+            LRESULT(0)
+        }
         WM_SETTINGS_ACTION => {
             let drained: Vec<_> = SETTINGS_ACTIONS
                 .lock()
@@ -2320,5 +2478,27 @@ pub fn message_loop() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn show_in_folder_quotes_the_path_and_refuses_a_quote() {
+        assert_eq!(
+            select_arg(r"C:\Users\Me\Downloads\a b,c.pdf").as_deref(),
+            Some(r#"/select,"C:\Users\Me\Downloads\a b,c.pdf""#)
+        );
+        // A quote would end the quoting early: never passed on.
+        assert_eq!(select_arg(r#"C:\x" /root,C:\Windows"#), None);
+    }
+
+    #[test]
+    fn local_offset_is_a_real_time_zone() {
+        let tz = local_offset_s();
+        assert!((-14 * 3600..=14 * 3600).contains(&tz), "{tz}");
+        assert_eq!(tz % 900, 0, "zones are whole quarter hours: {tz}");
     }
 }
