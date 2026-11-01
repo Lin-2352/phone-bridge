@@ -384,9 +384,11 @@ fn page_model(st: &State) -> crate::pages::Model {
     use crate::pages::home;
     let phone = st.peers.lock().ok().and_then(|g| g.first().cloned());
     let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
+    // Streaming only: a camera request still waiting for the phone is not
+    // contact (the Camera tile cancels it, as on the flyout).
     let (screen, camera, control) = (
         crate::screen_window::is_open(),
-        crate::camera::is_running() || crate::camera::pending(),
+        crate::camera::is_running(),
         crate::control::is_active(),
     );
     if let Some((id, _)) = &phone {
@@ -1132,8 +1134,15 @@ fn show_phone_notification(
                     otp: n.otp.clone(),
                 },
             );
-            // Home presents it again under the settings of the moment.
-            ns.mirror.set_note(&tag, n.clone());
+            // Home presents it again under the settings of the moment; it
+            // needs the text only, not the picture bytes.
+            ns.mirror.set_note(
+                &tag,
+                pb_protocol::control::Notification {
+                    picture: Vec::new(),
+                    ..n.clone()
+                },
+            );
             ns.meta
                 .insert(tag, (group, reply_index, picture.clone()))
                 .and_then(|(_, _, old)| old)
