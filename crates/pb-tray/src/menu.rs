@@ -27,7 +27,7 @@ use windows::{
 
 use crate::{
     d2d::{Backdrop, Surface},
-    fluent::{self, px, rectf, round_rect, text, Align, Canvas, Font, RectF},
+    fluent::{self, from_rect, px, rectf, round_rect, text, Align, Canvas, Font},
     tokens::RADIUS,
 };
 
@@ -100,10 +100,6 @@ fn height(s: f32, items: &[Item]) -> i32 {
     rows(s, items).last().map_or(0, |r| r.bottom) + px(s, PAD)
 }
 
-fn rf(r: RECT) -> RectF {
-    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
-}
-
 fn paint(hwnd: HWND) {
     // Copied out so the lock is not held while drawing.
     let snap = CURRENT.lock().ok().and_then(|g| {
@@ -131,7 +127,7 @@ fn paint(hwnd: HWND) {
 fn draw(c: &mut Canvas, items: &[Item], hover: Option<usize>) {
     let (s, p) = (c.s, c.p);
     for (i, (item, r)) in items.iter().zip(rows(s, items)).enumerate() {
-        let r = rf(r);
+        let r = from_rect(r);
         if item.id == 0 {
             let line = rectf(
                 r.left + 8.0 * s,

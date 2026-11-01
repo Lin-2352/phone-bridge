@@ -14,7 +14,7 @@ use std::{
 };
 
 use windows::{
-    core::{w, PCWSTR},
+    core::{w, Interface, PCWSTR},
     Win32::{
         Foundation::{COLORREF, HWND, RECT},
         Graphics::{
@@ -26,13 +26,14 @@ use windows::{
                 D2D1_TEXT_ANTIALIAS_MODE_DEFAULT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
             },
             DirectWrite::{
-                IDWriteFontCollection, IDWriteTextFormat, DWRITE_FONT_STRETCH_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_MEASURING_MODE_NATURAL,
-                DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
-                DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-                DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-                DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
-                DWRITE_WORD_WRAPPING_WRAP,
+                IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout1,
+                DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
+                DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT,
+                DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+                DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
+                DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
             },
             Dwm::{
                 DwmSetWindowAttribute, DWMSBT_MAINWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
@@ -214,6 +215,11 @@ pub fn rectf(left: f32, top: f32, right: f32, bottom: f32) -> RectF {
     }
 }
 
+/// A pixel-snapped GDI-style `RECT` (as the pure layouts make) as a `RectF`.
+pub fn from_rect(r: RECT) -> RectF {
+    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
+}
+
 /// One paint pass: the window's device context, its DPI scale and the
 /// palette of the current theme.
 pub struct Canvas<'a> {
@@ -372,6 +378,80 @@ pub fn text(c: &Canvas, font: Font, s: &str, r: RectF, rgb: u32, align: Align) {
             DWRITE_MEASURING_MODE_NATURAL,
         );
     }
+}
+
+/// One line of `s` in `r` like `text`, with `trailing` extra pixels after
+/// every character (letter spacing, e.g. for a code to compare).
+pub fn text_spaced(
+    c: &Canvas,
+    font: Font,
+    s: &str,
+    r: RectF,
+    rgb: u32,
+    align: Align,
+    trailing: f32,
+) {
+    if s.is_empty() || r.right <= r.left || r.bottom <= r.top {
+        return;
+    }
+    let Some(f) = format(font, c.s, align) else {
+        return;
+    };
+    let (_, dwrite) = d2d::factories();
+    let chars = utf16(s);
+    // SAFETY: a text layout made here and drawn inside the surface's
+    // BeginDraw/EndDraw.
+    unsafe {
+        let Ok(layout) = dwrite.CreateTextLayout(&chars, &f, r.right - r.left, r.bottom - r.top)
+        else {
+            return;
+        };
+        if let Ok(l1) = layout.cast::<IDWriteTextLayout1>() {
+            let all = DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: chars.len() as u32,
+            };
+            let _ = l1.SetCharacterSpacing(0.0, trailing, 0.0, all);
+        }
+        let Ok(brush) = c.dc.CreateSolidColorBrush(&color(rgb, 1.0), None) else {
+            return;
+        };
+        c.dc.DrawTextLayout(
+            windows_numerics::Vector2 {
+                X: r.left,
+                Y: r.top,
+            },
+            &layout,
+            &brush,
+            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_CLIP,
+        );
+    }
+}
+
+/// The width `s` takes laid out with `trailing` letter spacing.
+#[cfg(test)]
+fn spaced_width(font: Font, s: f32, t: &str, trailing: f32) -> f32 {
+    let Some(f) = format(font, s, Align::Left) else {
+        return 0.0;
+    };
+    let (_, dwrite) = d2d::factories();
+    let chars = utf16(t);
+    let mut m = DWRITE_TEXT_METRICS::default();
+    // SAFETY: a text layout made and measured here.
+    unsafe {
+        let Ok(layout) = dwrite.CreateTextLayout(&chars, &f, 10_000.0, 1_000.0) else {
+            return 0.0;
+        };
+        if let Ok(l1) = layout.cast::<IDWriteTextLayout1>() {
+            let all = DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: chars.len() as u32,
+            };
+            let _ = l1.SetCharacterSpacing(0.0, trailing, 0.0, all);
+        }
+        let _ = layout.GetMetrics(&mut m);
+    }
+    m.widthIncludingTrailingWhitespace
 }
 
 /// The word-wrapping, top-aligned format for `font` at scale `s`.
@@ -1130,6 +1210,44 @@ mod tests {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn letter_spacing_widens_the_code() {
+        let hwnd = crate::d2d::test_window();
+        let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        let plain = spaced_width(Font::Code, 1.5, "628 183", 0.0);
+        let spaced = spaced_width(Font::Code, 1.5, "628 183", 6.0);
+        // Seven characters, 6 px after each.
+        assert!((spaced - plain - 42.0).abs() < 1.0, "{plain} -> {spaced}");
+        surface
+            .draw(|dc| {
+                let c = Canvas {
+                    dc,
+                    s: 1.5,
+                    p: palette(),
+                };
+                let r = rectf(0.0, 0.0, 200.0, 100.0);
+                text_spaced(&c, Font::Code, "628 183", r, c.p.text, Align::Center, 6.0);
+            })
+            .expect("draw");
+        drop(surface);
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+        }
+    }
+
+    #[test]
+    fn a_layout_rect_converts_edge_for_edge() {
+        let r = from_rect(RECT {
+            left: 1,
+            top: 2,
+            right: 30,
+            bottom: 40,
+        });
+        assert_eq!((r.left, r.top, r.right, r.bottom), (1.0, 2.0, 30.0, 40.0));
     }
 
     #[test]

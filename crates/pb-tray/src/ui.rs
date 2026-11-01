@@ -401,17 +401,11 @@ fn minute_now() -> u64 {
     crate::timeline::now_unix() / 60 * 60
 }
 
-/// Keeps an open flyout's header in step with the phone.
-fn refresh_flyout(st: &State) {
-    if crate::flyout::is_open() {
-        let (_, phone) = flyout_phone(st);
-        crate::flyout::update_phone(phone, minute_now());
-    }
-}
-
-fn open_flyout(hwnd: HWND, st: &State) {
+/// Everything the flyout shows, from one look at the peers, sessions,
+/// clipboard setting and last activity.
+fn flyout_model(st: &State) -> crate::flyout::Model {
     let (peer, phone) = flyout_phone(st);
-    let model = crate::flyout::Model {
+    crate::flyout::Model {
         peer,
         phone,
         now: minute_now(),
@@ -424,7 +418,19 @@ fn open_flyout(hwnd: HWND, st: &State) {
         camera_on: crate::camera::is_running(),
         camera_fps: crate::camera::fps(),
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
-    };
+    }
+}
+
+/// Keeps an open flyout (header, tiles, drop zone, footer) in step with
+/// the tray: a phone paired or removed, a session started or ended.
+fn refresh_flyout(st: &State) {
+    if crate::flyout::is_open() {
+        crate::flyout::update(flyout_model(st));
+    }
+}
+
+fn open_flyout(hwnd: HWND, st: &State) {
+    let model = flyout_model(st);
     let raw = hwnd.0 as isize;
     let cmds = st.cmds.clone();
     // Runs on the UI thread from the flyout's window procedure: only post

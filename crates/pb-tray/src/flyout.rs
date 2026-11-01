@@ -22,6 +22,7 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE},
             Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
             WindowsAndMessaging::{
@@ -39,7 +40,10 @@ use windows::{
 use crate::{
     d2d::{self, Backdrop, Surface},
     ease,
-    fluent::{self, glyph, px, rectf, round_rect, text, text_wrapped, Align, Canvas, Font, RectF},
+    fluent::{
+        self, from_rect, glyph, px, rectf, round_rect, text, text_wrapped, Align, Canvas, Font,
+        RectF,
+    },
     flyout_tiles::{release_target, status_line, tiles, TileKind},
     pages::home::{self, PhoneCard},
     tokens::RADIUS,
@@ -62,8 +66,9 @@ const MICA_ALPHA: f32 = 0.6;
 const CAMERA: char = '\u{E722}';
 const CHEVRON: char = '\u{E76C}';
 
-/// What the flyout shows; filled in by the UI before opening.
-#[derive(Clone, Default)]
+/// What the flyout shows; filled in by the UI before opening and again
+/// while it is open (`update`).
+#[derive(Clone, Default, PartialEq)]
 pub struct Model {
     pub peer: Option<String>,
     /// The paired phone as Home's hero card shows it (`home::phone_card`).
@@ -258,10 +263,6 @@ fn layout(s: f32) -> Layout {
     }
 }
 
-fn rf(r: RECT) -> RectF {
-    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
-}
-
 /// What `paint` needs, copied out of the state.
 struct Snapshot {
     model: Model,
@@ -318,7 +319,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     let (small, big) = (RADIUS[0] * s, RADIUS[1] * s);
 
     // Header: the phone as Home's hero card shows it, settings and close.
-    let badge = rf(l.badge);
+    let badge = from_rect(l.badge);
     let (title, sub, sub_rgb, tint) = match &m.phone {
         Some(card) => {
             let tint = if card.connected { p.accent } else { p.text2 };
@@ -342,7 +343,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     let half = (badge.right - badge.left) / 2.0;
     round_rect(c, &badge, Some((tint, 0.14)), None, half, false);
     fluent::icon_sized(c, Font::IconLarge, glyph::PHONE, badge, tint);
-    let h = rf(l.header);
+    let h = from_rect(l.header);
     let tx = badge.right + 12.0 * s;
     let mid = (h.top + h.bottom) / 2.0;
     text(
@@ -365,13 +366,13 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         (l.settings, glyph::SETTINGS, Hit::Settings),
         (l.close, glyph::CLOSE, Hit::Close),
     ] {
-        let r = rf(r);
+        let r = from_rect(r);
         states(c, &r, hov(hit), prs(hit), small, (p.hover, p.stroke));
         fluent::icon(c, g, r, p.text2);
     }
 
     // Drop zone: icon and hint on one line.
-    let drop = rf(l.drop);
+    let drop = from_rect(l.drop);
     round_rect(c, &drop, Some((p.card, a)), None, big, false);
     states(
         c,
@@ -389,10 +390,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         drop.bottom,
     );
     fluent::icon_sized(c, Font::IconLarge, glyph::UPLOAD, ic, p.text2);
-    let label = match &m.peer {
-        Some(n) => format!("Drop files here to send to {n}"),
-        None => "Pair a device to send files".to_owned(),
-    };
+    let label = drop_label(m);
     let lr = rectf(
         ic.right + 8.0 * s,
         drop.top,
@@ -407,16 +405,16 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         .iter()
         .zip(["Camera & Screen", "Connection", "Files"])
     {
-        text(c, Font::Caption, cap, rf(*r), p.text2, Align::Left);
+        text(c, Font::Caption, cap, from_rect(*r), p.text2, Align::Left);
     }
     for r in &l.dividers {
-        round_rect(c, &rf(*r), Some((p.stroke, 1.0)), None, 0.0, false);
+        round_rect(c, &from_rect(*r), Some((p.stroke, 1.0)), None, 0.0, false);
     }
 
     // Tiles.
     for t in tiles(m) {
         let hit = Hit::Tile(t.kind);
-        let r = rf(l.tiles[tile_index(t.kind)]);
+        let r = from_rect(l.tiles[tile_index(t.kind)]);
         let fg = if !t.enabled {
             round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
             mix(p.text, p.card, 0.6)
@@ -447,7 +445,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         if t.kind == TileKind::Camera {
             // The camera status window stays reachable even while the
             // tile itself is dimmed.
-            let ci = rf(l.camera_info);
+            let ci = from_rect(l.camera_info);
             let over = if t.on { p.on_accent } else { p.stroke };
             let k = 0.2 * hov(Hit::CameraInfo) + 0.2 * prs(Hit::CameraInfo);
             if k > 0.0 {
@@ -470,12 +468,12 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         c,
         Font::Caption,
         &status_line(m, STATUS_CHARS),
-        rf(l.status),
+        from_rect(l.status),
         p.text2,
         Align::Left,
     );
-    let o = rf(l.open_relay);
-    round_rect(c, &o, Some((p.card, 1.0)), Some(p.stroke), small, false);
+    let o = from_rect(l.open_relay);
+    round_rect(c, &o, Some((p.card, a)), Some(p.stroke), small, false);
     states(
         c,
         &o,
@@ -485,6 +483,14 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         (p.hover, p.stroke),
     );
     text(c, Font::Body, "Open Relay", o, p.text, Align::Center);
+}
+
+/// The drop zone's hint.
+fn drop_label(m: &Model) -> String {
+    match &m.peer {
+        Some(n) => format!("Drop files here to send to {n}"),
+        None => "Pair a device to send files".to_owned(),
+    }
 }
 
 /// Blend two 0xRRGGBB colours: `t` = 0 gives `a`, 1 gives `b`.
@@ -616,18 +622,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_DPICHANGED => {
             // SAFETY: lParam is the suggested RECT Windows passes for this message.
             let r = unsafe { *(lparam.0 as *const RECT) };
-            // SAFETY: moves our own window to the rect Windows suggested.
-            let _ = unsafe {
-                SetWindowPos(
-                    hwnd,
-                    None,
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE,
-                )
+            let (w, h) = (r.right - r.left, r.bottom - r.top);
+            // Still fully on the work area at the new size.
+            let (x, y) = match work_area(r.left + w / 2, r.top + h / 2) {
+                Some(wa) => clamp_to(wa, r.left, r.top, w, h),
+                None => (r.left, r.top),
             };
+            // SAFETY: moves our own window to the (clamped) suggested rect.
+            let _ = unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) };
             repaint(hwnd);
             LRESULT(0)
         }
@@ -902,33 +904,20 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
     }
     // SAFETY: positioning and showing our own window on the UI thread.
     unsafe {
-        let s = fluent::scale(hwnd);
-        let (w, h) = (px(s, W), px(s, H));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
+        let last = LAST_POS.lock().ok().and_then(|p| *p);
+        // Sized at the scale of the monitor it opens on (the tray icon's,
+        // or where it was dragged), not the one Windows made it on.
+        let anchor = last.map_or(pt, |(x, y)| POINT { x, y });
+        let s = monitor_scale(anchor).unwrap_or_else(|| fluent::scale(hwnd));
+        let (w, h) = (px(s, W), px(s, H));
         // Above-left of the tray icon, like Windows' own flyouts, unless the
         // user dragged it somewhere this session.
-        let (mut x, mut y) = LAST_POS
-            .lock()
-            .ok()
-            .and_then(|p| *p)
-            .unwrap_or((pt.x - w + px(s, 24), pt.y - h - px(s, 16)));
+        let (mut x, mut y) = last.unwrap_or((pt.x - w + px(s, 24), pt.y - h - px(s, 16)));
         // Keep it fully on the monitor's work area (taskbar excluded).
-        let mon = MonitorFromPoint(
-            POINT {
-                x: x + w / 2,
-                y: y + h / 2,
-            },
-            MONITOR_DEFAULTTONEAREST,
-        );
-        let mut mi = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if GetMonitorInfoW(mon, &mut mi).as_bool() {
-            let wa = mi.rcWork;
-            x = x.clamp(wa.left, (wa.right - w).max(wa.left));
-            y = y.clamp(wa.top, (wa.bottom - h).max(wa.top));
+        if let Some(wa) = work_area(x + w / 2, y + h / 2) {
+            (x, y) = clamp_to(wa, x, y, w, h);
         }
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
         fluent::frame(hwnd, false);
@@ -939,22 +928,62 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
     }
 }
 
+/// The top-left that keeps a `w` x `h` window fully inside `work` (or at
+/// its top-left corner when it is bigger than the work area).
+fn clamp_to(work: RECT, x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
+    (
+        x.clamp(work.left, (work.right - w).max(work.left)),
+        y.clamp(work.top, (work.bottom - h).max(work.top)),
+    )
+}
+
+/// The work area (taskbar excluded) of the monitor nearest (`x`, `y`).
+fn work_area(x: i32, y: i32) -> Option<RECT> {
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: plain monitor queries into a local struct.
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        GetMonitorInfoW(mon, &mut mi).as_bool().then_some(mi.rcWork)
+    }
+}
+
+/// The DPI scale of the monitor nearest `pt`.
+fn monitor_scale(pt: POINT) -> Option<f32> {
+    let (mut dx, mut dy) = (0u32, 0u32);
+    // SAFETY: plain monitor queries into locals.
+    unsafe {
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy).ok()?;
+    }
+    Some(dx.max(96) as f32 / 96.0)
+}
+
 pub fn is_open() -> bool {
     CURRENT.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
-/// The phone's status changed while the flyout is open: redraw the header,
-/// only when it really changed. UI thread only.
-pub fn update_phone(phone: Option<PhoneCard>, now: u64) {
+/// Takes `new` as the open flyout's model; true if anything shown changed.
+fn apply(model: &mut Model, new: Model) -> bool {
+    let changed = *model != new;
+    *model = new;
+    changed
+}
+
+/// The phone, the sessions or the clipboard changed while the flyout is
+/// open: take the fresh model (header, tiles, drop zone and footer all
+/// from the same look) and redraw, only when it really changed. UI thread
+/// only.
+pub fn update(model: Model) {
     let changed = CURRENT.lock().ok().and_then(|mut g| {
         let st = g.as_mut()?;
-        let changed = st.model.phone != phone || st.model.now != now;
-        st.model.phone = phone;
-        st.model.now = now;
-        changed.then_some(st.hwnd)
+        apply(&mut st.model, model).then_some(st.hwnd)
     });
     if let Some(h) = changed {
-        repaint(HWND(h as *mut _));
+        // A tile that went dim must not stay highlighted.
+        animate(HWND(h as *mut _));
     }
 }
 
@@ -1092,5 +1121,59 @@ mod tests {
         drop(surface);
         // SAFETY: our own test window, made above on this thread.
         let _ = unsafe { DestroyWindow(hwnd) };
+    }
+
+    fn paired(name: &str) -> Model {
+        Model {
+            peer: Some(name.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unpairing_while_open_dims_the_drop_zone_and_tiles() {
+        let mut m = paired("RMX3561");
+        assert!(clickable(&m, Hit::Drop));
+        assert!(drop_label(&m).contains("RMX3561"));
+        assert!(apply(&mut m, Model::default()));
+        assert!(!clickable(&m, Hit::Drop));
+        assert!(!clickable(&m, Hit::Tile(TileKind::SendFile)));
+        assert_eq!(drop_label(&m), "Pair a device to send files");
+        assert!(!status_line(&m, STATUS_CHARS).contains("RMX3561"));
+        // The same model again changes nothing (no repaint).
+        assert!(!apply(&mut m, Model::default()));
+    }
+
+    #[test]
+    fn pairing_while_open_enables_the_drop_zone_and_tiles() {
+        let mut m = Model::default();
+        assert!(!clickable(&m, Hit::Tile(TileKind::Screen)));
+        assert!(apply(&mut m, paired("Pixel 8")));
+        assert!(clickable(&m, Hit::Drop));
+        assert!(clickable(&m, Hit::Tile(TileKind::Screen)));
+        assert!(drop_label(&m).contains("Pixel 8"));
+        let pair = tiles(&m)
+            .into_iter()
+            .find(|t| t.kind == TileKind::Pair)
+            .unwrap();
+        assert_eq!(pair.label, "Control phone");
+    }
+
+    #[test]
+    fn the_flyout_is_clamped_into_the_work_area() {
+        let wa = RECT {
+            left: 1920,
+            top: 0,
+            right: 3840,
+            bottom: 1040,
+        };
+        // Past the bottom-right (a suggested rect after a DPI change).
+        assert_eq!(clamp_to(wa, 3700, 900, 540, 618), (3300, 422));
+        // Left of and above the monitor.
+        assert_eq!(clamp_to(wa, 1000, -50, 540, 618), (1920, 0));
+        // Already inside: unchanged.
+        assert_eq!(clamp_to(wa, 2000, 100, 540, 618), (2000, 100));
+        // Bigger than the work area: pinned to its top-left.
+        assert_eq!(clamp_to(wa, 2500, 500, 4000, 2000), (1920, 0));
     }
 }

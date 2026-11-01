@@ -22,16 +22,17 @@ use windows::{
         Graphics::Gdi::{InvalidateRect, ScreenToClient, ValidateRect},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            HiDpi::AdjustWindowRectExForDpi,
             Input::KeyboardAndMouse::{
                 GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE, VK_RETURN, VK_SHIFT,
                 VK_SPACE, VK_TAB,
             },
             WindowsAndMessaging::{
-                AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, KillTimer,
-                LoadCursorW, LoadIconW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-                SetTimer, SetWindowPos, ShowWindow, TranslateMessage, HWND_TOPMOST, IDC_ARROW, MSG,
-                SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SW_SHOW, WM_CLOSE, WM_DESTROY,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+                GetMessageW, GetSystemMetrics, KillTimer, LoadCursorW, LoadIconW, PostQuitMessage,
+                RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+                TranslateMessage, HWND_TOPMOST, IDC_ARROW, MSG, SM_CXSCREEN, SM_CYSCREEN,
+                SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
                 WM_ERASEBKGND, WM_GETDLGCODE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT,
                 WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOPMOST,
                 WS_OVERLAPPED, WS_SYSMENU,
@@ -43,7 +44,7 @@ use windows::{
 use crate::{
     d2d::{Backdrop, Surface},
     ease,
-    fluent::{self, px, rectf, round_rect, text, text_wrapped, Align, Canvas, Font, RectF},
+    fluent::{self, from_rect, px, rectf, round_rect, text, text_wrapped, Align, Canvas, Font},
     tokens::RADIUS,
 };
 
@@ -269,6 +270,14 @@ fn hit(l: &Layout, x: i32, y: i32) -> Option<Button> {
     }
 }
 
+/// Where a dialog of outer size `size` goes after a DPI change: centred on
+/// the rect Windows suggests (x, y, width, height).
+fn dpi_rect(suggested: RECT, size: (i32, i32)) -> (i32, i32, i32, i32) {
+    let cx = (suggested.left + suggested.right) / 2;
+    let cy = (suggested.top + suggested.bottom) / 2;
+    (cx - size.0 / 2, cy - size.1 / 2, size.0, size.1)
+}
+
 // ---- window ----
 
 struct State {
@@ -324,10 +333,6 @@ fn measure(s: f32, d: &Dialog) -> Layout {
     )
 }
 
-fn rf(r: RECT) -> RectF {
-    rectf(r.left as f32, r.top as f32, r.right as f32, r.bottom as f32)
-}
-
 /// What one paint shows, copied out of the state.
 struct View<'a> {
     dialog: &'a Dialog,
@@ -340,10 +345,10 @@ struct View<'a> {
 fn paint_dialog(c: &mut Canvas, v: &View) {
     let (s, p) = (c.s, c.p);
     let (l, d) = (&v.layout, v.dialog);
-    text_wrapped(c, Font::Subtitle, &d.heading, rf(l.heading), p.text);
-    text_wrapped(c, Font::Body, &d.body, rf(l.body), p.text2);
+    text_wrapped(c, Font::Subtitle, &d.heading, from_rect(l.heading), p.text);
+    text_wrapped(c, Font::Body, &d.body, from_rect(l.body), p.text2);
     if let (Some(r), Some(code)) = (l.code, &d.code) {
-        let r = rf(r);
+        let r = from_rect(r);
         round_rect(
             c,
             &r,
@@ -352,11 +357,13 @@ fn paint_dialog(c: &mut Canvas, v: &View) {
             RADIUS[1] * s,
             false,
         );
-        text(c, Font::Code, code, r, p.text, Align::Center);
+        // Spaced like the old GDI card (4 px per character) so the eye can
+        // compare it digit by digit with the phone.
+        fluent::text_spaced(c, Font::Code, code, r, p.text, Align::Center, 4.0 * s);
     }
     let radius = RADIUS[0] * s;
     let button = |c: &mut Canvas, b: Button, r: RECT, label: &str, accent: bool| {
-        let r = rf(r);
+        let r = from_rect(r);
         let t = v.hover[idx(b)];
         let down = v.pressed == Some(b);
         let (fill, stroke, ink) = if accent {
@@ -420,6 +427,23 @@ fn draw(hwnd: HWND) {
         // SAFETY: our own window; nothing to draw with.
         let _ = unsafe { ValidateRect(Some(hwnd), None) };
     }
+}
+
+/// The window size for a client `WIDTH` x `client_h` at scale `s`, with
+/// the frame for that scale.
+fn frame_size(s: f32, client_h: i32) -> (i32, i32) {
+    let mut r = rect(0, 0, px(s, WIDTH), client_h);
+    // SAFETY: plain computation on a local rect.
+    let _ = unsafe {
+        AdjustWindowRectExForDpi(
+            &mut r,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            false,
+            WS_EX_APPWINDOW | WS_EX_TOPMOST,
+            (s * 96.0).round() as u32,
+        )
+    };
+    (r.right - r.left, r.bottom - r.top)
 }
 
 /// Deliver the answer (once) and close.
@@ -487,6 +511,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_GETDLGCODE => LRESULT(DLGC_WANTALLKEYS),
+        // Moved to a monitor with another scale: re-measure at the new
+        // scale and fit the window to it (centred on Windows' suggestion).
+        WM_DPICHANGED => {
+            // SAFETY: lParam is the suggested RECT Windows passes for this message.
+            let sug = unsafe { *(lparam.0 as *const RECT) };
+            let s = ((wparam.0 >> 16) & 0xffff).max(96) as f32 / 96.0;
+            let lay = STATE.with(|st| {
+                let mut st = st.borrow_mut();
+                let st = st.as_mut()?;
+                st.layout = measure(s, &st.dialog);
+                Some(st.layout)
+            });
+            if let Some(lay) = lay {
+                let (x, y, w, h) = dpi_rect(sug, frame_size(s, lay.height));
+                // SAFETY: moves our own window.
+                let _ =
+                    unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) };
+            }
+            // SAFETY: repaint our own window.
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+            LRESULT(0)
+        }
         WM_SETCURSOR => {
             let over = cursor_client(hwnd).and_then(|p| {
                 STATE.with(|st| st.borrow().as_ref().and_then(|s| hit(&s.layout, p.x, p.y)))
@@ -679,9 +725,7 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
                 outcome: Outcome::new(done),
             });
         });
-        let mut r = rect(0, 0, px(s, WIDTH), lay.height);
-        let _ = AdjustWindowRectEx(&mut r, style, false, ex);
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        let (w, h) = frame_size(s, lay.height);
         let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
         let _ = SetWindowPos(
             hwnd,
@@ -919,5 +963,21 @@ mod tests {
         drop(surface);
         // SAFETY: our own test window, made above on this thread.
         let _ = unsafe { DestroyWindow(hwnd) };
+    }
+
+    #[test]
+    fn after_a_dpi_change_the_dialog_stays_centred_on_the_suggestion() {
+        let sug = rect(100, 200, 700, 600);
+        let (x, y, w, h) = dpi_rect(sug, (800, 500));
+        assert_eq!((w, h), (800, 500));
+        assert_eq!((x + w / 2, y + h / 2), (400, 400));
+    }
+
+    #[test]
+    fn the_frame_grows_with_the_scale() {
+        let (w1, h1) = frame_size(1.0, 200);
+        let (w2, h2) = frame_size(2.0, 400);
+        assert!(w1 >= WIDTH && h1 > 200);
+        assert!(w2 >= 2 * WIDTH && h2 > 400 && h2 - 400 > h1 - 200);
     }
 }
