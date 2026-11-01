@@ -85,6 +85,10 @@ mod toast_xml;
 mod tokens;
 #[cfg(windows)]
 mod ui;
+#[cfg(windows)]
+// Used from Task 8 on (the pages).
+#[allow(dead_code)]
+mod widgets;
 
 #[cfg(not(windows))]
 fn main() {

@@ -240,6 +240,8 @@ pub enum Font {
     Title,
     Display,
     Icon,
+    /// 20 px glyphs: empty states and the nav rail.
+    IconLarge,
 }
 
 impl Font {
@@ -255,6 +257,7 @@ impl Font {
             Font::Title => (display, ty::TITLE, 600),
             Font::Display => (display, ty::DISPLAY, 600),
             Font::Icon => (w!("Segoe Fluent Icons"), 16.0, 400),
+            Font::IconLarge => (w!("Segoe Fluent Icons"), 20.0, 400),
         }
     }
 }
@@ -401,7 +404,12 @@ fn laid_out_width(c: &Canvas, font: Font, s: &str, r: RectF, align: Align) -> f3
 /// A Segoe Fluent Icons glyph centred in `r`.
 #[allow(dead_code)] // used from Task 4 on
 pub fn icon(c: &Canvas, g: char, r: RectF, rgb: u32) {
-    text(c, Font::Icon, &g.to_string(), r, rgb, Align::Center);
+    icon_sized(c, Font::Icon, g, r, rgb);
+}
+
+/// A glyph centred in `r` in `font` (`Font::Icon` or `Font::IconLarge`).
+pub fn icon_sized(c: &Canvas, font: Font, g: char, r: RectF, rgb: u32) {
+    text(c, font, &g.to_string(), r, rgb, Align::Center);
 }
 
 fn dash_style(s: f32) -> Option<ID2D1StrokeStyle> {
