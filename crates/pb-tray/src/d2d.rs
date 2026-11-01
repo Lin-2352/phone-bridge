@@ -356,7 +356,9 @@ impl Surface {
     /// the caller simply repaints.
     pub fn draw(&mut self, f: impl FnOnce(&ID2D1DeviceContext)) -> Result<(), String> {
         if self.gfx.is_none() {
-            return self.rebuild();
+            // Lost earlier (e.g. a failed resize): rebuild and still draw
+            // this frame, so WM_SIZE paints in the same message.
+            self.rebuild()?;
         }
         match self.frame(f) {
             Ok(()) => Ok(()),
