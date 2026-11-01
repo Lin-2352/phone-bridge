@@ -246,3 +246,28 @@ fn failed_write_logs_and_keeps_data() {
     assert!(msgs.lock().unwrap()[0].starts_with("TIMELINE write failed: "));
     assert_eq!(s.entries().len(), 1);
 }
+
+#[test]
+fn version_changes_with_the_entries_only() {
+    let d = tmpdir("version");
+    let mut s = Store::open(&d, Box::new(Plain));
+    let v0 = s.version();
+    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
+    let v1 = s.version();
+    assert_ne!(v1, v0, "add");
+    // Writing to disk does not change what is shown.
+    s.flush();
+    s.flush_if_due(Instant::now());
+    assert_eq!(s.version(), v1);
+    s.clear();
+    let v2 = s.version();
+    assert_ne!(v2, v1, "clear");
+    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
+    let v3 = s.version();
+    s.set_enabled(false);
+    assert_ne!(s.version(), v3, "history off clears");
+    // Off: adds are dropped, nothing changes.
+    let v4 = s.version();
+    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
+    assert_eq!(s.version(), v4);
+}

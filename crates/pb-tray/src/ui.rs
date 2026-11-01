@@ -84,9 +84,10 @@ const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
 static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_window::Action>> =
     Mutex::new(VecDeque::new());
-/// Open / Show in folder from the Timeline, queued for the tray window.
+/// A Timeline file action finished (toasts queued in `PAGE_FILES`), or a
+/// file's state changed: toast and repaint the main window.
 const WM_PAGE_FILE: u32 = WM_APP + 8;
-static PAGE_FILES: Mutex<VecDeque<crate::pages::Action>> = Mutex::new(VecDeque::new());
+static PAGE_FILES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 static MY_FINGERPRINT: Mutex<String> = Mutex::new(String::new());
 const WM_CLIPBOARDUPDATE: u32 = 0x031D;
 const NIN_BALLOONUSERCLICK: u32 = 0x0405;
@@ -382,58 +383,105 @@ fn page_action(a: crate::pages::Action) {
         Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
         // The tray's own Remove: it asks first, then unpairs.
         Action::Unpair(i) => post_command(raw, ID_UNPAIR_BASE + i),
-        // A path does not fit in a command id: queue it, then post.
-        a @ (Action::OpenFile(_) | Action::ShowInFolder(_)) => {
-            if let Ok(mut q) = PAGE_FILES.lock() {
-                q.push_back(a);
-            }
-            // SAFETY: posting to our own message window.
-            let _ = unsafe {
-                PostMessageW(
-                    Some(HWND(raw as *mut _)),
-                    WM_PAGE_FILE,
-                    WPARAM(0),
-                    LPARAM(0),
-                )
-            };
-        }
+        // On a worker: the check and the shell may wait on a slow share.
+        Action::OpenFile(path) => page_file(raw, path, true),
+        Action::ShowInFolder(path) => page_file(raw, path, false),
     }
 }
 
-/// Open or Show in folder on a Timeline file, if it is still there; a
-/// toast says so when it is not (it may have gone since the row was drawn).
-fn page_file(hwnd: HWND, a: crate::pages::Action) {
-    use crate::pages::{timeline::still_there, Action};
-    use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
-    let (Action::OpenFile(path) | Action::ShowInFolder(path)) = &a else {
-        return;
+/// Open or Show in folder on a Timeline file, on a worker thread so a slow
+/// or offline share never stalls the window. The file is checked again
+/// first (it may have gone since the row was drawn); a toast says when it
+/// is gone or the shell could not act.
+fn page_file(raw: isize, path: String, open: bool) {
+    use crate::pages::timeline::{file_state, files, FileState, MISSING};
+    std::thread::spawn(move || {
+        let st = file_state(&path);
+        // The row shows it now, and the next layout skips a re-check.
+        files::record(&path, st);
+        let toast = if st == FileState::Missing {
+            Some(MISSING.to_owned())
+        } else {
+            // SAFETY: COM for the shell on this fresh thread; paired below.
+            let com = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_APARTMENTTHREADED
+                        | windows::Win32::System::Com::COINIT_DISABLE_OLE1DDE,
+                )
+            };
+            let ok = if open {
+                shell_open(&path, None)
+            } else {
+                show_in_folder(&path)
+            };
+            if com.is_ok() {
+                // SAFETY: pairs the successful CoInitializeEx above.
+                unsafe { windows::Win32::System::Com::CoUninitialize() };
+            }
+            (!ok).then(|| failed_text(&path, open))
+        };
+        if let Some(t) = toast {
+            if let Ok(mut q) = PAGE_FILES.lock() {
+                q.push_back(t);
+            }
+            post_page_file(raw);
+        }
+    });
+}
+
+/// Wakes the tray window to show queued toasts and repaint the main window.
+fn post_page_file(raw: isize) {
+    // SAFETY: posting to our own message window.
+    let _ = unsafe {
+        PostMessageW(
+            Some(HWND(raw as *mut _)),
+            WM_PAGE_FILE,
+            WPARAM(0),
+            LPARAM(0),
+        )
     };
-    if let Err(msg) = still_there(path) {
-        balloon(hwnd, "Relay", msg);
-        return;
+}
+
+/// The toast when the shell could not open or show the file.
+fn failed_text(path: &str, open: bool) -> String {
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+    if open {
+        format!("Couldn't open {name}")
+    } else {
+        format!("Couldn't show {name} in its folder")
     }
-    // Explorer gets `/select,"<path>"` as its parameters.
-    let (file, params) = match &a {
-        Action::OpenFile(_) => (wide(path), None),
-        _ => match select_arg(path) {
-            Some(p) => (wide("explorer.exe"), Some(wide(&p))),
-            None => return,
-        },
-    };
-    let params = params
+}
+
+/// `ShellExecuteW` "open" on `file` (with `params`); false when the shell
+/// reports an error (a result of 32 or less).
+fn shell_open(file: &str, params: Option<&str>) -> bool {
+    use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let file = wide(file);
+    let params = params.map(wide);
+    let p = params
         .as_ref()
         .map_or(PCWSTR::null(), |p| PCWSTR(p.as_ptr()));
     // SAFETY: valid NUL-terminated strings for the duration of the call.
-    unsafe {
+    let h = unsafe {
         ShellExecuteW(
             None,
             w!("open"),
             PCWSTR(file.as_ptr()),
-            params,
+            p,
             PCWSTR::null(),
             SW_SHOWNORMAL,
-        );
-    }
+        )
+    };
+    h.0 as isize > 32
+}
+
+/// Explorer with the file selected. The one way Relay shows a file in its
+/// folder (Timeline, toasts, balloons).
+fn show_in_folder(path: &str) -> bool {
+    select_arg(path).is_some_and(|p| shell_open("explorer.exe", Some(&p)))
 }
 
 /// Explorer's `/select,"<path>"`. Windows paths cannot hold a quote, so one
@@ -479,59 +527,50 @@ fn paired_devices(st: &State) -> Vec<(String, String, bool)> {
         .unwrap_or_default()
 }
 
-/// What the Timeline model was built from: the entries, history on, the
-/// local day, the time zone and which entries' files are missing.
-type TimelineKey = (Vec<crate::timeline::Entry>, bool, i64, i64, Vec<bool>);
-type TimelineCache = Option<(TimelineKey, Arc<crate::pages::timeline::TimelineModel>)>;
-/// The last Timeline model: rebuilt only when its inputs change, so the
-/// main window's once-a-second model check is cheap.
+/// What the Timeline model was built from: the store's version, history
+/// on, the local day and the time zone.
+type TimelineKey = (u64, bool, i64, i64);
+/// The last Timeline model and Home's recent entries, with their key.
+type TimelineCache = Option<(
+    TimelineKey,
+    Arc<crate::pages::timeline::TimelineModel>,
+    Vec<crate::timeline::Entry>,
+)>;
 static TIMELINE_MODEL: Mutex<TimelineCache> = Mutex::new(None);
 
+/// The Timeline model and Home's last few entries. The entries are copied
+/// and the model rebuilt only when the store, the day or the time zone
+/// changed, so the main window's once-a-second model check stays cheap.
 fn timeline_model(
-    entries: Vec<crate::timeline::Entry>,
     history_on: bool,
     now: u64,
-) -> Arc<crate::pages::timeline::TimelineModel> {
-    use crate::pages::timeline::{build, file_state, FileState};
+) -> (
+    Arc<crate::pages::timeline::TimelineModel>,
+    Vec<crate::timeline::Entry>,
+) {
     let tz = local_offset_s();
-    // Files are checked only while the Timeline is on screen (a save
-    // folder on a network share can be slow); switching to it refreshes.
-    let check = crate::main_window::shown() == Some(crate::main_window::Page::Timeline);
-    let missing: Vec<bool> = entries
-        .iter()
-        .map(|e| {
-            check
-                && e.kind == crate::timeline::Kind::File
-                && e.path
-                    .as_deref()
-                    .is_some_and(|p| file_state(p) == FileState::Missing)
-        })
-        .collect();
     let today = (now as i64 + tz).div_euclid(86_400);
-    let key = (entries, history_on, today, tz, missing);
     let mut cache = TIMELINE_MODEL.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((k, m)) = cache.as_ref() {
-        if *k == key {
-            return m.clone();
+    let cached = cache.as_ref().map(|(k, _, _)| *k);
+    let mut fresh = None;
+    crate::timeline::with(|t| {
+        let key = (t.version(), history_on, today, tz);
+        if cached != Some(key) {
+            fresh = Some((key, t.entries().to_vec()));
         }
+    });
+    if let Some((key, entries)) = fresh {
+        let m = Arc::new(crate::pages::timeline::build(&entries, history_on, now, tz));
+        let recent = entries
+            .into_iter()
+            .take(crate::pages::home::RECENT)
+            .collect();
+        *cache = Some((key, m, recent));
     }
-    let (entries, _, _, _, missing) = &key;
-    let gone: std::collections::HashSet<&str> = entries
-        .iter()
-        .zip(missing)
-        .filter(|(_, &m)| m)
-        .filter_map(|(e, _)| e.path.as_deref())
-        .collect();
-    let state = |p: &str| {
-        if gone.contains(p) {
-            FileState::Missing
-        } else {
-            FileState::Present
-        }
-    };
-    let m = Arc::new(build(entries, history_on, now, tz, state));
-    *cache = Some((key, m.clone()));
-    m
+    cache
+        .as_ref()
+        .map(|(_, m, r)| (m.clone(), r.clone()))
+        .unwrap_or_default()
 }
 
 /// Everything the main window's pages show. Each lock is taken and
@@ -560,10 +599,8 @@ fn page_model(st: &State) -> crate::pages::Model {
             .collect();
         (notes, ns.locked)
     };
-    let mut entries = Vec::new();
-    crate::timeline::with(|t| entries = t.entries().to_vec());
-    let recent = &entries[..entries.len().min(home::RECENT)];
     let now = crate::timeline::now_unix();
+    let (timeline, recent) = timeline_model(settings.keep_history, now);
     let phone = phone.map(|(id, name)| {
         let c = crate::core::contact(&id);
         home::PhoneIn {
@@ -586,12 +623,12 @@ fn page_model(st: &State) -> crate::pages::Model {
             notes: &notes,
             settings: &settings,
             locked,
-            recent,
+            recent: &recent,
             // Whole minutes: the labels change no faster, and an unchanged
             // model is not repainted.
             now: now / 60 * 60,
         }),
-        timeline: timeline_model(entries, settings.keep_history, now),
+        timeline,
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
         },
@@ -605,9 +642,7 @@ fn save_settings(st: &State) {
 }
 
 fn reveal(path: &std::path::Path) {
-    let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn();
+    let _ = show_in_folder(&path.to_string_lossy());
 }
 
 /// Multi-select file picker; runs on its own thread (COM STA).
@@ -2266,11 +2301,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .lock()
                 .map(|mut q| q.drain(..).collect())
                 .unwrap_or_default();
-            for a in drained {
-                page_file(hwnd, a);
+            for t in drained {
+                balloon(hwnd, "Relay", &t);
             }
-            // A file found missing on click shows so on its row now.
-            crate::main_window::refresh();
+            // A file found missing (or back) shows so on its row now.
+            crate::main_window::repaint_page();
             LRESULT(0)
         }
         WM_SETTINGS_ACTION => {
@@ -2345,6 +2380,13 @@ pub fn create(
         settings_path: settings_path.clone(),
         model: Box::new(|| STATE.get().map(page_model).unwrap_or_default()),
         act: Box::new(page_action),
+    });
+    // A Timeline file check that changes a row repaints the window.
+    crate::pages::timeline::files::set_notify(|| {
+        let raw = TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed);
+        if raw != 0 {
+            post_page_file(raw);
+        }
     });
     let _ = STATE.set(State {
         cmds,
@@ -2493,6 +2535,18 @@ mod tests {
         );
         // A quote would end the quoting early: never passed on.
         assert_eq!(select_arg(r#"C:\x" /root,C:\Windows"#), None);
+    }
+
+    #[test]
+    fn a_failed_open_names_the_file() {
+        assert_eq!(
+            failed_text(r"C:\Users\Me\Downloads\report.pdf", true),
+            "Couldn't open report.pdf"
+        );
+        assert_eq!(
+            failed_text(r"C:\Users\Me\Downloads\report.pdf", false),
+            "Couldn't show report.pdf in its folder"
+        );
     }
 
     #[test]

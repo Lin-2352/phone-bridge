@@ -106,7 +106,7 @@ pub fn content_height(page: Page, width: f32, s: f32, m: &Model) -> f32 {
 pub fn draw(page: Page, c: &mut Canvas, r: RectF, view: RectF, m: &Model, hits: &[Hit]) {
     match page {
         Page::Home => home::draw(c, r, &m.home, hits),
-        Page::Timeline => timeline::draw(c, r, view, &m.timeline),
+        Page::Timeline => timeline::draw(c, r, view, &m.timeline, hits),
         Page::Devices => devices::draw(c, r, &m.devices),
         Page::Settings => {
             let (glyph, title, body) = placeholder(page);

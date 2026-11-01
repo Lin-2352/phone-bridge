@@ -359,6 +359,8 @@ pub struct Store {
     /// The file could not be read (not just unsealed): never overwrite it this session.
     write_locked: bool,
     dirty: bool,
+    /// Bumped whenever `entries` changes, so readers copy them only then.
+    version: u64,
     last_write: Option<Instant>,
     log: Box<dyn Fn(&str) + Send>,
     pending_log: Vec<String>,
@@ -375,6 +377,7 @@ impl Store {
             enabled: true,
             write_locked: false,
             dirty: false,
+            version: 0,
             last_write: None,
             log: Box::new(|_| {}),
             pending_log: Vec::new(),
@@ -421,6 +424,11 @@ impl Store {
         &self.entries
     }
 
+    /// Changes whenever `entries` does (add, prune, clear, history off).
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
     pub fn add(&mut self, e: Entry) {
         if !self.enabled {
             return;
@@ -428,6 +436,7 @@ impl Store {
         self.entries.insert(0, e);
         prune(&mut self.entries, now_unix());
         self.dirty = true;
+        self.version += 1;
     }
 
     /// `add` only marks the entry; the file is written by this (from the
@@ -461,6 +470,7 @@ impl Store {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.version += 1;
         self.dirty = false;
         self.write_locked = false; // the user asked for it gone
         let _ = std::fs::remove_file(&self.path);

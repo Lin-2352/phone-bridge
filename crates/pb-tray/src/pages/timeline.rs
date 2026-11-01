@@ -32,15 +32,6 @@ pub fn file_state(path: &str) -> FileState {
     }
 }
 
-/// The re-check before Open or Show in folder: the file may have gone
-/// since the row was drawn. Err carries the toast text.
-pub fn still_there(path: &str) -> Result<(), &'static str> {
-    match file_state(path) {
-        FileState::Present => Ok(()),
-        FileState::Missing => Err(MISSING),
-    }
-}
-
 const DAY_SECS: i64 = 86_400;
 
 /// The local day number (days since 1970-01-01) of Unix time `at`.
@@ -102,18 +93,15 @@ pub fn group_by_day(entries: &[Entry], now: u64, tz_offset_s: i64) -> Vec<(Strin
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileRow {
-    pub path: String,
-    pub state: FileState,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowModel {
     pub kind: Kind,
     pub title: String,
     pub meta: String,
     /// A file with a saved path; the buttons act on it.
-    pub file: Option<FileRow>,
+    pub file: Option<String>,
+    /// Stable across inserts (from the entry's own fields): the row's hit
+    /// ids, so focus and a click in flight stay on this entry.
+    pub key: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,43 +139,48 @@ fn item_h(i: &Item) -> u32 {
     }
 }
 
-fn row(e: &Entry, tz_offset_s: i64, state: &impl Fn(&str) -> FileState) -> RowModel {
+/// 30 bits of a hash of the entry's fields, so `HIT_BASE + 2 * key + 2`
+/// stays far inside u32.
+fn entry_key(e: &Entry) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (
+        e.at,
+        e.kind as u8,
+        e.dir as u8,
+        &e.peer,
+        &e.name,
+        e.size,
+        &e.path,
+    )
+        .hash(&mut h);
+    (h.finish() & 0x3FFF_FFFF) as u32
+}
+
+fn row(e: &Entry, tz_offset_s: i64) -> RowModel {
     let (arrow, way) = match e.dir {
         Dir::ToPhone => ('\u{2191}', "To"),
         Dir::ToPc => ('\u{2193}', "From"),
     };
-    let mut meta = format!(
-        "{arrow} {way} {} \u{b7} {}",
-        e.peer,
-        clock(e.at, tz_offset_s)
-    );
-    let file = match (e.kind, &e.path) {
-        (Kind::File, Some(p)) => Some(FileRow {
-            path: p.clone(),
-            state: state(p),
-        }),
-        _ => None,
-    };
-    if file.as_ref().is_some_and(|f| f.state == FileState::Missing) {
-        // First, so a narrow row still says it.
-        meta = format!("{MISSING} \u{b7} {meta}");
-    }
     RowModel {
         kind: e.kind,
         title: timeline::summary(e),
-        meta,
-        file,
+        meta: format!(
+            "{arrow} {way} {} \u{b7} {}",
+            e.peer,
+            clock(e.at, tz_offset_s)
+        ),
+        file: match (e.kind, &e.path) {
+            (Kind::File, Some(p)) => Some(p.clone()),
+            _ => None,
+        },
+        key: entry_key(e),
     }
 }
 
-/// `state` tells whether a saved file is still there (`file_state`).
-pub fn build(
-    entries: &[Entry],
-    history_on: bool,
-    now: u64,
-    tz_offset_s: i64,
-    state: impl Fn(&str) -> FileState,
-) -> TimelineModel {
+/// Labels, rows and offsets; whether files are still there is asked when
+/// rows are laid out (`layout`), not here.
+pub fn build(entries: &[Entry], history_on: bool, now: u64, tz_offset_s: i64) -> TimelineModel {
     let mut m = TimelineModel {
         history_on,
         ..Default::default()
@@ -204,13 +197,22 @@ pub fn build(
         for k in idx {
             m.tops.push(y);
             y += ROW_H;
-            m.items
-                .push(Item::Row(row(&entries[k], tz_offset_s, &state)));
+            m.items.push(Item::Row(row(&entries[k], tz_offset_s)));
         }
         m.cards.push((top, y));
     }
     m.height = y;
     m
+}
+
+/// The row's caption line as drawn: says so first when its file is gone,
+/// so a narrow row still shows it.
+pub fn shown_meta(x: &RowModel, present: bool) -> String {
+    if x.file.is_some() && !present {
+        format!("{MISSING} \u{b7} {}", x.meta)
+    } else {
+        x.meta.clone()
+    }
 }
 
 /// Top of the list in pixels.
@@ -223,13 +225,17 @@ fn list_top(r: RectF, s: f32) -> f32 {
 pub fn visible(r: RectF, view: RectF, s: f32, m: &TimelineModel) -> Range<usize> {
     let top = list_top(r, s);
     let (y0, y1) = ((view.top - top) / s, (view.bottom - top) / s);
-    // `tops` ascend, so both ends are binary searches: the item holding y0,
-    // through the last one starting above y1.
     let n = m.items.len();
-    let first = m
-        .tops
-        .partition_point(|&t| t as f32 <= y0)
-        .saturating_sub(1);
+    // `tops` ascend, so both ends are binary searches: the item holding y0
+    // (none when the view is past the end), through the last one starting
+    // above y1.
+    let first = if y0 >= m.height as f32 {
+        n
+    } else {
+        m.tops
+            .partition_point(|&t| t as f32 <= y0)
+            .saturating_sub(1)
+    };
     let end = m.tops.partition_point(|&t| (t as f32) < y1);
     let start = first.saturating_sub(1).min(n);
     start..(end + 1).min(n).max(start)
@@ -255,29 +261,42 @@ fn buttons(row: RectF, s: f32) -> (RectF, RectF) {
     (rectf(open_l, t, open_r, b), rectf(show_l, t, show_r, b))
 }
 
-/// Hit ids: item `k`'s Open is 2k + 1, its Show in folder 2k + 2.
-fn open_id(k: usize) -> u32 {
-    2 * k as u32 + 1
+/// Hit ids: a row's Open is 2 key + 1, its Show in folder 2 key + 2.
+fn open_id(key: u32) -> u32 {
+    2 * key + 1
 }
 
+/// Hits of the rows in view whose file is there, as the window's file
+/// cache knows it (`files::lookup`, never blocking).
 pub fn layout(r: RectF, view: RectF, s: f32, m: &TimelineModel) -> Vec<Hit> {
+    layout_with(r, view, s, m, &files::lookup)
+}
+
+/// `layout` with the file check given: a missing file's buttons are drawn
+/// disabled and take no clicks.
+pub fn layout_with(
+    r: RectF,
+    view: RectF,
+    s: f32,
+    m: &TimelineModel,
+    state: &dyn Fn(&str) -> FileState,
+) -> Vec<Hit> {
     let mut hits = Vec::new();
     for k in visible(r, view, s, m) {
         let Item::Row(x) = &m.items[k] else {
             continue;
         };
-        // A missing file's buttons are drawn disabled and take no clicks.
         if x.file
-            .as_ref()
-            .is_some_and(|f| f.state == FileState::Present)
+            .as_deref()
+            .is_some_and(|p| state(p) == FileState::Present)
         {
             let (open, show) = buttons(item_rect(r, s, m, k), s);
             hits.push(Hit {
-                id: open_id(k),
+                id: open_id(x.key),
                 r: open,
             });
             hits.push(Hit {
-                id: open_id(k) + 1,
+                id: open_id(x.key) + 1,
                 r: show,
             });
         }
@@ -326,7 +345,9 @@ fn disabled_button(c: &Canvas, r: RectF, label: &str) {
     text(c, Font::Body, label, r, c.p.text2, Align::Center);
 }
 
-pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel) {
+/// `hits` is this frame's `layout`: a file row without its hits is drawn
+/// as missing, so the picture always matches what takes clicks.
+pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hit]) {
     let (s, pal) = (c.s, c.p);
     if m.items.is_empty() {
         let (title, body) = empty_text(m);
@@ -363,15 +384,16 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel) {
                 let t = rectf(ir.left, ir.top + SPACE[1] * s, ir.right, ir.bottom);
                 text(c, Font::BodyStrong, label, t, pal.text, Align::Left);
             }
+            Item::Row(x) if x.file.is_none() => {
+                widgets::row(c, ir, glyph(x.kind), &x.title, &x.meta, "");
+            }
             Item::Row(x) => {
-                let Some(f) = &x.file else {
-                    widgets::row(c, ir, glyph(x.kind), &x.title, &x.meta, "");
-                    continue;
-                };
+                let present = hits.iter().any(|h| h.id == open_id(x.key));
                 let (open, show) = buttons(ir, s);
                 let text_r = rectf(ir.left, ir.top, open.left, ir.bottom);
-                widgets::row(c, text_r, glyph(x.kind), &x.title, &x.meta, "");
-                if f.state == FileState::Present {
+                let meta = shown_meta(x, present);
+                widgets::row(c, text_r, glyph(x.kind), &x.title, &meta, "");
+                if present {
                     fluent::button(c, open, "Open", false);
                     fluent::button(c, show, "Show in folder", false);
                 } else {
@@ -383,17 +405,99 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel) {
     }
 }
 
+/// The row is found by its key, so a click that spans an insert still
+/// acts on the row that was pressed (or nothing, if it scrolled away).
 pub fn click(hit: &Hit, m: &TimelineModel) -> Option<Action> {
-    let k = (hit.id.checked_sub(1)? / 2) as usize;
-    let Some(Item::Row(x)) = m.items.get(k) else {
-        return None;
-    };
-    let f = x.file.as_ref().filter(|f| f.state == FileState::Present)?;
-    Some(if hit.id == open_id(k) {
-        Action::OpenFile(f.path.clone())
+    let n = hit.id.checked_sub(1)?;
+    let key = n / 2;
+    let path = m.items.iter().find_map(|i| match i {
+        Item::Row(x) if x.key == key => x.file.clone(),
+        _ => None,
+    })?;
+    Some(if n % 2 == 0 {
+        Action::OpenFile(path)
     } else {
-        Action::ShowInFolder(f.path.clone())
+        Action::ShowInFolder(path)
     })
+}
+
+/// Whether the rows' files are there, checked off the UI thread: a save
+/// folder on a slow or offline share must never stall the window. Layout
+/// asks for the rows in view; a path not checked yet counts as present (the
+/// click re-checks before acting).
+pub mod files {
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::{Arc, Mutex, OnceLock},
+        time::{Duration, Instant},
+    };
+
+    use super::{file_state, FileState};
+
+    /// A result is reused this long before the path is checked again.
+    pub const FRESH: Duration = Duration::from_millis(2500);
+    /// Checks running at once; a hung share holds at most this many threads.
+    const MAX_RUNNING: usize = 8;
+
+    type Notify = Arc<dyn Fn() + Send + Sync>;
+
+    #[derive(Default)]
+    struct Cache {
+        known: HashMap<String, (FileState, Instant)>,
+        running: HashSet<String>,
+        notify: Option<Notify>,
+    }
+
+    fn cache() -> &'static Mutex<Cache> {
+        static C: OnceLock<Mutex<Cache>> = OnceLock::new();
+        C.get_or_init(Default::default)
+    }
+
+    fn lock() -> std::sync::MutexGuard<'static, Cache> {
+        cache().lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Called (from a worker thread) when a path's state changed, so the
+    /// window repaints. It must only post.
+    pub fn set_notify(f: impl Fn() + Send + Sync + 'static) {
+        lock().notify = Some(Arc::new(f));
+    }
+
+    /// The last known state (Present until checked); starts a check on a
+    /// worker when it is unknown or older than `FRESH`. Never blocks.
+    pub fn lookup(path: &str) -> FileState {
+        let mut c = lock();
+        let known = c.known.get(path).copied();
+        if known.is_some_and(|(_, at)| at.elapsed() < FRESH) {
+            return known.map_or(FileState::Present, |k| k.0);
+        }
+        if !c.running.contains(path) && c.running.len() < MAX_RUNNING {
+            c.running.insert(path.to_owned());
+            let p = path.to_owned();
+            std::thread::spawn(move || {
+                let st = file_state(&p);
+                record(&p, st);
+            });
+        }
+        known.map_or(FileState::Present, |k| k.0)
+    }
+
+    /// A fresh result for `path` (a worker's, or the click's re-check);
+    /// tells the window when it changes what the row shows.
+    pub fn record(path: &str, st: FileState) {
+        let notify = {
+            let mut c = lock();
+            c.running.remove(path);
+            let before = c
+                .known
+                .insert(path.to_owned(), (st, Instant::now()))
+                .map_or(FileState::Present, |k| k.0);
+            (before != st).then(|| c.notify.clone()).flatten()
+        };
+        if let Some(f) = notify {
+            f();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -479,22 +583,21 @@ mod tests {
         let p = path.to_string_lossy().into_owned();
         let now = DAY + 8 * H;
         let entries = [file(now - 60, &p), text(now - 120)];
-        let m = build(&entries, true, now, 0, file_state);
+        let m = build(&entries, true, now, 0);
         let (r, view) = page();
-        let hits = layout(r, view, 1.0, &m);
+        let hits = layout_with(r, view, 1.0, &m, &file_state);
         // Open and Show in folder on the file row; nothing on the text row.
         assert_eq!(hits.len(), 2);
-        assert_eq!(still_there(&p), Ok(()));
+        assert_eq!(file_state(&p), FileState::Present);
         // Gone between the layout and the click: the page cannot know yet,
         // so the click still asks, and the tray's re-check refuses.
         std::fs::remove_file(&path).unwrap();
         assert_eq!(click(&hits[0], &m), Some(Action::OpenFile(p.clone())));
         assert_eq!(click(&hits[1], &m), Some(Action::ShowInFolder(p.clone())));
         assert_eq!(file_state(&p), FileState::Missing);
-        assert_eq!(still_there(&p), Err(MISSING));
         // The next model disables the buttons and says why.
-        let m = build(&entries, true, now, 0, file_state);
-        assert!(layout(r, view, 1.0, &m).is_empty());
+        let m = build(&entries, true, now, 0);
+        assert!(layout_with(r, view, 1.0, &m, &file_state).is_empty());
         let row = m
             .items
             .iter()
@@ -503,8 +606,10 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert!(row.meta.contains(MISSING), "{}", row.meta);
-        assert_eq!(row.file.as_ref().unwrap().state, FileState::Missing);
+        // Drawn without its hits, the row says why.
+        let shown = shown_meta(row, false);
+        assert!(shown.starts_with(MISSING), "{shown}");
+        assert_eq!(shown_meta(row, true), row.meta);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -515,7 +620,7 @@ mod tests {
         let entries: Vec<Entry> = (0..1000)
             .map(|k| file(now - k as u64 * 2600, &format!("C:\\x\\{k}.pdf")))
             .collect();
-        let m = build(&entries, true, now, 0, |_| FileState::Present);
+        let m = build(&entries, true, now, 0);
         assert!(m.items.len() > 1000, "rows and day headers");
         assert_eq!(m.tops.len(), m.items.len());
         let (full, view) = page();
@@ -528,7 +633,7 @@ mod tests {
             let range = visible(r, v, s, &m);
             assert!(!range.is_empty());
             assert!(range.len() <= most, "{range:?} at {offset}");
-            let hits = layout(r, v, s, &m);
+            let hits = layout_with(r, v, s, &m, &|_| FileState::Present);
             assert!(hits.len() <= 2 * range.len());
             assert!(!hits.is_empty());
             // Every hit is in view or on the one overscan row beside it.
@@ -549,17 +654,17 @@ mod tests {
     fn history_off_shows_the_empty_state() {
         let now = DAY + 8 * H;
         let entries = [text(now - 60)];
-        let off = build(&entries, false, now, 0, |_| FileState::Present);
+        let off = build(&entries, false, now, 0);
         assert!(!off.history_on);
         assert!(off.items.is_empty());
         let (r, view) = page();
-        assert!(layout(r, view, 1.0, &off).is_empty());
+        assert!(layout_with(r, view, 1.0, &off, &|_| FileState::Present).is_empty());
         assert_eq!(content_height(800.0, 1.0, &off), 0.0);
         assert_eq!(empty_text(&off).0, "History is off");
-        let none = build(&[], true, now, 0, |_| FileState::Present);
+        let none = build(&[], true, now, 0);
         assert_eq!(content_height(800.0, 1.0, &none), 0.0);
         assert_eq!(empty_text(&none).0, "Nothing has moved yet");
-        let some = build(&entries, true, now, 0, |_| FileState::Present);
+        let some = build(&entries, true, now, 0);
         assert!(content_height(800.0, 1.0, &some) > 0.0);
     }
 
@@ -568,7 +673,7 @@ mod tests {
         let now = DAY + 8 * H;
         let mut e = text(DAY + 14 * H + 5 * 60 - 12 * H);
         e.dir = Dir::ToPhone;
-        let m = build(&[e], true, now, 19_800, |_| FileState::Present);
+        let m = build(&[e], true, now, 19_800);
         let Item::Row(row) = &m.items[1] else {
             panic!("a row after its day")
         };
@@ -590,8 +695,8 @@ mod tests {
         let entries: Vec<Entry> = (0..300)
             .map(|k| file(now - k as u64 * 2600, &format!("C:\\gone\\{k}.pdf")))
             .collect();
-        let full = build(&entries, true, now, 19_800, file_state);
-        let empty = build(&[], false, now, 0, file_state);
+        let full = build(&entries, true, now, 19_800);
+        let empty = build(&[], false, now, 0);
         let hwnd = crate::d2d::test_window();
         let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
         surface
@@ -604,9 +709,10 @@ mod tests {
                 let view = rectf(0.0, 0.0, 600.0, 400.0);
                 for offset in [0.0, 5_000.0, full.height as f32] {
                     let r = rectf(0.0, -offset, 600.0, 20_000.0);
-                    draw(&mut c, r, view, &full);
+                    let hits = layout_with(r, view, 1.0, &full, &file_state);
+                    draw(&mut c, r, view, &full, &hits);
                 }
-                draw(&mut c, view, view, &empty);
+                draw(&mut c, view, view, &empty, &[]);
                 let d = devices::DevicesModel {
                     devices: vec![("Galaxy".into(), "AB12-CD34".into(), true)],
                 };
@@ -619,5 +725,109 @@ mod tests {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
         }
+    }
+
+    #[test]
+    fn a_new_entry_at_the_top_keeps_each_rows_action() {
+        let now = DAY + 8 * H;
+        let mut entries = vec![
+            file(now - 60, "C:\\x\\a.pdf"),
+            file(now - 120, "C:\\x\\b.pdf"),
+        ];
+        let m = build(&entries, true, now, 0);
+        let (r, view) = page();
+        let hits = layout_with(r, view, 1.0, &m, &|_| FileState::Present);
+        // b.pdf's Open, as focused or pressed before the insert.
+        let b_open = hits
+            .iter()
+            .find(|h| click(h, &m) == Some(Action::OpenFile("C:\\x\\b.pdf".into())))
+            .copied()
+            .unwrap();
+        entries.insert(0, file(now - 10, "C:\\x\\new.pdf"));
+        let m = build(&entries, true, now, 0);
+        let hits = layout_with(r, view, 1.0, &m, &|_| FileState::Present);
+        // The same id (focus follows it) still names b.pdf.
+        let same = hits.iter().find(|h| h.id == b_open.id).unwrap();
+        assert_eq!(
+            click(same, &m),
+            Some(Action::OpenFile("C:\\x\\b.pdf".into()))
+        );
+        assert_eq!(
+            click(&b_open, &m),
+            Some(Action::OpenFile("C:\\x\\b.pdf".into()))
+        );
+    }
+
+    #[test]
+    fn visible_at_the_edges() {
+        let now = DAY + 8 * H;
+        let entries: Vec<Entry> = (0..40).map(|k| text(now - k * 60)).collect();
+        let m = build(&entries, true, now, 0);
+        // Items: day header (top 0), then rows at 32, 88, 144, ...
+        let list = PAD + TITLE_H;
+        let s = 1.0;
+        // The view's top exactly on row 3's top (item 3, at 32 + 2 * 56):
+        // item 3 is the first in view, plus one overscan above.
+        let y = list + 32.0 + 2.0 * 56.0;
+        let r = rectf(0.0, -y, 800.0, 10_000.0);
+        let v = rectf(0.0, 0.0, 800.0, 112.0);
+        let range = visible(r, v, s, &m);
+        assert_eq!(range.start, 2);
+        // Rows 3 and 4 fill the view exactly; row 5 starts at its bottom
+        // and is the overscan below.
+        assert_eq!(range.end, 6);
+        // The view entirely below the list: nothing past the end.
+        let r = rectf(0.0, -100_000.0, 800.0, 0.0);
+        let range = visible(r, v, s, &m);
+        assert!(range.end <= m.items.len());
+        assert!(range.len() <= 1, "{range:?}");
+        // The view above the list (on the title): the first item or two.
+        let r = rectf(0.0, 0.0, 800.0, 10_000.0);
+        let v = rectf(0.0, 0.0, 800.0, 30.0);
+        assert_eq!(visible(r, v, s, &m), 0..1);
+        // A new entry at the top: the range covers the same pixels, and
+        // the rows under it shift down by one.
+        let mut more = entries.clone();
+        more.insert(0, text(now - 1));
+        let m2 = build(&more, true, now, 0);
+        let r = rectf(0.0, -y, 800.0, 10_000.0);
+        let v = rectf(0.0, 0.0, 800.0, 112.0);
+        assert_eq!(visible(r, v, s, &m2), 2..6);
+        assert_eq!(m2.items.len(), m.items.len() + 1);
+    }
+
+    #[test]
+    fn file_checks_never_block_and_report_changes() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let dir = std::env::temp_dir().join(format!("pb-tl-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("later.pdf");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_string_lossy().into_owned();
+        let told = Arc::new(AtomicUsize::new(0));
+        let t = told.clone();
+        files::set_notify(move || {
+            t.fetch_add(1, Ordering::SeqCst);
+        });
+        // Not checked yet: present (buttons on) at once, checked on a worker.
+        assert_eq!(files::lookup(&p), FileState::Present);
+        let t0 = std::time::Instant::now();
+        while files::lookup(&p) == FileState::Present {
+            assert!(t0.elapsed().as_secs() < 5, "the worker reports");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(told.load(Ordering::SeqCst), 1, "the window is told");
+        // The same result again changes nothing on screen.
+        files::record(&p, FileState::Missing);
+        assert_eq!(told.load(Ordering::SeqCst), 1);
+        // The click's re-check found it back.
+        std::fs::write(&path, b"x").unwrap();
+        files::record(&p, file_state(&p));
+        assert_eq!(told.load(Ordering::SeqCst), 2);
+        assert_eq!(files::lookup(&p), FileState::Present);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

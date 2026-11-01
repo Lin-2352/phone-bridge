@@ -8,7 +8,7 @@
 #![allow(unsafe_code)]
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -302,15 +302,6 @@ thread_local! {
     /// The Direct2D surface, apart from `STATE` so painting never needs both
     /// borrowed (COM objects stay on the UI thread).
     static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
-    /// The page on screen, readable while the model is built (before the
-    /// window's state exists, and outside its borrow).
-    static SHOWN: Cell<Option<Page>> = const { Cell::new(None) };
-}
-
-/// The page the main window shows, None while it is closed. The model
-/// builder uses it to do per-page work (file checks) only when it is seen.
-pub fn shown() -> Option<Page> {
-    SHOWN.with(Cell::get)
 }
 
 /// Runs `f` on the window's state if `hwnd` is the main window. `f` must not
@@ -410,25 +401,25 @@ fn set_nav_hover(st: &mut State, h: Option<Page>, now: Instant) -> bool {
     true
 }
 
-/// True when the page changed.
-fn switch(st: &mut State, page: Page) -> bool {
+fn switch(st: &mut State, page: Page) {
     if st.page == page {
-        return false;
+        return;
     }
     st.page = page;
-    SHOWN.with(|c| c.set(Some(page)));
     st.pressed = None;
     // A focused hit belonged to the old page.
     if st.focus.is_some_and(|id| id >= HIT_BASE) {
         st.focus = None;
     }
-    true
 }
 
 /// A click, Enter or Space on `t`.
 fn activate(hwnd: HWND, t: Target) {
-    let (action, switched) = with(hwnd, |st| match t {
-        Target::Nav(p) => (None, switch(st, p)),
+    let action = with(hwnd, |st| match t {
+        Target::Nav(p) => {
+            switch(st, p);
+            None
+        }
         Target::Hit(id) => {
             let (_, hits) = layout_now(hwnd, st);
             match hits
@@ -436,19 +427,18 @@ fn activate(hwnd: HWND, t: Target) {
                 .find(|h| h.id == id)
                 .and_then(|h| pages::click(st.page, h, &st.model))
             {
-                Some(pages::Action::Go(p)) => (None, switch(st, p)),
-                other => (other, false),
+                Some(pages::Action::Go(p)) => {
+                    switch(st, p);
+                    None
+                }
+                other => other,
             }
         }
     })
-    .unwrap_or((None, false));
+    .flatten();
     // Outside the state borrow: the host posts to the tray window.
     if let (Some(a), Some(host)) = (action, HOST.get()) {
         (host.act)(a);
-    }
-    if switched {
-        // The new page's model parts are only fresh while it is shown.
-        refresh();
     }
     repaint(hwnd);
 }
@@ -945,7 +935,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let main = g.as_ref().is_some_and(|st| st.hwnd == hwnd.0 as isize);
                 if main {
                     *g = None;
-                    SHOWN.with(|c| c.set(None));
                 }
                 main
             });
@@ -1133,7 +1122,6 @@ fn create(page: Page, opened: Instant) {
     // The tray idles under EcoQoS (efficient cores, low clock); while this
     // window is open the UI thread runs at full speed (undone on WM_DESTROY).
     let _ = pb_platform_win::power::set_thread_eco_exempt(true);
-    SHOWN.with(|c| c.set(Some(page)));
     let model = (host.model)();
     let saved = host.settings.lock().ok().and_then(|s| s.main_window_rect);
     let rect = restore_rect(saved, &monitors()).unwrap_or_else(default_rect);
@@ -1142,7 +1130,6 @@ fn create(page: Page, opened: Instant) {
         Err(e) => {
             host.log.line(&format!("UI main window failed: {e}"));
             let _ = pb_platform_win::power::set_thread_eco_exempt(false);
-            SHOWN.with(|c| c.set(None));
             return;
         }
     };
@@ -1199,9 +1186,7 @@ pub fn open(page: Page) {
         create(page, opened);
         return;
     };
-    if with(hwnd, |st| switch(st, page)) == Some(true) {
-        refresh();
-    }
+    with(hwnd, |st| switch(st, page));
     // SAFETY: restore and raise our own window.
     unsafe {
         if IsIconic(hwnd).as_bool() {
@@ -1210,6 +1195,14 @@ pub fn open(page: Page) {
         let _ = SetForegroundWindow(hwnd);
     }
     repaint(hwnd);
+}
+
+/// Repaints the open window without rebuilding the model (a Timeline file
+/// check came back). UI thread only.
+pub fn repaint_page() {
+    if let Some(hwnd) = current() {
+        repaint(hwnd);
+    }
 }
 
 /// The model changed: rebuild it and repaint. UI thread only.
