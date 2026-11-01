@@ -1,0 +1,46 @@
+# Single source of the Relay design tokens. `cargo run -p gen-tokens` writes
+# crates/pb-tray/src/tokens.rs and android/.../ui/Tokens.kt from this file.
+
+[light]
+surface = "#F3F3F3"
+surface_variant = "#FBFBFB"
+outline = "#E5E5E5"
+text = "#1A1A1A"
+text_muted = "#5F5F5F"
+primary = "#3651C5"
+on_primary = "#FFFFFF"
+accent = "#C9820F"
+success = "#0F7B0F"
+warning = "#9D5D00"
+danger = "#C42B1C"
+
+[dark]
+surface = "#202020"
+surface_variant = "#2D2D2D"
+outline = "#3F3F3F"
+text = "#FFFFFF"
+text_muted = "#C5C5C5"
+primary = "#B9C3FF"
+on_primary = "#082587"
+accent = "#E8A93A"
+success = "#6CCB5F"
+warning = "#FCE100"
+danger = "#FF998B"
+
+[space]
+steps = [4, 8, 12, 16, 24, 32]
+
+[radius]
+steps = [4, 8, 12, 20]
+
+[type]
+caption = 12
+body = 14
+subtitle = 16
+title = 20
+display = 28
+
+[motion]
+fast_ms = 120
+normal_ms = 200
+emphasised_ms = 300

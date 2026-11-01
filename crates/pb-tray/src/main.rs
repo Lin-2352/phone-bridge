@@ -78,6 +78,8 @@ mod toast;
 mod toast_images;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod toast_xml;
+#[allow(dead_code)]
+mod tokens;
 #[cfg(windows)]
 mod ui;
 

@@ -16,6 +16,7 @@ members = [
     "spikes/wifidirect-win",
     "tools/uniffi-bindgen",
     "tools/pb-bench",
+    "tools/gen-tokens",
 ]
 
 [workspace.package]
