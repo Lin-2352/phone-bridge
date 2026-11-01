@@ -30,10 +30,10 @@ use windows::{
                     DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, DXGI_FORMAT_B8G8R8A8_UNORM,
                     DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
                 },
-                CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1,
-                IDXGIFactory2, IDXGISwapChain1, IDXGISwapChain2, DXGI_PRESENT,
-                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-                DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                CreateDXGIFactory1, IDXGIAdapter, IDXGIDevice, IDXGIFactory1, IDXGIFactory2,
+                IDXGISwapChain1, IDXGISwapChain2, DXGI_PRESENT, DXGI_SWAP_CHAIN_DESC1,
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
             Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST},
         },
@@ -59,16 +59,15 @@ pub fn is_black(samples: &[u8]) -> bool {
     sum / samples.len() as u32 <= BLACK_MEAN && samples.iter().all(|&b| b < 64)
 }
 
-/// A D3D11 device on the GPU that drives the window's monitor (on hybrid
-/// laptops usually the iGPU): no copies between GPUs, the dGPU can sleep.
-pub fn device_for_window(hwnd: HWND) -> Result<ID3D11Device, String> {
-    // SAFETY: DXGI enumeration and device creation with owned out-params.
+/// The GPU that drives the window's monitor (on hybrid laptops usually the
+/// iGPU), or None when no adapter output matches it.
+pub fn adapter_for_window(hwnd: HWND) -> Option<IDXGIAdapter> {
+    // SAFETY: DXGI enumeration with owned out-params.
     unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(err)?;
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let mut chosen: Option<IDXGIAdapter1> = None;
         let mut i = 0;
-        'adapters: while let Ok(adapter) = factory.EnumAdapters1(i) {
+        while let Ok(adapter) = factory.EnumAdapters1(i) {
             let mut j = 0;
             while let Ok(output) = adapter.EnumOutputs(j) {
                 if output
@@ -76,14 +75,22 @@ pub fn device_for_window(hwnd: HWND) -> Result<ID3D11Device, String> {
                     .map(|d| d.Monitor == monitor)
                     .unwrap_or(false)
                 {
-                    chosen = Some(adapter);
-                    break 'adapters;
+                    return adapter.cast().ok();
                 }
                 j += 1;
             }
             i += 1;
         }
-        let adapter: Option<IDXGIAdapter> = chosen.and_then(|a| a.cast().ok());
+        None
+    }
+}
+
+/// A D3D11 device on the GPU that drives the window's monitor: no copies
+/// between GPUs, the dGPU can sleep.
+pub fn device_for_window(hwnd: HWND) -> Result<ID3D11Device, String> {
+    let adapter = adapter_for_window(hwnd);
+    // SAFETY: device creation with owned out-params.
+    unsafe {
         // An explicit adapter needs the UNKNOWN driver type; none: the default GPU.
         let driver = if adapter.is_some() {
             D3D_DRIVER_TYPE_UNKNOWN

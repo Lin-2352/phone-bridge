@@ -14,8 +14,9 @@ use windows::{
         Foundation::{COLORREF, HWND, RECT},
         Graphics::{
             Dwm::{
-                DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+                DwmSetWindowAttribute, DWMSBT_MAINWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
+                DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+                DWM_SYSTEMBACKDROP_TYPE,
             },
             Gdi::{
                 BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
@@ -63,22 +64,32 @@ pub fn set_theme(mode: u8) {
     THEME.store(mode.min(2), Ordering::Relaxed);
 }
 
-fn windows_dark() -> bool {
-    let mut v: u32 = 1;
+/// One DWORD from the user's Themes\Personalize key, if it is set.
+fn personalize(name: PCWSTR) -> Option<u32> {
+    let mut v: u32 = 0;
     let mut size = 4u32;
-    // SAFETY: reads one DWORD into `v`; failure leaves the light default.
+    // SAFETY: reads one DWORD into `v`; failure leaves it unused.
     let r = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
             w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
-            w!("AppsUseLightTheme"),
+            name,
             RRF_RT_REG_DWORD,
             None,
             Some(&mut v as *mut u32 as *mut _),
             Some(&mut size),
         )
     };
-    r.is_ok() && v == 0
+    r.is_ok().then_some(v)
+}
+
+fn windows_dark() -> bool {
+    personalize(w!("AppsUseLightTheme")) == Some(0)
+}
+
+/// Windows "Transparency effects" (on unless explicitly turned off).
+pub fn transparency_on() -> bool {
+    personalize(w!("EnableTransparency")) != Some(0)
 }
 
 pub fn dark() -> bool {
@@ -477,15 +488,24 @@ pub fn frame(hwnd: HWND, mica: bool) {
             &d as *const _ as *const _,
             4,
         );
-        if mica {
-            let backdrop: i32 = 2; // DWMSBT_MAINWINDOW
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_SYSTEMBACKDROP_TYPE,
-                &backdrop as *const _ as *const _,
-                4,
-            );
-        }
+    }
+    if mica {
+        set_backdrop(hwnd, DWMSBT_MAINWINDOW);
+    }
+}
+
+/// Sets the DWM system backdrop; false where DWM refuses it (before
+/// Windows 11 22H2), so the caller knows Mica is unavailable.
+pub fn set_backdrop(hwnd: HWND, kind: DWM_SYSTEMBACKDROP_TYPE) -> bool {
+    // SAFETY: one attribute write on the caller's window.
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            &kind as *const _ as *const _,
+            std::mem::size_of::<DWM_SYSTEMBACKDROP_TYPE>() as u32,
+        )
+        .is_ok()
     }
 }
 

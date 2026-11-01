@@ -30,6 +30,10 @@ mod clip_image;
 mod control;
 #[cfg(windows)]
 mod core;
+// Used from Task 3 (Canvas).
+#[cfg(windows)]
+#[allow(dead_code)]
+mod d2d;
 #[cfg(windows)]
 mod dialog_window;
 #[cfg_attr(not(windows), allow(dead_code))]
