@@ -484,11 +484,12 @@ mod tests {
         let hits = layout(r, view, 1.0, &m);
         // Open and Show in folder on the file row; nothing on the text row.
         assert_eq!(hits.len(), 2);
+        assert_eq!(still_there(&p), Ok(()));
+        // Gone between the layout and the click: the page cannot know yet,
+        // so the click still asks, and the tray's re-check refuses.
+        std::fs::remove_file(&path).unwrap();
         assert_eq!(click(&hits[0], &m), Some(Action::OpenFile(p.clone())));
         assert_eq!(click(&hits[1], &m), Some(Action::ShowInFolder(p.clone())));
-        assert_eq!(still_there(&p), Ok(()));
-        // Gone between the layout and the click: the click re-checks.
-        std::fs::remove_file(&path).unwrap();
         assert_eq!(file_state(&p), FileState::Missing);
         assert_eq!(still_there(&p), Err(MISSING));
         // The next model disables the buttons and says why.
