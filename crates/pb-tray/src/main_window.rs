@@ -84,8 +84,10 @@ const RAIL_W: f32 = 80.0;
 /// Frame timer: about 60 fps, only while something animates.
 const FRAME_TIMER: usize = 1;
 const FRAME_MS: u32 = 16;
-/// Focus ids: nav items are 1..=4, page hits `HIT_BASE + id`.
+/// Focus ids: nav items are 1..=4, the Settings search box `SEARCH_FOCUS`,
+/// page hits `HIT_BASE + id`.
 const HIT_BASE: u32 = 100;
+const SEARCH_FOCUS: u32 = 5;
 /// A saved rect must show this much of its caption strip on one monitor.
 const MIN_VISIBLE_W: i32 = 64;
 const MIN_VISIBLE_H: i32 = 20;
@@ -140,6 +142,9 @@ pub struct Host {
     pub settings_path: PathBuf,
     pub model: Box<dyn Fn() -> Model + Send + Sync>,
     pub act: Box<dyn Fn(pages::Action) + Send + Sync>,
+    /// Asks which paired devices still answer as themselves (debounced by
+    /// the tray); called when the window enters Settings or Devices.
+    pub check_peers: Box<dyn Fn() + Send + Sync>,
 }
 
 static HOST: OnceLock<Host> = OnceLock::new();
@@ -173,13 +178,22 @@ fn target_of(id: u32) -> Option<Target> {
     }
 }
 
-/// Tab order: the nav rail, then the page's hits in layout order.
-fn focus_order(hits: &[Hit]) -> Vec<u32> {
+/// Tab order: the nav rail, the search box (Settings), then the page's hits
+/// in layout order.
+fn focus_order(hits: &[Hit], search: bool) -> Vec<u32> {
     Page::ALL
         .iter()
         .map(|&p| focus_id(Target::Nav(p)))
+        .chain(search.then_some(SEARCH_FOCUS))
         .chain(hits.iter().map(|h| focus_id(Target::Hit(h.id))))
         .collect()
+}
+
+/// Where Tab (Shift+Tab when `back`) goes from the focus ring `focus`, or
+/// from the search box when the keys are in it (`in_search`).
+fn tab(order: &[u32], focus: Option<u32>, in_search: bool, back: bool) -> Option<u32> {
+    let from = if in_search { Some(SEARCH_FOCUS) } else { focus };
+    focus::next(order, from, back)
 }
 
 /// The window's regions in client pixels.
@@ -299,6 +313,8 @@ struct State {
     sub: settings::Page,
     query: String,
     search_focused: bool,
+    /// The page last entered (`note_page`).
+    entered: Option<Page>,
 }
 
 impl State {
@@ -340,6 +356,37 @@ fn current() -> Option<HWND> {
 
 pub fn is_open() -> bool {
     current().is_some()
+}
+
+/// Whether the Settings page is showing (the tray builds its rows only then).
+pub fn shows_settings() -> bool {
+    STATE.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .is_some_and(|g| g.as_ref().is_some_and(|st| st.page == Page::Settings))
+    })
+}
+
+/// After the page may have changed: entering Settings or Devices asks for
+/// a peer check, and Settings rebuilds the model (its rows are built only
+/// while it shows). Call with no borrow of the state held.
+fn note_page(hwnd: HWND) {
+    let Some(Some(page)) = with(hwnd, |st| {
+        (st.entered != Some(st.page)).then(|| {
+            st.entered = Some(st.page);
+            st.page
+        })
+    }) else {
+        return;
+    };
+    if matches!(page, Page::Settings | Page::Devices) {
+        if let Some(host) = HOST.get() {
+            (host.check_peers)();
+        }
+    }
+    if page == Page::Settings {
+        refresh();
+    }
 }
 
 /// Whether the window shows something that needs the camera status (the
@@ -406,7 +453,13 @@ fn on_search(hwnd: HWND, code: u32) {
             }
         }
         EN_SETFOCUS | EN_KILLFOCUS => {
-            with(hwnd, |st| st.search_focused = code == EN_SETFOCUS);
+            with(hwnd, |st| {
+                st.search_focused = code == EN_SETFOCUS;
+                // The keys go to the box now: no ring elsewhere.
+                if st.search_focused {
+                    st.focus = None;
+                }
+            });
             repaint(hwnd);
         }
         _ => {}
@@ -543,6 +596,8 @@ fn activate(hwnd: HWND, t: Target) {
                     sb.set_text("");
                 }
             });
+            // The Camera page shows the camera status: measure it now.
+            refresh();
             fit_scroll(hwnd);
         }
         Some(a) => {
@@ -553,10 +608,7 @@ fn activate(hwnd: HWND, t: Target) {
         None => {}
     }
     sync_search(hwnd);
-    if with(hwnd, |st| st.page == Page::Settings) == Some(true) {
-        // The camera card's status is measured only while it may show.
-        refresh();
-    }
+    note_page(hwnd);
     repaint(hwnd);
 }
 
@@ -999,17 +1051,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_LBUTTONDOWN => {
             let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
-            with(hwnd, |st| {
+            let in_search = with(hwnd, |st| {
                 let (f, hits) = layout_now(hwnd, st);
                 st.pressed = target_at(&f, &hits, x, y);
                 // The pointer took over: hide the keyboard focus ring.
                 st.focus = None;
-            });
-            // A click outside the search box takes the keyboard back from it
-            // (after the borrow: it notifies us of the focus change).
-            // SAFETY: focus queries and change on our own window.
+                st.page == Page::Settings
+                    && within(&settings::search_rect(f.content, f.pane, st.scale), x, y)
+            })
+            .unwrap_or(false);
+            // The search frame (glyph, border) focuses its edit; any other
+            // click takes the keyboard back from it. After the borrow: the
+            // edit notifies us of the focus change.
+            let into_box = in_search && with_search(|sb| sb.focus()).is_some();
+            // SAFETY: focus query and change on our own window.
             unsafe {
-                if GetFocus() != hwnd {
+                if !into_box && GetFocus() != hwnd {
                     let _ = SetFocus(Some(hwnd));
                 }
             }
@@ -1041,10 +1098,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_KEYDOWN if wparam.0 == VK_TAB.0 as usize => {
             // SAFETY: plain keyboard state query.
             let back = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
-            with(hwnd, |st| {
+            // The search box forwards Tab here too.
+            let has_search = with_search(|_| ()).is_some();
+            let moved = with(hwnd, |st| {
                 let (_, hits) = layout_now(hwnd, st);
-                st.focus = focus::next(&focus_order(&hits), st.focus, back);
+                let search = has_search && st.page == Page::Settings;
+                let order = focus_order(&hits, search);
+                let next = tab(&order, st.focus, st.search_focused, back);
+                let into = next == Some(SEARCH_FOCUS);
+                st.focus = if into { None } else { next };
+                (into, st.search_focused)
             });
+            // After the borrow: focus changes notify us.
+            match moved {
+                Some((true, _)) => {
+                    with_search(|sb| sb.focus());
+                }
+                Some((false, true)) => {
+                    // SAFETY: focus change to our own window.
+                    let _ = unsafe { SetFocus(Some(hwnd)) };
+                }
+                _ => {}
+            }
             repaint(hwnd);
             LRESULT(0)
         }
@@ -1325,6 +1400,7 @@ fn create(page: Page, opened: Instant) {
             sub: settings::Page::Devices,
             query: String::new(),
             search_focused: false,
+            entered: None,
         })
     });
     match SearchBox::new(hwnd, ID_SEARCH) {
@@ -1336,6 +1412,8 @@ fn create(page: Page, opened: Instant) {
         Err(e) => host.log.line(&format!("UI search box failed: {e}")),
     }
     sync_search(hwnd);
+    // Before the first paint: Settings needs its rows built.
+    note_page(hwnd);
     fluent::register_window(hwnd);
     // SAFETY: show and raise our own window.
     unsafe {
@@ -1354,9 +1432,7 @@ pub fn open(page: Page) {
     };
     with(hwnd, |st| switch(st, page));
     sync_search(hwnd);
-    if page == Page::Settings {
-        refresh();
-    }
+    note_page(hwnd);
     // SAFETY: restore and raise our own window.
     unsafe {
         if IsIconic(hwnd).as_bool() {
@@ -1481,12 +1557,37 @@ mod tests {
     }
 
     #[test]
+    fn the_search_box_sits_between_the_rail_and_the_page() {
+        let hit = |id| Hit {
+            id,
+            r: rectf(0.0, 0.0, 1.0, 1.0),
+        };
+        let order = focus_order(&[hit(1), hit(2)], true);
+        assert_eq!(
+            order,
+            [1, 2, 3, 4, SEARCH_FOCUS, HIT_BASE + 1, HIT_BASE + 2]
+        );
+        assert_eq!(target_of(SEARCH_FOCUS), None, "not a click target");
+        // Tab from the last nav item enters the box; from the box, the
+        // first page link; Shift+Tab from that link goes back to the box.
+        assert_eq!(tab(&order, Some(4), false, false), Some(SEARCH_FOCUS));
+        assert_eq!(tab(&order, None, true, false), Some(HIT_BASE + 1));
+        assert_eq!(tab(&order, None, true, true), Some(4));
+        assert_eq!(
+            tab(&order, Some(HIT_BASE + 1), false, true),
+            Some(SEARCH_FOCUS)
+        );
+        // Keys in the box win over a stale ring.
+        assert_eq!(tab(&order, Some(2), true, false), Some(HIT_BASE + 1));
+    }
+
+    #[test]
     fn tab_order_is_the_rail_then_the_page() {
         let hit = |id| Hit {
             id,
             r: rectf(0.0, 0.0, 1.0, 1.0),
         };
-        let order = focus_order(&[hit(0), hit(3)]);
+        let order = focus_order(&[hit(0), hit(3)], false);
         assert_eq!(order, [1, 2, 3, 4, HIT_BASE, HIT_BASE + 3]);
         assert_eq!(target_of(2), Some(Target::Nav(Page::Timeline)));
         assert_eq!(target_of(HIT_BASE + 3), Some(Target::Hit(3)));

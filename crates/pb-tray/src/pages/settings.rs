@@ -9,7 +9,7 @@
 use crate::{
     app_name::APP_NAME,
     camera_status::{CameraButton, Mark},
-    fluent::{self, rectf, round_rect, text, text_wrapped, Align, Canvas, Font, RectF},
+    fluent::{self, rectf, round_rect, text, text_width, text_wrapped, Align, Canvas, Font, RectF},
     pages::{Action, Hit},
     settings_groups::{label_of, page_of, page_title_of, pages, search},
     settings_rows::{self, rows, Action as SAction, CameraAct, ChoiceKey, Key, Model, Row},
@@ -95,6 +95,31 @@ pub fn items(m: &Model, page: Page, query: &str) -> Vec<Item> {
     out
 }
 
+/// `path` as it fits (`fits` measures): whole, or with folders from the
+/// middle replaced by "…" so the drive (or `\\server\share`) and the last
+/// folders stay; at worst "…\" and the last folder alone.
+pub fn shorten_path(path: &str, fits: impl Fn(&str) -> bool) -> String {
+    if fits(path) || !path.contains('\\') {
+        return path.to_owned();
+    }
+    let parts: Vec<&str> = path.split('\\').collect();
+    let head_n = if path.starts_with(r"\\") {
+        4.min(parts.len() - 1)
+    } else {
+        1
+    };
+    let (head, body) = parts.split_at(head_n);
+    let head = head.join("\\");
+    let last = body.last().copied().unwrap_or_default();
+    for keep in (1..body.len()).rev() {
+        let t = format!("{head}\\\u{2026}\\{}", body[body.len() - keep..].join("\\"));
+        if fits(&t) {
+            return t;
+        }
+    }
+    format!("\u{2026}\\{last}")
+}
+
 /// Sizes in logical px. `PANE_PAD` is the window's padding around the
 /// content rect (`main_window::frame`).
 const PANE_PAD: f32 = SPACE[4];
@@ -172,8 +197,11 @@ const KEYS: [Key; 15] = [
     Key::KeepHistory,
 ];
 
+/// Every key is in `KEYS` (a test checks), so this never falls back.
 fn toggle_id(k: Key) -> u32 {
-    TOGGLE + KEYS.iter().position(|x| *x == k).unwrap_or(0) as u32
+    let i = KEYS.iter().position(|x| *x == k);
+    debug_assert!(i.is_some(), "{k:?} missing from KEYS");
+    TOGGLE + i.unwrap_or(KEYS.len()) as u32
 }
 
 fn choice_id(k: ChoiceKey, i: u8) -> u32 {
@@ -529,7 +557,9 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
                 Align::Left,
             );
             let pr = rectf(il, card.top + 36.0 * s, right, card.top + 58.0 * s);
-            text(c, Font::Caption, &m.save_dir, pr, p.text2, Align::Left);
+            let w = pr.right - pr.left;
+            let shown = shorten_path(&m.save_dir, |t| text_width(c, Font::Caption, t) <= w);
+            text(c, Font::Caption, &shown, pr, p.text2, Align::Left);
             fluent::button(c, open, "Open", false);
             fluent::button(c, change, "Change", true);
         }
@@ -1042,6 +1072,62 @@ mod tests {
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
         }
+    }
+
+    #[test]
+    fn keys_cover_every_toggle() {
+        // Fails to compile when a Key is added: add it to KEYS too.
+        let numbered = |k: Key| match k {
+            Key::Share
+            | Key::ShareImages
+            | Key::Passwords
+            | Key::Keep
+            | Key::Auto
+            | Key::SendTo
+            | Key::Startup
+            | Key::Control
+            | Key::Notify
+            | Key::NotifyLock
+            | Key::NotifyClear
+            | Key::NotifyOpen
+            | Key::NotifyOtp
+            | Key::NotifyQuietMirror
+            | Key::KeepHistory => KEYS.contains(&k),
+        };
+        let m = on(Page::General, model());
+        for (i, k) in KEYS.iter().enumerate() {
+            assert!(numbered(*k));
+            assert!(!KEYS[..i].contains(k), "{k:?} twice");
+            let h = Hit {
+                id: toggle_id(*k),
+                r: rectf(0.0, 0.0, 1.0, 1.0),
+            };
+            assert_eq!(click(&h, &m), Some(set(SAction::Toggle(*k))));
+        }
+        assert_eq!(KEYS.len(), 15);
+        for r in rows(&model()) {
+            if let Row::Toggle(k, ..) = r {
+                assert!(KEYS.contains(&k), "{k:?} missing from KEYS");
+            }
+        }
+    }
+
+    #[test]
+    fn long_save_paths_keep_the_folder_name() {
+        let fits = |n: usize| move |t: &str| t.chars().count() <= n;
+        let p = r"C:\Users\Harsh Raj\Documents\Relay\Received";
+        assert_eq!(shorten_path(p, fits(100)), p);
+        assert_eq!(shorten_path(p, fits(28)), "C:\\\u{2026}\\Relay\\Received");
+        assert_eq!(shorten_path(p, fits(18)), "C:\\\u{2026}\\Received");
+        // Not even that fits: the folder name alone, after the ellipsis.
+        assert_eq!(shorten_path(p, fits(5)), "\u{2026}\\Received");
+        // A UNC share keeps its server and share.
+        let u = r"\\server\share\a\b\Folder";
+        assert_eq!(
+            shorten_path(u, fits(24)),
+            "\\\\server\\share\\\u{2026}\\Folder"
+        );
+        assert_eq!(shorten_path("Folder", fits(3)), "Folder");
     }
 
     #[test]

@@ -82,6 +82,38 @@ static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsiz
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
+/// Each peer check dials every paired device (5 s timeout each): at most
+/// one per this long, whoever asks.
+const PEER_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+static LAST_PEER_CHECK: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Whether a peer check may run at `now` after the one at `last`.
+fn peer_check_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|t| {
+        now.checked_duration_since(t)
+            .is_some_and(|d| d >= PEER_CHECK_EVERY)
+    })
+}
+
+/// Asks which devices still answer as the paired one (Settings and Devices
+/// show the "Reinstalled or reset" note from it), debounced.
+fn check_peers(cmds: &UnboundedSender<Cmd>) {
+    let now = std::time::Instant::now();
+    let due = LAST_PEER_CHECK
+        .lock()
+        .map(|mut last| {
+            let due = peer_check_due(*last, now);
+            if due {
+                *last = Some(now);
+            }
+            due
+        })
+        .unwrap_or(true);
+    if due {
+        let _ = cmds.send(Cmd::CheckPeers);
+    }
+}
+
 /// Settings page controls, applied on the UI thread (`WM_SETTINGS_ACTION`).
 static SETTINGS_ACTIONS: Mutex<VecDeque<crate::settings_rows::Action>> =
     Mutex::new(VecDeque::new());
@@ -656,9 +688,14 @@ fn page_model(st: &State) -> crate::pages::Model {
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
         },
-        // The window adds its own sub-page and query.
+        // The window adds its own sub-page and query. The rows (a registry
+        // read and two file checks) are built only while Settings shows.
         settings: crate::pages::settings::SettingsModel {
-            rows: settings_model(st),
+            rows: if crate::main_window::shows_settings() {
+                settings_model(st)
+            } else {
+                Default::default()
+            },
             ..Default::default()
         },
     }
@@ -1807,18 +1844,31 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                 .map(|mut s| s.keep_in_history = !s.keep_in_history);
             save_settings(st);
         }
-        // Off stops recording and deletes the stored history.
+        // Off stops recording and deletes the stored history: asked first.
         Action::Toggle(Key::KeepHistory) => {
-            let on = st
-                .settings
-                .lock()
-                .map(|mut s| {
-                    s.keep_history = !s.keep_history;
-                    s.keep_history
-                })
-                .unwrap_or(true);
-            save_settings(st);
-            crate::timeline::with(|t| t.set_enabled(on));
+            let on = st.settings.lock().map(|s| s.keep_history).unwrap_or(true);
+            if !on {
+                set_keep_history(st, true);
+            } else {
+                let raw = hwnd.0 as isize;
+                ask_yes_no(
+                    Dialog::question(
+                        "Turn off history?".into(),
+                        "This deletes the history on this PC.".into(),
+                        "Turn off",
+                        "Cancel",
+                    ),
+                    move |yes| {
+                        if yes {
+                            if let Some(st) = STATE.get() {
+                                set_keep_history(st, false);
+                            }
+                            // The switch and the Timeline show it now.
+                            post_settings_action(raw);
+                        }
+                    },
+                );
+            }
         }
         Action::ClearHistory => {
             let raw = hwnd.0 as isize;
@@ -1864,6 +1914,13 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
         }
         Action::Camera(CameraAct::OpenWindow) => command(hwnd, st, ID_CAMERA_WINDOW),
     }
+}
+
+/// "Keep history": saved, and the Timeline records (or is deleted) to match.
+fn set_keep_history(st: &State, on: bool) {
+    let _ = st.settings.lock().map(|mut s| s.keep_history = on);
+    save_settings(st);
+    crate::timeline::with(|t| t.set_enabled(on));
 }
 
 const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
@@ -2029,8 +2086,8 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_OPEN_MAIN => crate::main_window::open(crate::main_window::Page::Home),
         ID_SETTINGS => {
             // Which devices still answer as the paired one (the page updates
-            // when it ends).
-            let _ = st.cmds.send(Cmd::CheckPeers);
+            // when it ends); the window asks too, under the same debounce.
+            check_peers(&st.cmds);
             crate::main_window::open(crate::main_window::Page::Settings);
         }
         ID_MENU => show_menu(hwnd),
@@ -2401,6 +2458,11 @@ pub fn create(
         settings_path: settings_path.clone(),
         model: Box::new(|| STATE.get().map(page_model).unwrap_or_default()),
         act: Box::new(page_action),
+        check_peers: Box::new(|| {
+            if let Some(st) = STATE.get() {
+                check_peers(&st.cmds);
+            }
+        }),
     });
     // A Timeline file check that changes a row repaints the window.
     crate::pages::timeline::files::set_notify(|| {
@@ -2556,6 +2618,17 @@ mod tests {
         );
         // A quote would end the quoting early: never passed on.
         assert_eq!(select_arg(r#"C:\x" /root,C:\Windows"#), None);
+    }
+
+    #[test]
+    fn peer_checks_run_at_most_every_30_seconds() {
+        let t0 = std::time::Instant::now();
+        let s = std::time::Duration::from_secs;
+        assert!(peer_check_due(None, t0));
+        assert!(!peer_check_due(Some(t0), t0 + s(29)));
+        assert!(peer_check_due(Some(t0), t0 + s(30)));
+        // A last check "in the future" is not due yet.
+        assert!(!peer_check_due(Some(t0 + s(5)), t0));
     }
 
     #[test]

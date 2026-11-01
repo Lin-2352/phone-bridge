@@ -14,12 +14,14 @@ use windows::{
             FONT_QUALITY, HBRUSH, HDC, HFONT, HGDIOBJ,
         },
         UI::{
-            Input::KeyboardAndMouse::{GetFocus, SetFocus},
+            Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_ESCAPE, VK_RETURN, VK_TAB},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 CreateWindowExW, DestroyWindow, GetParent, GetWindowLongW, GetWindowTextLengthW,
                 GetWindowTextW, MoveWindow, SendMessageW, SetWindowLongW, SetWindowTextW,
                 ShowWindow, ES_AUTOHSCROLL, GWL_STYLE, HMENU, SW_HIDE, SW_SHOWNA, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_SETFONT, WS_CHILD, WS_CLIPCHILDREN, WS_TABSTOP, WS_VISIBLE,
+                WINDOW_STYLE, WM_CHAR, WM_KEYDOWN, WM_NCDESTROY, WM_SETFONT, WS_CHILD,
+                WS_CLIPCHILDREN, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
@@ -66,6 +68,46 @@ fn make_font(s: f32) -> HFONT {
     }
 }
 
+const SUBCLASS_ID: usize = 1;
+
+/// The edit's keys outside a dialog: Tab and Shift+Tab go to the parent
+/// (which moves its focus), Esc clears the text (`EN_CHANGE` follows) and
+/// Enter does nothing; none of them beep.
+unsafe extern "system" fn subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    // SAFETY (whole body): messages on the edit this procedure subclasses.
+    unsafe {
+        match msg {
+            WM_KEYDOWN if wparam.0 == VK_TAB.0 as usize => {
+                if let Ok(parent) = GetParent(hwnd) {
+                    SendMessageW(parent, WM_KEYDOWN, Some(wparam), Some(lparam));
+                }
+                LRESULT(0)
+            }
+            WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {
+                if GetWindowTextLengthW(hwnd) > 0 {
+                    let _ = SetWindowTextW(hwnd, w!(""));
+                }
+                LRESULT(0)
+            }
+            WM_KEYDOWN if wparam.0 == VK_RETURN.0 as usize => LRESULT(0),
+            // Tab, Enter and Esc as characters: the edit would beep.
+            WM_CHAR if matches!(wparam.0, 0x09 | 0x0d | 0x1b) => LRESULT(0),
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(hwnd, Some(subclass), SUBCLASS_ID);
+                DefSubclassProc(hwnd, msg, wparam, lparam)
+            }
+            _ => DefSubclassProc(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
 fn set_font(edit: HWND, font: HFONT) {
     // SAFETY: our edit; the font outlives its use (deleted in `place`/`Drop`).
     unsafe {
@@ -104,6 +146,11 @@ impl SearchBox {
             )
         }
         .map_err(|e| format!("CreateWindowExW(EDIT): {e}"))?;
+        // SAFETY: subclassing our own edit; removed in `subclass` on
+        // WM_NCDESTROY.
+        unsafe {
+            let _ = SetWindowSubclass(edit, Some(subclass), SUBCLASS_ID, 0);
+        }
         let font = make_font(1.0);
         set_font(edit, font);
         Ok(Self {
@@ -155,7 +202,6 @@ impl SearchBox {
         let _ = unsafe { SetWindowTextW(self.edit, PCWSTR(wide.as_ptr())) };
     }
 
-    #[allow(dead_code)] // part of the box's interface; nothing focuses it by code yet
     pub fn focus(&self) {
         // SAFETY: focuses our own child.
         let _ = unsafe { SetFocus(Some(self.edit)) };
@@ -278,6 +324,41 @@ mod tests {
     fn edit_sits_inside_the_frame_after_the_glyph() {
         let r = edit_rect(rectf(0., 0., 300., 36.), 1.0);
         assert!(r.left >= 32.0 && r.right <= 292.0 && (r.top - 8.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn esc_clears_and_enter_and_tab_type_nothing() {
+        let parent = crate::d2d::test_window();
+        let sb = SearchBox::new(parent, 101).expect("search box");
+        sb.set_text("cam");
+        // SAFETY: messages to our own edit, as the keyboard would send them.
+        unsafe {
+            for ch in [0x0d, 0x09, 0x1b] {
+                SendMessageW(sb.edit, WM_CHAR, Some(WPARAM(ch)), None);
+            }
+            SendMessageW(
+                sb.edit,
+                WM_KEYDOWN,
+                Some(WPARAM(VK_RETURN.0 as usize)),
+                None,
+            );
+        }
+        assert_eq!(sb.text(), "cam");
+        // SAFETY: as above.
+        unsafe {
+            SendMessageW(
+                sb.edit,
+                WM_KEYDOWN,
+                Some(WPARAM(VK_ESCAPE.0 as usize)),
+                None,
+            );
+        }
+        assert_eq!(sb.text(), "");
+        drop(sb);
+        // SAFETY: our own test window.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(parent);
+        }
     }
 
     #[test]
