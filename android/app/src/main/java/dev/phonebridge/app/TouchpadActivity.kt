@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
+import dev.phonebridge.app.ui.ThemeChoice
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -98,7 +100,7 @@ class TouchpadActivity : ComponentActivity() {
         enableEdgeToEdge()
         ThemeChoice.mode.intValue = Prefs(this).theme
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        setContent { PbTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) { Screen() } } }
+        setContent { RelayTheme { Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) { Screen() } } }
     }
 
     override fun onStart() {

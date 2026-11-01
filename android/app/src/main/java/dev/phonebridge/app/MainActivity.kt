@@ -1,5 +1,10 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
+import dev.phonebridge.app.ui.ThemeChoice
+import dev.phonebridge.app.ui.isDark
+import dev.phonebridge.app.ui.Amber
+import dev.phonebridge.app.ui.AmberDark
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -117,7 +122,7 @@ class MainActivity : ComponentActivity() {
         honourUserStop(this)
         if (prefs.enabled) startForegroundService(Intent(this, PbService::class.java))
         setContent {
-            PbTheme {
+            RelayTheme {
                 val dark = isDark()
                 LaunchedEffect(dark) {
                     val bars = if (dark) SystemBarStyle.dark(AColor.TRANSPARENT) else SystemBarStyle.light(AColor.TRANSPARENT, AColor.TRANSPARENT)

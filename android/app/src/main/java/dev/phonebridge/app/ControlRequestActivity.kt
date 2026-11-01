@@ -1,5 +1,6 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
@@ -28,7 +29,7 @@ class ControlRequestActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         current = this
         setContent {
-            PbTheme {
+            RelayTheme {
                 peerName?.let { peer ->
                     ConsentDialog(
                         title = "Let $peer control this phone?",
