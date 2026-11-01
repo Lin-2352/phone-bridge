@@ -40,7 +40,7 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
-                GetWindowRect, IsIconic, IsZoomed, KillTimer, LoadCursorW, PostMessageW,
+                GetWindowRect, IsIconic, IsZoomed, KillTimer, LoadCursorW, LoadIconW, PostMessageW,
                 RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, HTCLOSE,
                 HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE,
                 SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
@@ -1000,6 +1000,12 @@ fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface), Strin
             hInstance: hinstance.into(),
             lpszClassName: CLASS,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // The app icon (resource 1) for the taskbar and Alt+Tab.
+            hIcon: LoadIconW(
+                Some(hinstance.into()),
+                PCWSTR(std::ptr::without_provenance::<u16>(1)),
+            )
+            .unwrap_or_default(),
             // No background brush: every pixel is ours (WM_ERASEBKGND).
             ..Default::default()
         };
