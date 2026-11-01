@@ -49,6 +49,9 @@ pub struct Settings {
     pub screen_sharp: bool,
     /// Record what moved in the PC timeline (metadata only).
     pub keep_history: bool,
+    /// Where the main window was last (x, y, width, height in screen
+    /// pixels); None until it has been closed once.
+    pub main_window_rect: Option<(i32, i32, i32, i32)>,
 }
 
 impl Default for Settings {
@@ -80,6 +83,7 @@ impl Default for Settings {
             screen_dim: false,
             screen_sharp: false,
             keep_history: true,
+            main_window_rect: None,
         }
     }
 }
@@ -150,6 +154,12 @@ impl Settings {
                 "screen_dim" => s.screen_dim = parse_bool(v).unwrap_or(s.screen_dim),
                 "screen_sharp" => s.screen_sharp = parse_bool(v).unwrap_or(s.screen_sharp),
                 "keep_history" => s.keep_history = parse_bool(v).unwrap_or(s.keep_history),
+                "main_window_rect" => {
+                    let n: Vec<i32> = v.split(',').filter_map(|f| f.trim().parse().ok()).collect();
+                    if let [x, y, w, h] = n[..] {
+                        s.main_window_rect = Some((x, y, w, h));
+                    }
+                }
                 "notify_app" => {
                     let mut f = v.splitn(3, '\t');
                     if let (Some(m), Some(pkg), Some(name)) = (f.next(), f.next(), f.next()) {
@@ -191,6 +201,9 @@ impl Settings {
             "screen_pinned={}\nscreen_dim={}\nscreen_sharp={}\nkeep_history={}\n",
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
+        if let Some((x, y, w, h)) = self.main_window_rect {
+            text += &format!("main_window_rect={x},{y},{w},{h}\n");
+        }
         let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
         for (pkg, name, muted) in &self.notify_apps {
             text += &format!(
@@ -218,6 +231,7 @@ mod tests {
         assert!(s.skip_private);
         assert!(!s.keep_in_history);
         assert!(s.keep_history, "the timeline records by default");
+        assert_eq!(s.main_window_rect, None);
     }
 
     #[test]
@@ -250,6 +264,7 @@ mod tests {
             screen_dim: true,
             screen_sharp: true,
             keep_history: false,
+            main_window_rect: Some((-1200, 40, 1000, 700)),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
@@ -271,10 +286,11 @@ new"
         );
         std::fs::write(
             &path,
-            "garbage\nuniversal_clipboard=maybe\nauto_accept=off\nfuture_key=1\n",
+            "garbage\nuniversal_clipboard=maybe\nauto_accept=off\nfuture_key=1\nmain_window_rect=1,2,x,4\n",
         )
         .unwrap();
         let t = Settings::load(&path);
+        assert_eq!(t.main_window_rect, None, "a malformed rect is ignored");
         assert!(!t.universal_clipboard);
         assert!(!t.auto_accept);
         assert_eq!(

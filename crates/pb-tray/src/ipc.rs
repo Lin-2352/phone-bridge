@@ -30,7 +30,7 @@ pub enum Request {
     SendClipboard,
     /// Open the settings window.
     Settings,
-    /// Open the flyout.
+    /// Open the main window on Home.
     Open,
     /// Show the tray menu (for checks without clicking the icon).
     Menu,

@@ -1,0 +1,1264 @@
+//! The Relay main window: Mica backdrop (opaque token surface when Mica is
+//! unavailable), a custom title bar with the standard caption buttons, a
+//! nav rail (Home, Timeline, Devices, Settings) and a content pane drawn by
+//! `pages`. Size and position are remembered in the settings. Everything
+//! here runs on the UI thread (the tray's message loop), so the window's
+//! state lives in thread-locals; a borrow is never held across a call that
+//! can send messages back into `wndproc`.
+#![allow(unsafe_code)]
+
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+    time::Instant,
+};
+
+use windows::{
+    core::{w, PCWSTR},
+    Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::{
+            Direct2D::D2D1_ANTIALIAS_MODE_ALIASED,
+            Dwm::DwmExtendFrameIntoClientArea,
+            Gdi::{
+                EnumDisplayMonitors, GetMonitorInfoW, InvalidateRect, MonitorFromPoint,
+                ScreenToClient, UpdateWindow, ValidateRect, HDC, HMONITOR, MONITORINFO,
+                MONITOR_DEFAULTTONEAREST,
+            },
+        },
+        System::LibraryLoader::GetModuleHandleW,
+        UI::{
+            Controls::MARGINS,
+            HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI},
+            Input::KeyboardAndMouse::{
+                GetKeyState, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_RETURN,
+                VK_SHIFT, VK_SPACE, VK_TAB,
+            },
+            WindowsAndMessaging::{
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
+                GetWindowRect, IsIconic, IsZoomed, KillTimer, LoadCursorW, PostMessageW,
+                RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, HTCLOSE,
+                HTMAXBUTTON, HTMINBUTTON, IDC_ARROW, MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE,
+                SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
+                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
+                SW_SHOW, WINDOW_EX_STYLE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+                WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
+                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
+                WM_NCMOUSEMOVE, WM_PAINT, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW,
+                WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
+            },
+        },
+    },
+};
+
+use crate::{
+    app_name::APP_NAME,
+    core::{Log, SharedSettings},
+    d2d::{Backdrop, Surface},
+    ease::Anim,
+    fluent::{self, rectf, round_rect, text, Align, Canvas, Font, RectF},
+    focus,
+    pages::{self, Hit, Model},
+    titlebar::{self, Caption},
+    tokens::{motion, RADIUS, SPACE},
+    widgets::{self, Scroll},
+};
+
+const CLASS: PCWSTR = w!("PhoneBridgeMain");
+const WM_MOUSELEAVE: u32 = 0x02A3;
+/// Default and minimum window sizes, nav rail width, in logical px.
+const DEFAULT_W: f32 = 1000.0;
+const DEFAULT_H: f32 = 700.0;
+const MIN_W: f32 = 640.0;
+const MIN_H: f32 = 480.0;
+const RAIL_W: f32 = 80.0;
+/// Frame timer: about 60 fps, only while something animates.
+const FRAME_TIMER: usize = 1;
+const FRAME_MS: u32 = 16;
+/// Focus ids: nav items are 1..=4, page hits `HIT_BASE + id`.
+const HIT_BASE: u32 = 100;
+/// A saved rect must show this much of its caption strip on one monitor.
+const MIN_VISIBLE_W: i32 = 64;
+const MIN_VISIBLE_H: i32 = 20;
+const CAPTION_STRIP: i32 = 40;
+
+/// A saved window rectangle: x, y, width, height in screen pixels.
+pub type SavedRect = (i32, i32, i32, i32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Home,
+    Timeline,
+    Devices,
+    Settings,
+}
+
+impl Page {
+    /// Nav rail order.
+    pub const ALL: [Page; 4] = [Page::Home, Page::Timeline, Page::Devices, Page::Settings];
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Page::Home => "Home",
+            Page::Timeline => "Timeline",
+            Page::Devices => "Devices",
+            Page::Settings => "Settings",
+        }
+    }
+
+    fn glyph(self) -> char {
+        match self {
+            Page::Home => '\u{E80F}',
+            Page::Timeline => '\u{E81C}',
+            Page::Devices => '\u{E8EA}',
+            Page::Settings => '\u{E713}',
+        }
+    }
+}
+
+/// What the window needs from the tray: the log, the settings (for the
+/// saved rect) and a way to build the page model.
+pub struct Host {
+    pub log: Log,
+    pub settings: SharedSettings,
+    pub settings_path: PathBuf,
+    pub model: Box<dyn Fn() -> Model + Send + Sync>,
+}
+
+static HOST: OnceLock<Host> = OnceLock::new();
+/// The first paint is logged once per process.
+static FIRST_PAINT: AtomicBool = AtomicBool::new(false);
+
+/// Called once by the tray before anything opens the window.
+pub fn init(host: Host) {
+    let _ = HOST.set(host);
+}
+
+/// Something the pointer or keyboard can act on in the client area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Target {
+    Nav(Page),
+    Hit(u32),
+}
+
+fn focus_id(t: Target) -> u32 {
+    match t {
+        Target::Nav(p) => p.index() as u32 + 1,
+        Target::Hit(id) => HIT_BASE + id,
+    }
+}
+
+fn target_of(id: u32) -> Option<Target> {
+    match id {
+        1..=4 => Some(Target::Nav(Page::ALL[id as usize - 1])),
+        n if n >= HIT_BASE => Some(Target::Hit(n - HIT_BASE)),
+        _ => None,
+    }
+}
+
+/// Tab order: the nav rail, then the page's hits in layout order.
+fn focus_order(hits: &[Hit]) -> Vec<u32> {
+    Page::ALL
+        .iter()
+        .map(|&p| focus_id(Target::Nav(p)))
+        .chain(hits.iter().map(|h| focus_id(Target::Hit(h.id))))
+        .collect()
+}
+
+/// The window's regions in client pixels.
+struct Frame {
+    cap: Caption,
+    pane: RectF,
+    /// The pane minus its padding: what a page lays out into.
+    content: RectF,
+    nav: Vec<(RectF, Page)>,
+}
+
+fn frame(w: f32, h: f32, s: f32) -> Frame {
+    let cap = titlebar::layout(w, s);
+    let top = cap.close.bottom;
+    let rail = rectf(0.0, top, RAIL_W * s, h);
+    let pane = rectf(rail.right, top, w.max(rail.right), h.max(top));
+    let pad = SPACE[4] * s;
+    let content = rectf(
+        pane.left + pad,
+        pane.top + pad,
+        (pane.right - pad).max(pane.left + pad),
+        (pane.bottom - pad).max(pane.top + pad),
+    );
+    let labels = Page::ALL.map(Page::label);
+    let nav = widgets::nav_rail(rail, s, &labels, 0)
+        .into_iter()
+        .map(|(r, i)| (r, Page::ALL[i]))
+        .collect();
+    Frame {
+        cap,
+        pane,
+        content,
+        nav,
+    }
+}
+
+fn within(r: &RectF, x: f32, y: f32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+fn target_at(f: &Frame, hits: &[Hit], x: f32, y: f32) -> Option<Target> {
+    if let Some((_, p)) = f.nav.iter().find(|(r, _)| within(r, x, y)) {
+        return Some(Target::Nav(*p));
+    }
+    if !within(&f.pane, x, y) {
+        return None;
+    }
+    hits.iter()
+        .find(|h| within(&h.r, x, y))
+        .map(|h| Target::Hit(h.id))
+}
+
+/// The page's full content rect, moved up by the scroll offset (logical px).
+fn scrolled(content: RectF, s: f32, sc: &Scroll) -> RectF {
+    let off = sc.offset * s;
+    let h = (sc.content * s).max(content.bottom - content.top);
+    rectf(
+        content.left,
+        content.top - off,
+        content.right,
+        content.top - off + h,
+    )
+}
+
+/// The saved rect if its caption strip is visible enough on some monitor
+/// (`monitors` are work areas) to be grabbed; otherwise None (the monitor
+/// was unplugged or the layout changed), and the window opens centred.
+pub fn restore_rect(saved: Option<SavedRect>, monitors: &[RECT]) -> Option<SavedRect> {
+    let (x, y, w, h) = saved?;
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let strip = (x, y, x + w, y + h.min(CAPTION_STRIP));
+    let visible = monitors.iter().any(|m| {
+        let iw = strip.2.min(m.right) - strip.0.max(m.left);
+        let ih = strip.3.min(m.bottom) - strip.1.max(m.top);
+        iw >= MIN_VISIBLE_W && ih >= MIN_VISIBLE_H
+    });
+    visible.then_some((x, y, w, h))
+}
+
+/// WM_DPICHANGED: the rect Windows suggests and the new scale.
+pub fn on_dpi(suggested: RECT, dpi: u32) -> (RECT, f32) {
+    (suggested, dpi.max(96) as f32 / 96.0)
+}
+
+/// The smallest window size at scale `s`, so the caption never collapses.
+fn min_size(s: f32) -> (i32, i32) {
+    ((MIN_W * s).round() as i32, (MIN_H * s).round() as i32)
+}
+
+struct State {
+    hwnd: isize,
+    page: Page,
+    model: Model,
+    /// Current DPI scale (updated before WM_DPICHANGED resizes the window).
+    scale: f32,
+    active: bool,
+    /// Caption button (`HT*`) under the pointer / held down.
+    cap_hover: Option<u32>,
+    cap_pressed: Option<u32>,
+    nc_tracking: bool,
+    tracking: bool,
+    nav_hover: Option<Page>,
+    /// Hover fade per nav item, indexed like `Page::ALL`.
+    nav_fade: [Anim; 4],
+    pressed: Option<Target>,
+    /// Keyboard focus (a focus id); shown as a ring, cleared by the mouse.
+    focus: Option<u32>,
+    scroll: [Scroll; 4],
+    timer: bool,
+    /// The last restored (not maximized or minimized) window rect.
+    normal: Option<SavedRect>,
+    opened: Instant,
+}
+
+impl State {
+    fn animating(&self, now: Instant) -> bool {
+        self.nav_fade.iter().any(|a| a.running(now)) || self.scroll.iter().any(|s| s.animating(now))
+    }
+}
+
+thread_local! {
+    static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// The Direct2D surface, apart from `STATE` so painting never needs both
+    /// borrowed (COM objects stay on the UI thread).
+    static SURFACE: RefCell<Option<(isize, Surface)>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` on the window's state if `hwnd` is the main window. `f` must not
+/// call anything that sends messages to the window.
+fn with<R>(hwnd: HWND, f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    STATE.with(|cell| {
+        let mut g = cell.borrow_mut();
+        g.as_mut().filter(|st| st.hwnd == hwnd.0 as isize).map(f)
+    })
+}
+
+fn current() -> Option<HWND> {
+    STATE.with(|cell| cell.borrow().as_ref().map(|st| HWND(st.hwnd as *mut _)))
+}
+
+pub fn is_open() -> bool {
+    current().is_some()
+}
+
+fn client_size(hwnd: HWND) -> (f32, f32) {
+    let mut r = RECT::default();
+    // SAFETY: reads our own window's client rect.
+    let _ = unsafe { GetClientRect(hwnd, &mut r) };
+    ((r.right - r.left) as f32, (r.bottom - r.top) as f32)
+}
+
+/// The frame and the current page's hits, from the live client size.
+fn layout_now(hwnd: HWND, st: &State) -> (Frame, Vec<Hit>) {
+    let (w, h) = client_size(hwnd);
+    let f = frame(w, h, st.scale);
+    let sc = &st.scroll[st.page.index()];
+    let hits = pages::layout(
+        st.page,
+        scrolled(f.content, st.scale, sc),
+        st.scale,
+        &st.model,
+    );
+    (f, hits)
+}
+
+/// Re-measures every page's scroll range for the current size and model.
+fn fit_scroll(hwnd: HWND) {
+    let (w, h) = client_size(hwnd);
+    with(hwnd, |st| {
+        let f = frame(w, h, st.scale);
+        let (cw, ch) = (
+            f.content.right - f.content.left,
+            f.content.bottom - f.content.top,
+        );
+        for p in Page::ALL {
+            let sc = &mut st.scroll[p.index()];
+            sc.view = ch / st.scale;
+            sc.content = pages::content_height(p, cw, st.scale, &st.model);
+            sc.clamp();
+        }
+    });
+}
+
+fn repaint(hwnd: HWND) {
+    // SAFETY: repaint request on our own window.
+    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+}
+
+/// Runs the frame timer exactly while something animates.
+fn sync_timer(hwnd: HWND) {
+    let now = Instant::now();
+    let Some((want, had)) = with(hwnd, |st| {
+        let want = st.animating(now);
+        let had = std::mem::replace(&mut st.timer, want);
+        (want, had)
+    }) else {
+        return;
+    };
+    // SAFETY: our own window's timer; killed when idle and on WM_DESTROY.
+    unsafe {
+        if want && !had {
+            SetTimer(Some(hwnd), FRAME_TIMER, FRAME_MS, None);
+        } else if !want && had {
+            let _ = KillTimer(Some(hwnd), FRAME_TIMER);
+        }
+    }
+}
+
+fn set_nav_hover(st: &mut State, h: Option<Page>, now: Instant) -> bool {
+    if st.nav_hover == h {
+        return false;
+    }
+    st.nav_hover = h;
+    for p in Page::ALL {
+        let target = if h == Some(p) { 1.0 } else { 0.0 };
+        let a = st.nav_fade[p.index()];
+        if a.to != target {
+            st.nav_fade[p.index()] = Anim::new(a.value(now), target, now, motion::FAST_MS);
+        }
+    }
+    true
+}
+
+fn switch(st: &mut State, page: Page) {
+    if st.page == page {
+        return;
+    }
+    st.page = page;
+    st.pressed = None;
+    // A focused hit belonged to the old page.
+    if st.focus.is_some_and(|id| id >= HIT_BASE) {
+        st.focus = None;
+    }
+}
+
+/// A click, Enter or Space on `t`.
+fn activate(hwnd: HWND, t: Target) {
+    with(hwnd, |st| match t {
+        Target::Nav(p) => switch(st, p),
+        Target::Hit(id) => {
+            let (_, hits) = layout_now(hwnd, st);
+            let action = hits
+                .iter()
+                .find(|h| h.id == id)
+                .and_then(|h| pages::click(st.page, h, &st.model));
+            if let Some(pages::Action::Go(p)) = action {
+                switch(st, p);
+            }
+        }
+    });
+    repaint(hwnd);
+}
+
+/// What `paint` needs, copied out of the state.
+struct Snapshot {
+    page: Page,
+    model: Model,
+    active: bool,
+    maximized: bool,
+    cap_hover: Option<u32>,
+    cap_pressed: Option<u32>,
+    nav_t: [f32; 4],
+    focus: Option<u32>,
+    scroll: Scroll,
+}
+
+fn paint(hwnd: HWND) {
+    let now = Instant::now();
+    // SAFETY: plain query on our own window.
+    let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+    let snap = with(hwnd, |st| Snapshot {
+        page: st.page,
+        model: st.model.clone(),
+        active: st.active,
+        maximized,
+        cap_hover: st.cap_hover,
+        cap_pressed: st.cap_pressed,
+        nav_t: st.nav_fade.map(|a| a.value(now)),
+        focus: st.focus,
+        scroll: st.scroll[st.page.index()].clone(),
+    });
+    let painted = SURFACE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match (snap.as_ref(), slot.as_mut()) {
+            (Some(snap), Some((h, surface))) if *h == hwnd.0 as isize => {
+                let mica = surface.backdrop() == Backdrop::Mica;
+                fluent::paint_with(surface, hwnd, |c, area| draw(c, area, snap, mica));
+                true
+            }
+            _ => false,
+        }
+    });
+    if !painted {
+        // Nothing to draw with (yet): validate so WM_PAINT does not repeat.
+        // SAFETY: our own window.
+        let _ = unsafe { ValidateRect(Some(hwnd), None) };
+        return;
+    }
+    if !FIRST_PAINT.swap(true, Ordering::Relaxed) {
+        let ms = with(hwnd, |st| st.opened.elapsed().as_millis()).unwrap_or(0);
+        if let Some(host) = HOST.get() {
+            host.log
+                .line(&format!("UI main window first paint {ms} ms"));
+        }
+    }
+}
+
+/// A 2 px accent ring just outside `r`.
+fn focus_ring(c: &Canvas, r: RectF) {
+    let radius = RADIUS[1] * c.s;
+    for grow in [2.0, 1.0] {
+        let o = rectf(r.left - grow, r.top - grow, r.right + grow, r.bottom + grow);
+        round_rect(c, &o, None, Some(c.p.accent), radius + grow, false);
+    }
+}
+
+fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
+    let (s, p) = (c.s, c.p);
+    let f = frame(area.right, area.bottom, s);
+
+    // Content layer: a rounded top-left corner and a hairline edge; its right
+    // and bottom edges sit outside the window. Over Mica it is translucent.
+    let over = RADIUS[1] * s * 2.0;
+    let layer = rectf(
+        f.pane.left,
+        f.pane.top,
+        f.pane.right + over,
+        f.pane.bottom + over,
+    );
+    let alpha = if mica { 0.5 } else { 1.0 };
+    round_rect(
+        c,
+        &layer,
+        Some((p.card, alpha)),
+        Some(p.stroke),
+        RADIUS[1] * s,
+        false,
+    );
+
+    // Title bar: app name and the caption buttons.
+    let title_rgb = if snap.active { p.text } else { p.text2 };
+    let tr = rectf(
+        16.0 * s,
+        f.cap.drag.top,
+        f.cap.drag.right,
+        f.cap.drag.bottom,
+    );
+    text(c, Font::Caption, APP_NAME, tr, title_rgb, Align::Left);
+    titlebar::draw(
+        c,
+        &f.cap,
+        snap.cap_hover,
+        snap.cap_pressed,
+        snap.maximized,
+        snap.active,
+    );
+
+    // Nav rail.
+    for (r, page) in &f.nav {
+        let selected = *page == snap.page;
+        let t = snap.nav_t[page.index()];
+        if !selected && t > 0.0 {
+            round_rect(c, r, Some((p.hover, t)), None, RADIUS[1] * s, false);
+        }
+        widgets::draw_nav_item(c, *r, page.glyph(), page.label(), selected);
+        if snap.focus == Some(focus_id(Target::Nav(*page))) {
+            focus_ring(c, *r);
+        }
+    }
+
+    // The page, clipped to the pane, with an overlay scrollbar.
+    let pr = scrolled(f.content, s, &snap.scroll);
+    let hits = pages::layout(snap.page, pr, s, &snap.model);
+    // SAFETY: clip push/pop pair inside the surface's BeginDraw/EndDraw.
+    unsafe {
+        c.dc.PushAxisAlignedClip(&f.pane, D2D1_ANTIALIAS_MODE_ALIASED)
+    };
+    pages::draw(snap.page, c, pr, &snap.model, &hits);
+    if let Some(id) = snap.focus.filter(|&id| id >= HIT_BASE) {
+        if let Some(h) = hits.iter().find(|h| focus_id(Target::Hit(h.id)) == id) {
+            focus_ring(c, h.r);
+        }
+    }
+    if let Some((top, h)) = snap.scroll.thumb() {
+        let x = f.pane.right - 6.0 * s;
+        let bar = rectf(
+            x,
+            f.content.top + top * s,
+            x + 3.0 * s,
+            f.content.top + (top + h) * s,
+        );
+        round_rect(c, &bar, Some((p.text2, 0.6)), None, 1.5 * s, false);
+    }
+    // SAFETY: pops the clip pushed above.
+    unsafe { c.dc.PopAxisAlignedClip() };
+}
+
+fn caption_button(ht: u32) -> bool {
+    matches!(ht, HTMINBUTTON | HTMAXBUTTON | HTCLOSE)
+}
+
+fn track(hwnd: HWND, nonclient: bool) {
+    let mut t = TRACKMOUSEEVENT {
+        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+        dwFlags: if nonclient {
+            TME_LEAVE | TME_NONCLIENT
+        } else {
+            TME_LEAVE
+        },
+        hwndTrack: hwnd,
+        dwHoverTime: 0,
+    };
+    // SAFETY: valid struct for our own window.
+    let _ = unsafe { TrackMouseEvent(&mut t) };
+}
+
+/// The resize frame Windows hangs outside the screen when maximized.
+fn maximized_inset(hwnd: HWND) -> i32 {
+    // SAFETY: plain metric queries.
+    unsafe {
+        let dpi = GetDpiForWindow(hwnd);
+        GetSystemMetricsForDpi(SM_CXFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+    }
+}
+
+/// Remembers the window rect while it is neither maximized nor minimized.
+fn note_normal(hwnd: HWND) {
+    let mut r = RECT::default();
+    // SAFETY: queries on our own window.
+    let normal = unsafe {
+        !IsZoomed(hwnd).as_bool()
+            && !IsIconic(hwnd).as_bool()
+            && GetWindowRect(hwnd, &mut r).is_ok()
+    };
+    if normal {
+        with(hwnd, |st| {
+            st.normal = Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
+        });
+    }
+}
+
+/// Writes the remembered rect to the settings file if it changed.
+fn save_rect(hwnd: HWND) {
+    let (Some(Some(rect)), Some(host)) = (with(hwnd, |st| st.normal), HOST.get()) else {
+        return;
+    };
+    if let Ok(mut s) = host.settings.lock() {
+        if s.main_window_rect != Some(rect) {
+            s.main_window_rect = Some(rect);
+            let _ = s.save(&host.settings_path);
+        }
+    }
+}
+
+fn lo(v: isize) -> i32 {
+    (v & 0xffff) as i16 as i32
+}
+
+fn hi(v: isize) -> i32 {
+    ((v >> 16) & 0xffff) as i16 as i32
+}
+
+extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let now = Instant::now();
+    match msg {
+        WM_PAINT => {
+            paint(hwnd);
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        // The client area covers the whole window (the title bar is ours).
+        // Maximized, Windows hangs the frame off-screen: keep it out.
+        WM_NCCALCSIZE => {
+            // SAFETY: plain query on our own window.
+            if wparam.0 != 0 && unsafe { IsZoomed(hwnd) }.as_bool() {
+                let b = maximized_inset(hwnd);
+                // SAFETY: with wParam TRUE, lParam is the NCCALCSIZE_PARAMS
+                // Windows passes for this message.
+                let p = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
+                let r = &mut p.rgrc[0];
+                r.left += b;
+                r.top += b;
+                r.right -= b;
+                r.bottom -= b;
+            }
+            LRESULT(0)
+        }
+        WM_NCHITTEST => {
+            let mut pt = POINT {
+                x: lo(lparam.0),
+                y: hi(lparam.0),
+            };
+            // SAFETY: maps a screen point into our client area, which is
+            // the window (or, maximized, its visible part).
+            let _ = unsafe { ScreenToClient(hwnd, &mut pt) };
+            let (w, h) = client_size(hwnd);
+            let s = with(hwnd, |st| st.scale).unwrap_or_else(|| fluent::scale(hwnd));
+            // SAFETY: plain query on our own window.
+            let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+            let ht = titlebar::hit_test(pt.x as f32, pt.y as f32, w, h, s, maximized);
+            LRESULT(ht as isize)
+        }
+        // Caption buttons: hover, press and click arrive as non-client
+        // messages carrying the hit-test code. Windows must not handle them
+        // (it would run its own modal button loop); everything else (drag,
+        // edges, the system menu) goes to DefWindowProc.
+        WM_NCMOUSEMOVE => {
+            let ht = wparam.0 as u32;
+            let button = caption_button(ht).then_some(ht);
+            let changed = with(hwnd, |st| {
+                let before = (st.cap_hover, st.cap_pressed);
+                st.cap_hover = button;
+                if st.cap_pressed.is_some() && st.cap_pressed != button {
+                    st.cap_pressed = None;
+                }
+                let arm = !st.nc_tracking;
+                st.nc_tracking = true;
+                (before != (st.cap_hover, st.cap_pressed), arm)
+            });
+            if let Some((changed, arm)) = changed {
+                if arm {
+                    track(hwnd, true);
+                }
+                if changed {
+                    repaint(hwnd);
+                }
+            }
+            if button.is_some() {
+                LRESULT(0)
+            } else {
+                // SAFETY: default handling.
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+        }
+        WM_NCMOUSELEAVE => {
+            with(hwnd, |st| {
+                st.cap_hover = None;
+                st.cap_pressed = None;
+                st.nc_tracking = false;
+            });
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_NCLBUTTONDOWN if caption_button(wparam.0 as u32) => {
+            with(hwnd, |st| st.cap_pressed = Some(wparam.0 as u32));
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_NCLBUTTONUP if caption_button(wparam.0 as u32) => {
+            let ht = wparam.0 as u32;
+            let clicked = with(hwnd, |st| st.cap_pressed.take() == Some(ht)).unwrap_or(false);
+            repaint(hwnd);
+            if clicked {
+                // SAFETY: plain query on our own window.
+                let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+                let sc = match ht {
+                    HTMINBUTTON => SC_MINIMIZE,
+                    HTMAXBUTTON if maximized => SC_RESTORE,
+                    HTMAXBUTTON => SC_MAXIMIZE,
+                    _ => SC_CLOSE,
+                };
+                // SAFETY: posting to our own window.
+                let _ = unsafe {
+                    PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(sc as usize), LPARAM(0))
+                };
+            }
+            LRESULT(0)
+        }
+        WM_NCLBUTTONDBLCLK if caption_button(wparam.0 as u32) => LRESULT(0),
+        WM_NCACTIVATE => {
+            with(hwnd, |st| st.active = wparam.0 != 0);
+            repaint(hwnd);
+            // lParam -1: there is no non-client area for Windows to repaint.
+            // SAFETY: default handling.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)) }
+        }
+        WM_GETMINMAXINFO => {
+            let (w, h) = min_size(fluent::scale(hwnd));
+            // SAFETY: lParam is the MINMAXINFO Windows passes for this message.
+            let mmi = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
+            mmi.ptMinTrackSize = POINT { x: w, y: h };
+            LRESULT(0)
+        }
+        WM_DPICHANGED => {
+            // SAFETY: lParam is the suggested RECT Windows passes for this message.
+            let suggested = unsafe { *(lparam.0 as *const RECT) };
+            let (r, s) = on_dpi(suggested, hi(wparam.0 as isize) as u32);
+            // The scale first: SetWindowPos sends WM_SIZE, which repaints.
+            with(hwnd, |st| st.scale = s);
+            // SAFETY: moves our own window to the rect Windows suggested.
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+            fit_scroll(hwnd);
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        // Resize and present in the same message, so dragging an edge never
+        // shows stale or black borders.
+        WM_SIZE => {
+            if wparam.0 == SIZE_RESTORED as usize {
+                note_normal(hwnd);
+            }
+            fit_scroll(hwnd);
+            // SAFETY: synchronous repaint of our own window.
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                let _ = UpdateWindow(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_EXITSIZEMOVE => {
+            note_normal(hwnd);
+            save_rect(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == FRAME_TIMER => {
+            with(hwnd, |st| {
+                for sc in &mut st.scroll {
+                    sc.tick(now);
+                }
+            });
+            sync_timer(hwnd);
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
+            let r = with(hwnd, |st| {
+                let (f, hits) = layout_now(hwnd, st);
+                let t = target_at(&f, &hits, x, y);
+                let nav = match t {
+                    Some(Target::Nav(p)) => Some(p),
+                    _ => None,
+                };
+                // Back from the caption: its leave message may still be queued.
+                let cap = st.cap_hover.take().is_some() | st.cap_pressed.take().is_some();
+                let changed = set_nav_hover(st, nav, now) | cap;
+                let arm = !std::mem::replace(&mut st.tracking, true);
+                (changed, arm)
+            });
+            if let Some((changed, arm)) = r {
+                if arm {
+                    track(hwnd, false);
+                }
+                if changed {
+                    sync_timer(hwnd);
+                    repaint(hwnd);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            with(hwnd, |st| {
+                set_nav_hover(st, None, now);
+                st.tracking = false;
+                st.pressed = None;
+            });
+            sync_timer(hwnd);
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_LBUTTONDOWN => {
+            let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
+            with(hwnd, |st| {
+                let (f, hits) = layout_now(hwnd, st);
+                st.pressed = target_at(&f, &hits, x, y);
+                // The pointer took over: hide the keyboard focus ring.
+                st.focus = None;
+            });
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
+            let t = with(hwnd, |st| {
+                let (f, hits) = layout_now(hwnd, st);
+                let up = target_at(&f, &hits, x, y);
+                let down = st.pressed.take();
+                down.filter(|_| down == up)
+            })
+            .flatten();
+            match t {
+                Some(t) => activate(hwnd, t),
+                None => repaint(hwnd),
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            let delta = hi(wparam.0 as isize);
+            with(hwnd, |st| st.scroll[st.page.index()].wheel(delta, now));
+            sync_timer(hwnd);
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == VK_TAB.0 as usize => {
+            // SAFETY: plain keyboard state query.
+            let back = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+            with(hwnd, |st| {
+                let (_, hits) = layout_now(hwnd, st);
+                st.focus = focus::next(&focus_order(&hits), st.focus, back);
+            });
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == VK_RETURN.0 as usize || wparam.0 == VK_SPACE.0 as usize => {
+            let t = with(hwnd, |st| st.focus.and_then(target_of)).flatten();
+            if let Some(t) = t {
+                activate(hwnd, t);
+            }
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            save_rect(hwnd);
+            fluent::unregister_window(hwnd);
+            // SAFETY: our own timer; harmless if it is not running.
+            let _ = unsafe { KillTimer(Some(hwnd), FRAME_TIMER) };
+            // The surface's composition target refers to this window.
+            let surface = SURFACE.with(|cell| {
+                let mut slot = cell.borrow_mut();
+                if slot.as_ref().is_some_and(|(h, _)| *h == hwnd.0 as isize) {
+                    slot.take()
+                } else {
+                    None
+                }
+            });
+            drop(surface);
+            STATE.with(|cell| {
+                let mut g = cell.borrow_mut();
+                if g.as_ref().is_some_and(|st| st.hwnd == hwnd.0 as isize) {
+                    *g = None;
+                }
+            });
+            LRESULT(0)
+        }
+        // SAFETY: default handling.
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Work areas of all monitors.
+fn monitors() -> Vec<RECT> {
+    unsafe extern "system" fn add(
+        mon: HMONITOR,
+        _: HDC,
+        _: *mut RECT,
+        data: LPARAM,
+    ) -> windows::core::BOOL {
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: `data` is the Vec passed to EnumDisplayMonitors below,
+        // alive for the whole (synchronous) enumeration.
+        unsafe {
+            if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                (*(data.0 as *mut Vec<RECT>)).push(mi.rcWork);
+            }
+        }
+        true.into()
+    }
+    let mut out: Vec<RECT> = Vec::new();
+    // SAFETY: synchronous enumeration writing into `out` through the callback.
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(add), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}
+
+/// The default size, centred on the work area of the monitor under the
+/// pointer, at that monitor's scale.
+fn default_rect() -> SavedRect {
+    let mut pt = POINT::default();
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let (mut dx, mut dy) = (96u32, 96u32);
+    // SAFETY: plain queries; failures leave the defaults above.
+    let wa = unsafe {
+        let _ = GetCursorPos(&mut pt);
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+        if GetMonitorInfoW(mon, &mut mi).as_bool() {
+            mi.rcWork
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1280,
+                bottom: 800,
+            }
+        }
+    };
+    let s = dx.max(96) as f32 / 96.0;
+    let w = ((DEFAULT_W * s) as i32).min(wa.right - wa.left);
+    let h = ((DEFAULT_H * s) as i32).min(wa.bottom - wa.top);
+    (
+        wa.left + (wa.right - wa.left - w) / 2,
+        wa.top + (wa.bottom - wa.top - h) / 2,
+        w,
+        h,
+    )
+}
+
+/// Creates the window and its surface. Without Mica the window must not
+/// lack a redirection bitmap (an HWND swap chain needs it), so a window made
+/// for Mica is remade plain when the surface fell back to opaque.
+fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface), String> {
+    // SAFETY: class registration (a repeat fails harmlessly) and window
+    // creation on the UI thread.
+    let hwnd = unsafe {
+        let hinstance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(wndproc),
+            hInstance: hinstance.into(),
+            lpszClassName: CLASS,
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // No background brush: every pixel is ours (WM_ERASEBKGND).
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+        let ex = if for_mica {
+            WS_EX_APPWINDOW | WS_EX_NOREDIRECTIONBITMAP
+        } else {
+            WS_EX_APPWINDOW | WINDOW_EX_STYLE::default()
+        };
+        let title: Vec<u16> = APP_NAME.encode_utf16().chain([0]).collect();
+        CreateWindowExW(
+            ex,
+            CLASS,
+            PCWSTR(title.as_ptr()),
+            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3,
+            None,
+            None,
+            Some(hinstance.into()),
+            None,
+        )
+        .map_err(|e| e.to_string())?
+    };
+    match Surface::new(hwnd, Backdrop::Mica) {
+        Ok(s) if s.backdrop() == Backdrop::Mica || !for_mica => Ok((hwnd, s)),
+        other => {
+            drop(other);
+            // SAFETY: our own window, not yet shown or registered anywhere.
+            let _ = unsafe { DestroyWindow(hwnd) };
+            if for_mica {
+                make_window(rect, false)
+            } else {
+                Err("no Direct2D surface".into())
+            }
+        }
+    }
+}
+
+fn create(page: Page, opened: Instant) {
+    let Some(host) = HOST.get() else {
+        return;
+    };
+    let model = (host.model)();
+    let saved = host.settings.lock().ok().and_then(|s| s.main_window_rect);
+    let rect = restore_rect(saved, &monitors()).unwrap_or_else(default_rect);
+    let (hwnd, surface) = match make_window(rect, fluent::transparency_on()) {
+        Ok(v) => v,
+        Err(e) => {
+            host.log.line(&format!("UI main window failed: {e}"));
+            return;
+        }
+    };
+    if surface.backdrop() == Backdrop::Mica {
+        // The whole window is "frame", so Mica shows behind the
+        // composition swap chain wherever it is transparent.
+        let m = MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
+        };
+        // SAFETY: attribute call on our own window.
+        let _ = unsafe { DwmExtendFrameIntoClientArea(hwnd, &m) };
+    }
+    fluent::frame(hwnd, false);
+    let now = Instant::now();
+    SURFACE.with(|cell| *cell.borrow_mut() = Some((hwnd.0 as isize, surface)));
+    STATE.with(|cell| {
+        *cell.borrow_mut() = Some(State {
+            hwnd: hwnd.0 as isize,
+            page,
+            model,
+            scale: fluent::scale(hwnd),
+            active: true,
+            cap_hover: None,
+            cap_pressed: None,
+            nc_tracking: false,
+            tracking: false,
+            nav_hover: None,
+            nav_fade: [Anim::new(0.0, 0.0, now, 0); 4],
+            pressed: None,
+            focus: None,
+            scroll: std::array::from_fn(|_| Scroll::new(0.0, 0.0)),
+            timer: false,
+            normal: Some(rect),
+            opened,
+        })
+    });
+    fluent::register_window(hwnd);
+    // SAFETY: frame recalculation (our WM_NCCALCSIZE drops the standard title
+    // bar before the first frame), then show and raise our own window.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+/// Opens the main window on `page`, or brings the open one forward (restored
+/// if minimized) and switches it to `page`. UI thread only.
+pub fn open(page: Page) {
+    let opened = Instant::now();
+    let Some(hwnd) = current() else {
+        create(page, opened);
+        return;
+    };
+    with(hwnd, |st| switch(st, page));
+    // SAFETY: restore and raise our own window.
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        let _ = SetForegroundWindow(hwnd);
+    }
+    repaint(hwnd);
+}
+
+/// The model changed: rebuild it and repaint. UI thread only.
+pub fn refresh() {
+    let Some(hwnd) = current() else {
+        return;
+    };
+    let model = HOST.get().map(|h| (h.model)()).unwrap_or_default();
+    with(hwnd, |st| st.model = model);
+    fit_scroll(hwnd);
+    repaint(hwnd);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{HTCAPTION, HTCLIENT};
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn saved_rect_off_every_monitor_is_ignored() {
+        let monitors = [rect(0, 0, 1920, 1040), rect(1920, 0, 3840, 1040)];
+        // On the second monitor: kept.
+        assert_eq!(
+            restore_rect(Some((2000, 100, 1000, 700)), &monitors),
+            Some((2000, 100, 1000, 700))
+        );
+        // A monitor that was unplugged: dropped.
+        assert_eq!(restore_rect(Some((4000, 100, 1000, 700)), &monitors), None);
+        // Only a sliver on screen (the caption cannot be grabbed): dropped.
+        assert_eq!(restore_rect(Some((-995, 100, 1000, 700)), &monitors), None);
+        assert_eq!(restore_rect(Some((100, 1035, 1000, 700)), &monitors), None);
+        // Degenerate sizes and nothing saved.
+        assert_eq!(restore_rect(Some((100, 100, 0, 700)), &monitors), None);
+        assert_eq!(restore_rect(None, &monitors), None);
+    }
+
+    #[test]
+    fn dpi_change_uses_the_suggested_rect_and_new_scale() {
+        let suggested = rect(10, 20, 1510, 1070);
+        assert_eq!(on_dpi(suggested, 144), (suggested, 1.5));
+        assert_eq!(on_dpi(suggested, 96).1, 1.0);
+        // A bogus 0 never yields a zero scale.
+        assert_eq!(on_dpi(suggested, 0).1, 1.0);
+    }
+
+    #[test]
+    fn minimum_size_scales() {
+        assert_eq!(min_size(1.0), (640, 480));
+        assert_eq!(min_size(1.5), (960, 720));
+    }
+
+    #[test]
+    fn frame_has_rail_left_of_pane_under_caption() {
+        let f = frame(1000.0, 700.0, 1.0);
+        assert_eq!(f.pane.top, f.cap.close.bottom);
+        assert_eq!(f.pane.left, RAIL_W);
+        assert_eq!(f.nav.len(), 4);
+        assert!(f
+            .nav
+            .iter()
+            .all(|(r, _)| r.right <= f.pane.left && r.top >= f.pane.top));
+        assert!(f.content.left > f.pane.left && f.content.bottom < f.pane.bottom);
+        // The nav area is client area, not caption.
+        let (r, _) = f.nav[0];
+        let ht = titlebar::hit_test(r.left + 5.0, r.top + 5.0, 1000.0, 700.0, 1.0, false);
+        assert_eq!(ht, HTCLIENT);
+        assert_eq!(
+            titlebar::hit_test(300.0, 10.0, 1000.0, 700.0, 1.0, false),
+            HTCAPTION
+        );
+    }
+
+    #[test]
+    fn clicks_map_to_nav_items_and_page_hits() {
+        let f = frame(1000.0, 700.0, 1.5);
+        let (r, _) = f.nav[1];
+        assert_eq!(
+            target_at(&f, &[], r.left + 2.0, r.top + 2.0),
+            Some(Target::Nav(Page::Timeline))
+        );
+        let hit = Hit {
+            id: 7,
+            r: rectf(400.0, 300.0, 500.0, 340.0),
+        };
+        assert_eq!(target_at(&f, &[hit], 450.0, 320.0), Some(Target::Hit(7)));
+        assert_eq!(target_at(&f, &[hit], 600.0, 600.0), None);
+    }
+
+    #[test]
+    fn tab_order_is_the_rail_then_the_page() {
+        let hit = |id| Hit {
+            id,
+            r: rectf(0.0, 0.0, 1.0, 1.0),
+        };
+        let order = focus_order(&[hit(0), hit(3)]);
+        assert_eq!(order, [1, 2, 3, 4, HIT_BASE, HIT_BASE + 3]);
+        assert_eq!(target_of(2), Some(Target::Nav(Page::Timeline)));
+        assert_eq!(target_of(HIT_BASE + 3), Some(Target::Hit(3)));
+        assert_eq!(target_of(0), None);
+        // Shift+Tab from nothing lands on the page's last hit.
+        assert_eq!(focus::next(&order, None, true), Some(HIT_BASE + 3));
+    }
+
+    #[test]
+    fn scrolled_content_moves_up_by_the_offset() {
+        let mut sc = Scroll::new(1000.0, 400.0);
+        sc.offset = 100.0;
+        let r = scrolled(rectf(0.0, 50.0, 300.0, 450.0), 2.0, &sc);
+        assert_eq!((r.top, r.bottom), (50.0 - 200.0, 50.0 - 200.0 + 2000.0));
+    }
+
+    #[test]
+    fn window_and_surface_are_made_hidden_either_way() {
+        for for_mica in [true, false] {
+            let (hwnd, mut surface) = make_window((0, 0, 800, 600), for_mica).expect("window");
+            println!("for_mica {for_mica}: got {:?}", surface.backdrop());
+            if !for_mica {
+                assert_eq!(surface.backdrop(), Backdrop::Opaque);
+            }
+            surface.resize(900, 650);
+            surface.draw(|_| {}).expect("draw");
+            drop(surface);
+            // SAFETY: our own hidden test window.
+            let _ = unsafe { DestroyWindow(hwnd) };
+        }
+    }
+}

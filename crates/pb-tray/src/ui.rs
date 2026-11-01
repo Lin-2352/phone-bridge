@@ -73,6 +73,8 @@ const ID_CAMERA_LENS: usize = 20;
 const ID_CAMERA_REMOVE: usize = 21;
 pub const ID_CAMERA_WINDOW: usize = 22;
 pub const ID_CAMERA_REPAIR: usize = 23;
+/// The main window on Home (menu "Open Relay", IPC `--open`).
+pub const ID_OPEN_MAIN: usize = 24;
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
@@ -1290,7 +1292,7 @@ fn show_menu(hwnd: HWND) {
         ID_CAMERA,
     )];
     let mut items = vec![
-        Item::new(glyph::PHONE, "Open Relay", ID_OPEN_FLYOUT),
+        Item::new(glyph::PHONE, "Open Relay", ID_OPEN_MAIN),
         Item::new(
             glyph::PHONE,
             if crate::screen_window::is_open() {
@@ -1713,6 +1715,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             save_settings(st);
         }
         ID_OPEN_FLYOUT => open_flyout(hwnd, st),
+        ID_OPEN_MAIN => crate::main_window::open(crate::main_window::Page::Home),
         ID_SETTINGS => open_settings(hwnd, st),
         ID_MENU => show_menu(hwnd),
         ID_CONTROL => toggle_control(hwnd, st),
@@ -1859,6 +1862,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if crate::settings_window::is_open() {
                 crate::settings_window::update(settings_model(st));
             }
+            if crate::main_window::is_open() {
+                crate::main_window::refresh();
+            }
             LRESULT(0)
         }
         WM_TOAST => {
@@ -1871,6 +1877,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             if crate::settings_window::is_open() {
                 crate::settings_window::update(settings_model(st));
+            }
+            if crate::main_window::is_open() {
+                crate::main_window::refresh();
             }
             LRESULT(0)
         }
@@ -1955,6 +1964,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if crate::settings_window::is_open() {
                 crate::settings_window::update(settings_model(st));
             }
+            if crate::main_window::is_open() {
+                crate::main_window::refresh();
+            }
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY if wparam.0 as i32 == HOTKEY_CONTROL => {
@@ -1980,6 +1992,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 apply_settings_action(hwnd, st, a);
             }
             crate::settings_window::update(settings_model(st));
+            if crate::main_window::is_open() {
+                crate::main_window::refresh();
+            }
             LRESULT(0)
         }
         // Windows switched light/dark (or accent): repaint the themed windows.
@@ -2034,6 +2049,13 @@ pub fn create(
     crate::qr_window::set_on_user_close(Box::new(move || {
         let _ = close_cmds.send(Cmd::CancelPair);
     }));
+    crate::main_window::init(crate::main_window::Host {
+        log: log.clone(),
+        settings: settings.clone(),
+        settings_path: settings_path.clone(),
+        // The pages fill their model from Task 9 on.
+        model: Box::new(crate::pages::Model::default),
+    });
     let _ = STATE.set(State {
         cmds,
         peers,

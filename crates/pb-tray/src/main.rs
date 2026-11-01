@@ -42,12 +42,18 @@ mod fluent;
 mod flyout;
 #[cfg(windows)]
 mod flyout_tiles;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod focus;
 #[cfg(windows)]
 mod ipc;
+#[cfg(windows)]
+mod main_window;
 #[cfg(windows)]
 mod menu;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod notify;
+#[cfg(windows)]
+mod pages;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
@@ -245,6 +251,16 @@ fn main() {
             ok &= ipc::send_request(&ipc::Request::SendClipboard);
         }
         if let Some(r) = &ui_request {
+            // The running tray raises a window for it: let it take the
+            // foreground from this (foreground) process.
+            #[allow(unsafe_code)]
+            // SAFETY: plain call; failure only means the window may flash in
+            // the taskbar instead of coming forward.
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                    windows::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+                );
+            }
             ok &= ipc::send_request(r);
         }
         if !send_files.is_empty() {
@@ -309,7 +325,7 @@ fn main() {
                 hwnd,
                 match r {
                     ipc::Request::Settings => ui::ID_SETTINGS,
-                    ipc::Request::Open => ui::ID_OPEN_FLYOUT,
+                    ipc::Request::Open => ui::ID_OPEN_MAIN,
                     ipc::Request::Menu => ui::ID_MENU,
                     ipc::Request::ShowScreen => ui::ID_SCREEN_SHOW,
                     ipc::Request::HideScreen => ui::ID_SCREEN_HIDE,
