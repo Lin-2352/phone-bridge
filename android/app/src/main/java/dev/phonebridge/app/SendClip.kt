@@ -86,7 +86,7 @@ class SendClipboardActivity : Activity() {
         return try {
             node.sendClipboard(peer.id, text, sensitive)
             Log.i(TAG, "SENDCLIP text to ${peer.name}")
-            Bridge.addRecent(RecentItem(text.take(80), "Sent to ${peer.name}", RecentItem.Kind.Clipboard))
+            Timeline.add(clipTextEntry(peer.name, text))
             null
         } catch (t: Throwable) {
             Log.e(TAG, "SENDCLIP failed: $t")

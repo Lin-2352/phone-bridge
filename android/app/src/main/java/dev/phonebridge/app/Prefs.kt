@@ -93,6 +93,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("instant_screen", false)
         set(v) = sp.edit().putBoolean("instant_screen", v).apply()
 
+    /** "Keep history": record the Timeline (metadata only). Off deletes it. On by default. */
+    var keepHistory: Boolean
+        get() = sp.getBoolean("keep_history", true)
+        set(v) = sp.edit().putBoolean("keep_history", v).apply()
+
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?
         get() = sp.getString("save_tree", null)?.let(Uri::parse)

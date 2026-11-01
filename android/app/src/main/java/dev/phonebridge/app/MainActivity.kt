@@ -68,6 +68,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -112,6 +113,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        Timeline.init(this)
         ThemeChoice.mode.intValue = prefs.theme
         Bridge.allowControl.value = prefs.allowControl
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -442,6 +444,8 @@ class MainActivity : ComponentActivity() {
         val notificationsOn = remember(resumed.intValue) { getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled() }
         val notifyMissing = remember(resumed.intValue) { notifyAccessMissing(prefs.notifyToPc, hasNotifyAccess(this@MainActivity)) }
         val shotsMissing = remember(resumed.intValue) { screenshotAccessMissing(prefs.shareScreenshots, ClipImages.hasImageAccess(this@MainActivity)) }
+        val timeline by Timeline.entries.collectAsState()
+        val recent = remember(timeline) { timeline.take(20).map(::recentItem) }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -555,10 +559,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 item { Text("Recent", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 16.dp, top = 8.dp)) }
-                if (Bridge.recent.isEmpty()) {
+                if (recent.isEmpty()) {
                     item { Text("Nothing yet. Share a photo or file to $APP_NAME from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
                 }
-                items(Bridge.recent) { r ->
+                items(recent) { r ->
                     ListItem(
                         headlineContent = { Text(r.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = { Text(r.subtitle) },
@@ -566,7 +570,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.clickable(enabled = r.uri != null) {
                             r.uri?.let {
                                 // No app for this file type, or the file is gone.
-                                runCatching { startActivity(Intent(Intent.ACTION_VIEW).setData(it).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
+                                runCatching { startActivity(Intent(Intent.ACTION_VIEW).setData(Uri.parse(it)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
                                     .onFailure { message.value = "No app can open ${r.title}" }
                             }
                         },
@@ -910,6 +914,23 @@ private fun DeviceBadge(name: String, bg: Color, fg: Color, isPhone: Boolean) {
         Text(name, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(110.dp), textAlign = TextAlign.Center)
     }
 }
+
+/** One line in the Home screen's Recent list (until Home moves to the Timeline screen). */
+data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: String? = null) {
+    enum class Kind { File, Clipboard, Link }
+}
+
+/** A timeline entry in the Recent list's shape: metadata only, as stored. */
+fun recentItem(e: TlEntry) = RecentItem(
+    title = summary(e),
+    subtitle = if (e.dir == TlDir.ToPc) "Sent to ${e.peer}" else "From ${e.peer}",
+    kind = when (e.kind) {
+        TlKind.File -> RecentItem.Kind.File
+        TlKind.Link -> RecentItem.Kind.Link
+        else -> RecentItem.Kind.Clipboard
+    },
+    uri = e.uri,
+)
 
 @Composable
 private fun KindBadge(kind: RecentItem.Kind) {

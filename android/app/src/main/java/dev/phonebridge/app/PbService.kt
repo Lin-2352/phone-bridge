@@ -21,7 +21,6 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
@@ -52,17 +51,11 @@ const val SCREEN_SHARE_ID = 7
 const val CAMERA_ASK_ID = 8
 const val CAMERA_SHARE_ID = 9
 
-/** One line in the Home screen's Recent list. */
-data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
-    enum class Kind { File, Clipboard, Link }
-}
-
 /** Process-wide handle to the running node, shared by the service and the UI. */
 object Bridge {
     @Volatile var node: PbNode? = null
     val listeners = CopyOnWriteArrayList<(PbEvent) -> Unit>()
     /** Compose-observable state for the Home screen. */
-    val recent = mutableStateListOf<RecentItem>()
     val linked = mutableStateOf<String?>(null)
     /** True while the service (and node) runs. */
     val running = mutableStateOf(false)
@@ -97,13 +90,6 @@ object Bridge {
 
     /** The previous node's shutdown; a new node waits for it so the ports are free. */
     @Volatile var stopping: kotlinx.coroutines.Job? = null
-
-    fun addRecent(item: RecentItem) {
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            recent.add(0, item)
-            while (recent.size > 20) recent.removeAt(recent.size - 1)
-        }
-    }
 
     fun firstPeer() = node?.peers()?.firstOrNull()
 
@@ -186,6 +172,7 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Timeline.init(this)
         // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
         val nm = getSystemService(NotificationManager::class.java)
@@ -242,11 +229,6 @@ class PbService : Service() {
             ScreenShare.capture?.memoryPressure()
         }
         super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_RUNNING_LOW) {
-            android.os.Handler(mainLooper).post {
-                while (Bridge.recent.size > 5) Bridge.recent.removeAt(Bridge.recent.size - 1)
-            }
-        }
         Log.i(TAG, "TRIM level=$level")
     }
 
@@ -376,14 +358,18 @@ class PbService : Service() {
                 Prefs(this).lastClip = e.text.hashCode()
                 writeClipboard(e.text, e.sensitive)
                 Log.i(TAG, "CLIPSYNC received from ${e.peerName}${if (e.sensitive) " (sensitive)" else ""}")
-                val title = if (e.sensitive) "Password or code" else e.text.take(80)
-                Bridge.addRecent(RecentItem(title, "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+                Timeline.add(clipTextEntry(e.peerName, e.text, TlDir.ToPhone))
             }
             is PbEvent.RemoteImage -> {
                 // Share copied images: a picture copied on the PC goes on the clipboard.
+                // Size and dimensions first: applying moves the file.
+                val src = File(e.path)
+                val size = src.length()
+                val dims = runCatching { java.io.DataInputStream(src.inputStream()).use { d -> ByteArray(24).also { d.readFully(it) } } }
+                    .getOrNull()?.let(::pngDims)
                 ClipImages.applyReceived(this, e.path)
                 Log.i(TAG, "CLIPIMG received from ${e.peerName}")
-                Bridge.addRecent(RecentItem("Picture", "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+                Timeline.add(clipImageEntry(e.peerName, TlDir.ToPhone, size, dims))
             }
             is PbEvent.FileReceived -> {
                 cancelProgress(true)
@@ -391,7 +377,7 @@ class PbService : Service() {
             }
             is PbEvent.SharedText -> {
                 if (e.isLink) notifyLink(e.peerName, e.text) else writeClipboard(e.text, false)
-                Bridge.addRecent(RecentItem(e.text.take(80), if (e.isLink) "Link from ${e.peerName}" else "Text from ${e.peerName}", if (e.isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
+                Timeline.add(if (e.isLink) linkEntry(e.peerName, e.text, TlDir.ToPhone) else clipTextEntry(e.peerName, e.text, TlDir.ToPhone))
             }
             is PbEvent.IncomingOffer -> notifyOffer(e)
             is PbEvent.ControlRequest -> askControl(e)
@@ -429,7 +415,7 @@ class PbService : Service() {
                 src.delete()
                 val label = treeLabel(tree)
                 Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName} to $label")
-                Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to $label", RecentItem.Kind.File, uri))
+                Timeline.add(fileEntry(e.peerName, TlDir.ToPhone, e.name, e.size.toLong(), uri.toString()))
                 notifyFile(e.peerName, e.name, e.size, uri, mime, label)
                 return
             } catch (t: Throwable) {
@@ -465,7 +451,7 @@ class PbService : Service() {
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             src.delete()
             Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName}")
-            Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to Downloads", RecentItem.Kind.File, uri))
+            Timeline.add(fileEntry(e.peerName, TlDir.ToPhone, e.name, e.size.toLong(), uri.toString()))
             notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/$APP_NAME")
         } catch (t: Throwable) {
             runCatching { contentResolver.delete(uri, null, null) }

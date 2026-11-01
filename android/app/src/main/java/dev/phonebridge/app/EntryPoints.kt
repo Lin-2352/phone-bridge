@@ -102,7 +102,8 @@ class ShareActivity : Activity() {
                 try {
                     node.sendFileFd(peer.id, f.fd, f.name, f.size.toULong(), f.mime)
                     Log.i(TAG, "SHARE sent ${f.name} (${f.size} bytes) to ${peer.name}")
-                    Bridge.addRecent(RecentItem(f.name, "Sent to ${peer.name}", RecentItem.Kind.File))
+                    // No uri: the share grant ends with this send, so it could not be opened later.
+                    Timeline.add(fileEntry(peer.name, TlDir.ToPc, f.name, f.size, null))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE failed: $t")
                     PbService.cancelOutgoingProgress(app)
@@ -114,7 +115,7 @@ class ShareActivity : Activity() {
                 try {
                     node.sendText(peer.id, text, isLink)
                     Log.i(TAG, "SHARE sent ${if (isLink) "link" else "text"} to ${peer.name}")
-                    Bridge.addRecent(RecentItem(text.take(80), "Sent to ${peer.name}", if (isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
+                    Timeline.add(if (isLink) linkEntry(peer.name, text) else clipTextEntry(peer.name, text))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
                     notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
