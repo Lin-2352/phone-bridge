@@ -1805,6 +1805,9 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         startup: startup_enabled(),
         control,
         keep_history: n.keep_history,
+        keep_logs: n.keep_logs,
+        log_dir: crate::applog::dir().display().to_string(),
+        log_bytes: crate::applog::size_bytes(),
         devices: paired_devices(st),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
         notify: n.notify_enabled,
@@ -1978,6 +1981,44 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                     if yes {
                         crate::timeline::with(|t| t.clear());
                         // The Timeline page shows it now.
+                        post_settings_action(raw);
+                    }
+                },
+            );
+        }
+        Action::Toggle(Key::KeepLogs) => {
+            let on = st
+                .settings
+                .lock()
+                .map(|mut s| {
+                    s.keep_logs = !s.keep_logs;
+                    s.keep_logs
+                })
+                .unwrap_or(true);
+            crate::applog::set_enabled(on);
+            save_settings(st);
+        }
+        Action::OpenLogs => {
+            let dir = crate::applog::dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+        }
+        Action::ClearLogs => {
+            let raw = hwnd.0 as isize;
+            ask_yes_no(
+                Dialog::question(
+                    "Clear all logs?".into(),
+                    format!(
+                        "This deletes all {} of logs on this PC.",
+                        crate::settings_rows::log_size_text(crate::applog::size_bytes())
+                    ),
+                    "Clear",
+                    "Cancel",
+                ),
+                move |yes| {
+                    if yes {
+                        crate::applog::clear_all();
+                        // The row shows the new size.
                         post_settings_action(raw);
                     }
                 },

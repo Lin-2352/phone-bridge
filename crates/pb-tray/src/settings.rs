@@ -49,6 +49,10 @@ pub struct Settings {
     pub screen_sharp: bool,
     /// Record what moved in the PC timeline (metadata only).
     pub keep_history: bool,
+    /// Write the day-by-day structured logs (metadata only).
+    pub keep_logs: bool,
+    /// Where the day folders go.
+    pub log_dir: PathBuf,
     /// Where the main window was last (x, y, width, height in screen
     /// pixels); None until it has been closed once.
     pub main_window_rect: Option<(i32, i32, i32, i32)>,
@@ -83,6 +87,8 @@ impl Default for Settings {
             screen_dim: false,
             screen_sharp: false,
             keep_history: true,
+            keep_logs: true,
+            log_dir: PathBuf::from(r"D:\Documents\Relay Logs"),
             main_window_rect: None,
         }
     }
@@ -154,6 +160,8 @@ impl Settings {
                 "screen_dim" => s.screen_dim = parse_bool(v).unwrap_or(s.screen_dim),
                 "screen_sharp" => s.screen_sharp = parse_bool(v).unwrap_or(s.screen_sharp),
                 "keep_history" => s.keep_history = parse_bool(v).unwrap_or(s.keep_history),
+                "keep_logs" => s.keep_logs = parse_bool(v).unwrap_or(s.keep_logs),
+                "log_dir" if !v.is_empty() => s.log_dir = PathBuf::from(v),
                 "main_window_rect" => {
                     let n: Vec<i32> = v.split(',').filter_map(|f| f.trim().parse().ok()).collect();
                     if let [x, y, w, h] = n[..] {
@@ -201,6 +209,11 @@ impl Settings {
             "screen_pinned={}\nscreen_dim={}\nscreen_sharp={}\nkeep_history={}\n",
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
+        text += &format!(
+            "keep_logs={}\nlog_dir={}\n",
+            self.keep_logs,
+            self.log_dir.display()
+        );
         if let Some((x, y, w, h)) = self.main_window_rect {
             text += &format!("main_window_rect={x},{y},{w},{h}\n");
         }
@@ -232,6 +245,8 @@ mod tests {
         assert!(!s.keep_in_history);
         assert!(s.keep_history, "the timeline records by default");
         assert_eq!(s.main_window_rect, None);
+        assert!(s.keep_logs, "logs are kept by default");
+        assert_eq!(s.log_dir, PathBuf::from(r"D:\Documents\Relay Logs"));
     }
 
     #[test]
@@ -264,6 +279,8 @@ mod tests {
             screen_dim: true,
             screen_sharp: true,
             keep_history: false,
+            keep_logs: false,
+            log_dir: PathBuf::from(r"E:\Logs"),
             main_window_rect: Some((-1200, 40, 1000, 700)),
         };
         s.save(&path).unwrap();

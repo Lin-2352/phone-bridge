@@ -445,6 +445,7 @@ impl Log {
                 let _ = f.flush();
             }
         }
+        crate::applog::from_line(msg);
     }
 }
 

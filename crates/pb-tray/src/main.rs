@@ -11,6 +11,10 @@
 #[cfg(windows)]
 mod app_name;
 #[cfg(windows)]
+mod applog;
+#[cfg(windows)]
+mod applog_sys;
+#[cfg(windows)]
 mod camera;
 #[cfg(windows)]
 mod camera_device;
@@ -52,6 +56,8 @@ mod main_window;
 mod menu;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod netpath;
+#[cfg(windows)]
+mod netsample;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod notify;
 #[cfg(windows)]
@@ -286,6 +292,22 @@ fn main() {
         Arc::new(Mutex::new(settings::Settings::load(&settings_path)));
     fluent::set_theme(settings.lock().map(|s| s.theme).unwrap_or(0));
     {
+        let (want, keep) = settings
+            .lock()
+            .map(|s| (s.log_dir.clone(), s.keep_logs))
+            .unwrap_or_default();
+        match applog::init(&want, keep) {
+            Some(dir) => {
+                applog::install_panic_hook();
+                if let Some(lg) = applog::handle() {
+                    netsample::start(lg.clone());
+                }
+                log.line(&format!("LOGS folder {}", dir.display()));
+            }
+            None => log.line("LOGS could not be opened; structured logs are off"),
+        }
+    }
+    {
         let keep = settings.lock().map(|s| s.keep_history).unwrap_or(true);
         let tl_log = log.clone();
         timeline::init(
@@ -355,4 +377,5 @@ fn main() {
     log.line("tray started");
     ui::message_loop();
     log.line("tray exiting");
+    applog::flush();
 }

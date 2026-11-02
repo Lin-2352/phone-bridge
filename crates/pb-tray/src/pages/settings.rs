@@ -157,6 +157,8 @@ fn item_height(i: &Item) -> f32 {
             Row::CameraStatus => 120.0,
             Row::CameraWindow => 68.0,
             Row::ClearHistory => 68.0,
+            Row::LogFolder => 76.0,
+            Row::ClearLogs => 68.0,
         },
     }
 }
@@ -175,11 +177,13 @@ const CAMERA: u32 = 53;
 const REPAIR: u32 = 54;
 const CAMERA_WINDOW: u32 = 55;
 const CLEAR_HISTORY: u32 = 56;
+const OPEN_LOGS: u32 = 57;
+const CLEAR_LOGS: u32 = 58;
 const APP_BIT: u32 = 0x1000_0000;
 const DEVICE_BIT: u32 = 0x2000_0000;
 const KEY_MASK: u32 = 0x0FFF_FFFF;
 
-const KEYS: [Key; 15] = [
+const KEYS: [Key; 16] = [
     Key::Share,
     Key::ShareImages,
     Key::Passwords,
@@ -195,6 +199,7 @@ const KEYS: [Key; 15] = [
     Key::NotifyOtp,
     Key::NotifyQuietMirror,
     Key::KeepHistory,
+    Key::KeepLogs,
 ];
 
 /// Every key is in `KEYS` (a test checks), so this never falls back.
@@ -406,6 +411,8 @@ fn controls(row: &Row, card: RectF, s: f32, m: &Model) -> Vec<(u32, RectF)> {
         }
         Row::CameraWindow => vec![(CAMERA_WINDOW, right_button(card, s, 100.0, 18.0))],
         Row::ClearHistory => vec![(CLEAR_HISTORY, right_button(card, s, 100.0, 18.0))],
+        Row::LogFolder => vec![(OPEN_LOGS, right_button(card, s, 100.0, 18.0))],
+        Row::ClearLogs => vec![(CLEAR_LOGS, right_button(card, s, 100.0, 18.0))],
     }
 }
 
@@ -471,6 +478,8 @@ pub fn click(hit: &Hit, m: &SettingsModel) -> Option<Action> {
         REPAIR => SAction::Camera(CameraAct::Repair),
         CAMERA_WINDOW => SAction::Camera(CameraAct::OpenWindow),
         CLEAR_HISTORY => SAction::ClearHistory,
+        OPEN_LOGS => SAction::OpenLogs,
+        CLEAR_LOGS => SAction::ClearLogs,
         _ => return None,
     };
     Some(Action::Settings(a))
@@ -653,6 +662,24 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             two_lines(c, card, il, right, "Clear history", sub, p.text);
             fluent::button(c, b, "Clear", false);
         }
+        Row::LogFolder => {
+            let b = right_button(card, s, 100.0, 18.0);
+            let right = left_of(il, b.left, s);
+            let w = right - il;
+            let shown = shorten_path(&m.log_dir, |t| text_width(c, Font::Caption, t) <= w);
+            two_lines(c, card, il, right, "Log folder", &shown, p.text);
+            fluent::button(c, b, "Open", false);
+        }
+        Row::ClearLogs => {
+            let b = right_button(card, s, 100.0, 18.0);
+            let right = left_of(il, b.left, s);
+            let sub = format!(
+                "Delete every log file ({})",
+                settings_rows::log_size_text(m.log_bytes)
+            );
+            two_lines(c, card, il, right, "Clear all logs", &sub, p.text);
+            fluent::button(c, b, "Clear", false);
+        }
     }
 }
 
@@ -831,6 +858,8 @@ mod tests {
             set(SAction::Camera(CameraAct::Toggle)),
             set(SAction::Camera(CameraAct::OpenWindow)),
             set(SAction::ClearHistory),
+            set(SAction::OpenLogs),
+            set(SAction::ClearLogs),
         ];
         for k in [ChoiceKey::Content, ChoiceKey::Sound] {
             want.extend((0..3).map(|i| set(SAction::Choice(k, i))));
@@ -851,6 +880,7 @@ mod tests {
             Key::NotifyOtp,
             Key::NotifyQuietMirror,
             Key::KeepHistory,
+            Key::KeepLogs,
         ] {
             want.push(set(SAction::Toggle(k)));
         }
@@ -1092,7 +1122,8 @@ mod tests {
             | Key::NotifyOpen
             | Key::NotifyOtp
             | Key::NotifyQuietMirror
-            | Key::KeepHistory => KEYS.contains(&k),
+            | Key::KeepHistory
+            | Key::KeepLogs => KEYS.contains(&k),
         };
         let m = on(Page::General, model());
         for (i, k) in KEYS.iter().enumerate() {
@@ -1104,7 +1135,7 @@ mod tests {
             };
             assert_eq!(click(&h, &m), Some(set(SAction::Toggle(*k))));
         }
-        assert_eq!(KEYS.len(), 15);
+        assert_eq!(KEYS.len(), 16);
         for r in rows(&model()) {
             if let Row::Toggle(k, ..) = r {
                 assert!(KEYS.contains(&k), "{k:?} missing from KEYS");

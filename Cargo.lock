@@ -2490,6 +2490,7 @@ dependencies = [
  "pb-camera-frames",
  "pb-camera-source",
  "pb-identity",
+ "pb-log",
  "pb-platform-win",
  "pb-protocol",
  "pb-transport",
