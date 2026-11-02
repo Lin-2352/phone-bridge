@@ -664,7 +664,7 @@ struct Shared {
     control_busy: std::sync::atomic::AtomicBool,
     /// Unix ms of the last control request refused because "Relay control"
     /// was not running (0: none since the node started).
-    control_refused_at: std::sync::atomic::AtomicU64,
+    control_refused: RefusalStamp,
     /// Ids for questions to the user (offers, control requests), chosen here:
     /// the peer's own ids may repeat.
     next_ask: std::sync::atomic::AtomicU64,
@@ -729,6 +729,37 @@ impl ControlGate {
     /// a user who declined is not something to fix.
     fn stamps_refusal(&self) -> bool {
         *self == Self::NoService
+    }
+}
+
+/// When the last PC control request was refused because "Relay control" was
+/// not running (unix ms, 0 for none). It must not outlive what it reports:
+/// a served request or the service connecting clears it.
+#[derive(Default)]
+struct RefusalStamp(std::sync::atomic::AtomicU64);
+
+impl RefusalStamp {
+    /// A request met `gate`: only a refusal for the service being off counts.
+    fn gate(&self, gate: &ControlGate, now_ms: u64) {
+        if gate.stamps_refusal() {
+            self.0.store(now_ms, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// A control session was accepted.
+    fn served(&self) {
+        self.0.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The input listener was registered (`true`) or cleared.
+    fn listener(&self, registered: bool) {
+        if registered {
+            self.served();
+        }
+    }
+
+    fn get(&self) -> u64 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -804,7 +835,7 @@ pub async fn start_node(
         allow_control: std::sync::atomic::AtomicBool::new(false),
         control: Mutex::new(None),
         control_busy: std::sync::atomic::AtomicBool::new(false),
-        control_refused_at: std::sync::atomic::AtomicU64::new(0),
+        control_refused: RefusalStamp::default(),
         next_ask: std::sync::atomic::AtomicU64::new(1),
         notify: pb_transport::notify::NotifyOutbox::new(node.clone()),
         notify_enabled: std::sync::atomic::AtomicBool::new(false),
@@ -932,11 +963,8 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     listener.is_some(),
                     sh.allow_control.load(std::sync::atomic::Ordering::Relaxed),
                 );
-                if gate.stamps_refusal() {
-                    // Still refused without an event; Home reads the time.
-                    sh.control_refused_at
-                        .store(unix_ms(), std::sync::atomic::Ordering::Relaxed);
-                }
+                // Still refused without an event; Home reads the time.
+                sh.control_refused.gate(&gate, unix_ms());
                 let accept = match gate {
                     ControlGate::Busy | ControlGate::NoService => false,
                     ControlGate::Allowed => true,
@@ -970,6 +998,9 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         answer
                     }
                 };
+                if accept {
+                    sh.control_refused.served();
+                }
                 let listener = listener.filter(|_| accept);
                 if let Some(l) = &listener {
                     *sh.control.lock().unwrap_or_else(|p| p.into_inner()) = Some(s.closer());
@@ -1588,9 +1619,7 @@ impl PbNode {
     /// Unix ms of the most recent PC control request refused because
     /// "Relay control" was not running on this phone; 0 if none.
     pub fn control_refused_at(&self) -> u64 {
-        self.shared
-            .control_refused_at
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.shared.control_refused.get()
     }
 
     pub fn unpair(&self, peer_id: String) -> bool {
@@ -1752,6 +1781,7 @@ impl PbNode {
 
     /// Register (service connected) or clear (service gone) the PC-control handler.
     pub fn set_input_listener(&self, listener: Option<Arc<dyn InputListener>>) {
+        self.shared.control_refused.listener(listener.is_some());
         if let Ok(mut g) = self.shared.input.lock() {
             *g = listener;
         }
@@ -2347,6 +2377,29 @@ mod attention_tests {
         // Asking may end in a decline or a timeout: never stamped.
         assert_eq!(control_gate(false, true, false), ControlGate::Ask);
         assert!(!ControlGate::Ask.stamps_refusal());
+    }
+
+    #[test]
+    fn the_refusal_stamp_ends_once_a_request_is_served_or_the_service_connects() {
+        let stamp = RefusalStamp::default();
+        assert_eq!(stamp.get(), 0);
+        stamp.gate(&ControlGate::NoService, 1_000);
+        assert_eq!(stamp.get(), 1_000);
+        // Other outcomes leave it as it is.
+        for g in [ControlGate::Busy, ControlGate::Allowed, ControlGate::Ask] {
+            stamp.gate(&g, 2_000);
+        }
+        assert_eq!(stamp.get(), 1_000);
+        stamp.listener(false);
+        assert_eq!(stamp.get(), 1_000);
+        // The service connected (its listener registered): cleared.
+        stamp.listener(true);
+        assert_eq!(stamp.get(), 0);
+        // Refused again, then a later request is accepted: cleared.
+        stamp.gate(&ControlGate::NoService, 3_000);
+        assert_eq!(stamp.get(), 3_000);
+        stamp.served();
+        assert_eq!(stamp.get(), 0);
     }
 
     #[test]

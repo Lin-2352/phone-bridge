@@ -1744,4 +1744,63 @@ mod identity_changed {
         let _ = pc.connect(&id).await;
         assert!(!pc.peer_changed(&id));
     }
+
+    /// Leave the flag a failed dial to a new identity would leave (that
+    /// path is the test above; iroh remembers a live peer's real address,
+    /// so an impostor cannot be put in front of it here).
+    fn mark_changed(from: &Node, peer: PeerId) {
+        lock(&from.inner.changed).push(peer);
+        assert!(from.peer_changed(&peer));
+    }
+
+    #[tokio::test]
+    async fn pairing_again_with_the_same_device_clears_the_flag_on_both_sides() {
+        let (pc, mut pc_ev, pc_store) = node(44, "PC").await;
+        let (phone, _phone_ev, phone_store) = node(45, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        mark_changed(&phone, pc.peer_id());
+        mark_changed(&pc, phone.peer_id());
+
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        // Joiner (pinned in `Joining::decide`) and host (in `host_pairing`).
+        assert!(!phone.peer_changed(&pc.peer_id()));
+        assert!(!pc.peer_changed(&phone.peer_id()));
+        assert!(lock(&phone_store).get(&pc.peer_id()).is_some());
+        assert!(lock(&pc_store).get(&phone.peer_id()).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_authenticated_incoming_session_clears_a_stale_flag() {
+        let (pc, mut pc_ev, _) = node(48, "PC").await;
+        let (phone, _phone_ev, _) = node(49, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        mark_changed(&pc, phone.peer_id());
+
+        // The phone dials the PC: its TLS identity is the paired one.
+        let _s = phone.connect(&pc.peer_id()).await.unwrap();
+        let _incoming = pc_ev.sessions.recv().await.unwrap();
+        assert!(!pc.peer_changed(&phone.peer_id()));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_incoming_device_leaves_the_flag_alone() {
+        let (pc, mut pc_ev, _) = node(51, "PC").await;
+        let (phone, _phone_ev, _) = node(52, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        mark_changed(&pc, phone.peer_id());
+
+        // A stranger that thinks it is paired with the PC is refused.
+        let (stranger, _sev, stranger_store) = node(54, "Stranger").await;
+        lock(&stranger_store).pin(PairedPeer {
+            id: pc.peer_id(),
+            name: "PC".into(),
+            addrs: loopback(&pc),
+        });
+        assert!(stranger.connect(&pc.peer_id()).await.is_err());
+        assert!(pc.peer_changed(&phone.peer_id()));
+    }
 }
