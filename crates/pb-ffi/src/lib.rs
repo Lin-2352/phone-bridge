@@ -662,6 +662,9 @@ struct Shared {
     /// A control request is being asked or a session runs: further requests
     /// are declined (one cursor, one Stop button, one closer).
     control_busy: std::sync::atomic::AtomicBool,
+    /// Unix ms of the last control request refused because "Relay control"
+    /// was not running (0: none since the node started).
+    control_refused_at: std::sync::atomic::AtomicU64,
     /// Ids for questions to the user (offers, control requests), chosen here:
     /// the peer's own ids may repeat.
     next_ask: std::sync::atomic::AtomicU64,
@@ -696,6 +699,53 @@ struct Shared {
 /// sync and, separately, sharing of copied images (both default off).
 fn image_accepted(clipboard_sync: bool, clipboard_images: bool) -> bool {
     clipboard_sync && clipboard_images
+}
+
+/// What a PC control request meets before anyone is asked.
+#[derive(Debug, PartialEq, Eq)]
+enum ControlGate {
+    /// Another request is being asked or a session runs.
+    Busy,
+    /// "Relay control" (the accessibility service) is not running.
+    NoService,
+    /// The user allows control without asking.
+    Allowed,
+    /// Ask the user (they may decline, or not answer in time).
+    Ask,
+}
+
+fn control_gate(busy: bool, has_listener: bool, allow_control: bool) -> ControlGate {
+    match () {
+        _ if busy => ControlGate::Busy,
+        _ if !has_listener => ControlGate::NoService,
+        _ if allow_control => ControlGate::Allowed,
+        _ => ControlGate::Ask,
+    }
+}
+
+impl ControlGate {
+    /// Only a refusal because the service was off is remembered for Home
+    /// ("Control is off while a control request is waiting"); a busy phone or
+    /// a user who declined is not something to fix.
+    fn stamps_refusal(&self) -> bool {
+        *self == Self::NoService
+    }
+}
+
+/// Unix time in milliseconds (0 if the clock is before 1970).
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Whether the paired peer with this hex id was found reinstalled or reset
+/// on the last attempt to reach it. Unknown or malformed ids: false.
+fn changed_peer(node: &Node, peer_id: &str) -> bool {
+    node.paired_peers()
+        .into_iter()
+        .find(|p| p.id.to_string() == peer_id)
+        .is_some_and(|p| node.peer_changed(&p.id))
 }
 
 /// Name of a received picture inside the private incoming folder: safe
@@ -754,6 +804,7 @@ pub async fn start_node(
         allow_control: std::sync::atomic::AtomicBool::new(false),
         control: Mutex::new(None),
         control_busy: std::sync::atomic::AtomicBool::new(false),
+        control_refused_at: std::sync::atomic::AtomicU64::new(0),
         next_ask: std::sync::atomic::AtomicU64::new(1),
         notify: pb_transport::notify::NotifyOutbox::new(node.clone()),
         notify_enabled: std::sync::atomic::AtomicBool::new(false),
@@ -876,11 +927,20 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 let busy = sh
                     .control_busy
                     .swap(true, std::sync::atomic::Ordering::AcqRel);
-                let accept = match &listener {
-                    _ if busy => false,
-                    None => false,
-                    Some(_) if sh.allow_control.load(std::sync::atomic::Ordering::Relaxed) => true,
-                    Some(_) => {
+                let gate = control_gate(
+                    busy,
+                    listener.is_some(),
+                    sh.allow_control.load(std::sync::atomic::Ordering::Relaxed),
+                );
+                if gate.stamps_refusal() {
+                    // Still refused without an event; Home reads the time.
+                    sh.control_refused_at
+                        .store(unix_ms(), std::sync::atomic::Ordering::Relaxed);
+                }
+                let accept = match gate {
+                    ControlGate::Busy | ControlGate::NoService => false,
+                    ControlGate::Allowed => true,
+                    ControlGate::Ask => {
                         let ask = sh
                             .next_ask
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1518,6 +1578,21 @@ impl PbNode {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl PbNode {
+    /// True when the paired PC with this id answered with another identity
+    /// the last time this phone tried to reach it (it was reset or
+    /// reinstalled): it no longer recognises this phone. Unknown ids: false.
+    pub fn peer_changed(&self, peer_id: String) -> bool {
+        changed_peer(&self.node, &peer_id)
+    }
+
+    /// Unix ms of the most recent PC control request refused because
+    /// "Relay control" was not running on this phone; 0 if none.
+    pub fn control_refused_at(&self) -> u64 {
+        self.shared
+            .control_refused_at
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn unpair(&self, peer_id: String) -> bool {
         self.node
             .paired_peers()
@@ -2204,5 +2279,79 @@ mod image_tests {
         assert!(a
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'));
+    }
+}
+
+#[cfg(test)]
+mod attention_tests {
+    use super::*;
+    use pb_identity::{Identity, MemoryPeerStore, PairedPeer};
+
+    async fn bind(seed: u8, store: SharedStore) -> (Node, pb_transport::NodeEvents) {
+        let config = NodeConfig {
+            device_name: format!("node {seed}"),
+            port: None,
+            discovery_port: None,
+            tuning: Default::default(),
+        };
+        Node::bind(&Identity::from_seed([seed; 32]), store, config)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_changed_is_false_for_a_healthy_peer_and_unknown_ids() {
+        let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+        let pc = Identity::from_seed([2; 32]).peer_id();
+        store.lock().unwrap().pin(PairedPeer {
+            id: pc,
+            name: "PC".into(),
+            addrs: vec![],
+        });
+        let (node, _ev) = bind(1, store).await;
+        assert!(!changed_peer(&node, &pc.to_string()));
+        let stranger = Identity::from_seed([3; 32]).peer_id();
+        assert!(!changed_peer(&node, &stranger.to_string()));
+        assert!(!changed_peer(&node, "not hex"));
+        assert!(!changed_peer(&node, ""));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peer_changed_once_the_pc_answers_with_another_identity() {
+        // The PC was reset: a new identity now answers at its saved address.
+        let (new_pc, _pc_ev) = bind(4, Arc::new(Mutex::new(MemoryPeerStore::default()))).await;
+        let old_pc = Identity::from_seed([2; 32]).peer_id();
+        let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+        store.lock().unwrap().pin(PairedPeer {
+            id: old_pc,
+            name: "PC".into(),
+            addrs: vec![format!("127.0.0.1:{}", new_pc.port())],
+        });
+        let (phone, _ev) = bind(1, store).await;
+        assert!(!changed_peer(&phone, &old_pc.to_string()));
+        assert!(phone.connect(&old_pc).await.is_err());
+        assert!(changed_peer(&phone, &old_pc.to_string()));
+    }
+
+    #[test]
+    fn only_a_request_refused_for_the_service_being_off_is_remembered() {
+        assert_eq!(control_gate(false, false, false), ControlGate::NoService);
+        assert_eq!(control_gate(false, false, true), ControlGate::NoService);
+        assert!(control_gate(false, false, false).stamps_refusal());
+        // Busy wins over everything, and is not something to fix.
+        assert_eq!(control_gate(true, false, false), ControlGate::Busy);
+        assert_eq!(control_gate(true, true, true), ControlGate::Busy);
+        assert!(!ControlGate::Busy.stamps_refusal());
+        assert_eq!(control_gate(false, true, true), ControlGate::Allowed);
+        assert!(!ControlGate::Allowed.stamps_refusal());
+        // Asking may end in a decline or a timeout: never stamped.
+        assert_eq!(control_gate(false, true, false), ControlGate::Ask);
+        assert!(!ControlGate::Ask.stamps_refusal());
+    }
+
+    #[test]
+    fn unix_ms_is_wall_clock_milliseconds() {
+        // 2020-01-01 in ms: a real clock is past it; seconds would not be.
+        assert!(unix_ms() > 1_577_836_800_000);
     }
 }
