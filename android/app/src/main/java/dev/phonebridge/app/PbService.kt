@@ -21,6 +21,8 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
@@ -79,6 +81,23 @@ object Bridge {
     val controlledBy = mutableStateOf<String?>(null)
     /** Mirrors [Prefs.allowControl] for the UI. */
     val allowControl = mutableStateOf(false)
+    /** Sessions from the PC open right now (Connected minus Disconnected events); 0 when the node stops. */
+    val liveSessions = mutableIntStateOf(0)
+    /** When the PC was last in contact (wall-clock ms), 0 if never; persisted as [Prefs.lastSeenMs]. */
+    val lastSeen = mutableLongStateOf(0L)
+
+    /** The PC opened or closed a session: count it and stamp the contact time. */
+    fun pcContact(ctx: Context, opened: Boolean) {
+        liveSessions.intValue = if (opened) liveSessions.intValue + 1 else (liveSessions.intValue - 1).coerceAtLeast(0)
+        stampSeen(ctx)
+    }
+
+    /** The PC was in contact just now. */
+    fun stampSeen(ctx: Context) {
+        val now = System.currentTimeMillis()
+        lastSeen.longValue = now
+        Prefs(ctx).lastSeenMs = now
+    }
 
     /** Allow PC control without asking, or ask each time; off also ends a running session. */
     fun setAllowControl(ctx: Context, on: Boolean) {
@@ -123,6 +142,8 @@ object Bridge {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
             linked.value = name
+            // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".
+            stampSeen(ctx)
             PbService.refresh(ctx)
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing not completed: ${e.message}")
@@ -255,6 +276,7 @@ class PbService : Service() {
             runCatching { kotlinx.coroutines.runInterruptible { events.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS) } }
         }
         Bridge.nodeReady.value = false
+        Bridge.liveSessions.intValue = 0
         cancelProgress(true)
         cancelProgress(false)
         netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
@@ -273,6 +295,8 @@ class PbService : Service() {
         if (Bridge.node != null) return
         // Turned off and on again quickly: the old node still holds the ports.
         Bridge.stopping?.join()
+        // A new node has no sessions yet (the old node's last events are handled by now).
+        Bridge.liveSessions.intValue = 0
         try {
             NativeInit.initContext(applicationContext)
             val n = startNode(
@@ -389,8 +413,14 @@ class PbService : Service() {
                 notifySimple("Transfer from ${e.peerName} failed", e.reason)
             }
             is PbEvent.TransferProgress -> notifyProgress(e)
-            is PbEvent.Connected -> Log.i(TAG, "Connected: ${e.peerName}")
-            is PbEvent.Disconnected -> Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
+            is PbEvent.Connected -> {
+                Log.i(TAG, "Connected: ${e.peerName}")
+                Bridge.pcContact(this, opened = true)
+            }
+            is PbEvent.Disconnected -> {
+                Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
+                Bridge.pcContact(this, opened = false)
+            }
         }
         Bridge.listeners.forEach { it(e) }
     }

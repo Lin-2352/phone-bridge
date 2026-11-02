@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.timeline.RecentItem
+import dev.phonebridge.app.ui.timeline.recentItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull

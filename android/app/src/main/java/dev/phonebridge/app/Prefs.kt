@@ -98,6 +98,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("keep_history", true)
         set(v) = sp.edit().putBoolean("keep_history", v).apply()
 
+    /** When the paired PC was last in contact (wall-clock ms), 0 if never: Home's "Last seen". */
+    var lastSeenMs: Long
+        get() = sp.getLong("last_seen_ms", 0L)
+        set(v) = sp.edit().putLong("last_seen_ms", v).apply()
+
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?
         get() = sp.getString("save_tree", null)?.let(Uri::parse)

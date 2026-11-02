@@ -181,20 +181,3 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val TAB_REQUEST = "tab_request"
-
-/** One line in the Home screen's Recent list (until Home moves to the Timeline screen). */
-data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: String? = null) {
-    enum class Kind { File, Clipboard, Link }
-}
-
-/** A timeline entry in the Recent list's shape: metadata only, as stored. */
-fun recentItem(e: TlEntry) = RecentItem(
-    title = summary(e),
-    subtitle = if (e.dir == TlDir.ToPc) "Sent to ${e.peer}" else "From ${e.peer}",
-    kind = when (e.kind) {
-        TlKind.File -> RecentItem.Kind.File
-        TlKind.Link -> RecentItem.Kind.Link
-        else -> RecentItem.Kind.Clipboard
-    },
-    uri = e.uri,
-)

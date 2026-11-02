@@ -12,7 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import dev.phonebridge.app.RecentItem
+import dev.phonebridge.app.ui.timeline.RecentItem
 
 /** The letter badge in front of a Recent row: F(ile), C(lipboard) or L(ink). */
 @Composable
