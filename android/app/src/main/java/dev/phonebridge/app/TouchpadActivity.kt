@@ -5,6 +5,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -45,7 +46,7 @@ class TouchpadActivity : ComponentActivity() {
                             )
                         },
                     ) { pad ->
-                        TouchpadPad(Modifier.padding(pad).fillMaxSize().navigationBarsPadding())
+                        TouchpadPad(Modifier.padding(pad).consumeWindowInsets(pad).fillMaxSize().navigationBarsPadding())
                     }
                 }
             }

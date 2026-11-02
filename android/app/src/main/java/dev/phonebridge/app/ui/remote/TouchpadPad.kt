@@ -47,6 +47,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -134,12 +136,14 @@ private class TouchpadSession {
     }
 
     fun stop() {
+        var had = false
         synchronized(generation) {
             generation.incrementAndGet()
+            had = input != null
             input?.stop()
             input = null
         }
-        Log.i(TAG, "INPUT stopped")
+        if (had) Log.i(TAG, "INPUT stopped")
     }
 
     fun key(code: Int) {
@@ -159,17 +163,26 @@ private class TouchpadSession {
 fun TouchpadPad(modifier: Modifier = Modifier) {
     val session = remember { TouchpadSession() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(lifecycle) {
+    val view = LocalView.current
+    DisposableEffect(lifecycle, view) {
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
-                Lifecycle.Event.ON_START -> session.start()
-                Lifecycle.Event.ON_STOP -> session.stop()
+                Lifecycle.Event.ON_START -> {
+                    // Held only while the pad is visible (the activity host sets its own window flag too).
+                    view.keepScreenOn = true
+                    session.start()
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    view.keepScreenOn = false
+                    session.stop()
+                }
                 else -> {}
             }
         }
         lifecycle.addObserver(obs)
         onDispose {
             lifecycle.removeObserver(obs)
+            view.keepScreenOn = false
             session.stop()
         }
     }
@@ -225,9 +238,14 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
     Box(
         modifier
             // Swipes that start at the screen edge move the PC cursor instead of triggering Android's Back gesture.
-            // Android honours at most 200 dp of exclusion height per edge, so the system may still claim the
-            // rest of a tall pad; the pad's edge areas stay inside the safe insets.
-            .systemGestureExclusion()
+            // Android honours at most 200 dp of exclusion height per edge and drops the rest unpredictably, so ask
+            // for a deterministic band instead of the whole bounds: 200 dp centred vertically, along both edges
+            // (the pad is edge to edge inside the horizontal safe insets).
+            .systemGestureExclusion { c ->
+                val h = minOf(c.size.height.toFloat(), 200 * density)
+                val top = (c.size.height - h) / 2f
+                Rect(0f, top, c.size.width.toFloat(), top + h)
+            }
             .clip(RoundedCornerShape(24.dp))
             .background(MaterialTheme.colorScheme.surfaceContainer)
             .pointerInput(Unit) {
