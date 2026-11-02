@@ -563,7 +563,7 @@ impl Logger {
     /// nothing else about the file is recorded.
     pub fn transfer(&self, dir: &str, name: &str, bytes: u64, secs: f64, ok: bool) {
         let mbps = if secs > 0.0 {
-            bytes as f64 / secs / 1_048_576.0
+            bytes as f64 / secs / 1e6
         } else {
             0.0
         };

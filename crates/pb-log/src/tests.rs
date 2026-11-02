@@ -309,7 +309,7 @@ fn transfer_lines_never_contain_the_file_name() {
     let s = read(&lg, "2026-11-03", "transfers.jsonl");
     assert!(!s.contains(secret) && !s.contains("salary"), "{s}");
     assert!(s.contains(".pdf/17-32"), "{s}");
-    assert!(s.contains("\"mbps\":5.000"), "{s}");
+    assert!(s.contains("\"mbps\":5.243"), "{s}");
 }
 
 #[test]
