@@ -88,12 +88,6 @@ import dev.phonebridge.app.ui.timeline.recentItem
 import kotlinx.coroutines.delay
 
 /**
- * The PC never told this phone it forgot it. Task 18 wires this to the FFI's `peer_changed`;
- * until then the "Pair again" row cannot show.
- */
-private const val PC_FORGOT_PHONE = false
-
-/**
  * The Home tab: the PC hero card, one "Needs attention" card (hidden when nothing needs it),
  * the 2 x 3 quick actions, a card with Stop for each live session, and the last few Recent items.
  */
@@ -122,18 +116,16 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
         }
     }
 
-    val notificationsOn = remember(resumed) { ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled() }
-    val list = remember(resumed, Bridge.allowControl.value) {
+    val list = remember(resumed) {
         needs(
             notifyAccess = !notifyAccessMissing(prefs.notifyToPc, hasNotifyAccess(ctx)),
             screenshotsOn = prefs.shareScreenshots,
             photosGranted = ClipImages.hasImageAccess(ctx),
             // Running, not only turned on: Android can leave it enabled but stopped.
             controlOn = ControlService.instance != null,
-            // The phone is not told when a PC asked while Control was off (the request is refused
-            // without an event), so "waiting" means the user expects the PC to control this phone.
-            controlWaiting = Bridge.allowControl.value,
+            controlWaiting = PC_CONTROL_WAITING,
             pcForgot = PC_FORGOT_PHONE,
+            appNotificationsOn = ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled(),
         )
     }
     val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -169,14 +161,17 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
             item { HeroCard(pc, running, ready, live, pcStatus(live, lastSeen, now)) }
-            if (list.isNotEmpty() || !notificationsOn) {
+            if (list.isNotEmpty()) {
                 item {
-                    NeedsCard(list, notificationsOn) { need ->
+                    NeedsCard(list) { need ->
                         when (need) {
                             Need.NotificationAccess -> openNotifyAccess(ctx)
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermission)
                             Need.ControlOff -> ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                             Need.PcForgotPhone -> ctx.startActivity(Intent(ctx, ScanActivity::class.java))
+                            Need.AppNotificationsOff -> ctx.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName),
+                            )
                         }
                     }
                 }
@@ -265,8 +260,7 @@ private fun HeroText(title: String, body: String?, accent: Boolean = false) {
 
 /** The single "Needs attention" card: one row per [needs] entry, each with its fix. */
 @Composable
-private fun NeedsCard(needs: List<Need>, notificationsOn: Boolean, onFix: (Need) -> Unit) {
-    val ctx = LocalContext.current
+private fun NeedsCard(needs: List<Need>, onFix: (Need) -> Unit) {
     Card(
         shape = RoundedCornerShape(Radius.card),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
@@ -277,12 +271,6 @@ private fun NeedsCard(needs: List<Need>, notificationsOn: Boolean, onFix: (Need)
             needs.forEach { need ->
                 val (title, body, fix) = needText(need)
                 NeedRow(title, body, fix) { onFix(need) }
-            }
-            // Not one of the attention needs (the app's own notifications), but it hides what arrives from the PC.
-            if (!notificationsOn) {
-                NeedRow("Notifications are off", "You will not see files, links or clips arriving from your PC.", "Turn on") {
-                    ctx.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName))
-                }
             }
         }
     }
@@ -310,6 +298,11 @@ private fun needText(need: Need): Triple<String, String, String> = when (need) {
         "Your PC no longer recognises this phone",
         "$APP_NAME on your PC was reset or reinstalled. Pair again to reconnect.",
         "Pair again",
+    )
+    Need.AppNotificationsOff -> Triple(
+        "Notifications are off",
+        "You will not see files, links or clips arriving from your PC.",
+        "Turn on",
     )
 }
 

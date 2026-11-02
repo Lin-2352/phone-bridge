@@ -1,18 +1,29 @@
 package dev.phonebridge.app.ui.home
 
 /** One problem the Home "Needs attention" card lists, each with its own fix. */
-enum class Need { NotificationAccess, PhotosPermission, ControlOff, PcForgotPhone }
+enum class Need { NotificationAccess, PhotosPermission, ControlOff, PcForgotPhone, AppNotificationsOff }
+
+/**
+ * A PC asked to control this phone and was refused because Relay control was off. The phone is not
+ * told yet (the FFI refuses without an event); Task 18 adds `control_refused_at()` and flips this source.
+ */
+internal const val PC_CONTROL_WAITING = false
+
+/** The PC no longer recognises this phone. Task 18 wires this to the FFI's `peer_changed`. */
+internal const val PC_FORGOT_PHONE = false
 
 /**
  * What the "Needs attention" card lists, in its fixed priority order (empty hides the card).
  * [notifyAccess] already means "granted, or not needed" (notifications to the PC are off).
- * Photos matter only while screenshots are shared; Control only while the PC is expected to use it.
+ * Photos matter only while screenshots are shared; Control only while a PC's request waits (off alone is
+ * normal: it switches itself off after every session). [appNotificationsOn] is the app's own notifications.
  */
-fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean, controlOn: Boolean, controlWaiting: Boolean, pcForgot: Boolean): List<Need> = buildList {
+fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean, controlOn: Boolean, controlWaiting: Boolean, pcForgot: Boolean, appNotificationsOn: Boolean): List<Need> = buildList {
     if (!notifyAccess) add(Need.NotificationAccess)
     if (screenshotsOn && !photosGranted) add(Need.PhotosPermission)
     if (controlWaiting && !controlOn) add(Need.ControlOff)
     if (pcForgot) add(Need.PcForgotPhone)
+    if (!appNotificationsOn) add(Need.AppNotificationsOff)
 }
 
 /**
