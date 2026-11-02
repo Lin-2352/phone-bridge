@@ -136,9 +136,10 @@ const TIMER_OTP: usize = 10;
 /// second) and refreshes the open main window and flyout. Runs only while
 /// one of those needs it (`timeline_timer_needed`).
 const TIMER_TIMELINE: usize = 11;
-/// 30 s after the last Direct2D surface on the UI thread went (any window:
-/// main, flyout, menu, dialogs, QR, camera, pill): release the shared
-/// device and trim the working set.
+/// 30 s after the last Direct2D surface on the UI thread went (the main
+/// window, flyout, menu, QR, camera window and pill): release the shared
+/// device and trim the working set. Dialogs and the screen window run on
+/// their own threads; their devices go when those threads end.
 const TIMER_RELEASE: usize = 12;
 /// How long the device stays after the last window, for a quick reopen.
 const RELEASE_AFTER_MS: u32 = 30_000;

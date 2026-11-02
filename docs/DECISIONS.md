@@ -381,6 +381,6 @@ Measured on the dev laptop (Intel UHD Graphics drives the panel, RTX 4060 idle; 
 - **Idle CPU over 60 s:** window open 0.03 to 0.09 s (the 1 s refresh timer); window closed 0.00 s after the change. Before the change it was 0.08 to 0.20 s, from the permanent 1 s timer.
 - **Changes:**
   - The device is made by the first window, not at start.
-  - It's released 30 s after the last surface on the UI thread closes (main window, flyout, menu, dialogs, QR, camera window or pill), then the working set is trimmed.
+  - It's released 30 s after the last surface on the UI thread closes (main window, flyout, menu, QR, camera window or pill), then the working set is trimmed. Dialogs and the screen window run on their own threads; their devices are freed when those threads end.
   - The 1 s timeline timer runs only while a write is owed or the main window or flyout is open. A timeline add from the core wakes it.
 - **GDI:** every window now draws through Direct2D. The guard test `no_gdi_drawing_left` keeps it that way. The `Win32_Graphics_GdiPlus` feature is gone.

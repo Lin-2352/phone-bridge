@@ -463,12 +463,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             WM_DESTROY => {
                 fluent::unregister_window(hwnd);
-                SURFACE.with(|cell| {
+                // Taken out first, dropped outside the borrow (dropping the last
+                // surface runs the device idle hook).
+                let surface = SURFACE.with(|cell| {
                     let mut slot = cell.borrow_mut();
                     if slot.as_ref().is_some_and(|(h, _)| *h == hwnd.0 as isize) {
-                        *slot = None;
+                        slot.take()
+                    } else {
+                        None
                     }
                 });
+                drop(surface);
                 let st = CURRENT.lock().ok().and_then(|mut g| g.take());
                 if let Some(mut st) = st {
                     st.collector_stop.store(true, Ordering::Release);

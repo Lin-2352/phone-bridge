@@ -403,7 +403,7 @@ impl Surface {
     /// Err only when nothing can draw at all (no Direct2D, not even WARP).
     pub fn new(hwnd: HWND, want: Backdrop) -> Result<Surface, String> {
         let size = client_size(hwnd);
-        let (gfx, backdrop) = build(hwnd, want, size)?;
+        let (gfx, backdrop) = build(hwnd, want, size).inspect_err(|_| after_failed_build())?;
         LIVE.with(|n| n.set(n.get() + 1));
         Ok(Surface {
             hwnd,
@@ -512,6 +512,24 @@ impl Surface {
     }
 }
 
+/// Runs the idle hook (the tray schedules the device's release).
+fn notify_idle() {
+    ON_IDLE.with(|c| {
+        if let Some(f) = c.borrow().as_ref() {
+            f();
+        }
+    });
+}
+
+/// A surface failed to build, possibly after making the shared device
+/// (e.g. the swap chain was refused): with no surface left nothing else
+/// would schedule its release.
+fn after_failed_build() {
+    if LIVE.with(Cell::get) == 0 && SHARED.with(|c| c.borrow().is_some()) {
+        notify_idle();
+    }
+}
+
 impl Drop for Surface {
     fn drop(&mut self) {
         // The swap chain and context go first; then the count.
@@ -521,11 +539,7 @@ impl Drop for Surface {
             n.get()
         });
         if left == 0 {
-            ON_IDLE.with(|c| {
-                if let Some(f) = c.borrow().as_ref() {
-                    f();
-                }
-            });
+            notify_idle();
         }
     }
 }
@@ -723,6 +737,43 @@ mod tests {
         // SAFETY: our own test windows, made above on this thread.
         unsafe {
             let _ = DestroyWindow(hwnd);
+            let _ = DestroyWindow(h2);
+        }
+    }
+
+    /// A surface whose build failed after the shared device was made must
+    /// still schedule the device's release (nothing else will).
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_build_with_no_surface_left_still_schedules_the_release() {
+        use std::rc::Rc;
+        let idle = Rc::new(Cell::new(0));
+        let seen = idle.clone();
+        set_on_idle(Box::new(move || seen.set(seen.get() + 1)));
+        after_failed_build();
+        assert_eq!(idle.get(), 0, "no device: nothing to release");
+        let (h1, h2) = (test_window(), test_window());
+        let s1 = Surface::new(h1, Backdrop::Opaque).expect("surface");
+        // A second swap chain on the same window is refused.
+        assert!(Surface::new(h1, Backdrop::Opaque).is_err());
+        assert_eq!(idle.get(), 0, "a surface still uses the device");
+        drop(s1);
+        assert_eq!(idle.get(), 1);
+        assert_eq!(release_if_unused(), Release::Released);
+        // The device made for a surface that then fails: told once.
+        let s2 = Surface::new(h2, Backdrop::Opaque).expect("surface");
+        let held = s2.gfx.as_ref().map(|g| g.swap.clone());
+        drop(s2);
+        assert_eq!(idle.get(), 2);
+        // h2 still has a swap chain (held above): the build fails after
+        // the shared device was made again.
+        assert!(Surface::new(h2, Backdrop::Opaque).is_err());
+        assert_eq!(idle.get(), 3, "the failed build tells the tray");
+        drop(held);
+        assert_eq!(release_if_unused(), Release::Released);
+        // SAFETY: our own test windows, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(h1);
             let _ = DestroyWindow(h2);
         }
     }

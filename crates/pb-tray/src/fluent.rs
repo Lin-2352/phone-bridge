@@ -950,39 +950,89 @@ mod tests {
         assert_eq!((r.left, r.top, r.right, r.bottom), (1.0, 2.0, 30.0, 40.0));
     }
 
-    /// Every window draws through Direct2D: no GDI text, shapes or paint
-    /// passes are left. The needles are split so this file does not match
-    /// itself; fluent.rs is scanned too (the GDI kit lived here).
-    #[test]
-    fn no_gdi_drawing_left() {
+    /// Every `.rs` file under `dir`, with its path relative to `root`
+    /// ('/'-separated).
+    fn sources(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("source dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                sources(root, &path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let rel = path.strip_prefix(root).expect("under src");
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                out.push((rel, std::fs::read_to_string(&path).expect("source")));
+            }
+        }
+    }
+
+    /// GDI drawing calls found in `files` ((path, text) pairs), except where
+    /// allowed: the native EDIT control (font and text colour) and the
+    /// paint pass in `paint_with`. The needles are split so this test does
+    /// not match itself; fluent.rs is scanned too (the GDI kit lived here).
+    fn gdi_calls(files: &[(String, String)]) -> Vec<String> {
         // (needle, files allowed to use it)
-        let rules: [(&str, &[&str]); 6] = [
+        let rules: [(&str, &[&str]); 12] = [
             (concat!("gdi_", "text("), &[]),
             (concat!("gdi_", "round_rect("), &[]),
             (concat!("gdi_", "paint("), &[]),
             (concat!("gdi_", "icon("), &[]),
+            (concat!("Stretch", "DIBits("), &[]),
+            (concat!("Bit", "Blt("), &[]),
+            (concat!("Draw", "TextW("), &[]),
+            (concat!("Fill", "Rect("), &[]),
+            (concat!("Round", "Rect("), &[]),
+            // WM_CTLCOLOREDIT: the EDIT control's own text colour.
+            (concat!("SetText", "Color("), &["search_box.rs"]),
             // The native EDIT control needs a GDI font.
             (concat!("CreateFont", "W("), &["search_box.rs"]),
             // `paint_with` validates the window with a paint pass.
             (concat!("Begin", "Paint("), &["fluent.rs"]),
         ];
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offending = Vec::new();
-        for entry in std::fs::read_dir(&dir).expect("src dir") {
-            let path = entry.expect("entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let body = std::fs::read_to_string(&path).expect("source");
+        for (name, body) in files {
             for (needle, allowed) in rules {
-                if body.contains(needle) && !allowed.contains(&name) {
+                if body.contains(needle) && !allowed.contains(&name.as_str()) {
                     offending.push(format!("{name}: {needle}"));
                 }
             }
         }
         offending.sort();
+        offending
+    }
+
+    /// Every window draws through Direct2D: no GDI text, shapes, blits or
+    /// paint passes are left anywhere under src/ (subfolders included).
+    #[test]
+    fn no_gdi_drawing_left() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&root, &root, &mut files);
+        assert!(
+            files.iter().any(|(n, _)| n.starts_with("pages/")),
+            "subfolders are scanned"
+        );
+        let offending = gdi_calls(&files);
         assert!(offending.is_empty(), "GDI drawing left in: {offending:#?}");
+    }
+
+    #[test]
+    fn the_gdi_guard_catches_each_call_outside_its_allow_list() {
+        let file = |n: &str, body: String| (n.to_owned(), body);
+        let found = gdi_calls(&[
+            file("pages/home.rs", concat!("Bit", "Blt(hdc, 0)").into()),
+            file("a.rs", concat!("Fill", "Rect(hdc, &r, b)").into()),
+            file("search_box.rs", concat!("SetText", "Color(hdc, c)").into()),
+            file("b.rs", concat!("SetText", "Color(hdc, c)").into()),
+            file("fluent.rs", concat!("Begin", "Paint(hwnd, &mut ps)").into()),
+        ]);
+        assert_eq!(
+            found,
+            [
+                concat!("a.rs: Fill", "Rect("),
+                concat!("b.rs: SetText", "Color("),
+                concat!("pages/home.rs: Bit", "Blt("),
+            ]
+        );
     }
 
     #[test]
