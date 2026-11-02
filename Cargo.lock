@@ -2423,6 +2423,7 @@ dependencies = [
  "iroh",
  "jni 0.21.1",
  "pb-identity",
+ "pb-log",
  "pb-protocol",
  "pb-transport",
  "pb-video",
