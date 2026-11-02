@@ -53,13 +53,32 @@ pub const ROTATE: std::time::Duration = std::time::Duration::from_secs(30);
 const CODE_TTL: std::time::Duration = std::time::Duration::from_secs(35);
 const ROUNDS: u32 = 4;
 
-/// A PC -> phone control request still waiting for the phone's answer.
 /// Paired devices that answered at their saved address as a different device
-/// (reinstalled or reset), refreshed by [`Cmd::CheckPeers`].
+/// (reinstalled or reset): the transport's flags, copied by
+/// [`Cmd::CheckPeers`], unpair and pairing, and per device when a session
+/// opens or closes (an incoming session clears the transport's flag).
 static CHANGED: Mutex<Vec<PeerId>> = Mutex::new(Vec::new());
 
 pub fn is_changed(id: &PeerId) -> bool {
     CHANGED.lock().map(|g| g.contains(id)).unwrap_or(false)
+}
+
+/// Puts `id`'s flag in `cache`; true if that changed it (the UI repaints).
+fn set_changed(cache: &mut Vec<PeerId>, id: &PeerId, changed: bool) -> bool {
+    let had = cache.contains(id);
+    if changed && !had {
+        cache.push(*id);
+    } else if !changed && had {
+        cache.retain(|p| p != id);
+    }
+    had != changed
+}
+
+/// Copies the transport's flag for `id` into the cache; true if it changed.
+fn note_changed(node: &Node, id: &PeerId) -> bool {
+    let now = node.peer_changed(id);
+    let mut g = CHANGED.lock().unwrap_or_else(|p| p.into_inner());
+    set_changed(&mut g, id, now)
 }
 
 fn refresh_changed(node: &Node) {
@@ -154,6 +173,7 @@ impl Drop for OpenSession {
     }
 }
 
+/// A PC -> phone control request still waiting for the phone's answer.
 static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The task that is setting up the camera or waiting for the phone's answer.
 static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
@@ -283,7 +303,8 @@ pub enum UiEvent {
         size: u64,
         reply: oneshot::Sender<bool>,
     },
-    /// The check of paired devices finished: the Devices page may differ now.
+    /// The paired devices' "reinstalled or reset" notes may differ now (a
+    /// check finished, or a session opened or closed): the UI repaints.
     PeersChecked,
     Info(String),
     /// A phone notification arrived (or was re-sent quietly).
@@ -435,7 +456,7 @@ pub async fn run(
                 Ok(s) => {
                     seen(&node, &p.id);
                     let closer = s.closer();
-                    let pumped = pump(s, log, ui, settings, clip, images);
+                    let pumped = pump(s, node.clone(), log, ui, settings, clip, images);
                     if tokio::time::timeout(std::time::Duration::from_secs(30), pumped)
                         .await
                         .is_err()
@@ -478,6 +499,8 @@ pub async fn run(
                             match p.decide(accept).await {
                                 Ok(peer) => {
                                     log.line(&format!("PAIRED {} \"{}\"", peer.id, peer.name));
+                                    // Paired again: the transport cleared its flag.
+                                    refresh_changed(&node);
                                     refresh(&node, &peers);
                                     ui(UiEvent::Info(format!("Paired with {}", peer.name)));
                                 }
@@ -833,7 +856,7 @@ pub async fn run(
                 pending.insert(next_id, p);
             }
             Some(s) = ev.sessions.recv() => {
-                tokio::spawn(pump(s, log.clone(), ui.clone(), settings.clone(), clip.clone(), images.clone()));
+                tokio::spawn(pump(s, node.clone(), log.clone(), ui.clone(), settings.clone(), clip.clone(), images.clone()));
             }
         }
     }
@@ -925,7 +948,29 @@ async fn send_one_file(
     }
 }
 
+/// Runs a session; on open and on close the device's "reinstalled or reset"
+/// note follows the transport (which clears it for an incoming session),
+/// and the UI repaints if it changed.
 async fn pump(
+    s: Session,
+    node: Node,
+    log: Log,
+    ui: Arc<impl Fn(UiEvent) + Send + Sync + 'static>,
+    settings: SharedSettings,
+    clip: Arc<Mutex<ClipSync>>,
+    images: Arc<ToastImages>,
+) {
+    let peer = s.peer;
+    if note_changed(&node, &peer) {
+        ui(UiEvent::PeersChecked);
+    }
+    pump_session(s, log, ui.clone(), settings, clip, images).await;
+    if note_changed(&node, &peer) {
+        ui(UiEvent::PeersChecked);
+    }
+}
+
+async fn pump_session(
     mut s: Session,
     log: Log,
     ui: Arc<impl Fn(UiEvent) + Send + Sync + 'static>,
@@ -1555,6 +1600,28 @@ fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A phone that reconnects proves its identity, and the transport clears
+    /// its "changed" flag: the cached note must follow, or the UI keeps
+    /// saying "Reinstalled or reset".
+    #[test]
+    fn a_cleared_transport_flag_clears_the_cached_note() {
+        let a = pb_identity::Identity::from_seed([0xA1; 32]).peer_id();
+        let b = pb_identity::Identity::from_seed([0xB2; 32]).peer_id();
+        let mut cache = vec![a, b];
+        assert!(
+            set_changed(&mut cache, &a, false),
+            "cleared: the UI must refresh"
+        );
+        assert_eq!(cache, [b]);
+        assert!(
+            !set_changed(&mut cache, &a, false),
+            "already clear: no refresh"
+        );
+        assert!(!set_changed(&mut cache, &b, true), "already noted");
+        assert!(set_changed(&mut cache, &a, true));
+        assert_eq!(cache, [b, a]);
+    }
 
     #[test]
     fn open_sessions_are_counted_and_stamp_the_last_contact() {
