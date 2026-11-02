@@ -76,7 +76,6 @@ import dev.phonebridge.app.ScanActivity
 import dev.phonebridge.app.ScreenShare
 import dev.phonebridge.app.ScreenshotWatcher
 import dev.phonebridge.app.SendClipboardActivity
-import dev.phonebridge.app.ShareActivity
 import dev.phonebridge.app.Spacing
 import dev.phonebridge.app.Timeline
 import dev.phonebridge.app.TouchpadActivity
@@ -90,6 +89,8 @@ import dev.phonebridge.app.ui.components.KindBadge
 import dev.phonebridge.app.ui.components.LinkIndicator
 import dev.phonebridge.app.ui.settings.openNotifyAccess
 import dev.phonebridge.app.ui.timeline.recentItem
+import dev.phonebridge.app.widget.sendPickedFiles
+import dev.phonebridge.app.widget.widgetConnected
 import kotlinx.coroutines.delay
 
 /**
@@ -109,7 +110,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     val screenTo = ScreenShare.sharingWith.value
     val cameraTo = CameraShare.usedBy.value
     // Live, as on the PC: only while the PC really has a session open with this phone.
-    val live = running && pc != null && (Bridge.liveSessions.intValue > 0 || controller != null || screenTo != null || cameraTo != null)
+    val live = widgetConnected(running, pc, Bridge.liveSessions.intValue, controller, screenTo, cameraTo)
     val storedSeen = remember(resumed) { prefs.lastSeenMs }
     val lastSeen = maxOf(Bridge.lastSeen.longValue, storedSeen)
     // "Last seen 5 min ago" moves on, and the node-side needs are re-read, while Home is on screen
@@ -149,15 +150,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
         if (!granted && act != null && !act.shouldShowRequestPermissionRationale(ClipImages.imagePermission)) openAppDetails(ctx)
     }
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) {
-            // Into the share flow, as if shared from another app; the grant goes along with the URIs.
-            val send = Intent(ctx, ShareActivity::class.java)
-                .setAction(Intent.ACTION_SEND_MULTIPLE)
-                .setType("*/*")
-                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList<Uri>(uris))
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            runCatching { ctx.startActivity(send) }
-        }
+        if (uris.isNotEmpty()) sendPickedFiles(ctx, uris)
     }
 
     val timeline by Timeline.entries.collectAsState()

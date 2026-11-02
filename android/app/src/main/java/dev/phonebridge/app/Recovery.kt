@@ -10,9 +10,13 @@ import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
 import android.util.Log
+import dev.phonebridge.app.widget.RelayWidget
 
 private const val TAG = "PhoneBridge"
-private const val JOB_ID = 4701
+// Negative: WorkManager (used by the Glance widget) numbers its JobScheduler jobs from 0 upwards and
+// would in time reuse a positive id, replacing this job with its own.
+private const val JOB_ID = -4701
+private const val LEGACY_JOB_ID = 4701
 
 /**
  * Brings Phone Bridge back when the system killed it (low memory) and then
@@ -49,6 +53,8 @@ fun ensureRunning(ctx: Context, why: String) {
         // tap that starts it from the foreground.
         Log.i(TAG, "RECOVERY refused ($why): $t")
         notifyStopped(ctx)
+        // Killed without onDestroy (OEM task manager): the widget may still show the old state.
+        RelayWidget.update(ctx)
     }
 }
 
@@ -107,6 +113,7 @@ fun honourUserStop(ctx: Context): Boolean {
         cancelRecovery(ctx)
         ctx.getSystemService(android.app.NotificationManager::class.java).cancel(STOPPED_ID)
         refreshTile(ctx)
+        RelayWidget.update(ctx)
         Log.i(TAG, "RECOVERY user stopped $APP_NAME from the system: now off")
     }
     return stopped
@@ -114,6 +121,7 @@ fun honourUserStop(ctx: Context): Boolean {
 
 fun scheduleRecovery(ctx: Context) {
     val js = ctx.getSystemService(JobScheduler::class.java)
+    cancelLegacyRecovery(js)
     if (js.getPendingJob(JOB_ID) != null) return
     js.schedule(
         JobInfo.Builder(JOB_ID, ComponentName(ctx, RecoveryJob::class.java))
@@ -124,7 +132,14 @@ fun scheduleRecovery(ctx: Context) {
 }
 
 fun cancelRecovery(ctx: Context) {
-    ctx.getSystemService(JobScheduler::class.java).cancel(JOB_ID)
+    val js = ctx.getSystemService(JobScheduler::class.java)
+    js.cancel(JOB_ID)
+    cancelLegacyRecovery(js)
+}
+
+/** The job as older versions scheduled it; only if it is still ours (WorkManager may own that id now). */
+private fun cancelLegacyRecovery(js: JobScheduler) {
+    if (js.getPendingJob(LEGACY_JOB_ID)?.service?.className == RecoveryJob::class.java.name) js.cancel(LEGACY_JOB_ID)
 }
 
 fun isBatteryUnrestricted(ctx: Context): Boolean =
