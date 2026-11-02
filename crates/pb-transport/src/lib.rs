@@ -508,10 +508,14 @@ impl Node {
             // land here although the peer did not change. The phone's next
             // incoming session clears the flag (`accept_session`); a real fix
             // needs a way to drop a remote path in iroh. Forged discovery
-            // candidates are handled in `dial_known` (one retry with the
-            // saved addresses, then `Changed::untrusted`), so a planted
-            // address never reads as a reset; a real (lucky) connect through
-            // the saved address may still lose the race to it.
+            // candidates that fail a dial are handled in `dial_known` (one
+            // retry with the saved addresses, then `Changed::untrusted`).
+            // Remaining gap, accepted: a planted address that was dialled in
+            // a batch that SUCCEEDED (or timed out) stays a remembered path
+            // but the peer is not distrusted, so if the phone then goes
+            // offline and the planter answers there, this can still read as
+            // a reset. The user-facing copy says another device may be the
+            // cause, and removing the pairing asks for confirmation.
             Err(e) if is_identity_mismatch(&e) => {
                 if self.note_mismatch(peer, epoch) {
                     return Err(Error::PeerChanged);
