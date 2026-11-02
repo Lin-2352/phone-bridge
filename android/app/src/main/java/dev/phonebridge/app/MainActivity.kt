@@ -10,6 +10,7 @@ import dev.phonebridge.app.ui.isDark
 import dev.phonebridge.app.ui.startTab
 import dev.phonebridge.app.ui.Amber
 import dev.phonebridge.app.ui.AmberDark
+import dev.phonebridge.app.widget.RelayWidget
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -74,6 +75,8 @@ class MainActivity : ComponentActivity() {
         Timeline.init(this)
         ThemeChoice.mode.intValue = prefs.theme
         Bridge.allowControl.value = prefs.allowControl
+        // A process killed without onDestroy left the widget's last state behind: opening the app corrects it.
+        RelayWidget.update(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {

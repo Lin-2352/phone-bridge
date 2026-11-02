@@ -4,13 +4,16 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
+import androidx.glance.LocalSize
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
@@ -52,6 +55,9 @@ private val widgetColors by lazy { ColorProviders(light = relayLightScheme(), da
  * service renders "Relay is off".
  */
 class RelayWidget : GlanceAppWidget() {
+    // A one-row cell can be as low as the 40 dp minimum: a compact variant fits it; taller cells get room.
+    override val sizeMode = SizeMode.Responsive(setOf(COMPACT, ROOMY))
+
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         provideContent { GlanceTheme(colors = widgetColors) { Content(context) } }
     }
@@ -65,8 +71,12 @@ class RelayWidget : GlanceAppWidget() {
             running, pc, Bridge.liveSessions.intValue, Bridge.controlledBy.value,
             ScreenShare.sharingWith.value, CameraShare.usedBy.value,
         )
+        // Compact: 2 + 14 + 2 + 22 = 40 dp; roomy: 4 + 17 + 4 + 30 + 4 = 59 dp.
+        val compact = LocalSize.current.height < ROOMY.height
+        val pad = if (compact) 2.dp else 4.dp
         Column(
-            GlanceModifier.fillMaxSize().background(GlanceTheme.colors.surface).cornerRadius(16.dp).padding(8.dp),
+            GlanceModifier.fillMaxSize().background(GlanceTheme.colors.surface).cornerRadius(16.dp)
+                .padding(horizontal = 6.dp, vertical = pad),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -75,23 +85,25 @@ class RelayWidget : GlanceAppWidget() {
                     .clickable(actionStartActivity(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))),
                 style = TextStyle(
                     color = if (connected) GlanceTheme.colors.primary else GlanceTheme.colors.onSurface,
-                    fontSize = 13.sp,
+                    fontSize = if (compact) 11.sp else 13.sp,
                     fontWeight = FontWeight.Medium,
                 ),
                 maxLines = 1,
             )
-            Spacer(GlanceModifier.height(6.dp))
+            Spacer(GlanceModifier.height(pad))
             Row(GlanceModifier.fillMaxWidth()) {
                 // Started exactly as the Quick Settings tile does: the activity reads the clipboard once focused.
                 WidgetButton(
                     "Send clipboard",
                     Intent(ctx, SendClipboardActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    compact,
                     GlanceModifier.defaultWeight(),
                 )
                 Spacer(GlanceModifier.width(6.dp))
                 WidgetButton(
                     "Send file",
                     Intent(ctx, PickFileActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    compact,
                     GlanceModifier.defaultWeight(),
                 )
             }
@@ -99,21 +111,24 @@ class RelayWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun WidgetButton(label: String, intent: Intent, modifier: GlanceModifier) {
+    private fun WidgetButton(label: String, intent: Intent, compact: Boolean, modifier: GlanceModifier) {
+        val h = if (compact) 22.dp else 30.dp
         Box(
-            modifier.height(36.dp).background(GlanceTheme.colors.primaryContainer).cornerRadius(18.dp)
+            modifier.height(h).background(GlanceTheme.colors.primaryContainer).cornerRadius(h / 2)
                 .clickable(actionStartActivity(intent)),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 label,
-                style = TextStyle(color = GlanceTheme.colors.onPrimaryContainer, fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                style = TextStyle(color = GlanceTheme.colors.onPrimaryContainer, fontSize = if (compact) 11.sp else 12.sp, fontWeight = FontWeight.Medium),
                 maxLines = 1,
             )
         }
     }
 
     companion object {
+        private val COMPACT = DpSize(110.dp, 40.dp)
+        private val ROOMY = DpSize(110.dp, 60.dp)
         private val pending = AtomicBoolean(false)
 
         /**
