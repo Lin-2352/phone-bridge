@@ -425,6 +425,13 @@ impl Node {
                 lock(&self.inner.changed).retain(|p| p != peer);
                 c
             }
+            // Known limit: iroh keeps every address dialled for this peer as
+            // a path and tries them all on the next connect. If another
+            // device keeps answering at an old address while the paired one
+            // is reachable elsewhere, its handshake can win and land here
+            // although the peer did not change. The phone's next incoming
+            // session clears the flag (`accept_session`); a real fix needs a
+            // way to drop a remote path in iroh.
             Err(e) if is_identity_mismatch(&e) => {
                 let mut ch = lock(&self.inner.changed);
                 if !ch.contains(peer) {

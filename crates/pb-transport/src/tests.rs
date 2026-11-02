@@ -1736,12 +1736,25 @@ mod identity_changed {
         );
         assert!(pc.peer_changed(&id));
 
-        // The same identity answers again (a restart on a new port): cleared.
-        let (again, _aev, _) = node(42, "Phone").await;
+        // The other device has left the old address, and the paired phone
+        // answers again (a restart on a new port): cleared. The impostor
+        // must be gone first: iroh keeps the address the failed dial used
+        // as a path for the phone's id and tries it on the next connect,
+        // and an impostor still answering there can win the handshake race
+        // (`PeerChanged` again). See the note in `Node::connect`.
+        impostor.shutdown().await;
+        let (again, _aev, again_store) = node(42, "Phone").await;
+        // The restarted phone still knows the PC, so the session opens.
+        lock(&again_store).pin(PairedPeer {
+            id: pc.peer_id(),
+            name: "PC".into(),
+            addrs: loopback(&pc),
+        });
         let mut p = lock(&pc_store).get(&id).unwrap();
         p.addrs = loopback(&again);
         lock(&pc_store).pin(p);
-        let _ = pc.connect(&id).await;
+        let r = pc.connect(&id).await;
+        assert!(r.is_ok(), "got {:?}", r.err().map(|e| e.to_string()));
         assert!(!pc.peer_changed(&id));
     }
 
