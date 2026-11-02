@@ -24,6 +24,7 @@ import android.webkit.MimeTypeMap
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import dev.phonebridge.app.widget.RelayWidget
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -90,6 +91,7 @@ object Bridge {
     fun pcContact(ctx: Context, opened: Boolean) {
         liveSessions.intValue = if (opened) liveSessions.intValue + 1 else (liveSessions.intValue - 1).coerceAtLeast(0)
         stampSeen(ctx)
+        RelayWidget.update(ctx)
     }
 
     /** The PC was in contact just now. */
@@ -220,6 +222,7 @@ class PbService : Service() {
         Prefs(this).stoppedNotified = false
         getSystemService(NotificationManager::class.java).cancel(STOPPED_ID)
         refreshTile(this)
+        RelayWidget.update(this)
         scheduleRecovery(this)
         scope.launch { start() }
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
@@ -285,6 +288,7 @@ class PbService : Service() {
         Bridge.running.value = false
         Bridge.startingSince = 0L
         refreshTile(this)
+        RelayWidget.update(this)
         // Quitting right after a transfer: its timeline entry is still waiting
         // for the delayed write. Write it now, bounded (at most 500 ms).
         Timeline.flush(500)
@@ -780,6 +784,8 @@ class PbService : Service() {
         if (destroyed) return
         getSystemService(NotificationManager::class.java).notify(ONGOING_ID, statusNotification())
         refreshTile(this)
+        // Node up, PC paired or removed, control started or ended (all come through here).
+        RelayWidget.update(this)
     }
 
     companion object {
