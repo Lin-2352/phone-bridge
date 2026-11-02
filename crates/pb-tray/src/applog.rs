@@ -140,33 +140,7 @@ pub fn file_failed(dir: &'static str, name: &str, why: &str) -> Ev {
     )
 }
 
-/// An error text safe to keep: quoted parts (names) and path-like words are
-/// replaced, and it is cut to 120 characters.
-pub fn scrub(e: &str) -> String {
-    let mut out = String::new();
-    let mut in_q = false;
-    for c in e.chars() {
-        if c == '"' {
-            if !in_q {
-                out.push_str("<q>");
-            }
-            in_q = !in_q;
-        } else if !in_q {
-            out.push(c);
-        }
-    }
-    let words: Vec<&str> = out
-        .split_whitespace()
-        .map(|w| {
-            if w.contains(['\\', '/']) || w.contains(":\\") {
-                "<path>"
-            } else {
-                w
-            }
-        })
-        .collect();
-    words.join(" ").chars().take(120).collect()
-}
+pub use pb_log::scrub;
 
 fn file_name_of(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)

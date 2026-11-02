@@ -378,3 +378,63 @@ fn four_writers_lose_nothing_and_never_tear_lines() {
         assert!(l.starts_with("{\"t\":") && l.ends_with('}'), "{l}");
     }
 }
+
+#[test]
+fn flat_json_parses_scalars_and_skips_null() {
+    let f =
+        parse_flat(r#" {"a":"x\"y\u00e9","n":-3,"f":1.5,"ok":true,"z":null,"e":false} "#).unwrap();
+    assert_eq!(
+        f,
+        vec![
+            ("a".to_owned(), Value::s("x\"yé")),
+            ("n".to_owned(), Value::Int(-3)),
+            ("f".to_owned(), Value::Float(1.5)),
+            ("ok".to_owned(), Value::Bool(true)),
+            ("e".to_owned(), Value::Bool(false)),
+        ]
+    );
+    assert_eq!(parse_flat("{}").unwrap(), vec![]);
+}
+
+#[test]
+fn flat_json_rejects_nesting_long_values_and_garbage() {
+    assert_eq!(parse_flat(r#"{"a":{"b":1}}"#), Err(FieldsError::Nested));
+    assert_eq!(parse_flat(r#"{"a":[1]}"#), Err(FieldsError::Nested));
+    let long = format!("{{\"a\":\"{}\"}}", "x".repeat(257));
+    assert_eq!(parse_flat(&long), Err(FieldsError::TooLong));
+    let ok = format!("{{\"a\":\"{}\"}}", "x".repeat(256));
+    assert!(parse_flat(&ok).is_ok());
+    for bad in [
+        "",
+        "[]",
+        "{",
+        r#"{"a"}"#,
+        r#"{"a":1,}"#,
+        r#"{"a":1} x"#,
+        r#"{"a":tru}"#,
+        r#"{a:1}"#,
+    ] {
+        assert_eq!(parse_flat(bad), Err(FieldsError::Syntax), "{bad}");
+    }
+    let many: String = (0..33)
+        .map(|i| format!("\"k{i}\":1"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        parse_flat(&format!("{{{many}}}")),
+        Err(FieldsError::TooMany)
+    );
+    assert_eq!(
+        parse_flat(&format!("{{\"{}\":1}}", "k".repeat(65))),
+        Err(FieldsError::TooLong)
+    );
+}
+
+#[test]
+fn scrub_removes_quotes_and_paths_and_cuts() {
+    assert_eq!(
+        scrub("cannot open \"my file.txt\" in C:\\a\\b now"),
+        "cannot open <q> in <path> now"
+    );
+    assert_eq!(scrub(&"x".repeat(500)).len(), 120);
+}

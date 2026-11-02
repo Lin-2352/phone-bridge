@@ -14,7 +14,7 @@ mod timefmt;
 #[cfg(test)]
 mod tests;
 
-pub use json::Value;
+pub use json::{parse_flat, scrub, FieldsError, Value};
 pub use timefmt::day_for;
 
 use std::collections::HashMap;
