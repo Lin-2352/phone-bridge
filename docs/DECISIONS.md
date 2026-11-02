@@ -361,3 +361,23 @@ Not tested on the device (need the user): Cancel and Repair on screen, the lens 
 - **Not verified on the device:** a phone-side picture over 10 MB (covered by unit tests only); a revoked READ_MEDIA_IMAGES permission and the home banner (revoking would need a re-grant by the user); the tile after a phone restart.
 - **Found on the way.** The Linux CI job had been failing since the settings window work: `settings_rows.rs` (built everywhere) imports `camera_status`, which was gated to Windows. It is pure, so it now builds on every platform (`bb07dfe` on `phase3`, same change on this branch).
 - **Left alone.** An oversize picture copied on the PC is dropped without a log line.
+
+## Phase 8 (2026-11-02): UI v2 budgets on the PC (Task 13, `feature/ui-v2`)
+
+Measured on the dev laptop (Intel UHD Graphics drives the panel, RTX 4060 idle; 32 GB), `--profile spike`, throwaway `--dir`, no phone paired. "Private" is `PrivateMemorySize64`; working set (WS) also counts shared DLL pages.
+
+| State | WS | Private | Notes |
+|---|---|---|---|
+| Idle, no window ever opened, no device | 35 MB | 5.6 MB | after the change (the device is no longer made at start) |
+| Idle at start with the old warm-up | 61 MB | 55.8 MB | before: the device was made 3 s after start and never freed |
+| Main window open | 70 MB | 61 MB | same before and after; over the 40 MB budget |
+| Main window closed, 30 s later (device released, WS trimmed) | 1 to 5 MB | 12.9 MB | after; before, the device stayed (about 61 MB private) |
+
+- **Where the memory goes.** The D3D11 device plus its Direct2D device costs about 55 MB of private bytes in the Intel driver. It's the same on the default adapter and at feature levels 11.x, 10_0 and 9_3. WARP would cost about 15 MB private, but WS is still about 55 MB with the window open. With no device the tray is 35 MB WS (shared DLL pages), so a 40 MB WS budget with a GPU-drawn window can't be met on this machine. Proposal: restate the budget as private bytes. That's about 61 MB open on this driver; under 40 MB only with WARP.
+- **First paint** (log line, cold device): 182 to 184 ms (window 1 ms, surface about 150 ms, draw 23 ms). With the old warm-up it was 22 to 30 ms. Budget 200 ms: met, but close.
+- **Idle CPU over 60 s:** window open 0.03 to 0.09 s (the 1 s refresh timer); window closed 0.00 s after the change. Before the change it was 0.08 to 0.20 s, from the permanent 1 s timer.
+- **Changes:**
+  - The device is made by the first window, not at start.
+  - It's released 30 s after the last surface goes, then the working set is trimmed.
+  - The 1 s timeline timer runs only while a write is owed or the main window or flyout is open. A timeline add from the core wakes it.
+- **GDI:** every window now draws through Direct2D. The guard test `no_gdi_drawing_left` keeps it that way. The `Win32_Graphics_GdiPlus` feature is gone.
