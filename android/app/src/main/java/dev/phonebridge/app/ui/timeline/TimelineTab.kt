@@ -20,7 +20,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
@@ -216,7 +216,7 @@ private fun DayHeader(label: String) {
 }
 
 private fun kindIcon(k: TlKind) = when (k) {
-    TlKind.File -> Icons.Filled.InsertDriveFile
+    TlKind.File -> Icons.AutoMirrored.Filled.InsertDriveFile
     TlKind.ClipText -> Icons.Filled.ContentPaste
     TlKind.ClipImage -> Icons.Filled.Image
     TlKind.Link -> Icons.Filled.Link
