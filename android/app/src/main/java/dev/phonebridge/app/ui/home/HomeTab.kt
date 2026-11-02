@@ -40,6 +40,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -48,7 +50,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,10 +92,15 @@ import dev.phonebridge.app.ui.LocalResumeCount
 import dev.phonebridge.app.ui.components.KindBadge
 import dev.phonebridge.app.ui.components.LinkIndicator
 import dev.phonebridge.app.ui.settings.openNotifyAccess
+import dev.phonebridge.app.RelayDialog
+import dev.phonebridge.app.ui.timeline.RecentItem
+import dev.phonebridge.app.ui.timeline.isOpenable
+import dev.phonebridge.app.ui.timeline.openSavedFile
 import dev.phonebridge.app.ui.timeline.recentItem
 import dev.phonebridge.app.widget.sendPickedFiles
 import dev.phonebridge.app.widget.widgetConnected
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The Home tab: the PC hero card, one "Needs attention" card (hidden when nothing needs it),
@@ -143,6 +152,28 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
             appNotificationsOn = ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled(),
         )
     }
+    var forgetNames by remember { mutableStateOf<List<String>?>(null) }
+    forgetNames?.let { names ->
+        val prompt = forgetPrompt(names)
+        RelayDialog(
+            title = prompt.title,
+            onDismissRequest = { forgetNames = null },
+            confirmText = "Remove and pair again",
+            destructive = true,
+            onConfirm = {
+                forgetNames = null
+                // Re-reads which PCs are flagged at this moment.
+                removeForgottenPcs(ctx)
+                ctx.startActivity(Intent(ctx, ScanActivity::class.java))
+            },
+            dismissText = "Cancel",
+        ) {
+            Text(prompt.body, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+    val snack = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var opening by remember { mutableStateOf(false) }
     val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         ScreenshotWatcher.sync(ctx)
         // Android no longer shows its prompt once the user said "don't ask again": the app's settings page.
@@ -156,6 +187,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     val timeline by Timeline.entries.collectAsState()
     val recent = remember(timeline) { timeline.take(3).map(::recentItem) }
     Scaffold(
+        snackbarHost = { SnackbarHost(snack) },
         topBar = {
             TopAppBar(
                 title = { Text(APP_NAME) },
@@ -175,10 +207,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                             Need.NotificationAccess -> openNotifyAccess(ctx)
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermission)
                             Need.ControlOff -> openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                            Need.PcForgotPhone -> {
-                                removeForgottenPcs(ctx)
-                                ctx.startActivity(Intent(ctx, ScanActivity::class.java))
-                            }
+                            Need.PcForgotPhone -> forgetNames = forgottenPcNames()
                             Need.AppNotificationsOff -> openSettings(
                                 ctx,
                                 Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName),
@@ -217,11 +246,14 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                     headlineContent = { Text(r.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(r.subtitle) },
                     leadingContent = { KindBadge(r.kind) },
-                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).clickable(enabled = r.uri != null) {
-                        r.uri?.let {
-                            // No app for this file type, or the file is gone.
-                            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW).setData(Uri.parse(it)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)) }
-                                .onFailure { Bridge.pairMessage.value = "No app can open ${r.title}" }
+                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).clickable(enabled = isOpenable(r.kind == RecentItem.Kind.File, r.uri)) {
+                        val uri = r.uri
+                        if (uri != null && !opening) {
+                            opening = true // one tap, one viewer or one message, as in Timeline
+                            scope.launch {
+                                val msg = try { openSavedFile(ctx, uri) } finally { opening = false }
+                                msg?.let { snack.showSnackbar(it) }
+                            }
                         }
                     },
                 )
@@ -307,7 +339,8 @@ private fun needText(need: Need): Triple<String, String, String> = when (need) {
     )
     Need.PcForgotPhone -> Triple(
         "Your PC no longer recognises this phone",
-        "$APP_NAME on your PC was reset or reinstalled, so it no longer knows this phone. Remove the old pairing here and pair again.",
+        "Something answering as your PC has a different identity. This happens if $APP_NAME on the PC was reset or reinstalled " +
+            "— or if another device on this network is interfering. If you recognise the reset, remove the old pairing here and pair again.",
         "Remove and pair again",
     )
     Need.AppNotificationsOff -> Triple(
@@ -419,5 +452,11 @@ private fun openSettings(ctx: Context, intent: Intent) {
 }
 
 private fun openAppDetails(ctx: Context) {
-    ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:${ctx.packageName}")))
+    openSettings(ctx, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:${ctx.packageName}")))
+}
+
+/** Names of the PCs flagged as changed right now, for the confirmation. */
+private fun forgottenPcNames(): List<String> {
+    val node = Bridge.node ?: return emptyList()
+    return runCatching { node.peers().filter { node.peerChanged(it.id) }.map { it.name } }.getOrDefault(emptyList())
 }

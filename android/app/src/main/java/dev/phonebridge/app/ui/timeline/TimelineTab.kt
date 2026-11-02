@@ -1,6 +1,5 @@
 package dev.phonebridge.app.ui.timeline
 
-import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -62,12 +61,9 @@ import dev.phonebridge.app.TlDir
 import dev.phonebridge.app.TlEntry
 import dev.phonebridge.app.TlKind
 import dev.phonebridge.app.Timeline
-import dev.phonebridge.app.fileState
 import dev.phonebridge.app.summary
 import java.time.ZoneId
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** A day with its entries; each entry has a key that is unique and survives new entries at the top. */
 private class Day(val label: String, val key: String, val rows: List<Pair<String, TlEntry>>)
@@ -130,21 +126,7 @@ fun TimelineTab() {
         opening = true // one tap, one viewer or one message
         scope.launch {
             val msg: String? = try {
-                if (!withContext(Dispatchers.IO) { fileState(ctx, uri) }) {
-                    "File moved or deleted"
-                } else {
-                    val u = Uri.parse(uri)
-                    val type = withContext(Dispatchers.IO) { runCatching { ctx.contentResolver.getType(u) }.getOrNull() } ?: "*/*"
-                    val view = Intent(Intent.ACTION_VIEW).setDataAndType(u, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    try {
-                        ctx.startActivity(view)
-                        null
-                    } catch (x: ActivityNotFoundException) {
-                        "No app can open this file"
-                    } catch (x: SecurityException) {
-                        "Can't open this file any more"
-                    }
-                }
+                openSavedFile(ctx, uri)
             } finally {
                 opening = false
             }
@@ -257,9 +239,6 @@ private fun kindIcon(k: TlKind) = when (k) {
     TlKind.Link -> Icons.Filled.Link
     TlKind.Notification -> Icons.Filled.Notifications
 }
-
-/** Only a saved file with a content:// uri opens; a file:// uri would throw FileUriExposedException. */
-private fun isOpenable(e: TlEntry) = e.kind == TlKind.File && e.uri?.startsWith("content://") == true
 
 @Composable
 private fun EntryRow(e: TlEntry, zone: ZoneId, onOpen: () -> Unit) {
