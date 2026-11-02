@@ -1,5 +1,7 @@
 package dev.phonebridge.app.ui.home
 
+import dev.phonebridge.app.screenshotAccessMissing
+
 /** One problem the Home "Needs attention" card lists, each with its own fix. */
 enum class Need { NotificationAccess, PhotosPermission, ControlOff, PcForgotPhone, AppNotificationsOff }
 
@@ -20,7 +22,7 @@ fun controlWaiting(refusedAtMs: Long, nowMs: Long, controlOn: Boolean, windowMs:
  */
 fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean, controlOn: Boolean, controlWaiting: Boolean, pcForgot: Boolean, appNotificationsOn: Boolean): List<Need> = buildList {
     if (!notifyAccess) add(Need.NotificationAccess)
-    if (screenshotsOn && !photosGranted) add(Need.PhotosPermission)
+    if (screenshotAccessMissing(screenshotsOn, photosGranted)) add(Need.PhotosPermission)
     if (controlWaiting && !controlOn) add(Need.ControlOff)
     if (pcForgot) add(Need.PcForgotPhone)
     if (!appNotificationsOn) add(Need.AppNotificationsOff)
@@ -28,11 +30,12 @@ fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean,
 
 /**
  * The hero card's status line, worded as on the PC: "Connected" only while a session is live,
- * else "Last seen 5 min ago", or "Not seen yet" when the PC never reached this phone ([lastSeenMs] 0).
+ * else "Last seen 5 min ago". With no contact stamp ([lastSeenMs] 0): "Paired" when a PC is [paired]
+ * (an upgrade from a version that kept no stamp: the PC has reached this phone before), else "Not seen yet".
  */
-fun pcStatus(live: Boolean, lastSeenMs: Long, nowMs: Long): String = when {
+fun pcStatus(live: Boolean, lastSeenMs: Long, nowMs: Long, paired: Boolean): String = when {
     live -> "Connected"
-    lastSeenMs <= 0L -> "Not seen yet"
+    lastSeenMs <= 0L -> if (paired) "Paired" else "Not seen yet"
     else -> "Last seen ${ago(lastSeenMs, nowMs)}"
 }
 

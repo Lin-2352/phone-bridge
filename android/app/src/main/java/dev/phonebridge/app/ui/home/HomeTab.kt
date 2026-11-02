@@ -174,26 +174,27 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
             Modifier.padding(pad).padding(horizontal = Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
-            item { HeroCard(pc, running, ready, live, pcStatus(live, lastSeen, now)) }
+            item(key = "hero") { HeroCard(pc, running, ready, live, pcStatus(live, lastSeen, now, paired = pc != null)) }
             if (list.isNotEmpty()) {
-                item {
-                    NeedsCard(list) { need ->
+                item(key = "needs") {
+                    NeedsCard(list, Modifier.animateItem()) { need ->
                         when (need) {
                             Need.NotificationAccess -> openNotifyAccess(ctx)
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermission)
-                            Need.ControlOff -> ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            Need.ControlOff -> openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                             Need.PcForgotPhone -> {
                                 removeForgottenPcs(ctx)
                                 ctx.startActivity(Intent(ctx, ScanActivity::class.java))
                             }
-                            Need.AppNotificationsOff -> ctx.startActivity(
+                            Need.AppNotificationsOff -> openSettings(
+                                ctx,
                                 Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName),
                             )
                         }
                     }
                 }
             }
-            item {
+            item(key = "grid") {
                 QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null)) { q ->
                     when (q) {
                         Quick.SendFile -> pickFiles.launch(arrayOf("*/*"))
@@ -206,17 +207,17 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                     }
                 }
             }
-            controller?.let { item { SessionCard("$it is controlling this phone", "Its mouse and keyboard work here") { Bridge.node?.stopControl() } } }
-            screenTo?.let { item { SessionCard("Sharing your screen with $it", "Everything on this screen shows on your PC") { ScreenShare.stop(userStopped = true) } } }
-            cameraTo?.let { item { SessionCard("$it is using the camera", "This phone is your PC's webcam") { CameraShare.stop(userStopped = true) } } }
-            item {
+            controller?.let { item(key = "session-control") { SessionCard("$it is controlling this phone", "Its mouse and keyboard work here", Modifier.animateItem()) { Bridge.node?.stopControl() } } }
+            screenTo?.let { item(key = "session-screen") { SessionCard("Sharing your screen with $it", "Everything on this screen shows on your PC", Modifier.animateItem()) { ScreenShare.stop(userStopped = true) } } }
+            cameraTo?.let { item(key = "session-camera") { SessionCard("$it is using the camera", "This phone is your PC's webcam", Modifier.animateItem()) { CameraShare.stop(userStopped = true) } } }
+            item(key = "recent-head") {
                 Row(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
                     Text("Recent", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.sm))
                     if (recent.isNotEmpty()) TextButton(onClick = onTimeline) { Text("See all") }
                 }
             }
             if (recent.isEmpty()) {
-                item { Text("Nothing yet. Share a photo or file to $APP_NAME from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) }
+                item(key = "recent-empty") { Text("Nothing yet. Share a photo or file to $APP_NAME from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) }
             }
             items(recent) { r ->
                 ListItem(
@@ -277,11 +278,11 @@ private fun HeroText(title: String, body: String?, accent: Boolean = false) {
 
 /** The single "Needs attention" card: one row per [needs] entry, each with its fix. */
 @Composable
-private fun NeedsCard(needs: List<Need>, onFix: (Need) -> Unit) {
+private fun NeedsCard(needs: List<Need>, modifier: Modifier, onFix: (Need) -> Unit) {
     Card(
         shape = RoundedCornerShape(Radius.card),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = modifier.fillMaxWidth().animateContentSize(),
     ) {
         Column(Modifier.padding(vertical = Spacing.md)) {
             Text("Needs attention", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = Spacing.lg))
@@ -378,9 +379,9 @@ private fun QuickCard(tile: QuickTile, modifier: Modifier, onClick: () -> Unit) 
 
 /** A live session the user can end from here. */
 @Composable
-private fun SessionCard(title: String, body: String, onStop: () -> Unit) {
+private fun SessionCard(title: String, body: String, modifier: Modifier, onStop: () -> Unit) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(Radius.banner))
             .background(MaterialTheme.colorScheme.primaryContainer)
@@ -416,6 +417,12 @@ private fun removeForgottenPcs(ctx: Context) {
         Bridge.linked.value = node.peers().firstOrNull()?.name
         PbService.refresh(ctx)
     }
+}
+
+/** A system settings page; some OEM builds lack one, which must not crash Home. */
+private fun openSettings(ctx: Context, intent: Intent) {
+    runCatching { ctx.startActivity(intent) }
+        .onFailure { Toast.makeText(ctx, "This phone has no such settings page. Open Settings and find $APP_NAME there", Toast.LENGTH_LONG).show() }
 }
 
 private fun openAppDetails(ctx: Context) {
