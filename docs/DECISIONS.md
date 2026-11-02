@@ -371,13 +371,16 @@ Measured on the dev laptop (Intel UHD Graphics drives the panel, RTX 4060 idle; 
 | Idle, no window ever opened, no device | 35 MB | 5.6 MB | after the change (the device is no longer made at start) |
 | Idle at start with the old warm-up | 61 MB | 55.8 MB | before: the device was made 3 s after start and never freed |
 | Main window open | 70 MB | 61 MB | same before and after; over the 40 MB budget |
-| Main window closed, 30 s later (device released, WS trimmed) | 1 to 5 MB | 12.9 MB | after; before, the device stayed (about 61 MB private) |
+| Main window closed, 30 s later (device released, WS trimmed) | 1 to 5 MB | 12.9 to 13.2 MB | after; before, the device stayed (about 61 MB private) |
+| Camera window opened and closed after that, 40 s later | 3 to 5 MB | 13.3 MB | after: released again (any window on the UI thread) |
 
 - **Where the memory goes.** The D3D11 device plus its Direct2D device costs about 55 MB of private bytes in the Intel driver. It's the same on the default adapter and at feature levels 11.x, 10_0 and 9_3. WARP would cost about 15 MB private, but WS is still about 55 MB with the window open. With no device the tray is 35 MB WS (shared DLL pages), so a 40 MB WS budget with a GPU-drawn window can't be met on this machine. Proposal: restate the budget as private bytes. That's about 61 MB open on this driver; under 40 MB only with WARP.
-- **First paint** (log line, cold device): 182 to 184 ms (window 1 ms, surface about 150 ms, draw 23 ms). With the old warm-up it was 22 to 30 ms. Budget 200 ms: met, but close.
+- **First paint** (log line, cold device): 182 to 250 ms over six runs (window 1 to 2 ms, surface 150 to 218 ms, draw 23 ms). With the old warm-up it was 22 to 30 ms. The 200 ms budget is met in most runs but not all.
+  - Releasing has a cost: every first window after 30 s idle pays device creation (about 150 to 220 ms on the UI thread). That includes the flyout from a tray click, which used to open on a warm device.
+  - The first-paint line is logged once per process, so reopen timings after a release aren't in the log.
 - **Idle CPU over 60 s:** window open 0.03 to 0.09 s (the 1 s refresh timer); window closed 0.00 s after the change. Before the change it was 0.08 to 0.20 s, from the permanent 1 s timer.
 - **Changes:**
   - The device is made by the first window, not at start.
-  - It's released 30 s after the last surface goes, then the working set is trimmed.
+  - It's released 30 s after the last surface on the UI thread closes (main window, flyout, menu, dialogs, QR, camera window or pill), then the working set is trimmed.
   - The 1 s timeline timer runs only while a write is owed or the main window or flyout is open. A timeline add from the core wakes it.
 - **GDI:** every window now draws through Direct2D. The guard test `no_gdi_drawing_left` keeps it that way. The `Win32_Graphics_GdiPlus` feature is gone.
