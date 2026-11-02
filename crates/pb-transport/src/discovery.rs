@@ -226,6 +226,13 @@ impl Node {
         list.truncate(MAX_CANDIDATES);
     }
 
+    /// What a discovery packet carrying `peer`'s tag from `addr` leaves
+    /// (any host on the LAN can send one; tests plant it directly).
+    #[cfg(test)]
+    pub(crate) fn test_add_candidate(&self, peer: PeerId, addr: SocketAddr) {
+        self.add_candidate(peer, addr);
+    }
+
     /// Unverified addresses learned for `peer`, newest first.
     pub(crate) fn candidates(&self, peer: &PeerId) -> Vec<SocketAddr> {
         lock(&self.inner.candidates)

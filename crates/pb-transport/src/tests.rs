@@ -1762,7 +1762,7 @@ mod identity_changed {
     /// path is the test above; iroh remembers a live peer's real address,
     /// so an impostor cannot be put in front of it here).
     fn mark_changed(from: &Node, peer: PeerId) {
-        lock(&from.inner.changed).push(peer);
+        lock(&from.inner.changed).peers.push(peer);
         assert!(from.peer_changed(&peer));
     }
 
@@ -1796,6 +1796,97 @@ mod identity_changed {
         let _s = phone.connect(&pc.peer_id()).await.unwrap();
         let _incoming = pc_ev.sessions.recv().await.unwrap();
         assert!(!pc.peer_changed(&phone.peer_id()));
+    }
+
+    #[tokio::test]
+    async fn a_forged_candidate_does_not_make_an_away_peer_look_reset() {
+        let (pc, mut pc_ev, pc_store) = node(61, "PC").await;
+        let (phone, _phone_ev, _) = node(62, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let id = phone.peer_id();
+
+        // The phone is away: nothing answers at its saved address.
+        phone.shutdown().await;
+        let mut p = lock(&pc_store).get(&id).unwrap();
+        p.addrs = vec!["127.0.0.1:1".into()];
+        lock(&pc_store).pin(p);
+        // An unpaired LAN host replays the phone's discovery tag from its own
+        // address, where a device with another identity answers.
+        let (impostor, _iev, _) = node(63, "Impostor").await;
+        pc.test_add_candidate(id, SocketAddr::from(([127, 0, 0, 1], impostor.port())));
+
+        let r = pc.connect(&id).await;
+        assert!(r.is_err());
+        assert!(
+            !matches!(r, Err(Error::PeerChanged)),
+            "a forged candidate must not read as a reset"
+        );
+        assert!(!pc.peer_changed(&id));
+        // Asked again (iroh now remembers the forged address as a path):
+        // still not a reset.
+        let r = pc.connect(&id).await;
+        assert!(!matches!(r, Err(Error::PeerChanged)));
+        assert!(!pc.peer_changed(&id));
+    }
+
+    #[tokio::test]
+    async fn a_mismatch_that_lands_after_unpair_or_a_new_pairing_is_dropped() {
+        let (pc, mut pc_ev, _) = node(64, "PC").await;
+        let (phone, _phone_ev, _) = node(65, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let id = phone.peer_id();
+
+        // A dial in flight when the peer pairs again (or connects to us):
+        // its late mismatch is about the device from before.
+        let epoch = pc.changed_epoch();
+        pc.forget_changed(&id);
+        assert!(!pc.note_mismatch(&id, epoch));
+        assert!(!pc.peer_changed(&id));
+
+        // A dial in flight when the user unpairs: nothing is left behind.
+        let epoch = pc.changed_epoch();
+        assert!(pc.unpair(&id));
+        assert!(!pc.note_mismatch(&id, epoch));
+        assert!(lock(&pc.inner.changed).peers.is_empty());
+
+        // Not paired at all: never flagged.
+        assert!(!pc.note_mismatch(&id, pc.changed_epoch()));
+        assert!(lock(&pc.inner.changed).peers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_current_mismatch_for_a_paired_peer_is_flagged() {
+        let (pc, mut pc_ev, _) = node(66, "PC").await;
+        let (phone, _phone_ev, _) = node(67, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let id = phone.peer_id();
+        assert!(pc.note_mismatch(&id, pc.changed_epoch()));
+        assert!(pc.peer_changed(&id));
+    }
+
+    /// Racy by nature (iroh sends the first packets to every path at once):
+    /// without the retry in `dial_known` this failed 5 of 30 runs; with it,
+    /// 150 of 150 passed.
+    #[tokio::test]
+    async fn a_forged_candidate_does_not_hide_the_real_peer_at_its_saved_address() {
+        let (pc, mut pc_ev, pc_store) = node(68, "PC").await;
+        let (phone, _phone_ev, _) = node(69, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let id = phone.peer_id();
+        // The phone answers at its saved address; a LAN host plants a
+        // candidate where a device with another identity answers.
+        let mut p = lock(&pc_store).get(&id).unwrap();
+        p.addrs = loopback(&phone);
+        lock(&pc_store).pin(p);
+        let (impostor, _iev, _) = node(70, "Impostor").await;
+        pc.test_add_candidate(id, SocketAddr::from(([127, 0, 0, 1], impostor.port())));
+        let r = pc.connect(&id).await;
+        assert!(r.is_ok(), "got {:?}", r.err().map(|e| e.to_string()));
+        assert!(!pc.peer_changed(&id));
     }
 
     #[tokio::test]

@@ -201,7 +201,26 @@ struct Inner {
     /// When a failed dial last probed the network (see `dial_known`).
     last_probe: Mutex<Option<Instant>>,
     /// Paired peers whose last dial reached a device with a different identity.
-    changed: Mutex<Vec<PeerId>>,
+    changed: Mutex<Changed>,
+}
+
+/// The "reinstalled or reset" bookkeeping, under one lock.
+#[derive(Default)]
+struct Changed {
+    /// Paired peers whose last dial reached a device with a different identity.
+    peers: Vec<PeerId>,
+    /// Bumped whenever a peer proves itself or is unpaired: a dial that
+    /// started before then and fails with a mismatch afterwards is stale.
+    epoch: u64,
+    /// Peers whose wrong-key answers prove nothing: a dial that included
+    /// discovery candidates (anyone on the LAN can plant one) met a
+    /// different identity. iroh 1.3 keeps every address it dialled as a
+    /// path for that id and sends to all of them on later connects, with
+    /// no way to drop one, so the forged address can answer again even
+    /// when only saved addresses are asked. Kept for the process lifetime
+    /// (cleared by unpair): a real reset of such a peer is reported after
+    /// the next restart only.
+    untrusted: Vec<PeerId>,
 }
 
 fn lock<T: ?Sized>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -253,7 +272,7 @@ impl Node {
                 candidates: Mutex::default(),
                 live: Mutex::default(),
                 last_probe: Mutex::new(None),
-                changed: Mutex::new(Vec::new()),
+                changed: Mutex::default(),
             }),
         };
         tokio::spawn(node.clone().accept_loop());
@@ -302,20 +321,62 @@ impl Node {
     /// with a different identity: the other side was reinstalled or reset
     /// and must be paired again.
     pub fn peer_changed(&self, peer: &PeerId) -> bool {
-        lock(&self.inner.changed).contains(peer)
+        lock(&self.inner.changed).peers.contains(peer)
+    }
+
+    /// Taken before a dial; `note_mismatch` compares it.
+    fn changed_epoch(&self) -> u64 {
+        lock(&self.inner.changed).epoch
+    }
+
+    /// A dial that started at `epoch` reached a device with a different
+    /// identity: flag the peer. True when it was flagged.
+    /// Not flagged when the peer proved itself or was unpaired since
+    /// (`epoch` moved on), is no longer paired, or its mismatches are
+    /// untrusted (see `Changed::untrusted`).
+    fn note_mismatch(&self, peer: &PeerId, epoch: u64) -> bool {
+        let mut ch = lock(&self.inner.changed);
+        if ch.epoch != epoch || ch.untrusted.contains(peer) {
+            return false;
+        }
+        // Under the same lock: `unpair` removes from the store first, then
+        // bumps the epoch here.
+        if lock(&self.inner.store).get(peer).is_none() {
+            return false;
+        }
+        if !ch.peers.contains(peer) {
+            ch.peers.push(*peer);
+        }
+        true
+    }
+
+    /// A dial that included discovery candidates met a different identity.
+    fn distrust_mismatches(&self, peer: &PeerId) {
+        let mut ch = lock(&self.inner.changed);
+        if !ch.untrusted.contains(peer) {
+            ch.untrusted.push(*peer);
+        }
     }
 
     /// The peer proved its paired identity (paired again, or connected to
     /// us with it): an earlier "changed" result no longer holds.
     fn forget_changed(&self, peer: &PeerId) {
-        lock(&self.inner.changed).retain(|p| p != peer);
+        let mut ch = lock(&self.inner.changed);
+        ch.peers.retain(|p| p != peer);
+        ch.epoch += 1;
     }
 
     /// Revoke a peer: removed from the store, so it can no longer connect,
     /// and anything it has open now (a transfer, a control session) ends.
     pub fn unpair(&self, peer: &PeerId) -> bool {
-        lock(&self.inner.changed).retain(|p| p != peer);
+        // Store first: a mismatch noted after the bump below sees it gone.
         let removed = lock(&self.inner.store).remove(peer);
+        {
+            let mut ch = lock(&self.inner.changed);
+            ch.peers.retain(|p| p != peer);
+            ch.untrusted.retain(|p| p != peer);
+            ch.epoch += 1;
+        }
         lock(&self.inner.live).retain(|(p, w)| {
             if p != peer {
                 return true;
@@ -420,24 +481,33 @@ impl Node {
         let known = lock(&self.inner.store)
             .get(peer)
             .ok_or(Error::UnknownPeer)?;
+        let epoch = self.changed_epoch();
         let conn = match self.dial_known(*peer, &known.addrs).await {
             Ok(c) => {
-                lock(&self.inner.changed).retain(|p| p != peer);
+                self.forget_changed(peer);
                 c
             }
             // Known limit: iroh keeps every address dialled for this peer as
             // a path and tries them all on the next connect. If another
-            // device keeps answering at an old address while the paired one
-            // is reachable elsewhere, its handshake can win and land here
-            // although the peer did not change. The phone's next incoming
-            // session clears the flag (`accept_session`); a real fix needs a
-            // way to drop a remote path in iroh.
+            // device keeps answering at an old *saved* address while the
+            // paired one is reachable elsewhere, its handshake can win and
+            // land here although the peer did not change. The phone's next
+            // incoming session clears the flag (`accept_session`); a real fix
+            // needs a way to drop a remote path in iroh. Forged discovery
+            // candidates are handled in `dial_known` (one retry with the
+            // saved addresses, then `Changed::untrusted`), so a planted
+            // address never reads as a reset; a real (lucky) connect through
+            // the saved address may still lose the race to it.
             Err(e) if is_identity_mismatch(&e) => {
-                let mut ch = lock(&self.inner.changed);
-                if !ch.contains(peer) {
-                    ch.push(*peer);
+                if self.note_mismatch(peer, epoch) {
+                    return Err(Error::PeerChanged);
                 }
-                return Err(Error::PeerChanged);
+                if lock(&self.inner.store).get(peer).is_none() {
+                    return Err(Error::UnknownPeer);
+                }
+                return Err(Error::Transport(
+                    "a device with another identity answered for this peer".into(),
+                ));
             }
             Err(e) => return Err(e),
         };
@@ -504,7 +574,20 @@ impl Node {
         };
         // All paths are tried at once, so a stale or forged candidate costs
         // nothing when a saved address works (and vice versa).
-        let first = try_candidates(self.candidates(&peer), saved, Duration::from_secs(15)).await;
+        let cands = self.candidates(&peer);
+        let had_candidates = !cands.is_empty();
+        let mut first = try_candidates(cands, saved, Duration::from_secs(15)).await;
+        if had_candidates && matches!(&first, Err(e) if is_identity_mismatch(e)) {
+            // The wrong key may have come from a planted candidate (any LAN
+            // host can send the discovery tag); those were dropped above.
+            // Ask the saved addresses alone once. iroh may still send to the
+            // planted address (it remembers dialled paths), so from now on
+            // this peer's mismatches prove nothing (`Changed::untrusted`).
+            self.distrust_mismatches(&peer);
+            if !saved.is_empty() {
+                first = try_candidates(Vec::new(), saved, Duration::from_secs(15)).await;
+            }
+        }
         if first.is_ok() || lock(&self.inner.discovery).is_none() {
             return first;
         }
@@ -523,7 +606,14 @@ impl Node {
         for _ in 0..30 {
             let cands = self.candidates(&peer);
             if !cands.is_empty() {
-                return try_candidates(cands, &[], Duration::from_secs(10)).await;
+                let r = try_candidates(cands, &[], Duration::from_secs(10)).await;
+                if matches!(&r, Err(e) if is_identity_mismatch(e)) {
+                    // Only learned addresses were asked: whoever answered
+                    // with the wrong key is not at a saved address.
+                    self.distrust_mismatches(&peer);
+                    return first;
+                }
+                return r;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
