@@ -151,7 +151,7 @@ pub struct Joining {
     send: SendStream,
     recv: FrameReader,
     peer: PairedPeer,
-    store: SharedStore,
+    node: Node,
 }
 
 impl Joining {
@@ -175,7 +175,9 @@ impl Joining {
         let _ = tokio::time::timeout(Duration::from_secs(5), self.recv.next::<Pair>()).await;
         self.conn.close(0u32.into(), b"paired");
         if accept && remote_ok {
-            lock(&self.store).pin(self.peer.clone());
+            lock(&self.node.inner.store).pin(self.peer.clone());
+            // Paired again just now: whatever answered before is this device.
+            self.node.forget_changed(&self.peer.id);
             Ok(self.peer)
         } else {
             Err(Error::Rejected)
@@ -303,6 +305,12 @@ impl Node {
         lock(&self.inner.changed).contains(peer)
     }
 
+    /// The peer proved its paired identity (paired again, or connected to
+    /// us with it): an earlier "changed" result no longer holds.
+    fn forget_changed(&self, peer: &PeerId) {
+        lock(&self.inner.changed).retain(|p| p != peer);
+    }
+
     /// Revoke a peer: removed from the store, so it can no longer connect,
     /// and anything it has open now (a transfer, a control session) ends.
     pub fn unpair(&self, peer: &PeerId) -> bool {
@@ -403,7 +411,7 @@ impl Node {
             send,
             recv,
             peer,
-            store: self.inner.store.clone(),
+            node: self.clone(),
         })
     }
 
@@ -580,6 +588,8 @@ impl Node {
             conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");
             return;
         };
+        // The TLS handshake proved it holds the paired key: not changed.
+        self.forget_changed(&peer);
         self.track(peer, &conn);
         let Ok(Ok((send, recv))) = tokio::time::timeout(HEARTBEAT * 3, conn.accept_bi()).await
         else {
@@ -673,6 +683,7 @@ impl Node {
                 addrs: start.addrs,
             };
             lock(&self.inner.store).pin(peer.clone());
+            self.forget_changed(&peer.id);
             Ok(peer)
         } else {
             Err(Error::Rejected)

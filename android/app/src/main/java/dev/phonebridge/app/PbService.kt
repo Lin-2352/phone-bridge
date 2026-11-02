@@ -21,8 +21,10 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import android.webkit.MimeTypeMap
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import dev.phonebridge.app.widget.RelayWidget
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -52,17 +54,11 @@ const val SCREEN_SHARE_ID = 7
 const val CAMERA_ASK_ID = 8
 const val CAMERA_SHARE_ID = 9
 
-/** One line in the Home screen's Recent list. */
-data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: Uri? = null) {
-    enum class Kind { File, Clipboard, Link }
-}
-
 /** Process-wide handle to the running node, shared by the service and the UI. */
 object Bridge {
     @Volatile var node: PbNode? = null
     val listeners = CopyOnWriteArrayList<(PbEvent) -> Unit>()
     /** Compose-observable state for the Home screen. */
-    val recent = mutableStateListOf<RecentItem>()
     val linked = mutableStateOf<String?>(null)
     /** True while the service (and node) runs. */
     val running = mutableStateOf(false)
@@ -86,6 +82,24 @@ object Bridge {
     val controlledBy = mutableStateOf<String?>(null)
     /** Mirrors [Prefs.allowControl] for the UI. */
     val allowControl = mutableStateOf(false)
+    /** Sessions from the PC open right now (Connected minus Disconnected events); 0 when the node stops. */
+    val liveSessions = mutableIntStateOf(0)
+    /** When the PC was last in contact (wall-clock ms), 0 if never; persisted as [Prefs.lastSeenMs]. */
+    val lastSeen = mutableLongStateOf(0L)
+
+    /** The PC opened or closed a session: count it and stamp the contact time. */
+    fun pcContact(ctx: Context, opened: Boolean) {
+        liveSessions.intValue = if (opened) liveSessions.intValue + 1 else (liveSessions.intValue - 1).coerceAtLeast(0)
+        stampSeen(ctx)
+        RelayWidget.update(ctx)
+    }
+
+    /** The PC was in contact just now. */
+    fun stampSeen(ctx: Context) {
+        val now = System.currentTimeMillis()
+        lastSeen.longValue = now
+        Prefs(ctx).lastSeenMs = now
+    }
 
     /** Allow PC control without asking, or ask each time; off also ends a running session. */
     fun setAllowControl(ctx: Context, on: Boolean) {
@@ -97,13 +111,6 @@ object Bridge {
 
     /** The previous node's shutdown; a new node waits for it so the ports are free. */
     @Volatile var stopping: kotlinx.coroutines.Job? = null
-
-    fun addRecent(item: RecentItem) {
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            recent.add(0, item)
-            while (recent.size > 20) recent.removeAt(recent.size - 1)
-        }
-    }
 
     fun firstPeer() = node?.peers()?.firstOrNull()
 
@@ -137,6 +144,8 @@ object Bridge {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
             linked.value = name
+            // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".
+            stampSeen(ctx)
             PbService.refresh(ctx)
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing not completed: ${e.message}")
@@ -186,6 +195,7 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Timeline.init(this)
         // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
         val nm = getSystemService(NotificationManager::class.java)
@@ -212,6 +222,7 @@ class PbService : Service() {
         Prefs(this).stoppedNotified = false
         getSystemService(NotificationManager::class.java).cancel(STOPPED_ID)
         refreshTile(this)
+        RelayWidget.update(this)
         scheduleRecovery(this)
         scope.launch { start() }
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
@@ -242,11 +253,6 @@ class PbService : Service() {
             ScreenShare.capture?.memoryPressure()
         }
         super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_RUNNING_LOW) {
-            android.os.Handler(mainLooper).post {
-                while (Bridge.recent.size > 5) Bridge.recent.removeAt(Bridge.recent.size - 1)
-            }
-        }
         Log.i(TAG, "TRIM level=$level")
     }
 
@@ -273,6 +279,7 @@ class PbService : Service() {
             runCatching { kotlinx.coroutines.runInterruptible { events.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS) } }
         }
         Bridge.nodeReady.value = false
+        Bridge.liveSessions.intValue = 0
         cancelProgress(true)
         cancelProgress(false)
         netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
@@ -281,6 +288,10 @@ class PbService : Service() {
         Bridge.running.value = false
         Bridge.startingSince = 0L
         refreshTile(this)
+        RelayWidget.update(this)
+        // Quitting right after a transfer: its timeline entry is still waiting
+        // for the delayed write. Write it now, bounded (at most 500 ms).
+        Timeline.flush(500)
         super.onDestroy()
     }
 
@@ -288,6 +299,8 @@ class PbService : Service() {
         if (Bridge.node != null) return
         // Turned off and on again quickly: the old node still holds the ports.
         Bridge.stopping?.join()
+        // A new node has no sessions yet (the old node's last events are handled by now).
+        Bridge.liveSessions.intValue = 0
         try {
             NativeInit.initContext(applicationContext)
             val n = startNode(
@@ -376,14 +389,18 @@ class PbService : Service() {
                 Prefs(this).lastClip = e.text.hashCode()
                 writeClipboard(e.text, e.sensitive)
                 Log.i(TAG, "CLIPSYNC received from ${e.peerName}${if (e.sensitive) " (sensitive)" else ""}")
-                val title = if (e.sensitive) "Password or code" else e.text.take(80)
-                Bridge.addRecent(RecentItem(title, "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+                Timeline.add(clipTextEntry(e.peerName, e.text, TlDir.ToPhone))
             }
             is PbEvent.RemoteImage -> {
                 // Share copied images: a picture copied on the PC goes on the clipboard.
+                // Size and dimensions first: applying moves the file.
+                val src = File(e.path)
+                val size = src.length()
+                val dims = runCatching { java.io.DataInputStream(src.inputStream()).use { d -> ByteArray(24).also { d.readFully(it) } } }
+                    .getOrNull()?.let(::pngDims)
                 ClipImages.applyReceived(this, e.path)
                 Log.i(TAG, "CLIPIMG received from ${e.peerName}")
-                Bridge.addRecent(RecentItem("Picture", "Copied on ${e.peerName}", RecentItem.Kind.Clipboard))
+                Timeline.add(clipImageEntry(e.peerName, TlDir.ToPhone, size, dims))
             }
             is PbEvent.FileReceived -> {
                 cancelProgress(true)
@@ -391,7 +408,7 @@ class PbService : Service() {
             }
             is PbEvent.SharedText -> {
                 if (e.isLink) notifyLink(e.peerName, e.text) else writeClipboard(e.text, false)
-                Bridge.addRecent(RecentItem(e.text.take(80), if (e.isLink) "Link from ${e.peerName}" else "Text from ${e.peerName}", if (e.isLink) RecentItem.Kind.Link else RecentItem.Kind.Clipboard))
+                Timeline.add(if (e.isLink) linkEntry(e.peerName, e.text, TlDir.ToPhone) else clipTextEntry(e.peerName, e.text, TlDir.ToPhone))
             }
             is PbEvent.IncomingOffer -> notifyOffer(e)
             is PbEvent.ControlRequest -> askControl(e)
@@ -400,8 +417,14 @@ class PbService : Service() {
                 notifySimple("Transfer from ${e.peerName} failed", e.reason)
             }
             is PbEvent.TransferProgress -> notifyProgress(e)
-            is PbEvent.Connected -> Log.i(TAG, "Connected: ${e.peerName}")
-            is PbEvent.Disconnected -> Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
+            is PbEvent.Connected -> {
+                Log.i(TAG, "Connected: ${e.peerName}")
+                Bridge.pcContact(this, opened = true)
+            }
+            is PbEvent.Disconnected -> {
+                Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
+                Bridge.pcContact(this, opened = false)
+            }
         }
         Bridge.listeners.forEach { it(e) }
     }
@@ -429,7 +452,7 @@ class PbService : Service() {
                 src.delete()
                 val label = treeLabel(tree)
                 Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName} to $label")
-                Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to $label", RecentItem.Kind.File, uri))
+                Timeline.add(fileEntry(e.peerName, TlDir.ToPhone, e.name, e.size.toLong(), uri.toString()))
                 notifyFile(e.peerName, e.name, e.size, uri, mime, label)
                 return
             } catch (t: Throwable) {
@@ -465,7 +488,7 @@ class PbService : Service() {
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             src.delete()
             Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName}")
-            Bridge.addRecent(RecentItem(e.name, "From ${e.peerName}, saved to Downloads", RecentItem.Kind.File, uri))
+            Timeline.add(fileEntry(e.peerName, TlDir.ToPhone, e.name, e.size.toLong(), uri.toString()))
             notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/$APP_NAME")
         } catch (t: Throwable) {
             runCatching { contentResolver.delete(uri, null, null) }
@@ -761,6 +784,8 @@ class PbService : Service() {
         if (destroyed) return
         getSystemService(NotificationManager::class.java).notify(ONGOING_ID, statusNotification())
         refreshTile(this)
+        // Node up, PC paired or removed, control started or ended (all come through here).
+        RelayWidget.update(this)
     }
 
     companion object {

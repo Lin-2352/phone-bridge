@@ -1,5 +1,6 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -57,7 +58,7 @@ class ScanActivity : ComponentActivity() {
             addView(preview)
             addView(ComposeView(context).apply {
                 setContent {
-                    PbTheme {
+                    RelayTheme {
                         // A scrim card instead of bare shadowed text: readable over any camera image, in light and dark.
                         Surface(
                             shape = RoundedCornerShape(Radius.card),

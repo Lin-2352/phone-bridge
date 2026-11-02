@@ -1,5 +1,6 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
@@ -60,7 +61,7 @@ class ScreenConsentActivity : ComponentActivity() {
         if (ScreenShare.armed != null) Log.i(TAG, "SCREEN instant share waiting for the user's yes")
         asking = true
         setContent {
-            PbTheme {
+            RelayTheme {
                 if (asking) {
                     ConsentDialog(
                         title = "Let ${a.peer} see this screen?",

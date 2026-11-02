@@ -1,5 +1,6 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
 import android.Manifest
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -68,7 +69,7 @@ class CameraConsentActivity : ComponentActivity() {
         }
         asking = true
         setContent {
-            PbTheme {
+            RelayTheme {
                 if (asking) {
                     ConsentDialog(
                         title = "Let ${a.peer} use your camera?",

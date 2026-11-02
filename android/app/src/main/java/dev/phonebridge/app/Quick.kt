@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.RelayTheme
+import dev.phonebridge.app.ui.ThemeChoice
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.ClipDescription
@@ -171,7 +173,7 @@ class QuickPanelActivity : ComponentActivity() {
             window.attributes = window.attributes.apply { blurBehindRadius = 80 }
         }
         setContent {
-            PbTheme {
+            RelayTheme {
                 Box(
                     Modifier
                         .fillMaxSize()
