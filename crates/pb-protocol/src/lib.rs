@@ -20,6 +20,10 @@ pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 
 const LEN_PREFIX: usize = 4;
 
+/// `Hello.capabilities` entry: this build understands the audio messages
+/// (tags 25 to 27). A peer without it never answers them.
+pub const CAP_AUDIO: &str = "audio";
+
 /// First message on every connection, sent by both sides.
 #[derive(Clone, PartialEq, Message)]
 pub struct Hello {
@@ -41,6 +45,11 @@ impl Hello {
             device_name: device_name.into(),
             capabilities,
         }
+    }
+
+    /// Whether the sender listed `capability`.
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|c| c == capability)
     }
 
     /// Pre-1.0 policy: versions must match exactly.
@@ -228,6 +237,13 @@ impl InputDatagram {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hello_reports_listed_capabilities() {
+        let h = Hello::new("PC", vec!["clipboard".into(), CAP_AUDIO.into()]);
+        assert!(h.supports(CAP_AUDIO));
+        assert!(!Hello::new("old", vec!["clipboard".into()]).supports(CAP_AUDIO));
+    }
 
     #[test]
     fn touch_and_pinch_records_round_trip() {

@@ -75,6 +75,11 @@ pub enum Error {
     /// The received bytes do not match the sender's SHA-256.
     HashMismatch,
     Io(String),
+    /// The peer's `Hello` does not list audio: it predates the feature.
+    Unsupported,
+    /// The peer, or this node's own slot, refused an audio request for this
+    /// reason (`Declined` has its own variant).
+    AudioRefused(pb_protocol::control::AudioReason),
 }
 
 impl fmt::Display for Error {
@@ -93,6 +98,8 @@ impl fmt::Display for Error {
             Self::PeerChanged => f.write_str("another device answers for this peer: if it was reinstalled or reset, remove it and pair again"),
             Self::HashMismatch => f.write_str("file was corrupted in transit (hash mismatch); nothing was saved"),
             Self::Io(e) => write!(f, "file error: {e}"),
+            Self::Unsupported => f.write_str("the other device does not support this yet: update it"),
+            Self::AudioRefused(r) => write!(f, "audio refused: {r:?}"),
         }
     }
 }
@@ -242,6 +249,7 @@ fn lock<T: ?Sized>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[derive(Clone)]
 pub struct Node {
     inner: Arc<Inner>,
+    audio_slots: audio::AudioSlots,
 }
 
 /// Receivers for events the node produces; keep them polled.
@@ -271,6 +279,7 @@ impl Node {
         let (pair_tx, pair_rx) = mpsc::channel(4);
         let (sess_tx, sess_rx) = mpsc::channel(16);
         let node = Self {
+            audio_slots: Default::default(),
             inner: Arc::new(Inner {
                 endpoint,
                 me: identity.peer_id(),
@@ -904,7 +913,10 @@ impl Session {
         my_name: &str,
         peer_name: &str,
     ) -> Result<Self, Error> {
-        let hello = Hello::new(my_name, vec!["clipboard".into()]);
+        let hello = Hello::new(
+            my_name,
+            vec!["clipboard".into(), pb_protocol::CAP_AUDIO.into()],
+        );
         write_frame(&mut send, &Control::from(ControlMsg::Hello(hello))).await?;
         let mut recv = FrameReader::new(recv);
         let first = tokio::time::timeout(HEARTBEAT * 3, recv.next::<Control>()).await;

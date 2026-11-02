@@ -97,10 +97,12 @@ pub enum ControlMsg {
     /// Phone -> PC: the lens now in use (after any switch, and at the start).
     #[prost(message, tag = "24")]
     CameraLens(CameraLens),
-    /// PC -> phone: start streaming phone's audio to PC.
+    /// Requester -> responder: start an audio session (`direction` says which
+    /// side sends the PCM).
     #[prost(message, tag = "25")]
     AudioStart(AudioStart),
-    /// Phone -> PC: accepted; raw PCM frames follow on a uni stream.
+    /// Responder -> requester: accepted (PCM follows on a uni stream) or refused
+    /// with a reason.
     #[prost(message, tag = "26")]
     AudioAccept(AudioAccept),
     /// Either side: gracefully stop the audio stream.
@@ -201,31 +203,167 @@ impl Message for CameraLens {
     }
 }
 
+/// Audio flows from the phone to the PC.
+pub const AUDIO_PHONE_TO_PC: u32 = 0;
+/// Audio flows from the PC to the phone.
+pub const AUDIO_PC_TO_PHONE: u32 = 1;
+/// The audio is what the device plays (playback capture or loopback).
+pub const AUDIO_SOURCE_PLAYBACK: u32 = 0;
+/// The audio is the microphone: only ever with [`AUDIO_PHONE_TO_PC`], and only
+/// when the user chose the explicit microphone mode.
+pub const AUDIO_SOURCE_MIC: u32 = 1;
+/// Largest PCM frame on the audio stream, in bytes.
+pub const AUDIO_MAX_FRAME: usize = 64 * 1024;
+
+/// Why an audio request was not accepted (`AudioAccept.reason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum AudioReason {
+    /// The user said no.
+    Declined = 1,
+    /// This device cannot share audio now (old Android, feature off).
+    Unavailable = 2,
+    /// An audio session in that direction is already running.
+    Busy = 3,
+    /// A field of the request was out of range.
+    BadParams = 4,
+    /// The capture permission was not granted.
+    NoPermission = 5,
+    /// The app playing the audio forbids capturing it.
+    AppBlocksCapture = 6,
+}
+
+impl AudioReason {
+    pub fn code(self) -> u32 {
+        self as u32
+    }
+
+    /// Unknown codes (a newer peer) read as `Declined`.
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            2 => Self::Unavailable,
+            3 => Self::Busy,
+            4 => Self::BadParams,
+            5 => Self::NoPermission,
+            6 => Self::AppBlocksCapture,
+            _ => Self::Declined,
+        }
+    }
+}
+
+/// A peer-supplied audio field outside its allowed range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioParamError {
+    SampleRate(u32),
+    Channels(u32),
+    Direction(u32),
+    Source(u32),
+    /// The microphone was requested in the PC to phone direction.
+    MicWrongDirection,
+}
+
+impl fmt::Display for AudioParamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SampleRate(r) => write!(f, "audio sample rate {r} is not 44100 or 48000"),
+            Self::Channels(c) => write!(f, "audio channel count {c} is not 1 or 2"),
+            Self::Direction(d) => write!(f, "audio direction {d} is not 0 or 1"),
+            Self::Source(s) => write!(f, "audio source {s} is not 0 or 1"),
+            Self::MicWrongDirection => f.write_str("microphone audio only goes phone to PC"),
+        }
+    }
+}
+
+impl std::error::Error for AudioParamError {}
+
+/// Sample rate and channel count must be 44100 or 48000 Hz and 1 or 2.
+pub fn validate_audio_format(sample_rate: u32, channels: u32) -> Result<(), AudioParamError> {
+    if sample_rate != 44_100 && sample_rate != 48_000 {
+        return Err(AudioParamError::SampleRate(sample_rate));
+    }
+    if channels != 1 && channels != 2 {
+        return Err(AudioParamError::Channels(channels));
+    }
+    Ok(())
+}
+
+/// A PCM frame is 1..=[`AUDIO_MAX_FRAME`] bytes and a whole number of
+/// 16-bit sample groups (a multiple of `2 * channels`).
+pub fn audio_frame_len_ok(len: usize, channels: u32) -> bool {
+    let group = 2 * channels as usize;
+    group != 0 && (1..=AUDIO_MAX_FRAME).contains(&len) && len.is_multiple_of(group)
+}
+
 #[derive(Clone, PartialEq, Message)]
 pub struct AudioStart {
     #[prost(uint64, tag = "1")]
     pub id: u64,
-    /// Requested sample rate Hz (48000).
+    /// Requested sample rate Hz (44100 or 48000).
     #[prost(uint32, tag = "2")]
     pub sample_rate: u32,
     /// 1 = mono, 2 = stereo.
     #[prost(uint32, tag = "3")]
     pub channels: u32,
-    /// Target bitrate in kbps (e.g. 64).
-    #[prost(uint32, tag = "4")]
-    pub bitrate_kbps: u32,
+    // Tag 4 was `bitrate_kbps` (raw PCM, it never meant anything): not reused.
+    /// [`AUDIO_PHONE_TO_PC`] or [`AUDIO_PC_TO_PHONE`].
+    #[prost(uint32, tag = "5")]
+    pub direction: u32,
+    /// [`AUDIO_SOURCE_PLAYBACK`] or [`AUDIO_SOURCE_MIC`] (phone to PC only).
+    #[prost(uint32, tag = "6")]
+    pub source: u32,
+}
+
+impl AudioStart {
+    /// Check every field the peer supplied.
+    pub fn validate(&self) -> Result<(), AudioParamError> {
+        validate_audio_format(self.sample_rate, self.channels)?;
+        if self.direction > AUDIO_PC_TO_PHONE {
+            return Err(AudioParamError::Direction(self.direction));
+        }
+        if self.source > AUDIO_SOURCE_MIC {
+            return Err(AudioParamError::Source(self.source));
+        }
+        if self.source == AUDIO_SOURCE_MIC && self.direction != AUDIO_PHONE_TO_PC {
+            return Err(AudioParamError::MicWrongDirection);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct AudioAccept {
     #[prost(uint64, tag = "1")]
     pub id: u64,
-    /// Actual sample rate the phone will use.
+    /// Actual sample rate the sending side will use.
     #[prost(uint32, tag = "2")]
     pub sample_rate: u32,
     /// Actual channels.
     #[prost(uint32, tag = "3")]
     pub channels: u32,
+    /// False: the request was refused, `reason` says why (and the format
+    /// fields are ignored). Absent (old peers) reads as refused.
+    #[prost(bool, tag = "4")]
+    pub accepted: bool,
+    /// [`AudioReason`] code when `accepted` is false, else 0.
+    #[prost(uint32, tag = "5")]
+    pub reason: u32,
+}
+
+impl AudioAccept {
+    pub fn refused(id: u64, reason: AudioReason) -> Self {
+        Self {
+            id,
+            sample_rate: 0,
+            channels: 0,
+            accepted: false,
+            reason: reason.code(),
+        }
+    }
+
+    /// Check the format of an accepting reply.
+    pub fn validate(&self) -> Result<(), AudioParamError> {
+        validate_audio_format(self.sample_rate, self.channels)
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -768,13 +906,17 @@ mod tests {
                 id: 7,
                 sample_rate: 48000,
                 channels: 2,
-                bitrate_kbps: 64,
+                direction: AUDIO_PC_TO_PHONE,
+                source: AUDIO_SOURCE_PLAYBACK,
             }),
             ControlMsg::AudioAccept(AudioAccept {
                 id: 7,
                 sample_rate: 48000,
                 channels: 2,
+                accepted: true,
+                reason: 0,
             }),
+            ControlMsg::AudioAccept(AudioAccept::refused(7, AudioReason::Busy)),
             ControlMsg::AudioStop(AudioStop { id: 7 }),
         ];
         for m in msgs {
@@ -1001,5 +1143,101 @@ mod tests {
     #[test]
     fn the_image_cap_is_ten_mebibytes() {
         assert_eq!(MAX_CLIPBOARD_IMAGE, 10 * 1024 * 1024);
+    }
+
+    fn start(rate: u32, ch: u32, dir: u32, src: u32) -> AudioStart {
+        AudioStart {
+            id: 1,
+            sample_rate: rate,
+            channels: ch,
+            direction: dir,
+            source: src,
+        }
+    }
+
+    #[test]
+    fn audio_start_accepts_only_the_allowed_fields() {
+        for rate in [44_100, 48_000] {
+            for ch in [1, 2] {
+                assert_eq!(start(rate, ch, 0, 0).validate(), Ok(()));
+                assert_eq!(start(rate, ch, 1, 0).validate(), Ok(()));
+            }
+        }
+        assert_eq!(start(48_000, 1, 0, AUDIO_SOURCE_MIC).validate(), Ok(()));
+        assert_eq!(
+            start(96_000, 2, 0, 0).validate(),
+            Err(AudioParamError::SampleRate(96_000))
+        );
+        assert_eq!(
+            start(0, 2, 0, 0).validate(),
+            Err(AudioParamError::SampleRate(0))
+        );
+        assert_eq!(
+            start(48_000, 0, 0, 0).validate(),
+            Err(AudioParamError::Channels(0))
+        );
+        assert_eq!(
+            start(48_000, 3, 0, 0).validate(),
+            Err(AudioParamError::Channels(3))
+        );
+        assert_eq!(
+            start(48_000, 2, 2, 0).validate(),
+            Err(AudioParamError::Direction(2))
+        );
+        assert_eq!(
+            start(48_000, 2, 0, 2).validate(),
+            Err(AudioParamError::Source(2))
+        );
+        assert_eq!(
+            start(48_000, 2, AUDIO_PC_TO_PHONE, AUDIO_SOURCE_MIC).validate(),
+            Err(AudioParamError::MicWrongDirection)
+        );
+    }
+
+    #[test]
+    fn audio_frames_are_sized_and_aligned() {
+        assert!(audio_frame_len_ok(1920, 2));
+        assert!(audio_frame_len_ok(2, 1));
+        assert!(audio_frame_len_ok(AUDIO_MAX_FRAME, 2));
+        assert!(!audio_frame_len_ok(0, 2));
+        assert!(!audio_frame_len_ok(AUDIO_MAX_FRAME + 4, 2));
+        assert!(!audio_frame_len_ok(1, 1));
+        assert!(!audio_frame_len_ok(6, 2), "not a whole stereo sample");
+        assert!(!audio_frame_len_ok(4, 0));
+    }
+
+    #[test]
+    fn audio_reason_codes_round_trip_and_unknown_reads_as_declined() {
+        for r in [
+            AudioReason::Declined,
+            AudioReason::Unavailable,
+            AudioReason::Busy,
+            AudioReason::BadParams,
+            AudioReason::NoPermission,
+            AudioReason::AppBlocksCapture,
+        ] {
+            assert_eq!(AudioReason::from_code(r.code()), r);
+        }
+        assert_eq!(AudioReason::from_code(0), AudioReason::Declined);
+        assert_eq!(AudioReason::from_code(99), AudioReason::Declined);
+    }
+
+    #[test]
+    fn an_accept_without_the_flag_reads_as_refused() {
+        // An accept as the pre-direction code sent it: id, rate, channels only.
+        let mut old = Vec::new();
+        prost::encoding::uint64::encode(1, &7, &mut old);
+        prost::encoding::uint32::encode(2, &48_000, &mut old);
+        prost::encoding::uint32::encode(3, &2, &mut old);
+        let a = AudioAccept::decode(old.as_slice()).unwrap();
+        assert!(!a.accepted);
+    }
+
+    #[test]
+    fn an_unknown_tag_decodes_to_no_message() {
+        let mut raw = Vec::new();
+        prost::encoding::uint32::encode(99, &1, &mut raw);
+        let c = Control::decode(raw.as_slice()).unwrap();
+        assert_eq!(c.msg, None);
     }
 }
