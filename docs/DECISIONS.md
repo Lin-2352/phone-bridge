@@ -384,3 +384,29 @@ Measured on the dev laptop (Intel UHD Graphics drives the panel, RTX 4060 idle; 
   - It's released 30 s after the last surface on the UI thread closes (main window, flyout, menu, QR, camera window or pill), then the working set is trimmed. Dialogs and the screen window run on their own threads; their devices are freed when those threads end.
   - The 1 s timeline timer runs only while a write is owed or the main window or flyout is open. A timeline add from the core wakes it.
 - **GDI:** every window now draws through Direct2D. The guard test `no_gdi_drawing_left` keeps it that way. The `Win32_Graphics_GdiPlus` feature is gone.
+
+## Phase 8 (2026-11-02): UI v2 results and rulings
+
+What was built (`feature/ui-v2`, from `feature/clipboard-images`; not merged, not released): a shared design-token file generating Rust and Kotlin; a Direct2D drawing kit on the PC (Mica where Windows allows it, opaque otherwise); a main window (Home, Timeline, Devices, Settings) next to the tray; a metadata-only Timeline on both devices; a four-tab Android app (Home, Timeline, Remote, Settings); a home-screen widget; two FFI getters.
+
+**Rulings that change the spec (please confirm):**
+- **Memory budget restated.** "Under 40 MB working set with the main window open" cannot be met with a hardware Direct2D device on this machine: the GPU driver alone costs about 55 MB private. New budget: idle tray with no window at most 40 MB working set and 15 MB private; main window open at most 70 MB private; the device is released and the working set trimmed 30 s after the last window closes. WARP (software) would cut private memory to about 22 MB but is slower; not chosen.
+- **No always-on warm-up.** A warm device would hold about 55 MB for as long as the tray runs. Cold first paint is 182 to 250 ms (warm: 22 to 30 ms). Accepted as "about 200 ms".
+- **Silent removal of "reset" PCs after pairing was removed.** It could unpair the PC the user just re-paired. The Home row now offers "Remove and pair again" (explicit, only for PCs flagged at that moment). The transport clears the `changed` flag on re-pairing and on every authenticated incoming session.
+- **Turning "Keep history" off asks first** (it deletes the history), on both devices.
+
+**Known limits:**
+- If another Relay device keeps answering at a phone's old address while the phone is reachable elsewhere, PC connects can sometimes report "reinstalled or reset" until the phone's next authenticated connection (iroh 1.3 keeps dialled addresses as paths and has no API to drop one).
+- The screen window now builds its own Direct2D device for its two bars; its private memory with a phone screen open is unmeasured.
+- The camera preview allocates a GPU bitmap per frame (about 30 per second).
+- Android 14+ partial photo access may jump to the app settings after the photo prompt (this phone is Android 13; not testable here).
+
+**Not verified on real hardware (this phone was not reachable over adb during the final pass):** every Android screen on the phone, the widget, the tab back stack and rotation, the touchpad edge-swipe, Timeline entries after real transfers, screen and control sessions with the new windows, Mica (transparency effects are off on this PC), mixed-DPI monitors, and the flyout/dialog captures. The Android release APK builds and is signed with the Relay release key; unit tests and `lintRelease` pass.
+
+**Environment finding:** on this PC the Windows clipboard currently misbehaves (`Set-Clipboard` succeeds but `Get-Clipboard` reads back empty). The two `pb-platform-win` clipboard tests fail with "clipboard is busy", identically at the Phase 7 commit, so it is not a regression. Clipboard sync cannot be verified end to end on this PC until that clears.
+
+## Phase 7b (2026-11-02): why PayZapp refused to open, and the workaround
+
+PayZapp (HDFC) checks for security risks and refuses to run while either of these is on: (1) a non-screen-reader **accessibility service** (its dialog names "Relay control"), and (2) **USB debugging**. Relay's Control feature needs the accessibility service, so Control on means PayZapp will not open. Relay cannot and will not hide this from the bank app.
+
+Workaround: keep Relay Control off except while controlling the phone (Relay now switches it off about 1.5 s after a PC session ends; checked on the realme: session end 01:01:13.8, switch-off 01:01:15.3, `enabled_accessibility_services` empty), and turn USB debugging off (some banking apps also object to Developer options being on at all) when using PayZapp.
