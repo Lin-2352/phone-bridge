@@ -85,6 +85,90 @@ fn parse(buf: &[u8]) -> Option<(u8, u16, [u8; 16])> {
     Some((buf[4], port, t))
 }
 
+/// Directed broadcast address (`ip | !mask`) of each usable local IPv4
+/// network, using the interface's real prefix length.
+pub(crate) fn directed_broadcasts(ifaces: &[(Ipv4Addr, u8)]) -> Vec<Ipv4Addr> {
+    let mut out = Vec::new();
+    for &(ip, prefix) in ifaces {
+        // /31 and /32 have no broadcast; below /8 is not a LAN.
+        if !(8..=30).contains(&prefix)
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || ip.is_broadcast()
+        {
+            continue;
+        }
+        let b = Ipv4Addr::from(u32::from(ip) | (u32::MAX >> prefix));
+        if !out.contains(&b) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// Whether `ip` lies inside one of the networks in `ifaces`.
+fn on_known_network(ip: Ipv4Addr, ifaces: &[(Ipv4Addr, u8)]) -> bool {
+    ifaces.iter().any(|&(net, prefix)| {
+        let mask = u32::MAX
+            .checked_shl(32 - u32::from(prefix.min(32)))
+            .unwrap_or(0);
+        prefix > 0 && u32::from(ip) & mask == u32::from(net) & mask
+    })
+}
+
+/// Every address a probe goes to, in send order: the limited broadcast, the
+/// directed broadcast of every local interface (real prefix), a `/24` guess
+/// for any iroh address on no known interface (all of them when the
+/// interface list is unavailable: the previous behaviour), then each last
+/// known peer address.
+pub(crate) fn probe_targets(
+    port: u16,
+    interfaces: &[(Ipv4Addr, u8)],
+    iroh_addrs: &[String],
+    saved_peer_addrs: &[String],
+) -> Vec<SocketAddr> {
+    let mut targets = vec![SocketAddr::from((Ipv4Addr::BROADCAST, port))];
+    let mut push = |t: SocketAddr| {
+        if !targets.contains(&t) {
+            targets.push(t);
+        }
+    };
+    for b in directed_broadcasts(interfaces) {
+        push(SocketAddr::from((b, port)));
+    }
+    for a in iroh_addrs {
+        if let Ok(SocketAddr::V4(v4)) = a.parse::<SocketAddr>() {
+            if on_known_network(*v4.ip(), interfaces) {
+                continue;
+            }
+            let o = v4.ip().octets();
+            push(SocketAddr::from((
+                Ipv4Addr::new(o[0], o[1], o[2], 255),
+                port,
+            )));
+        }
+    }
+    // Across routers that drop broadcast.
+    for a in saved_peer_addrs {
+        if let Ok(sa) = a.parse::<SocketAddr>() {
+            push(SocketAddr::new(sa.ip(), port));
+        }
+    }
+    targets
+}
+
+/// IPv4 address and prefix length of every up, non-loopback interface
+/// (VPN adapters included: harmless). Empty when the OS gives no answer.
+pub(crate) fn local_ipv4_interfaces() -> Vec<(Ipv4Addr, u8)> {
+    netdev::get_interfaces()
+        .into_iter()
+        .filter(|i| i.is_up() && !i.is_loopback())
+        .flat_map(|i| i.ipv4.into_iter().map(|n| (n.addr(), n.prefix_len())))
+        .collect()
+}
+
 /// Source addresses we never accept as a peer location.
 fn usable(addr: &SocketAddr) -> bool {
     let ip = addr.ip();
@@ -177,30 +261,16 @@ impl Node {
             return;
         }
         let probe = packet(PROBE, my_port, tag(&self.inner.me, window(0)));
-        let mut targets = vec![SocketAddr::from((Ipv4Addr::BROADCAST, port))];
-        // Directed broadcast on each local IPv4 network (assumes /24, the
-        // common home and hotspot size): reaches interfaces the limited
-        // broadcast above does not leave through.
-        for a in self.addrs() {
-            if let Ok(SocketAddr::V4(v4)) = a.parse::<SocketAddr>() {
-                let o = v4.ip().octets();
-                let t = SocketAddr::from((Ipv4Addr::new(o[0], o[1], o[2], 255), port));
-                if !targets.contains(&t) {
-                    targets.push(t);
-                }
-            }
-        }
-        // And each last known peer address, across routers that drop broadcast.
-        for p in lock(&self.inner.store).list() {
-            for a in &p.addrs {
-                if let Ok(sa) = a.parse::<SocketAddr>() {
-                    let t = SocketAddr::new(sa.ip(), port);
-                    if !targets.contains(&t) {
-                        targets.push(t);
-                    }
-                }
-            }
-        }
+        let saved: Vec<String> = lock(&self.inner.store)
+            .list()
+            .into_iter()
+            .flat_map(|p| p.addrs)
+            .collect();
+        // Interface enumeration is a blocking OS call.
+        let ifaces = tokio::task::spawn_blocking(local_ipv4_interfaces)
+            .await
+            .unwrap_or_default();
+        let targets = probe_targets(port, &ifaces, &self.addrs(), &saved);
         for t in targets {
             let _ = sock.send_to(&probe, t).await;
         }
@@ -313,5 +383,153 @@ mod tests {
         assert!(!usable(&"224.0.0.1:47100".parse().unwrap()));
         assert!(!usable(&"255.255.255.255:47100".parse().unwrap()));
         assert!(usable(&"10.73.190.167:47100".parse().unwrap()));
+    }
+
+    fn v4(s: &str) -> Ipv4Addr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_slash_24_gives_the_previous_dot_255() {
+        assert_eq!(
+            directed_broadcasts(&[(v4("192.168.1.5"), 24)]),
+            vec![v4("192.168.1.255")]
+        );
+    }
+
+    #[test]
+    fn directed_broadcast_uses_the_real_prefix() {
+        assert_eq!(
+            directed_broadcasts(&[(v4("10.21.7.75"), 20)]),
+            vec![v4("10.21.15.255")]
+        );
+        assert_eq!(
+            directed_broadcasts(&[(v4("192.168.1.5"), 16)]),
+            vec![v4("192.168.255.255")]
+        );
+        assert_eq!(
+            directed_broadcasts(&[(v4("10.1.2.3"), 8), (v4("10.0.0.9"), 30)]),
+            vec![v4("10.255.255.255"), v4("10.0.0.11")]
+        );
+    }
+
+    #[test]
+    fn point_to_point_loopback_link_local_and_nonsense_give_nothing() {
+        let ifaces = [
+            (v4("10.0.0.1"), 31),
+            (v4("10.0.0.1"), 32),
+            (v4("10.0.0.1"), 0),
+            (v4("10.0.0.1"), 7),
+            (v4("10.0.0.1"), 33),
+            (v4("127.0.0.1"), 8),
+            (v4("169.254.10.20"), 16),
+            (v4("0.0.0.0"), 24),
+        ];
+        assert!(directed_broadcasts(&ifaces).is_empty());
+    }
+
+    #[test]
+    fn duplicates_across_interfaces_collapse_in_order() {
+        let ifaces = [
+            (v4("10.21.7.75"), 20),
+            (v4("192.168.1.5"), 24),
+            (v4("10.21.12.26"), 20),
+            (v4("192.168.1.9"), 24),
+        ];
+        assert_eq!(
+            directed_broadcasts(&ifaces),
+            vec![v4("10.21.15.255"), v4("192.168.1.255")]
+        );
+    }
+
+    fn sa(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn probe_targets_reach_the_real_subnet_broadcast() {
+        // The user's PC: Wi-Fi 10.21.7.75/20 plus a VPN adapter; iroh lists
+        // the Wi-Fi address; the only saved peer address is from another network.
+        let t = probe_targets(
+            47199,
+            &[(v4("10.21.7.75"), 20), (v4("10.2.0.2"), 32)],
+            &["10.21.7.75:51000".into()],
+            &["10.57.6.22:47100".into()],
+        );
+        assert_eq!(
+            t,
+            vec![
+                sa("255.255.255.255:47199"),
+                sa("10.21.15.255:47199"),
+                sa("10.57.6.22:47199"),
+            ]
+        );
+        // The wrong /24 guess is gone once the real prefix is known.
+        assert!(!t.contains(&sa("10.21.7.255:47199")));
+    }
+
+    #[test]
+    fn every_interface_is_probed_even_if_iroh_omits_it() {
+        let t = probe_targets(
+            47199,
+            &[(v4("10.21.7.75"), 20), (v4("192.168.137.1"), 24)],
+            &["10.21.7.75:51000".into()],
+            &[],
+        );
+        assert!(t.contains(&sa("192.168.137.255:47199")));
+        assert!(t.contains(&sa("10.21.15.255:47199")));
+    }
+
+    #[test]
+    fn without_interface_info_the_old_slash_24_guess_is_kept() {
+        let t = probe_targets(
+            47199,
+            &[],
+            &[
+                "10.21.7.75:51000".into(),
+                "[fe80::1]:51000".into(),
+                "10.21.7.80:51001".into(),
+            ],
+            &["10.57.6.22:47100".into(), "10.21.7.75:47100".into()],
+        );
+        assert_eq!(
+            t,
+            vec![
+                sa("255.255.255.255:47199"),
+                sa("10.21.7.255:47199"),
+                sa("10.57.6.22:47199"),
+                sa("10.21.7.75:47199"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_iroh_address_outside_every_known_interface_still_gets_the_guess() {
+        let t = probe_targets(
+            47199,
+            &[(v4("10.21.7.75"), 20)],
+            &["10.21.7.75:51000".into(), "172.20.1.4:51000".into()],
+            &[],
+        );
+        assert_eq!(
+            t,
+            vec![
+                sa("255.255.255.255:47199"),
+                sa("10.21.15.255:47199"),
+                sa("172.20.1.255:47199"),
+            ]
+        );
+    }
+
+    /// Prints the live probe targets of this machine (real-world check):
+    /// `cargo test -p pb-transport live_probe_targets -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads this machine's interfaces; run by hand"]
+    fn live_probe_targets() {
+        let ifaces = local_ipv4_interfaces();
+        println!("interfaces: {ifaces:?}");
+        for t in probe_targets(DISCOVERY_PORT, &ifaces, &[], &[]) {
+            println!("target: {t}");
+        }
     }
 }
