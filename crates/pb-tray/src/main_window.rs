@@ -261,16 +261,29 @@ fn scrolled(content: RectF, s: f32, sc: &Scroll) -> RectF {
 /// was unplugged or the layout changed), and the window opens centred.
 pub fn restore_rect(saved: Option<SavedRect>, monitors: &[RECT]) -> Option<SavedRect> {
     let (x, y, w, h) = saved?;
-    if w <= 0 || h <= 0 {
+    // A crafted or corrupt value whose far edge does not fit an i32: ignored.
+    if w <= 0 || h <= 0 || x.checked_add(w).is_none() || y.checked_add(h).is_none() {
         return None;
     }
-    let strip = (x, y, x + w, y + h.min(CAPTION_STRIP));
+    // In i64: a monitor edge minus a far-off strip edge can overflow i32.
+    let wide = |v: i32| i64::from(v);
+    let strip = (
+        wide(x),
+        wide(y),
+        wide(x) + wide(w),
+        wide(y) + wide(h.min(CAPTION_STRIP)),
+    );
     let visible = monitors.iter().any(|m| {
-        let iw = strip.2.min(m.right) - strip.0.max(m.left);
-        let ih = strip.3.min(m.bottom) - strip.1.max(m.top);
-        iw >= MIN_VISIBLE_W && ih >= MIN_VISIBLE_H
+        let iw = strip.2.min(wide(m.right)) - strip.0.max(wide(m.left));
+        let ih = strip.3.min(wide(m.bottom)) - strip.1.max(wide(m.top));
+        iw >= wide(MIN_VISIBLE_W) && ih >= wide(MIN_VISIBLE_H)
     });
     visible.then_some((x, y, w, h))
+}
+
+/// WM_KEYDOWN's lParam bit 30: the key was already down (auto-repeat).
+pub fn is_key_repeat(lparam: isize) -> bool {
+    lparam & (1 << 30) != 0
 }
 
 /// WM_DPICHANGED: the rect Windows suggests and the new scale.
@@ -1122,6 +1135,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == VK_RETURN.0 as usize || wparam.0 == VK_SPACE.0 as usize => {
+            // Held down: act once, not at the keyboard repeat rate.
+            if is_key_repeat(lparam.0) {
+                return LRESULT(0);
+            }
             let t = with(hwnd, |st| st.focus.and_then(target_of)).flatten();
             if let Some(t) = t {
                 activate(hwnd, t);
@@ -1466,6 +1483,35 @@ mod tests {
         // Degenerate sizes and nothing saved.
         assert_eq!(restore_rect(Some((100, 100, 0, 700)), &monitors), None);
         assert_eq!(restore_rect(None, &monitors), None);
+    }
+
+    #[test]
+    fn a_crafted_saved_rect_is_ignored_without_overflow() {
+        let monitors = [rect(0, 0, 1920, 1040), rect(1920, 0, 3840, 1040)];
+        for r in [
+            (i32::MAX, 0, 10, 10),
+            (0, i32::MAX, 10, 10),
+            (0, 0, i32::MAX, 10),
+            (0, 0, 10, i32::MAX),
+            (i32::MAX, i32::MAX, i32::MAX, i32::MAX),
+            (i32::MIN, 0, 10, 10),
+            (0, i32::MIN, 10, 10),
+            (i32::MIN, i32::MIN, i32::MAX, i32::MAX),
+        ] {
+            assert_eq!(restore_rect(Some(r), &monitors), None, "{r:?}");
+        }
+        let far = [rect(i32::MIN, i32::MIN, i32::MAX, i32::MAX)];
+        assert_eq!(restore_rect(Some((i32::MIN, 0, 10, 10)), &far), None);
+    }
+
+    #[test]
+    fn enter_held_down_activates_once() {
+        // First press: bit 30 clear (repeat count 1).
+        assert!(!is_key_repeat(0x0000_0001));
+        assert!(!is_key_repeat(0x001C_0001));
+        // Auto-repeat: bit 30 set.
+        assert!(is_key_repeat(0x4000_0001));
+        assert!(is_key_repeat(0x401C_0001));
     }
 
     #[test]
