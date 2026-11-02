@@ -23,7 +23,7 @@ body   = protobuf message (prost), at most 65536 bytes
 |---|---|---|---|
 | `protocol_version` | 1 | uint32 | Must equal the receiver's version, else close |
 | `device_name` | 2 | string | User-visible; only sent after authentication, never in discovery |
-| `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera` |
+| `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera`, `audio` (the audio messages, tags 25 to 27; a requester that does not see it fails at once instead of waiting for a reply an older peer never sends) |
 
 ### `Control` envelope (session stream)
 `oneof msg { Hello = 1; Heartbeat = 2; ClipboardText = 3; Offer = 4; OfferReply = 5; TransferDone = 6; Cancel = 7; ClipboardUpdate = 8; }`
@@ -136,6 +136,22 @@ Control messages, tags 21 to 24 (feedback reuses `ScreenFeedback`, 19):
 | 88 | count of completed frames |
 | 4096, 4096 + 3110400 | the two slots, tightly packed NV12 |
 
+### Audio sharing (either direction)
+Control messages, tags 25 to 27. The requester (whoever connected) sends `AudioStart`; the responder answers with `AudioAccept`. Which side sends the PCM is `direction`, not who requested.
+
+| Message | Direction | Content |
+|---|---|---|
+| `AudioStart` (25) | requester → responder | id, sample_rate (44100 or 48000), channels (1 or 2), direction (0 phone to PC, 1 PC to phone), source (0 playback, 1 microphone; the microphone only with direction 0 and only in the explicit microphone mode). Tag 4 was `bitrate_kbps`, removed (raw PCM) and not reused |
+| `AudioAccept` (26) | responder → requester | id, sample_rate and channels (the format that will be sent), accepted (bool; absent reads as refused), reason (when refused: 1 declined, 2 unavailable, 3 busy, 4 bad_params, 5 no_permission, 6 app_blocks_capture; an unknown code reads as declined) |
+| `AudioStop` (27) | either side | id: end the session; the receiver closes the connection. Older peers skip unknown tags |
+
+**Session:**
+1. Consent is given on the device whose audio is shared, before the request (PC audio) or before the accept (phone audio). There is no auto-accept and no resume after a drop.
+2. A requester checks the peer's `Hello` for `audio` first; without it the request fails as unsupported and nothing is sent.
+3. After an accepting `AudioAccept`, the sender opens a uni stream: `PBA0`, then repeated `u32 len LE | len bytes` of raw PCM (i16 LE, interleaved). The receiver closes the stream and the session if the magic is wrong, or a length is 0, above 65536, not a multiple of `2 x channels`, or the stream ends mid-frame.
+4. Each field is validated by whoever receives it, on both sides: `AudioStart` by the responder (a violation is answered with `reason = bad_params` and the user is not asked), `AudioAccept` by the requester (a format outside the limits closes the connection). One session per direction at a time per device; a second request in a direction in use is refused with `busy`.
+5. Both ends queue about 300 ms of audio (a frame is dropped, oldest first, past that) so a slow consumer never stalls the sender. A failed write, a limit violation, `AudioStop`, a lost link, or dropping the session ends it, and each side is told once why.
+
 ## Input datagram (fixed 8 bytes, little-endian)
 ```
 offset 0  kind   u8    0 MouseMove, 1 MouseButton, 2 Wheel, 3 Key
@@ -154,6 +170,7 @@ kind 6 Pinch: flags bit 0 = out (zoom in); a, b = centre x, y as u16
 ## Limits (enforced in code)
 - Control frame body: 64 KiB. Inline text/links and clipboard text: 60 KiB. Files: 4 GiB default cap.
 - Input datagram: exactly 8 bytes, anything else is dropped.
+- Audio: sample rate 44100 or 48000, channels 1 or 2, frame 1 to 65536 bytes and a multiple of `2 x channels`, one session per direction, about 300 ms queued per end.
 
 ## Open items
 - ALPN naming and per-feature stream headers.
