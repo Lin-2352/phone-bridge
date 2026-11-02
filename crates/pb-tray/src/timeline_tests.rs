@@ -271,3 +271,20 @@ fn version_changes_with_the_entries_only() {
     s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
     assert_eq!(s.version(), v4);
 }
+
+/// The tray's 1 s timer runs for a write only while one is owed and possible.
+#[test]
+fn wants_a_flush_only_while_an_add_is_unwritten() {
+    let d = tmpdir("wants");
+    let mut s = Store::open(&d, Box::new(Plain));
+    s.set_enabled(true);
+    assert!(!s.wants_flush(), "nothing added yet");
+    s.add(pic(10, 10, 100));
+    assert!(s.wants_flush());
+    s.flush();
+    assert!(!s.wants_flush(), "written");
+    s.add(pic(10, 10, 100));
+    s.set_enabled(false);
+    assert!(!s.wants_flush(), "history off: nothing to write");
+    let _ = std::fs::remove_dir_all(&d);
+}

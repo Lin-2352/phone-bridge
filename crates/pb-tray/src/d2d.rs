@@ -5,7 +5,10 @@
 //! Mica when it is unavailable) uses an opaque HWND swap chain.
 #![allow(unsafe_code)]
 
-use std::{cell::RefCell, sync::OnceLock};
+use std::{
+    cell::{Cell, RefCell},
+    sync::OnceLock,
+};
 
 use windows::{
     core::{Interface, HRESULT},
@@ -240,6 +243,8 @@ struct Shared {
 
 thread_local! {
     static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
+    /// Surfaces alive on this thread (they hold the shared device).
+    static LIVE: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The thread's shared device, made on first use (on `hwnd`'s GPU).
@@ -265,11 +270,14 @@ fn shared(hwnd: HWND) -> Result<Shared, String> {
     Ok(s)
 }
 
-/// Makes the thread's shared device ahead of the first window (on idle,
-/// shortly after the tray starts), so opening a window pays only for its
-/// swap chain.
-pub fn warm(hwnd: HWND) -> Result<(), String> {
-    shared(hwnd).map(|_| ())
+/// Drops the thread's shared device once no surface uses it, so an idle
+/// tray does not keep the GPU driver's memory (tens of MB of private
+/// bytes); the next window makes a new one. True if it was released.
+pub fn release_if_unused() -> bool {
+    if LIVE.with(Cell::get) > 0 {
+        return false;
+    }
+    SHARED.with(|c| c.borrow_mut().take()).is_some()
 }
 
 /// Forgets the shared device if the GPU removed or reset it, so the next
@@ -374,6 +382,7 @@ impl Surface {
     pub fn new(hwnd: HWND, want: Backdrop) -> Result<Surface, String> {
         let size = client_size(hwnd);
         let (gfx, backdrop) = build(hwnd, want, size)?;
+        LIVE.with(|n| n.set(n.get() + 1));
         Ok(Surface {
             hwnd,
             want,
@@ -478,6 +487,14 @@ impl Surface {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
         Ok(())
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        // The swap chain and context go first; then the count.
+        self.gfx = None;
+        LIVE.with(|n| n.set(n.get().saturating_sub(1)));
     }
 }
 
@@ -641,6 +658,30 @@ mod tests {
         unsafe {
             let _ = DestroyWindow(h1);
             let _ = DestroyWindow(h2);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_shared_device_is_released_only_after_the_last_surface() {
+        let made = || SHARED.with(|c| c.borrow().is_some());
+        let hwnd = test_window();
+        let s = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        assert!(made());
+        assert!(!release_if_unused(), "a surface still draws with it");
+        assert!(made());
+        drop(s);
+        assert!(release_if_unused());
+        assert!(!made(), "released");
+        assert!(!release_if_unused(), "nothing left to release");
+        // The next surface makes a new one.
+        let s = Surface::new(hwnd, Backdrop::Opaque).expect("surface again");
+        assert!(made());
+        drop(s);
+        assert!(release_if_unused());
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
         }
     }
 

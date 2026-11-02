@@ -452,6 +452,12 @@ impl Store {
         }
     }
 
+    /// An add is not written yet and could be (the tray's timer runs
+    /// only while this or a window needs it).
+    pub fn wants_flush(&self) -> bool {
+        self.dirty && self.enabled && !self.write_locked
+    }
+
     pub fn flush(&mut self) {
         if !self.dirty || !self.enabled || self.write_locked {
             return;

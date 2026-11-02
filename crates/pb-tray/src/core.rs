@@ -28,6 +28,7 @@ pub type SharedSettings = Arc<Mutex<Settings>>;
 pub fn record(settings: &SharedSettings, e: crate::timeline::Entry) {
     if settings.lock().map(|s| s.keep_history).unwrap_or(false) {
         crate::timeline::with(|t| t.add(e));
+        crate::ui::wake_timeline();
     }
 }
 

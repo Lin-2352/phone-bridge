@@ -132,11 +132,19 @@ const TIMER_CLIP: usize = 7;
 const TIMER_NOTIFY: usize = 9;
 /// Clears a copied one-time code after 60 s.
 const TIMER_OTP: usize = 10;
-/// Writes held-back timeline entries (a trailing write within about a second).
+/// Writes held-back timeline entries (a trailing write within about a
+/// second) and refreshes the open main window and flyout. Runs only while
+/// one of those needs it (`timeline_timer_needed`).
 const TIMER_TIMELINE: usize = 11;
-/// Once, a few seconds after start: build the shared Direct2D device so the
-/// first window opens fast.
-const TIMER_WARM: usize = 12;
+/// Some time after the last window closed: release the shared Direct2D
+/// device and trim the working set.
+const TIMER_RELEASE: usize = 12;
+/// How long the device stays after the last window, for a quick reopen.
+const RELEASE_AFTER_MS: u32 = 30_000;
+/// The timeline timer is armed (set before SetTimer, cleared after KillTimer).
+static TIMELINE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Another thread added a timeline entry: arm the timeline timer.
+const WM_TIMELINE_WAKE: u32 = WM_APP + 9;
 const WM_TOAST: u32 = WM_APP + 7;
 const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 const WTS_SESSION_LOCK: usize = 7;
@@ -1242,6 +1250,44 @@ fn arm_timer(hwnd: HWND, id: usize, ms: u32) {
     }
 }
 
+/// The timeline timer has work: a write is owed, or a window shows times
+/// and states that change without a message.
+fn timeline_timer_needed(wants_flush: bool, main_open: bool, flyout_open: bool) -> bool {
+    wants_flush || main_open || flyout_open
+}
+
+/// Arms the timeline timer unless it runs already (UI thread).
+fn arm_timeline(hwnd: HWND) {
+    use std::sync::atomic::Ordering;
+    if !TIMELINE_ARMED.swap(true, Ordering::SeqCst) {
+        arm_timer(hwnd, TIMER_TIMELINE, 1000);
+    }
+}
+
+/// A timeline entry was added (any thread): make sure it gets written.
+pub fn wake_timeline() {
+    use std::sync::atomic::Ordering;
+    let raw = TRAY_HWND.load(Ordering::Relaxed);
+    if raw != 0 && !TIMELINE_ARMED.load(Ordering::SeqCst) {
+        // SAFETY: posting to our own tray window from any thread.
+        let _ = unsafe {
+            PostMessageW(
+                Some(HWND(raw as *mut _)),
+                WM_TIMELINE_WAKE,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
+    }
+}
+
+/// Hands unused pages back to Windows (after the device is released).
+fn trim_working_set() {
+    use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+    // SAFETY: (-1, -1) on our own process only trims; it sets no limits.
+    let _ = unsafe { SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX) };
+}
+
 fn kill_timer(hwnd: HWND, id: usize) {
     // SAFETY: timer on our own window.
     let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), id) };
@@ -2312,28 +2358,50 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
-        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_WARM => {
-            kill_timer(hwnd, TIMER_WARM);
-            let t = std::time::Instant::now();
-            let r = crate::d2d::warm(hwnd);
-            st.log.line(&format!(
-                "UI device warmed in {} ms{}",
-                t.elapsed().as_millis(),
-                r.err()
-                    .map(|e| format!(" (failed: {e})"))
-                    .unwrap_or_default()
-            ));
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_RELEASE => {
+            kill_timer(hwnd, TIMER_RELEASE);
+            if crate::d2d::release_if_unused() {
+                trim_working_set();
+                st.log.line("UI device released");
+            } else if !TIMELINE_ARMED.load(std::sync::atomic::Ordering::SeqCst) {
+                // A dialog, the QR or the camera window still draws: retry.
+                arm_timer(hwnd, TIMER_RELEASE, RELEASE_AFTER_MS);
+            }
+            LRESULT(0)
+        }
+        WM_TIMELINE_WAKE => {
+            arm_timeline(hwnd);
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_TIMELINE => {
-            crate::timeline::with(|t| t.flush_if_due(std::time::Instant::now()));
+            use std::sync::atomic::Ordering;
+            let mut wants_flush = false;
+            crate::timeline::with(|t| {
+                t.flush_if_due(std::time::Instant::now());
+                wants_flush = t.wants_flush();
+            });
             // Catches what changes without a message (a session or
             // connection ending, timeline adds from the core, "5 min ago");
             // the window repaints only if its model changed.
-            if crate::main_window::is_open() {
+            let main_open = crate::main_window::is_open();
+            if main_open {
                 crate::main_window::refresh();
             }
             refresh_flyout(st);
+            let flyout_open = crate::flyout::is_open();
+            if !timeline_timer_needed(wants_flush, main_open, flyout_open) {
+                // Idle: no more wake-ups until an add or a window opens.
+                kill_timer(hwnd, TIMER_TIMELINE);
+                TIMELINE_ARMED.store(false, Ordering::SeqCst);
+                // An add that saw the timer still armed posted no wake.
+                let mut late = false;
+                crate::timeline::with(|t| late = t.wants_flush());
+                if late {
+                    arm_timeline(hwnd);
+                } else {
+                    arm_timer(hwnd, TIMER_RELEASE, RELEASE_AFTER_MS);
+                }
+            }
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_NOTIFY => {
@@ -2401,6 +2469,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             command(hwnd, st, wparam.0 & 0xffff);
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
+            }
+            // Every window opens through a command: refresh it every second.
+            if crate::main_window::is_open() || crate::flyout::is_open() {
+                arm_timeline(hwnd);
             }
             LRESULT(0)
         }
@@ -2587,8 +2659,11 @@ pub fn create(
             }
             arm_timer(hwnd, TIMER_NOTIFY, 5000);
         }
-        arm_timer(hwnd, TIMER_TIMELINE, 1000);
-        arm_timer(hwnd, TIMER_WARM, 3000);
+        // Stops itself after the first tick when nothing needs it. The
+        // shared Direct2D device is made by the first window (about 0.2 s)
+        // rather than ahead of time: kept warm it costs ~50 MB of private
+        // bytes for as long as the tray runs.
+        arm_timeline(hwnd);
         // Session lock and unlock (content hidden while locked).
         let _ = windows::Win32::System::RemoteDesktop::WTSRegisterSessionNotification(
             hwnd,
@@ -2652,6 +2727,23 @@ pub fn message_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeline_timer_runs_only_while_needed() {
+        assert!(
+            !timeline_timer_needed(false, false, false),
+            "idle: no wake-ups"
+        );
+        assert!(timeline_timer_needed(true, false, false), "a write is owed");
+        assert!(
+            timeline_timer_needed(false, true, false),
+            "the main window refreshes"
+        );
+        assert!(
+            timeline_timer_needed(false, false, true),
+            "the flyout refreshes"
+        );
+    }
 
     #[test]
     fn show_in_folder_quotes_the_path_and_refuses_a_quote() {
