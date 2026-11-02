@@ -18,7 +18,7 @@ pub const MAX_CLIPBOARD_IMAGE: usize = 10 * 1024 * 1024;
 pub struct Control {
     #[prost(
         oneof = "ControlMsg",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"
     )]
     pub msg: Option<ControlMsg>,
 }
@@ -97,6 +97,15 @@ pub enum ControlMsg {
     /// Phone -> PC: the lens now in use (after any switch, and at the start).
     #[prost(message, tag = "24")]
     CameraLens(CameraLens),
+    /// PC -> phone: start streaming phone's audio to PC.
+    #[prost(message, tag = "25")]
+    AudioStart(AudioStart),
+    /// Phone -> PC: accepted; raw PCM frames follow on a uni stream.
+    #[prost(message, tag = "26")]
+    AudioAccept(AudioAccept),
+    /// Either side: gracefully stop the audio stream.
+    #[prost(message, tag = "27")]
+    AudioStop(AudioStop),
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -190,6 +199,39 @@ impl Message for CameraLens {
     fn clear(&mut self) {
         self.lens = 0;
     }
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct AudioStart {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Requested sample rate Hz (48000).
+    #[prost(uint32, tag = "2")]
+    pub sample_rate: u32,
+    /// 1 = mono, 2 = stereo.
+    #[prost(uint32, tag = "3")]
+    pub channels: u32,
+    /// Target bitrate in kbps (e.g. 64).
+    #[prost(uint32, tag = "4")]
+    pub bitrate_kbps: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct AudioAccept {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Actual sample rate the phone will use.
+    #[prost(uint32, tag = "2")]
+    pub sample_rate: u32,
+    /// Actual channels.
+    #[prost(uint32, tag = "3")]
+    pub channels: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct AudioStop {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -722,6 +764,18 @@ mod tests {
             }),
             ControlMsg::CameraControl(CameraControl { lens: 0 }),
             ControlMsg::CameraLens(CameraLens { lens: 1 }),
+            ControlMsg::AudioStart(AudioStart {
+                id: 7,
+                sample_rate: 48000,
+                channels: 2,
+                bitrate_kbps: 64,
+            }),
+            ControlMsg::AudioAccept(AudioAccept {
+                id: 7,
+                sample_rate: 48000,
+                channels: 2,
+            }),
+            ControlMsg::AudioStop(AudioStop { id: 7 }),
         ];
         for m in msgs {
             let bytes = encode_frame(&Control::from(m.clone())).unwrap();

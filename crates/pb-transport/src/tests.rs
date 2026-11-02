@@ -1966,4 +1966,126 @@ mod identity_changed {
         assert!(stranger.connect(&pc.peer_id()).await.is_err());
         assert!(pc.peer_changed(&phone.peer_id()));
     }
+
+    mod audio {
+        use std::time::Duration;
+
+        use pb_protocol::control::{AudioAccept, AudioStart};
+
+        use super::screen::paired;
+        use super::*;
+        use crate::audio::{serve_audio, AudioEvent, AudioServer};
+
+        fn start() -> AudioStart {
+            AudioStart {
+                id: 1,
+                sample_rate: 48000,
+                channels: 2,
+                bitrate_kbps: 64,
+            }
+        }
+
+        fn accept() -> AudioAccept {
+            AudioAccept {
+                id: 1,
+                sample_rate: 48000,
+                channels: 2,
+            }
+        }
+
+        async fn phone_side(
+            ev: &mut NodeEvents,
+            answer: Option<AudioAccept>,
+        ) -> Result<AudioServer, Error> {
+            let mut s = ev.sessions.recv().await.unwrap();
+            loop {
+                match s.recv().await? {
+                    Some(ControlMsg::AudioStart(st)) => return serve_audio(s, st, answer).await,
+                    Some(_) => continue,
+                    None => return Err(Error::Closed),
+                }
+            }
+        }
+
+        async fn next_event(server: &mut AudioServer) -> AudioEvent {
+            tokio::time::timeout(Duration::from_secs(10), server.events.recv())
+                .await
+                .expect("an event")
+                .expect("events open")
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn audio_frames_arrive_in_order() {
+            let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+            let (go, ready) = tokio::sync::oneshot::channel::<()>();
+
+            let phone_task = tokio::spawn(async move {
+                let server = phone_side(&mut phone_ev, Some(accept())).await.unwrap();
+                let _ = ready.await;
+                // Send 10 PCM frames
+                for i in 1..=10 {
+                    server.send_frame(vec![i as u8; 960]); // e.g. 960 bytes
+                }
+                server
+            });
+
+            let mut view = pc
+                .open_audio(&phone.peer_id(), start(), || {
+                    let _ = go.send(());
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(view.accept.sample_rate, 48000);
+            assert_eq!(view.accept.channels, 2);
+
+            for i in 1..=10 {
+                let frame = tokio::time::timeout(Duration::from_secs(5), view.frames.recv())
+                    .await
+                    .expect("frame timeout")
+                    .expect("channel open");
+                assert_eq!(frame.samples, vec![i as u8; 960]);
+            }
+
+            view.close();
+            let mut server = phone_task.await.unwrap();
+            let ev = next_event(&mut server).await;
+            assert!(matches!(ev, AudioEvent::Stopped { .. }));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn declined_audio_reports_declined() {
+            let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+            tokio::spawn(async move {
+                let _ = phone_side(&mut phone_ev, None).await;
+            });
+            let res = pc.open_audio(&phone.peer_id(), start(), || {}).await;
+            assert!(matches!(res, Err(Error::Declined)));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn audio_stop_reaches_phone() {
+            let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+            let (go, ready) = tokio::sync::oneshot::channel::<()>();
+
+            let phone_task = tokio::spawn(async move {
+                let server = phone_side(&mut phone_ev, Some(accept())).await.unwrap();
+                let _ = ready.await;
+                server
+            });
+
+            let view = pc
+                .open_audio(&phone.peer_id(), start(), || {
+                    let _ = go.send(());
+                })
+                .await
+                .unwrap();
+
+            view.stop();
+
+            let mut server = phone_task.await.unwrap();
+            let ev = next_event(&mut server).await;
+            assert!(matches!(ev, AudioEvent::Stopped { by_peer: true }));
+        }
+    }
 }
