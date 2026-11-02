@@ -63,6 +63,31 @@ pub fn is_changed(id: &PeerId) -> bool {
     CHANGED.lock().map(|g| g.contains(id)).unwrap_or(false)
 }
 
+/// Where the transport's "changed" flags come from: the node (or a test
+/// stand-in).
+trait ChangedFlags {
+    fn changed(&self, id: &PeerId) -> bool;
+    fn paired(&self) -> Vec<PeerId>;
+}
+
+impl ChangedFlags for Node {
+    fn changed(&self, id: &PeerId) -> bool {
+        self.peer_changed(id)
+    }
+    fn paired(&self) -> Vec<PeerId> {
+        self.paired_peers().into_iter().map(|p| p.id).collect()
+    }
+}
+
+/// Tells the UI the cache changed (set once by `run`).
+static ON_CHANGED: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+
+fn changed_cache() {
+    if let Some(f) = ON_CHANGED.get() {
+        f();
+    }
+}
+
 /// Puts `id`'s flag in `cache`; true if that changed it (the UI repaints).
 fn set_changed(cache: &mut Vec<PeerId>, id: &PeerId, changed: bool) -> bool {
     let had = cache.contains(id);
@@ -74,23 +99,72 @@ fn set_changed(cache: &mut Vec<PeerId>, id: &PeerId, changed: bool) -> bool {
     had != changed
 }
 
-/// Copies the transport's flag for `id` into the cache; true if it changed.
-fn note_changed(node: &Node, id: &PeerId) -> bool {
-    let now = node.peer_changed(id);
-    let mut g = CHANGED.lock().unwrap_or_else(|p| p.into_inner());
-    set_changed(&mut g, id, now)
+// Lock order: CHANGED, then the transport's own locks (read inside, so two
+// overlapping updates cannot write a stale value last). The transport never
+// takes CHANGED, and nothing here takes CHANGED while holding a transport
+// lock.
+
+/// Copies the transport's flag for `id` into the cache; the UI repaints if
+/// it changed.
+fn note_changed(flags: &impl ChangedFlags, id: &PeerId) {
+    let changed = {
+        let mut g = CHANGED.lock().unwrap_or_else(|p| p.into_inner());
+        let now = flags.changed(id);
+        set_changed(&mut g, id, now)
+    };
+    if changed {
+        changed_cache();
+    }
 }
 
-fn refresh_changed(node: &Node) {
-    let list: Vec<PeerId> = node
-        .paired_peers()
-        .into_iter()
-        .map(|p| p.id)
-        .filter(|id| node.peer_changed(id))
-        .collect();
-    if let Ok(mut g) = CHANGED.lock() {
+/// Copies every paired device's flag (and drops unpaired ones).
+fn refresh_changed(flags: &impl ChangedFlags) {
+    let changed = {
+        let mut g = CHANGED.lock().unwrap_or_else(|p| p.into_inner());
+        let list: Vec<PeerId> = flags
+            .paired()
+            .into_iter()
+            .filter(|id| flags.changed(id))
+            .collect();
+        let differs = *g != list;
         *g = list;
+        differs
+    };
+    if changed {
+        changed_cache();
     }
+}
+
+/// Any dial of `peer` (connect, send, open a session): the transport clears
+/// its flag when the connection works and sets it on `PeerChanged`, so the
+/// note follows the attempt either way. Every tray-side dial goes through
+/// here (`every_dial_notes_the_changed_flag`).
+async fn dial<T>(
+    flags: &impl ChangedFlags,
+    peer: &PeerId,
+    attempt: impl std::future::Future<Output = T>,
+) -> T {
+    let r = attempt.await;
+    note_changed(flags, peer);
+    r
+}
+
+/// Runs a session; the note follows the transport when it opens (an
+/// incoming session clears the flag) and when it closes.
+async fn with_session_notes<T>(
+    flags: &impl ChangedFlags,
+    peer: &PeerId,
+    session: impl std::future::Future<Output = T>,
+) -> T {
+    note_changed(flags, peer);
+    let r = session.await;
+    note_changed(flags, peer);
+    r
+}
+
+/// Paired (again): the transport cleared the device's flag.
+fn on_paired(flags: &impl ChangedFlags) {
+    refresh_changed(flags);
 }
 
 /// What the tray knows about reaching a paired device this run (in memory).
@@ -394,6 +468,11 @@ pub async fn run(
     ui: impl Fn(UiEvent) + Send + Sync + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ui = Arc::new(ui);
+    // The "reinstalled or reset" notes changed: the windows repaint.
+    let _ = ON_CHANGED.set(Box::new({
+        let ui = ui.clone();
+        move || ui(UiEvent::PeersChecked)
+    }));
     std::fs::create_dir_all(&opts.dir)?;
     // A virtual camera a crash left behind goes now (nothing is streaming).
     if crate::camera_register::is_registered() {
@@ -450,7 +529,7 @@ pub async fn run(
             images.clone(),
         );
         tokio::spawn(async move {
-            match node.notify_sync_request(&p.id).await {
+            match dial(&node, &p.id, node.notify_sync_request(&p.id)).await {
                 // An older phone app never answers: do not keep the session
                 // (and its heartbeats) open.
                 Ok(s) => {
@@ -499,8 +578,7 @@ pub async fn run(
                             match p.decide(accept).await {
                                 Ok(peer) => {
                                     log.line(&format!("PAIRED {} \"{}\"", peer.id, peer.name));
-                                    // Paired again: the transport cleared its flag.
-                                    refresh_changed(&node);
+                                    on_paired(&node);
                                     refresh(&node, &peers);
                                     ui(UiEvent::Info(format!("Paired with {}", peer.name)));
                                 }
@@ -518,7 +596,7 @@ pub async fn run(
                     tokio::spawn(async move {
                         for id in targets {
                             // Only the outcome matters: the node records it.
-                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), node.connect(&id)).await {
+                            if let Ok(Ok(_)) = tokio::time::timeout(std::time::Duration::from_secs(5), dial(&node, &id, node.connect(&id))).await {
                                 seen(&node, &id);
                             }
                         }
@@ -551,7 +629,7 @@ pub async fn run(
                             index,
                             text,
                         };
-                        let r = node.notify_action(&peer, action).await;
+                        let r = dial(&node, &peer, node.notify_action(&peer, action)).await;
                         let hash = pb_transport::notify::key_hash(&key);
                         if r.is_ok() {
                             seen(&node, &peer);
@@ -610,7 +688,7 @@ pub async fn run(
                     tokio::spawn(async move {
                         for (id, name) in targets {
                             let r = async {
-                                let s = node.connect(&id).await?;
+                                let s = dial(&node, &id, node.connect(&id)).await?;
                                 s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: text.clone(), hash: h.to_vec(), sensitive })).await?;
                                 s.finish().await;
                                 Ok::<_, pb_transport::Error>(())
@@ -654,7 +732,7 @@ pub async fn run(
                         (node.clone(), log.clone(), clip.clone(), settings.clone());
                     tokio::spawn(async move {
                         for (id, name) in targets {
-                            match node.send_clipboard_image(&id, png.clone()).await {
+                            match dial(&node, &id, node.send_clipboard_image(&id, png.clone())).await {
                                 Ok(()) => {
                                     seen(&node, &id);
                                     record(
@@ -755,7 +833,7 @@ pub async fn run(
                                 )))
                             }
                         };
-                        match node.open_input_with(&id, asked).await {
+                        match dial(&node, &id, node.open_input_with(&id, asked)).await {
                             Ok(sender) => {
                                 seen(&node, &id);
                                 log.line(&format!("CONTROL phone \"{name}\" started"));
@@ -787,7 +865,7 @@ pub async fn run(
                             ui(UiEvent::Info("Pair a device first".into()));
                             return;
                         };
-                        match node.send_text(&id, &text, link).await {
+                        match dial(&node, &id, node.send_text(&id, &text, link)).await {
                             Ok(()) => {
                                 seen(&node, &id);
                                 if !link {
@@ -820,7 +898,7 @@ pub async fn run(
                             return;
                         }
                         let result = async {
-                            let s = node.connect(&id).await?;
+                            let s = dial(&node, &id, node.connect(&id)).await?;
                             s.send(ControlMsg::ClipboardText(ClipboardText { text: text.clone(), sensitive: false })).await?;
                             s.finish().await;
                             Ok::<_, pb_transport::Error>(())
@@ -917,7 +995,7 @@ async fn send_one_file(
             .map_err(|e| pb_transport::Error::Io(e.to_string()))?
             .len();
         let started = Instant::now();
-        node.send_file(id, &file_name, size, "", f, None).await?;
+        dial(node, id, node.send_file(id, &file_name, size, "", f, None)).await?;
         Ok::<_, pb_transport::Error>((size, started.elapsed()))
     }
     .await;
@@ -948,9 +1026,8 @@ async fn send_one_file(
     }
 }
 
-/// Runs a session; on open and on close the device's "reinstalled or reset"
-/// note follows the transport (which clears it for an incoming session),
-/// and the UI repaints if it changed.
+/// Runs a session with the "reinstalled or reset" note following the
+/// transport on open and close (`with_session_notes`).
 async fn pump(
     s: Session,
     node: Node,
@@ -961,13 +1038,12 @@ async fn pump(
     images: Arc<ToastImages>,
 ) {
     let peer = s.peer;
-    if note_changed(&node, &peer) {
-        ui(UiEvent::PeersChecked);
-    }
-    pump_session(s, log, ui.clone(), settings, clip, images).await;
-    if note_changed(&node, &peer) {
-        ui(UiEvent::PeersChecked);
-    }
+    with_session_notes(
+        &node,
+        &peer,
+        pump_session(s, log, ui, settings, clip, images),
+    )
+    .await;
 }
 
 async fn pump_session(
@@ -1288,7 +1364,7 @@ fn show_screen(
                     }
                 }
             };
-            match node.open_screen(&id, start.clone(), asked).await {
+            match dial(&node, &id, node.open_screen(&id, start.clone(), asked)).await {
                 Ok(view) => {
                     seen(&node, &id);
                     log.line(&format!(
@@ -1504,7 +1580,7 @@ fn show_camera(
             };
             // Open while the phone has not answered; any way out clears it.
             let pending = (!again).then(crate::camera::PendingGuard::new);
-            let opened = node.open_camera(&id, start.clone(), asked).await;
+            let opened = dial(&node, &id, node.open_camera(&id, start.clone(), asked)).await;
             drop(pending);
             match opened {
                 Ok(view) => {
@@ -1600,6 +1676,128 @@ fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Node calls that dial a peer (each one can set or clear the
+    /// transport's "changed" flag). Split so this test does not match itself.
+    const DIALS: [&str; 10] = [
+        concat!("node.", "connect("),
+        concat!("node.", "send_file("),
+        concat!("node.", "send_text("),
+        concat!("node.", "send_clipboard_image("),
+        concat!("node.", "open_camera("),
+        concat!("node.", "open_screen("),
+        concat!("node.", "open_input("),
+        concat!("node.", "open_input_with("),
+        concat!("node.", "notify_action("),
+        concat!("node.", "notify_sync_request("),
+    ];
+
+    /// Dialling calls in `body` that are not an argument of `dial(` (the
+    /// text since the previous `;` must contain it).
+    fn undialled(name: &str, body: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for needle in DIALS {
+            for (at, _) in body.match_indices(needle) {
+                let start = body[..at].rfind(';').map_or(0, |i| i + 1);
+                if !body[start..at].contains(concat!("dial", "(")) {
+                    let line = body[..at].lines().count();
+                    out.push(format!("{name}:{line}: {needle}"));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every tray-side dial goes through `dial`, so the "Reinstalled or
+    /// reset" note follows each attempt (src/ scanned recursively).
+    #[test]
+    fn every_dial_notes_the_changed_flag() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let path = e.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().and_then(|x| x.to_str()) == Some("rs") {
+                    let body = std::fs::read_to_string(&path).unwrap();
+                    out.extend(undialled(&path.display().to_string(), &body));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        assert!(found.is_empty(), "dial these through `dial`: {found:#?}");
+        // The check itself catches a bare call and passes a wrapped one.
+        let bare = concat!("let s = node.", "connect(&id).await?;");
+        let wrapped = concat!("let s = dial(&node, &id, node.", "connect(&id)).await?;");
+        assert_eq!(undialled("x.rs", bare).len(), 1);
+        assert!(undialled("x.rs", wrapped).is_empty());
+    }
+
+    /// A stand-in for the node's "changed" flags.
+    struct FakeFlags {
+        changed: Mutex<Vec<PeerId>>,
+        paired: Vec<PeerId>,
+    }
+
+    impl FakeFlags {
+        fn set(&self, id: &PeerId, on: bool) {
+            let mut g = self.changed.lock().unwrap();
+            g.retain(|p| p != id);
+            if on {
+                g.push(*id);
+            }
+        }
+    }
+
+    impl ChangedFlags for FakeFlags {
+        fn changed(&self, id: &PeerId) -> bool {
+            self.changed.lock().unwrap().contains(id)
+        }
+        fn paired(&self) -> Vec<PeerId> {
+            self.paired.clone()
+        }
+    }
+
+    /// The real hooks copy the flag into the cache at each point the
+    /// transport may change it: a session opening and closing, a dial
+    /// (either way) and pairing. One test: `on_paired` rewrites the cache.
+    #[test]
+    fn every_hook_copies_the_transport_flag_into_the_cache() {
+        let id = pb_identity::Identity::from_seed([0xC3; 32]).peer_id();
+        let flags = FakeFlags {
+            changed: Mutex::new(Vec::new()),
+            paired: vec![id],
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // Session open clears a stale note; its close notes a new flag.
+            CHANGED.lock().unwrap().push(id);
+            with_session_notes(&flags, &id, async {
+                assert!(!is_changed(&id), "cleared when the session opened");
+                flags.set(&id, true);
+            })
+            .await;
+            assert!(is_changed(&id), "noted when the session closed");
+
+            // A dial that cleared the flag (connect worked) clears the note...
+            flags.set(&id, false);
+            dial(&flags, &id, async {}).await;
+            assert!(!is_changed(&id), "a working dial clears the note");
+            // ...and one that set it (PeerChanged) notes it, Err or not.
+            flags.set(&id, true);
+            let r: Result<(), ()> = dial(&flags, &id, async { Err(()) }).await;
+            assert!(r.is_err() && is_changed(&id), "a failed dial notes it");
+        });
+        // Pairing again cleared it in the transport.
+        flags.set(&id, false);
+        on_paired(&flags);
+        assert!(!is_changed(&id), "pairing again clears the note");
+    }
 
     /// A phone that reconnects proves its identity, and the transport clears
     /// its "changed" flag: the cached note must follow, or the UI keeps
