@@ -4,13 +4,13 @@ package dev.phonebridge.app.ui.home
 enum class Need { NotificationAccess, PhotosPermission, ControlOff, PcForgotPhone, AppNotificationsOff }
 
 /**
- * A PC asked to control this phone and was refused because Relay control was off. The phone is not
- * told yet (the FFI refuses without an event); Task 18 adds `control_refused_at()` and flips this source.
+ * A PC asked to control this phone and was refused because Relay control was not running
+ * ([refusedAtMs] from the FFI's `controlRefusedAt()`, 0 for never). It counts as waiting for [windowMs]
+ * (the PC user is likely still there), and not at all once control runs. A refusal "in the future"
+ * (the clock moved back) does not count, so it cannot stick.
  */
-internal const val PC_CONTROL_WAITING = false
-
-/** The PC no longer recognises this phone. Task 18 wires this to the FFI's `peer_changed`. */
-internal const val PC_FORGOT_PHONE = false
+fun controlWaiting(refusedAtMs: Long, nowMs: Long, controlOn: Boolean, windowMs: Long = 120_000): Boolean =
+    !controlOn && refusedAtMs > 0 && nowMs - refusedAtMs in 0..windowMs
 
 /**
  * What the "Needs attention" card lists, in its fixed priority order (empty hides the card).

@@ -36,11 +36,38 @@ class AttentionTest {
     }
 
     @Test
-    fun control_off_never_shows_from_todays_source() {
-        // Control switches itself off after every session: off alone is the resting state, not a problem.
-        for (on in listOf(true, false)) {
-            assertFalse(Need.ControlOff in needs(true, false, true, controlOn = on, controlWaiting = PC_CONTROL_WAITING, pcForgot = PC_FORGOT_PHONE, appNotificationsOn = true))
-        }
+    fun control_waiting_never_without_a_refusal() {
+        assertFalse(controlWaiting(refusedAtMs = 0, nowMs = 1_000, controlOn = false))
+        assertFalse(controlWaiting(refusedAtMs = 0, nowMs = 60_000, controlOn = false))
+    }
+
+    @Test
+    fun control_waiting_within_two_minutes_of_a_refusal() {
+        val at = 1_700_000_000_000
+        assertTrue(controlWaiting(at, nowMs = at, controlOn = false))
+        assertTrue(controlWaiting(at, nowMs = at + 119_000, controlOn = false))
+        assertTrue(controlWaiting(at, nowMs = at + 120_000, controlOn = false))
+    }
+
+    @Test
+    fun control_waiting_ends_after_the_window() {
+        val at = 1_700_000_000_000
+        assertFalse(controlWaiting(at, nowMs = at + 120_001, controlOn = false))
+        assertFalse(controlWaiting(at, nowMs = at + 3_600_000, controlOn = false))
+        assertTrue(controlWaiting(at, nowMs = at + 200_000, controlOn = false, windowMs = 300_000))
+    }
+
+    @Test
+    fun control_waiting_is_false_once_control_runs() {
+        val at = 1_700_000_000_000
+        assertFalse(controlWaiting(at, nowMs = at + 1_000, controlOn = true))
+    }
+
+    @Test
+    fun a_refusal_in_the_future_does_not_count() {
+        // The clock moved back after the refusal: not shown until it would have expired anyway.
+        val at = 1_700_000_000_000
+        assertFalse(controlWaiting(at, nowMs = at - 1_000, controlOn = false))
     }
 
     @Test

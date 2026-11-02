@@ -59,6 +59,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.CameraShare
@@ -107,24 +110,33 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     val live = running && pc != null && (Bridge.liveSessions.intValue > 0 || controller != null || screenTo != null || cameraTo != null)
     val storedSeen = remember(resumed) { prefs.lastSeenMs }
     val lastSeen = maxOf(Bridge.lastSeen.longValue, storedSeen)
-    // "Last seen 5 min ago" moves on while Home is open.
+    // "Last seen 5 min ago" moves on, and the node-side needs are re-read, while Home is on screen
+    // (stopped with the activity: no polling in the background).
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = System.currentTimeMillis()
-            delay(30_000)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(5_000)
+            }
         }
     }
 
-    val list = remember(resumed) {
+    val list = remember(resumed, now) {
+        val node = Bridge.node
+        // Running, not only turned on: Android can leave it enabled but stopped.
+        val controlOn = ControlService.instance != null
+        // A node shut down meanwhile throws: then nothing is waiting or forgotten.
+        val refusedAt = node?.let { runCatching { it.controlRefusedAt().toLong() }.getOrNull() } ?: 0L
+        val forgot = node?.let { n -> runCatching { n.peers().any { n.peerChanged(it.id) } }.getOrNull() } == true
         needs(
             notifyAccess = !notifyAccessMissing(prefs.notifyToPc, hasNotifyAccess(ctx)),
             screenshotsOn = prefs.shareScreenshots,
             photosGranted = ClipImages.hasImageAccess(ctx),
-            // Running, not only turned on: Android can leave it enabled but stopped.
-            controlOn = ControlService.instance != null,
-            controlWaiting = PC_CONTROL_WAITING,
-            pcForgot = PC_FORGOT_PHONE,
+            controlOn = controlOn,
+            controlWaiting = controlWaiting(refusedAt, now, controlOn),
+            pcForgot = forgot,
             appNotificationsOn = ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled(),
         )
     }
@@ -296,7 +308,7 @@ private fun needText(need: Need): Triple<String, String, String> = when (need) {
     )
     Need.PcForgotPhone -> Triple(
         "Your PC no longer recognises this phone",
-        "$APP_NAME on your PC was reset or reinstalled. Pair again to reconnect.",
+        "Your PC doesn't recognise this phone any more. Remove $APP_NAME's pairing on the PC and pair again.",
         "Pair again",
     )
     Need.AppNotificationsOff -> Triple(
