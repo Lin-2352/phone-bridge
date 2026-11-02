@@ -67,4 +67,13 @@ class TimelineGroupingTest {
         assertEquals("History is off. Turn it on to see what you send and receive.", emptyText(false))
         assertEquals("Nothing yet. Files and clipboard you send or receive show up here.", emptyText(true))
     }
+
+    @Test fun same_entries_regroup_when_now_crosses_midnight() {
+        val zone = ZoneId.of("Asia/Kolkata")
+        val list = listOf(e(ms("2026-11-02T10:00:00Z"))) // 15:30 on 2 Nov
+        assertEquals(listOf("Today"), labels(groupByDay(list, ms("2026-11-02T18:00:00Z"), zone))) // 23:30
+        assertEquals(listOf("Yesterday"), labels(groupByDay(list, ms("2026-11-02T18:30:00Z"), zone))) // 00:00 on 3 Nov
+        // A time zone change moves the same instant to another day.
+        assertEquals(listOf("Today"), labels(groupByDay(list, ms("2026-11-02T18:30:00Z"), ZoneId.of("America/New_York"))))
+    }
 }

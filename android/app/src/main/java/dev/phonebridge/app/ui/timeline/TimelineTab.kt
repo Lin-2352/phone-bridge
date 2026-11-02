@@ -1,7 +1,10 @@
 package dev.phonebridge.app.ui.timeline
 
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -37,6 +40,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,7 +56,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.phonebridge.app.Prefs
 import dev.phonebridge.app.RelayDialog
 import dev.phonebridge.app.Spacing
 import dev.phonebridge.app.TlDir
@@ -67,10 +74,12 @@ private class Day(val label: String, val key: String, val rows: List<Pair<String
 
 private fun days(entries: List<TlEntry>, now: Long, zone: ZoneId): List<Day> {
     val seen = HashMap<String, Int>()
-    return groupByDay(entries, now, zone).mapIndexed { i, (label, group) ->
+    val seenDays = HashMap<String, Int>()
+    return groupByDay(entries, now, zone).map { (label, group) ->
         Day(
             label,
-            "h:$label:${group.first().at}:$i",
+            // Unique even if a day repeats (clock went backwards).
+            "h:$label#${seenDays.merge(label, 1, Int::plus)}",
             group.map { e ->
                 val base = "${e.at}|${e.kind}|${e.dir}|${e.peer}|${e.name ?: e.app}"
                 "e:$base#${seen.merge(base, 1, Int::plus)}" to e
@@ -86,32 +95,60 @@ fun TimelineTab() {
     val scope = rememberCoroutineScope()
     val snack = remember { SnackbarHostState() }
     val entries by Timeline.entries.collectAsState()
-    var historyOn by remember { mutableStateOf(Prefs(ctx).keepHistory) }
+    val historyOn by Timeline.historyOn.collectAsState()
     var confirmOff by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
-    val zone = remember(entries) { ZoneId.systemDefault() }
-    val grouped = remember(entries) { days(entries, System.currentTimeMillis(), zone) }
+    // Bumped when the date, time or time zone changes, and on resume, so "Today" and the clock times are redrawn.
+    var dayTick by remember { mutableIntStateOf(0) }
+    var opening by remember { mutableStateOf(false) }
+    DisposableEffect(ctx) {
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: Intent?) { dayTick++ }
+        }
+        val f = IntentFilter().apply {
+            addAction(Intent.ACTION_DATE_CHANGED)
+            addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            addAction(Intent.ACTION_TIME_CHANGED)
+        }
+        ctx.registerReceiver(r, f)
+        onDispose { ctx.unregisterReceiver(r) }
+    }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val o = LifecycleEventObserver { _, ev -> if (ev == Lifecycle.Event.ON_RESUME) dayTick++ }
+        lifecycle.addObserver(o)
+        onDispose { lifecycle.removeObserver(o) }
+    }
+    val zone = ZoneId.systemDefault()
+    val grouped = remember(entries, dayTick) { days(entries, System.currentTimeMillis(), ZoneId.systemDefault()) }
 
     // The check touches storage, so it runs off the main thread, and only on a tap.
     fun open(e: TlEntry) {
         val uri = e.uri ?: return
+        if (!isOpenable(e) || opening) return
+        opening = true // one tap, one viewer or one message
         scope.launch {
-            val present = withContext(Dispatchers.IO) { fileState(ctx, uri) }
-            if (!present) {
-                snack.showSnackbar("File moved or deleted")
-                return@launch
+            val msg: String? = try {
+                if (!withContext(Dispatchers.IO) { fileState(ctx, uri) }) {
+                    "File moved or deleted"
+                } else {
+                    val u = Uri.parse(uri)
+                    val type = withContext(Dispatchers.IO) { runCatching { ctx.contentResolver.getType(u) }.getOrNull() } ?: "*/*"
+                    val view = Intent(Intent.ACTION_VIEW).setDataAndType(u, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    try {
+                        ctx.startActivity(view)
+                        null
+                    } catch (x: ActivityNotFoundException) {
+                        "No app can open this file"
+                    } catch (x: SecurityException) {
+                        "Can't open this file any more"
+                    }
+                }
+            } finally {
+                opening = false
             }
-            val u = Uri.parse(uri)
-            val type = withContext(Dispatchers.IO) { runCatching { ctx.contentResolver.getType(u) }.getOrNull() } ?: "*/*"
-            val view = Intent(Intent.ACTION_VIEW).setDataAndType(u, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            try {
-                ctx.startActivity(view)
-            } catch (x: ActivityNotFoundException) {
-                snack.showSnackbar("No app can open this file")
-            } catch (x: SecurityException) {
-                snack.showSnackbar("File moved or deleted")
-            }
+            msg?.let { snack.showSnackbar(it) }
         }
     }
 
@@ -145,7 +182,6 @@ fun TimelineTab() {
                         onCheckedChange = { on ->
                             if (on) {
                                 Timeline.setEnabled(true)
-                                historyOn = true
                             } else {
                                 confirmOff = true // stays on until confirmed
                             }
@@ -180,7 +216,6 @@ fun TimelineTab() {
             confirmText = "Turn off",
             onConfirm = {
                 Timeline.setEnabled(false)
-                historyOn = false
                 confirmOff = false
             },
             dismissText = "Cancel",
@@ -223,10 +258,13 @@ private fun kindIcon(k: TlKind) = when (k) {
     TlKind.Notification -> Icons.Filled.Notifications
 }
 
+/** Only a saved file with a content:// uri opens; a file:// uri would throw FileUriExposedException. */
+private fun isOpenable(e: TlEntry) = e.kind == TlKind.File && e.uri?.startsWith("content://") == true
+
 @Composable
 private fun EntryRow(e: TlEntry, zone: ZoneId, onOpen: () -> Unit) {
     // A sent file has no uri (the share permission was temporary): not openable, which is not "moved or deleted".
-    val openable = e.kind == TlKind.File && e.uri != null
+    val openable = isOpenable(e)
     Row(
         Modifier.fillMaxWidth()
             .then(if (openable) Modifier.clickable(onClick = onOpen) else Modifier)

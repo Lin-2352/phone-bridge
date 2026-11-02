@@ -384,12 +384,18 @@ object Timeline {
     /** Newest first. */
     val entries: StateFlow<List<TlEntry>> get() = store.entries
 
+    private val _historyOn = kotlinx.coroutines.flow.MutableStateFlow(true)
+    /** "Keep history" as stored in Prefs; screens observe this rather than reading Prefs once. */
+    val historyOn: StateFlow<Boolean> = _historyOn.asStateFlow()
+
     fun init(ctx: Context) {
         synchronized(this) {
             if (app != null) return
             app = ctx.applicationContext
         }
-        store.start(AtomicTlFile(AtomicFile(File(ctx.applicationContext.filesDir, FILE))), Prefs(ctx).keepHistory)
+        val on = Prefs(ctx).keepHistory
+        _historyOn.value = on
+        store.start(AtomicTlFile(AtomicFile(File(ctx.applicationContext.filesDir, FILE))), on)
     }
 
     fun add(e: TlEntry) = store.add(e)
@@ -400,6 +406,7 @@ object Timeline {
     /** "Keep history": off deletes the history and stops recording; on starts again. */
     fun setEnabled(on: Boolean) {
         app?.let { Prefs(it).keepHistory = on }
+        _historyOn.value = on
         store.setEnabled(on)
     }
 
