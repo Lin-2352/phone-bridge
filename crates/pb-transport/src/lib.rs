@@ -335,13 +335,15 @@ impl Node {
     /// (`epoch` moved on), is no longer paired, or its mismatches are
     /// untrusted (see `Changed::untrusted`).
     fn note_mismatch(&self, peer: &PeerId, epoch: u64) -> bool {
-        let mut ch = lock(&self.inner.changed);
-        if ch.epoch != epoch || ch.untrusted.contains(peer) {
+        // Never both locks at once (the store is shared with the app).
+        // `unpair` removes from the store and then bumps the epoch: if it
+        // runs between this check and the lock below, the epoch has moved;
+        // if after the push, its own clean-up removes the entry.
+        if lock(&self.inner.store).get(peer).is_none() {
             return false;
         }
-        // Under the same lock: `unpair` removes from the store first, then
-        // bumps the epoch here.
-        if lock(&self.inner.store).get(peer).is_none() {
+        let mut ch = lock(&self.inner.changed);
+        if ch.epoch != epoch || ch.untrusted.contains(peer) {
             return false;
         }
         if !ch.peers.contains(peer) {
