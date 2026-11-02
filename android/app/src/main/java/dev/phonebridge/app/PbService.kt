@@ -141,14 +141,6 @@ object Bridge {
         try {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
-            // A PC found reset or reinstalled is gone for good: drop it, or Home keeps saying the PC
-            // forgot this phone and sends may still pick the dead entry (the first peer).
-            runCatching {
-                for (stale in n.peers().filter { n.peerChanged(it.id) }) {
-                    Log.i(TAG, "Dropping reset PC ${stale.name}")
-                    n.unpair(stale.id)
-                }
-            }
             linked.value = name
             // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".
             stampSeen(ctx)

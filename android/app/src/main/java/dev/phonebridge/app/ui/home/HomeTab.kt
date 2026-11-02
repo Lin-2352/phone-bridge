@@ -67,6 +67,7 @@ import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
 import dev.phonebridge.app.ControlService
+import dev.phonebridge.app.PbService
 import dev.phonebridge.app.Prefs
 import dev.phonebridge.app.Quick
 import dev.phonebridge.app.QuickTile
@@ -81,6 +82,7 @@ import dev.phonebridge.app.Timeline
 import dev.phonebridge.app.TouchpadActivity
 import dev.phonebridge.app.hasNotifyAccess
 import dev.phonebridge.app.notifyAccessMissing
+import dev.phonebridge.app.pruneAllowed
 import dev.phonebridge.app.quickTiles
 import dev.phonebridge.app.setBridgeEnabled
 import dev.phonebridge.app.ui.LocalResumeCount
@@ -180,7 +182,10 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                             Need.NotificationAccess -> openNotifyAccess(ctx)
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermission)
                             Need.ControlOff -> ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                            Need.PcForgotPhone -> ctx.startActivity(Intent(ctx, ScanActivity::class.java))
+                            Need.PcForgotPhone -> {
+                                removeForgottenPcs(ctx)
+                                ctx.startActivity(Intent(ctx, ScanActivity::class.java))
+                            }
                             Need.AppNotificationsOff -> ctx.startActivity(
                                 Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName),
                             )
@@ -308,8 +313,8 @@ private fun needText(need: Need): Triple<String, String, String> = when (need) {
     )
     Need.PcForgotPhone -> Triple(
         "Your PC no longer recognises this phone",
-        "Your PC doesn't recognise this phone any more. Remove $APP_NAME's pairing on the PC and pair again.",
-        "Pair again",
+        "$APP_NAME on your PC was reset or reinstalled, so it no longer knows this phone. Remove the old pairing here and pair again.",
+        "Remove and pair again",
     )
     Need.AppNotificationsOff -> Triple(
         "Notifications are off",
@@ -394,6 +399,23 @@ private fun SessionCard(title: String, body: String, onStop: () -> Unit) {
 /** Screen and camera shares start on the PC; tapping them on the phone says where. */
 private fun startsOnPc(ctx: Context, what: String) {
     Toast.makeText(ctx, "$what starts from your PC: open $APP_NAME there and choose $what", Toast.LENGTH_LONG).show()
+}
+
+/**
+ * "Remove and pair again": unpairs only the PCs found reset at this moment (the user asked for it;
+ * plain Pair never removes anything) and drops their "Always allow" for the camera.
+ */
+private fun removeForgottenPcs(ctx: Context) {
+    val node = Bridge.node ?: return
+    runCatching {
+        val gone = node.peers().filter { node.peerChanged(it.id) }
+        if (gone.isEmpty()) return
+        gone.forEach { node.unpair(it.id) }
+        val prefs = Prefs(ctx)
+        prefs.allowedCameraPcs = pruneAllowed(prefs.allowedCameraPcs, node.peers().map { it.id })
+        Bridge.linked.value = node.peers().firstOrNull()?.name
+        PbService.refresh(ctx)
+    }
 }
 
 private fun openAppDetails(ctx: Context) {
