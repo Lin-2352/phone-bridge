@@ -15,6 +15,7 @@ pub mod screen;
 pub mod tuning;
 
 use std::{
+    collections::HashMap,
     fmt,
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -66,8 +67,9 @@ pub enum Error {
     Declined,
     /// The offer exceeds the size limit.
     TooLarge,
-    /// Something answers at the saved address but is not the paired device
-    /// (it was reinstalled or reset, so its identity is new).
+    /// Something answers at the saved address but is not the paired device:
+    /// it was reinstalled or reset (its identity is new), or another device
+    /// answers there.
     PeerChanged,
     /// The received bytes do not match the sender's SHA-256.
     HashMismatch,
@@ -87,7 +89,7 @@ impl fmt::Display for Error {
             Self::Closed => f.write_str("connection closed"),
             Self::Declined => f.write_str("the other device declined"),
             Self::TooLarge => f.write_str("too large to send"),
-            Self::PeerChanged => f.write_str("this device no longer answers as the one that was paired (reinstalled or reset): remove it and pair again"),
+            Self::PeerChanged => f.write_str("another device answers for this peer: if it was reinstalled or reset, remove it and pair again"),
             Self::HashMismatch => f.write_str("file was corrupted in transit (hash mismatch); nothing was saved"),
             Self::Io(e) => write!(f, "file error: {e}"),
         }
@@ -104,6 +106,12 @@ impl From<PairError> for Error {
 
 fn tx<E: fmt::Display>(e: E) -> Error {
     Error::Transport(e.to_string())
+}
+
+/// A failed batch included a learned address that is not saved: a
+/// wrong-key answer may have come from it, not from a saved address.
+fn has_unsaved_candidate(cands: &[SocketAddr], saved: &[String]) -> bool {
+    cands.iter().any(|c| !saved.contains(&c.to_string()))
 }
 
 /// A dial that failed because the device answering is not the paired one:
@@ -209,17 +217,19 @@ struct Inner {
 struct Changed {
     /// Paired peers whose last dial reached a device with a different identity.
     peers: Vec<PeerId>,
-    /// Bumped whenever a peer proves itself or is unpaired: a dial that
-    /// started before then and fails with a mismatch afterwards is stale.
-    epoch: u64,
+    /// Per peer, bumped whenever that peer proves itself, pairs again or is
+    /// unpaired: its dial that started before then and fails with a
+    /// mismatch afterwards is stale. Another peer's news changes nothing.
+    epochs: HashMap<PeerId, u64>,
     /// Peers whose wrong-key answers prove nothing: a dial that included
     /// discovery candidates (anyone on the LAN can plant one) met a
     /// different identity. iroh 1.3 keeps every address it dialled as a
     /// path for that id and sends to all of them on later connects, with
     /// no way to drop one, so the forged address can answer again even
-    /// when only saved addresses are asked. Kept for the process lifetime
-    /// (cleared by unpair): a real reset of such a peer is reported after
-    /// the next restart only.
+    /// when only saved addresses are asked. The endpoint (and so that
+    /// memory) lives as long as the process, so this does too: unpair and
+    /// pairing the same device again do not clear it. A real reset of such
+    /// a peer is reported after the next restart only.
     untrusted: Vec<PeerId>,
 }
 
@@ -324,9 +334,13 @@ impl Node {
         lock(&self.inner.changed).peers.contains(peer)
     }
 
-    /// Taken before a dial; `note_mismatch` compares it.
-    fn changed_epoch(&self) -> u64 {
-        lock(&self.inner.changed).epoch
+    /// Taken before a dial to `_peer`; `note_mismatch` compares it.
+    fn changed_epoch(&self, peer: &PeerId) -> u64 {
+        lock(&self.inner.changed)
+            .epochs
+            .get(peer)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// A dial that started at `epoch` reached a device with a different
@@ -343,7 +357,7 @@ impl Node {
             return false;
         }
         let mut ch = lock(&self.inner.changed);
-        if ch.epoch != epoch || ch.untrusted.contains(peer) {
+        if ch.epochs.get(peer).copied().unwrap_or(0) != epoch || ch.untrusted.contains(peer) {
             return false;
         }
         if !ch.peers.contains(peer) {
@@ -365,7 +379,7 @@ impl Node {
     fn forget_changed(&self, peer: &PeerId) {
         let mut ch = lock(&self.inner.changed);
         ch.peers.retain(|p| p != peer);
-        ch.epoch += 1;
+        *ch.epochs.entry(*peer).or_default() += 1;
     }
 
     /// Revoke a peer: removed from the store, so it can no longer connect,
@@ -373,12 +387,10 @@ impl Node {
     pub fn unpair(&self, peer: &PeerId) -> bool {
         // Store first: a mismatch noted after the bump below sees it gone.
         let removed = lock(&self.inner.store).remove(peer);
-        {
-            let mut ch = lock(&self.inner.changed);
-            ch.peers.retain(|p| p != peer);
-            ch.untrusted.retain(|p| p != peer);
-            ch.epoch += 1;
-        }
+        // `untrusted` stays (see there). The epoch entry stays too, so a
+        // later pairing never reuses a value an old dial captured.
+        self.forget_changed(peer);
+        lock(&self.inner.candidates).remove(peer);
         lock(&self.inner.live).retain(|(p, w)| {
             if p != peer {
                 return true;
@@ -483,7 +495,7 @@ impl Node {
         let known = lock(&self.inner.store)
             .get(peer)
             .ok_or(Error::UnknownPeer)?;
-        let epoch = self.changed_epoch();
+        let epoch = self.changed_epoch(peer);
         let conn = match self.dial_known(*peer, &known.addrs).await {
             Ok(c) => {
                 self.forget_changed(peer);
@@ -578,6 +590,7 @@ impl Node {
         // nothing when a saved address works (and vice versa).
         let cands = self.candidates(&peer);
         let had_candidates = !cands.is_empty();
+        let unsaved = has_unsaved_candidate(&cands, saved);
         let mut first = try_candidates(cands, saved, Duration::from_secs(15)).await;
         if had_candidates && matches!(&first, Err(e) if is_identity_mismatch(e)) {
             // The wrong key may have come from a planted candidate (any LAN
@@ -585,7 +598,9 @@ impl Node {
             // Ask the saved addresses alone once. iroh may still send to the
             // planted address (it remembers dialled paths), so from now on
             // this peer's mismatches prove nothing (`Changed::untrusted`).
-            self.distrust_mismatches(&peer);
+            if unsaved {
+                self.distrust_mismatches(&peer);
+            }
             if !saved.is_empty() {
                 first = try_candidates(Vec::new(), saved, Duration::from_secs(15)).await;
             }
@@ -608,11 +623,14 @@ impl Node {
         for _ in 0..30 {
             let cands = self.candidates(&peer);
             if !cands.is_empty() {
+                let unsaved = has_unsaved_candidate(&cands, saved);
                 let r = try_candidates(cands, &[], Duration::from_secs(10)).await;
                 if matches!(&r, Err(e) if is_identity_mismatch(e)) {
-                    // Only learned addresses were asked: whoever answered
-                    // with the wrong key is not at a saved address.
-                    self.distrust_mismatches(&peer);
+                    // Only learned addresses were asked: the saved ones
+                    // already gave their answer (`first`).
+                    if unsaved {
+                        self.distrust_mismatches(&peer);
+                    }
                     return first;
                 }
                 return r;

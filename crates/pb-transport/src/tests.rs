@@ -1840,19 +1840,19 @@ mod identity_changed {
 
         // A dial in flight when the peer pairs again (or connects to us):
         // its late mismatch is about the device from before.
-        let epoch = pc.changed_epoch();
+        let epoch = pc.changed_epoch(&id);
         pc.forget_changed(&id);
         assert!(!pc.note_mismatch(&id, epoch));
         assert!(!pc.peer_changed(&id));
 
         // A dial in flight when the user unpairs: nothing is left behind.
-        let epoch = pc.changed_epoch();
+        let epoch = pc.changed_epoch(&id);
         assert!(pc.unpair(&id));
         assert!(!pc.note_mismatch(&id, epoch));
         assert!(lock(&pc.inner.changed).peers.is_empty());
 
         // Not paired at all: never flagged.
-        assert!(!pc.note_mismatch(&id, pc.changed_epoch()));
+        assert!(!pc.note_mismatch(&id, pc.changed_epoch(&id)));
         assert!(lock(&pc.inner.changed).peers.is_empty());
     }
 
@@ -1863,7 +1863,7 @@ mod identity_changed {
         let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
         assert!(h.is_ok() && j.is_ok());
         let id = phone.peer_id();
-        assert!(pc.note_mismatch(&id, pc.changed_epoch()));
+        assert!(pc.note_mismatch(&id, pc.changed_epoch(&id)));
         assert!(pc.peer_changed(&id));
     }
 
@@ -1887,6 +1887,65 @@ mod identity_changed {
         let r = pc.connect(&id).await;
         assert!(r.is_ok(), "got {:?}", r.err().map(|e| e.to_string()));
         assert!(!pc.peer_changed(&id));
+    }
+
+    #[tokio::test]
+    async fn another_peer_proving_itself_does_not_hide_a_reset() {
+        let (pc, mut pc_ev, _) = node(71, "PC").await;
+        let (a, _aev, _) = node(72, "Phone A").await;
+        let (b, _bev, _) = node(73, "Phone B").await;
+        for p in [&a, &b] {
+            let (h, j, _, _) = pair(&pc, &mut pc_ev, p, true, true).await;
+            assert!(h.is_ok() && j.is_ok());
+        }
+        let (ida, idb) = (a.peer_id(), b.peer_id());
+        // A's dial is in flight when B connects (or pairs again).
+        let epoch = pc.changed_epoch(&ida);
+        pc.forget_changed(&idb);
+        assert!(
+            pc.note_mismatch(&ida, epoch),
+            "B's session says nothing about A"
+        );
+        assert!(pc.peer_changed(&ida));
+    }
+
+    #[tokio::test]
+    async fn a_planted_path_stays_distrusted_after_remove_and_pair_again() {
+        let (pc, mut pc_ev, _) = node(74, "PC").await;
+        let (phone, _phone_ev, _) = node(75, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let id = phone.peer_id();
+        // A planted candidate met a different identity earlier in this run.
+        pc.distrust_mismatches(&id);
+        pc.test_add_candidate(id, SocketAddr::from(([127, 0, 0, 1], 40557)));
+        // The user removes the phone and pairs it again: iroh still has the
+        // planted path (the endpoint lives on), so its answers prove nothing.
+        assert!(pc.unpair(&id));
+        assert!(pc.candidates(&id).is_empty(), "unpair drops its candidates");
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        assert!(!pc.note_mismatch(&id, pc.changed_epoch(&id)));
+        assert!(!pc.peer_changed(&id));
+    }
+
+    #[test]
+    fn only_a_learned_address_that_is_not_saved_makes_a_mismatch_doubtful() {
+        let a: SocketAddr = "192.168.1.5:4000".parse().unwrap();
+        let b: SocketAddr = "192.168.1.9:4000".parse().unwrap();
+        let saved = vec!["192.168.1.5:4000".to_string()];
+        assert!(!has_unsaved_candidate(&[], &saved));
+        assert!(!has_unsaved_candidate(&[a], &saved), "already saved");
+        assert!(has_unsaved_candidate(&[b], &saved));
+        assert!(has_unsaved_candidate(&[a, b], &saved));
+        assert!(has_unsaved_candidate(&[a], &[]));
+    }
+
+    #[test]
+    fn the_changed_error_does_not_claim_a_reset() {
+        let m = Error::PeerChanged.to_string();
+        assert!(m.starts_with("another device answers for this peer"), "{m}");
+        assert!(m.contains("if it was reinstalled or reset"), "{m}");
     }
 
     #[tokio::test]
