@@ -254,7 +254,9 @@ pub fn rows(m: &Model) -> Vec<Row> {
 /// longer reachable when it answers with a new identity.
 pub fn device_note(fingerprint: &str, changed: bool) -> String {
     if changed {
-        "Reinstalled or reset, so it is no longer paired. Remove it, then pair again.".into()
+        "Answers as a different device now. If this phone was reinstalled or reset, \
+         remove it and pair again. (Another device on this network can also cause this.)"
+            .into()
     } else {
         format!("Fingerprint {fingerprint}")
     }
@@ -268,9 +270,10 @@ mod tests {
     fn a_device_that_was_reinstalled_says_so_instead_of_showing_a_fingerprint() {
         assert_eq!(device_note("18CF-F6D8", false), "Fingerprint 18CF-F6D8");
         let n = device_note("18CF-F6D8", true);
-        assert!(
-            n.to_lowercase().contains("reinstalled") && n.contains("pair again"),
-            "{n}"
+        assert_eq!(
+            n,
+            "Answers as a different device now. If this phone was reinstalled or reset, \
+             remove it and pair again. (Another device on this network can also cause this.)"
         );
         assert!(!n.contains("18CF"));
     }
