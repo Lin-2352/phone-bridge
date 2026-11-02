@@ -20,6 +20,7 @@ private const val TAG = "PhoneBridge"
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.init(this)
         honourUserStop(this)
         if (!Prefs(this).enabled) {
             Toast.makeText(this, "$APP_NAME is off. Turn it on from its Quick Settings tile", Toast.LENGTH_LONG).show()
@@ -92,6 +93,7 @@ class ShareActivity : Activity() {
             val peer = node?.peers()?.firstOrNull()
             if (node == null || peer == null) {
                 opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() } }
+                AppLog.event("events", "share_dropped", "why" to if (node == null) "no_node" else "not_paired")
                 Log.e(TAG, "SHARE dropped: ${if (node == null) "$APP_NAME did not start" else "not paired"}")
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     Toast.makeText(app, if (node == null) "$APP_NAME could not start. Try again" else "Pair $APP_NAME with your PC first", Toast.LENGTH_LONG).show()
@@ -102,10 +104,12 @@ class ShareActivity : Activity() {
                 try {
                     node.sendFileFd(peer.id, f.fd, f.name, f.size.toULong(), f.mime)
                     Log.i(TAG, "SHARE sent ${f.name} (${f.size} bytes) to ${peer.name}")
+                    AppLog.event("events", "share_sent", "kind" to "file", "ext" to LogFields.extOnly(f.name), "bytes" to f.size)
                     // No uri: the share grant ends with this send, so it could not be opened later.
                     Timeline.add(fileEntry(peer.name, TlDir.ToPc, f.name, f.size, null))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE failed: $t")
+                    AppLog.event("events", "share_failed", "kind" to "file", "ext" to LogFields.extOnly(f.name), "type" to t.javaClass.simpleName)
                     PbService.cancelOutgoingProgress(app)
                     notifyInfo(app, "Could not send ${f.name}", "${peer.name} did not receive it. Is $APP_NAME running there?")
                 }
@@ -115,9 +119,11 @@ class ShareActivity : Activity() {
                 try {
                     node.sendText(peer.id, text, isLink)
                     Log.i(TAG, "SHARE sent ${if (isLink) "link" else "text"} to ${peer.name}")
+                    AppLog.event("events", "share_sent", "kind" to if (isLink) "link" else "text", "chars" to text.length)
                     Timeline.add(if (isLink) linkEntry(peer.name, text) else clipTextEntry(peer.name, text))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
+                    AppLog.event("events", "share_failed", "kind" to if (text.startsWith("http")) "link" else "text", "type" to t.javaClass.simpleName)
                     notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
                 }
             }

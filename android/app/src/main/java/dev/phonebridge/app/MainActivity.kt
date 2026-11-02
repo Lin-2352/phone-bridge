@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.init(this)
         prefs = Prefs(this)
         // Kept across rotation and process death so a handled request is not replayed.
         tabRequest.intValue = savedInstanceState?.getInt(TAB_REQUEST) ?: 0
@@ -101,6 +102,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        AppLog.permissionsChanged(this)
         resumed.intValue++
         // Picture access may have been granted or taken away in Android's settings.
         ScreenshotWatcher.sync(this)

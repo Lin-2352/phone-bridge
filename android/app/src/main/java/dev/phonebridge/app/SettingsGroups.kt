@@ -37,6 +37,10 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Settings, "Send new screenshots to PC", "Each screenshot you take is copied to your PC's clipboard"),
     SettingEntry(Group.Settings, APP_NAME, "Turn it on or off; off means your PC cannot reach this phone"),
     SettingEntry(Group.Settings, "Keep running in background", "Let Android bring $APP_NAME back when memory is low"),
+    SettingEntry(Group.Settings, "Keep logs", "Technical notes about connections and transfers, never your content"),
+    SettingEntry(Group.Settings, "Log size", "How much space the daily logs use"),
+    SettingEntry(Group.Settings, "Export logs", "Share a zip of the daily logs"),
+    SettingEntry(Group.Settings, "Clear all logs", "Delete every daily log on this phone"),
     SettingEntry(Group.Settings, "Hide the status notification", "Open the notification's Android settings"),
 )
 

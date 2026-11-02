@@ -129,9 +129,11 @@ object Bridge {
         try {
             val s = n.joinPairing(code.trim())
             Log.i(TAG, "SAS=$s")
+            AppLog.event("events", "pair_step", "step" to "code_shown")
             sas.value = s
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing failed: ${e.message}")
+            AppLog.event("events", "pair_step", "step" to "join_failed", "type" to e.javaClass.simpleName)
             pairMessage.value = "Pairing failed: ${e.message}"
         }
     }
@@ -139,16 +141,19 @@ object Bridge {
     /** Pairing, step 2: the user compared the codes. */
     suspend fun confirm(ctx: Context, accept: Boolean) {
         sas.value = null
+        AppLog.event("events", "pair_step", "step" to if (accept) "confirmed" else "rejected")
         val n = node ?: run { pairMessage.value = "$APP_NAME stopped. Turn it on and pair again"; return }
         try {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
+            AppLog.event("events", "pair_step", "step" to "paired")
             linked.value = name
             // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".
             stampSeen(ctx)
             PbService.refresh(ctx)
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing not completed: ${e.message}")
+            AppLog.event("events", "pair_step", "step" to "not_completed", "type" to e.javaClass.simpleName)
             pairMessage.value = "Pairing not completed"
         }
     }
@@ -159,6 +164,9 @@ object NativeInit {
     init {
         System.loadLibrary("pb_ffi")
     }
+
+    /** Touching this object loads the native library (the log needs it before the node starts). */
+    fun ensureLoaded() = Unit
 
     @JvmStatic
     external fun initContext(context: Context)
@@ -195,6 +203,8 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        AppLog.init(this)
+        AppLog.event("events", "service_start")
         Timeline.init(this)
         // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
@@ -212,6 +222,7 @@ class PbService : Service() {
             // A background restart (after a low-memory kill) may be refused on
             // Android 12+. Stop cleanly instead of crash-looping; RecoveryJob retries.
             Log.e(TAG, "SERVICE could not go foreground: $t")
+            AppLog.event("events", "service_refused", "type" to t.javaClass.simpleName)
             Bridge.startingSince = 0L
             destroyed = true
             stopSelf()
@@ -225,9 +236,18 @@ class PbService : Service() {
         RelayWidget.update(this)
         scheduleRecovery(this)
         scope.launch { start() }
+        scope.launch { AppLog.sampleLoop(this@PbService) }
+        AppLog.permissionsChanged(this)
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) = rediscoverSoon()
-            override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) = rediscoverSoon()
+            override fun onAvailable(network: android.net.Network) {
+                AppLog.sampleNetwork(this@PbService)
+                rediscoverSoon()
+            }
+            override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) {
+                AppLog.sampleNetwork(this@PbService)
+                rediscoverSoon()
+            }
+            override fun onLost(network: android.net.Network) = AppLog.sampleNetwork(this@PbService)
         }
         runCatching { getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(cb) }
             .onSuccess { netCallback = cb }
@@ -258,6 +278,8 @@ class PbService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        AppLog.event("events", "service_stop")
+        AppLog.flush()
         ScreenshotWatcher.stop(this)
         ScreenShare.stop(userStopped = true)
         val n = synchronized(Bridge) {
@@ -360,6 +382,7 @@ class PbService : Service() {
             }
             Bridge.linked.value = n.peers().firstOrNull()?.name
             Bridge.nodeReady.value = true
+            AppLog.event("events", "node_ready", "paired" to n.peers().size)
             ScreenshotWatcher.sync(this)
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
@@ -371,6 +394,7 @@ class PbService : Service() {
             // Keystore not ready, port busy...: do not sit in the foreground
             // pretending to work. RecoveryJob retries later.
             Log.e(TAG, "SERVICE failed to start: $e")
+            AppLog.event("events", "node_failed", "type" to e.javaClass.simpleName)
             android.os.Handler(mainLooper).post { stopSelf() }
         }
     }

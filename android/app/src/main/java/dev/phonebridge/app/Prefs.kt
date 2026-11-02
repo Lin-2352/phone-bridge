@@ -7,6 +7,11 @@ import android.net.Uri
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    /** Keep the day-by-day log (metadata only). On by default. */
+    var keepLogs: Boolean
+        get() = sp.getBoolean("keep_logs", true)
+        set(v) = sp.edit().putBoolean("keep_logs", v).apply()
+
     /** Phone Bridge on (service running, reachable) or off. The tile's state. */
     var enabled: Boolean
         get() = sp.getBoolean("enabled", true)

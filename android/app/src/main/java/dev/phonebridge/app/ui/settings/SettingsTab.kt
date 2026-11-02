@@ -55,6 +55,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.phonebridge.app.APP_NAME
+import dev.phonebridge.app.AppLog
+import dev.phonebridge.app.LogFields
 import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
@@ -573,6 +575,7 @@ fun SettingsTab(onDone: () -> Unit) {
                             )
                         },
                     )
+                    LogRows()
                 }
             }
             }
@@ -581,6 +584,61 @@ fun SettingsTab(onDone: () -> Unit) {
         }
     }
 }
+/** Keep logs, Log size, Export logs and Clear all logs: the day-by-day log on this phone. */
+@Composable
+private fun LogRows() {
+    val ctx = LocalContext.current
+    val prefs = remember { Prefs(ctx) }
+    var keep by remember { mutableStateOf(prefs.keepLogs) }
+    var size by remember { mutableStateOf(AppLog.sizeBytes()) }
+    var days by remember { mutableStateOf(AppLog.dayCount()) }
+    var confirming by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    fun refresh() {
+        size = AppLog.sizeBytes()
+        days = AppLog.dayCount()
+    }
+    if (confirming) {
+        RelayDialog(
+            title = "Clear all logs?",
+            onDismissRequest = { confirming = false },
+            confirmText = "Clear",
+            destructive = true,
+            onConfirm = {
+                confirming = false
+                note = if (AppLog.clearAll()) null else "Could not clear the logs"
+                refresh()
+            },
+            dismissText = "Cancel",
+        ) {
+            Text("This deletes ${LogFields.mb(size)} of logs from this phone. Nothing else is affected.", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+    ListItem(
+        headlineContent = { Text("Keep logs") },
+        supportingContent = { Text("Technical notes about connections and transfers, to find problems. Never clipboard text, notifications or file contents") },
+        trailingContent = { Switch(keep, { keep = it; prefs.keepLogs = it; AppLog.setEnabled(it); refresh() }) },
+    )
+    ListItem(
+        headlineContent = { Text("Log size") },
+        supportingContent = { Text(note ?: "${LogFields.mb(size)} in $days ${if (days == 1) "day" else "days"}") },
+        modifier = Modifier.clickable { refresh() },
+    )
+    ListItem(
+        headlineContent = { Text("Export logs") },
+        supportingContent = { Text("Share a zip of the daily logs") },
+        modifier = Modifier.clickable {
+            val i = runCatching { AppLog.exportIntent(ctx) }.getOrNull()
+            if (i == null) note = "No logs to export" else runCatching { ctx.startActivity(i) }
+        },
+    )
+    ListItem(
+        headlineContent = { Text("Clear all logs") },
+        supportingContent = { Text("Delete every daily log on this phone") },
+        modifier = Modifier.clickable { refresh(); confirming = true },
+    )
+}
+
 @Composable
 private fun Section(title: String) {
     Text(title, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp))
