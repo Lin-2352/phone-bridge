@@ -136,7 +136,8 @@ const TIMER_OTP: usize = 10;
 /// second) and refreshes the open main window and flyout. Runs only while
 /// one of those needs it (`timeline_timer_needed`).
 const TIMER_TIMELINE: usize = 11;
-/// Some time after the last window closed: release the shared Direct2D
+/// 30 s after the last Direct2D surface on the UI thread went (any window:
+/// main, flyout, menu, dialogs, QR, camera, pill): release the shared
 /// device and trim the working set.
 const TIMER_RELEASE: usize = 12;
 /// How long the device stays after the last window, for a quick reopen.
@@ -444,6 +445,10 @@ fn open_flyout(hwnd: HWND, st: &State) {
     // Runs on the UI thread from the flyout's window procedure: only post
     // messages here, never call back into the flyout.
     crate::flyout::toggle(model, Box::new(move |a| flyout_action(raw, &cmds, a)));
+    // Opened from the tray icon or a command alike: refresh it every second.
+    if crate::flyout::is_open() {
+        arm_timeline(hwnd);
+    }
 }
 
 /// Runs a flyout command (from the flyout or Home's quick actions). Only
@@ -2360,12 +2365,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_RELEASE => {
             kill_timer(hwnd, TIMER_RELEASE);
-            if crate::d2d::release_if_unused() {
+            // Busy: a window opened meanwhile; its closing arms this again.
+            if crate::d2d::release_if_unused() == crate::d2d::Release::Released {
                 trim_working_set();
                 st.log.line("UI device released");
-            } else if !TIMELINE_ARMED.load(std::sync::atomic::Ordering::SeqCst) {
-                // A dialog, the QR or the camera window still draws: retry.
-                arm_timer(hwnd, TIMER_RELEASE, RELEASE_AFTER_MS);
             }
             LRESULT(0)
         }
@@ -2398,8 +2401,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 crate::timeline::with(|t| late = t.wants_flush());
                 if late {
                     arm_timeline(hwnd);
-                } else {
-                    arm_timer(hwnd, TIMER_RELEASE, RELEASE_AFTER_MS);
                 }
             }
             LRESULT(0)
@@ -2470,8 +2471,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
             }
-            // Every window opens through a command: refresh it every second.
-            if crate::main_window::is_open() || crate::flyout::is_open() {
+            // The main window opens through a command: refresh it every second.
+            if crate::main_window::is_open() {
                 arm_timeline(hwnd);
             }
             LRESULT(0)
@@ -2659,6 +2660,12 @@ pub fn create(
             }
             arm_timer(hwnd, TIMER_NOTIFY, 5000);
         }
+        // The last surface on this thread going schedules the device's
+        // release (a window opening before then keeps it).
+        let raw = hwnd.0 as isize;
+        crate::d2d::set_on_idle(Box::new(move || {
+            arm_timer(HWND(raw as *mut _), TIMER_RELEASE, RELEASE_AFTER_MS)
+        }));
         // Stops itself after the first tick when nothing needs it. The
         // shared Direct2D device is made by the first window (about 0.2 s)
         // rather than ahead of time: kept warm it costs ~50 MB of private
