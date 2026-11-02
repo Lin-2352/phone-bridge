@@ -6,6 +6,10 @@ Builds on commits 5476745 and cc60db8 (`feature/audio-sharing`): protocol tags 2
 - **Both directions in this feature**: phone audio plays on the PC, and PC audio plays on the phone.
 - **Microphone is a separate opt-in mode.** Never a silent fallback. Chosen on the phone each time, own notification and Android service type, off by default.
 
+## Consent rule (user, 2026-11-03)
+- **Microphone: asked every single time**, no setting can remove it (Relay dialog on the phone each session, plus Android's own RECORD_AUDIO grant and the microphone notification).
+- **System/playback audio: Relay's own confirmation can be skipped by a per-direction Settings toggle** ("Don't ask when ... starts", default off). Phone audio to PC: Android's MediaProjection dialog still appears every time (platform rule, a single-use token on Android 14; no app can skip it), so the toggle only removes Relay's extra dialog. PC audio to phone: the toggle removes the tray confirmation entirely. The toggle never applies to the microphone, and the active indicator plus Stop stay on regardless.
+
 ## Rules that hold for every mode
 - **Consent every session, on the device whose audio is shared.** Phone audio: the phone asks (system projection dialog for playback capture; a Relay dialog for the microphone). PC audio: the PC asks (tray dialog). No auto-accept, no resume after a drop.
 - **Default off** (a setting per direction), a persistent indicator while streaming (phone notification with Stop; PC tray state with Stop), the session ends on Stop from either side, on a link drop, or when the sharing app is closed.

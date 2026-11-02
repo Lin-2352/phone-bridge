@@ -11,6 +11,8 @@
 - Wire limits: sample rate 44100 or 48000, channels 1 or 2, frame length 1..=65536 and a multiple of 2 x channels, one audio session per direction. Raw PCM (no Opus).
 - Never record the microphone except in the explicit mic mode (direction 0, source 1).
 
+- Consent: microphone asked every time with no skip option; playback audio: per-direction Settings toggle `audio_skip_confirm_phone_to_pc` / `audio_skip_confirm_pc_to_phone` (default off) skips only Relay's own dialog (Android's projection dialog cannot be skipped); the toggle is ignored for source=microphone; Stop indicator always shown.
+
 ## Tasks
 1. **Protocol + transport hardening** (`pb-protocol/control.rs`, `pb-transport/audio.rs`, tests, docs/WIRE_PROTOCOL.md): AudioStart gains `direction` (0 phone→PC, 1 PC→phone) and `source` (0 playback, 1 mic); drop `bitrate_kbps`; AudioAccept gains `accepted` + `reason` (declined, unavailable, busy, bad_params, no_permission, app_blocks_capture); AudioStop sendable by either side; validation of every peer field on both sides; bounded drop-oldest queue (~300 ms); write failure surfaces as an event; Drop on the view closes the session; frame alignment/size checks; direction-agnostic sender/receiver; tests over a real node pair for both directions: order, decline, busy, bad params, stop from each side, consumer dropped, truncated frame, hostile accept, old-peer unknown tag.
 2. **PC player** (`pb-platform-win/audio_out.rs`): lock-free ring (no locks/allocs in the cpal callback), 100 ms prebuffer, target latency 100–150 ms with drop-to-target on overflow, pure resample/remix to the device format (unit-tested F32/I16/mono↔stereo/44.1↔48 kHz), clear error for unsupported formats.
