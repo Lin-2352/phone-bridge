@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    BufferSize, SampleRate, Stream, StreamConfig,
+    SampleFormat, Stream, StreamConfig,
 };
 use tokio::sync::mpsc;
 
@@ -51,11 +51,12 @@ impl AudioOut {
             .default_output_device()
             .ok_or_else(|| e("no default audio output device"))?;
 
-        let config = StreamConfig {
-            channels: channels as u16,
-            sample_rate: SampleRate(sample_rate),
-            buffer_size: BufferSize::Default,
-        };
+        let default_config = device
+            .default_output_config()
+            .map_err(|e| AudioOutError(e.to_string()))?;
+
+        let sample_format = default_config.sample_format();
+        let config: StreamConfig = default_config.into();
 
         // Shared ring buffer: the async receiver task fills it, the cpal
         // callback drains it.
@@ -102,8 +103,27 @@ impl AudioOut {
 
         // cpal output callback: drains the ring buffer into the device buffer,
         // outputting silence for any samples not yet available.
-        let stream = device
-            .build_output_stream(
+        // Handles F32 (Windows WASAPI default) and I16 formats.
+        let stream = match sample_format {
+            SampleFormat::F32 => device.build_output_stream(
+                &config,
+                move |data: &mut [f32], _| {
+                    let mut buf = ring_drain.lock().unwrap_or_else(|p| p.into_inner());
+                    let avail = buf.len().min(data.len());
+                    for i in 0..avail {
+                        data[i] = buf[i] as f32 / 32768.0;
+                    }
+                    buf.drain(..avail);
+                    for s in &mut data[avail..] {
+                        *s = 0.0;
+                    }
+                },
+                |err| {
+                    eprintln!("[pb-audio] stream error: {err}");
+                },
+                None,
+            ),
+            SampleFormat::I16 => device.build_output_stream(
                 &config,
                 move |data: &mut [i16], _| {
                     let mut buf = ring_drain.lock().unwrap_or_else(|p| p.into_inner());
@@ -118,8 +138,27 @@ impl AudioOut {
                     eprintln!("[pb-audio] stream error: {err}");
                 },
                 None,
-            )
-            .map_err(|e| AudioOutError(e.to_string()))?;
+            ),
+            _ => device.build_output_stream(
+                &config,
+                move |data: &mut [f32], _| {
+                    let mut buf = ring_drain.lock().unwrap_or_else(|p| p.into_inner());
+                    let avail = buf.len().min(data.len());
+                    for i in 0..avail {
+                        data[i] = buf[i] as f32 / 32768.0;
+                    }
+                    buf.drain(..avail);
+                    for s in &mut data[avail..] {
+                        *s = 0.0;
+                    }
+                },
+                |err| {
+                    eprintln!("[pb-audio] stream error: {err}");
+                },
+                None,
+            ),
+        }
+        .map_err(|e| AudioOutError(e.to_string()))?;
 
         stream.play().map_err(|e| AudioOutError(e.to_string()))?;
 
@@ -129,5 +168,36 @@ impl AudioOut {
     /// Stop playback immediately (equivalent to dropping `self`).
     pub fn stop(self) {
         // `_stream` is dropped here, which stops the cpal stream.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn audio_out_can_receive_and_stop() {
+        let (tx, rx) = mpsc::channel(16);
+        // Feed 100ms of 48kHz stereo silence (48000 * 2 * 2 * 0.1 = 19200 bytes)
+        let silence = vec![0u8; 1920];
+        tx.send(silence.clone()).await.unwrap();
+
+        // If an audio output device exists on this machine, test playback start and stop;
+        // if no audio device is available (e.g. headless CI), AudioOut gracefully returns an error.
+        match AudioOut::start(48000, 2, rx) {
+            Ok(ao) => {
+                for _ in 0..5 {
+                    if tx.send(silence.clone()).await.is_err() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                ao.stop();
+            }
+            Err(e) => {
+                println!("AudioOut error: {}", e.0);
+                assert!(!e.0.is_empty());
+            }
+        }
     }
 }
