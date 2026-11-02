@@ -1178,10 +1178,11 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         }
         UiEvent::Notify {
             peer,
+            from,
             n,
             logo,
             picture,
-        } => show_phone_notification(hwnd, st, peer, *n, logo, picture, false),
+        } => show_phone_notification(hwnd, st, peer, &from, *n, logo, picture, false),
         UiEvent::NotifyRemoved { peer, key } => {
             let gone = {
                 let mut ns = notify_ui();
@@ -1344,10 +1345,12 @@ fn restore_from_history() -> (usize, usize) {
     (restored, history.len())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_phone_notification(
     hwnd: HWND,
     st: &State,
     peer: pb_identity::PeerId,
+    from: &str,
     n: pb_protocol::control::Notification,
     logo: Option<std::path::PathBuf>,
     picture: Option<std::path::PathBuf>,
@@ -1452,21 +1455,19 @@ fn show_phone_notification(
         silent: p.silent || refresh,
         call: n.call,
     };
+    // An update, a quiet re-send (the sync at start) or a refresh at unlock
+    // of a toast already shown is not a new Timeline event. Checked before
+    // the mirror takes this one.
+    let is_new = crate::notify::is_new_event(&notify_ui().mirror, &tag, refresh);
     // Windows does not show it at all (turned off for Phone Bridge): do not
     // keep it in step, so its absence is never taken for a clear.
     let shown = crate::toast::enabled() && crate::toast::show(&spec).is_ok();
     if shown {
-        // A refresh at unlock re-shows a toast already counted. App name only.
-        if !refresh {
-            let from = st
-                .peers
-                .lock()
-                .ok()
-                .and_then(|g| g.iter().find(|(id, _)| *id == peer).map(|(_, n)| n.clone()))
-                .unwrap_or_default();
+        // App name only.
+        if is_new {
             crate::core::record(
                 &st.settings,
-                crate::timeline::notification_entry(&from, &app),
+                crate::timeline::notification_entry(crate::timeline::notification_peer(from), &app),
             );
         }
         let old_picture = {
@@ -1526,7 +1527,8 @@ fn show_phone_notification(
 fn refresh_hidden(hwnd: HWND, st: &State) {
     let list: Vec<HiddenToast> = notify_ui().hidden.drain().map(|(_, h)| h).collect();
     for (peer, n, logo, picture) in list {
-        show_phone_notification(hwnd, st, peer, *n, logo, picture, true);
+        // A refresh records nothing, so it needs no device name.
+        show_phone_notification(hwnd, st, peer, "", *n, logo, picture, true);
     }
 }
 
@@ -2534,8 +2536,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         // lifetime would also remove the device, but nothing is left to chance).
         WM_ENDSESSION => {
             if wparam.0 != 0 {
-                crate::camera::stop();
+                // The history first: stopping the camera can take a while
+                // and Windows may end the process at any moment now.
                 crate::timeline::with(|t| t.flush());
+                crate::camera::stop();
             }
             LRESULT(0)
         }

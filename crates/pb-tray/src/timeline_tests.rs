@@ -47,7 +47,7 @@ fn round_trips_all_kinds_with_tabs_and_newlines_in_names() {
         Some(Path::new("C:\\x\\a.txt")),
     );
     f.at = 100;
-    let mut t = clip_text_entry("Phone", Dir::ToPc, "hello");
+    let mut t = clip_text_entry("Phone", Dir::ToPc, "hello", false);
     t.at = 101;
     let mut i = clip_image_entry("Phone", Dir::ToPhone, &[]);
     i.dims = Some((1080, 2412));
@@ -67,7 +67,7 @@ fn keeps_newest_1000_and_drops_older_than_30_days() {
     let now = 100 * 86400;
     let mk = |at| Entry {
         at,
-        ..clip_text_entry("p", Dir::ToPc, "x")
+        ..clip_text_entry("p", Dir::ToPc, "x", false)
     };
     let mut v: Vec<Entry> = (0..1150).map(|i| mk(now - 10 - i)).collect();
     v.extend((0..50).map(|i| mk(now - 31 * 86400 - i)));
@@ -81,7 +81,7 @@ fn keeps_newest_1000_and_drops_older_than_30_days() {
 #[test]
 fn never_stores_text_or_titles() {
     let text = format!("secret words{}", "x".repeat(130));
-    let mut e = clip_text_entry("pc", Dir::ToPc, &text);
+    let mut e = clip_text_entry("pc", Dir::ToPc, &text, false);
     e.at = 5;
     assert_eq!(e.chars, Some(142));
     let s = String::from_utf8(encode(&[e])).unwrap();
@@ -98,7 +98,7 @@ fn summaries_read_well() {
         summary(&pic(1080, 2412, 1_200_000)),
         "Picture, 1080 \u{d7} 2412, 1.2 MB"
     );
-    let mut t = clip_text_entry("p", Dir::ToPc, &"a".repeat(142));
+    let mut t = clip_text_entry("p", Dir::ToPc, &"a".repeat(142), false);
     assert_eq!(summary(&t), "Text, 142 characters");
     t.chars = Some(1);
     assert_eq!(summary(&t), "Text, 1 character");
@@ -139,7 +139,7 @@ fn corrupt_file_is_replaced_but_a_missing_one_is_just_empty() {
     assert!(s.entries().is_empty());
     assert_eq!(msgs.lock().unwrap().len(), 1);
     assert!(!d.join(FILE).exists());
-    s.add(clip_text_entry("p", Dir::ToPc, "x"));
+    s.add(clip_text_entry("p", Dir::ToPc, "x", false));
     s.flush();
     assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
 }
@@ -157,9 +157,9 @@ fn leftover_tmp_is_removed_on_open() {
 fn exit_inside_the_debounce_still_saves_the_last_entry() {
     let d = tmpdir("debounce");
     let mut s = Store::open(&d, Box::new(Plain));
-    s.add(clip_text_entry("p", Dir::ToPc, "one"));
+    s.add(clip_text_entry("p", Dir::ToPc, "one", false));
     s.flush_if_due(Instant::now()); // written now
-    let mut last = clip_text_entry("p", Dir::ToPc, "two");
+    let mut last = clip_text_entry("p", Dir::ToPc, "two", false);
     last.chars = Some(777);
     s.add(last);
     s.flush_if_due(Instant::now()); // inside the second: held back
@@ -175,13 +175,13 @@ fn at_most_one_write_per_second() {
     let d = tmpdir("rate");
     let mut s = Store::open(&d, Box::new(Plain));
     let t0 = Instant::now();
-    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.add(clip_text_entry("p", Dir::ToPc, "a", false));
     assert!(!d.join(FILE).exists(), "add does no file I/O");
     s.flush_if_due(t0);
     assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
-    s.add(clip_text_entry("p", Dir::ToPc, "b"));
+    s.add(clip_text_entry("p", Dir::ToPc, "b", false));
     std::thread::sleep(Duration::from_millis(10));
-    s.add(clip_text_entry("p", Dir::ToPc, "c"));
+    s.add(clip_text_entry("p", Dir::ToPc, "c", false));
     s.flush_if_due(t0 + Duration::from_millis(500));
     assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
     // The trailing write: held-back entries land once a second has passed.
@@ -193,7 +193,7 @@ fn at_most_one_write_per_second() {
 fn flush_when_clean_does_not_touch_the_file() {
     let d = tmpdir("clean");
     let mut s = Store::open(&d, Box::new(Plain));
-    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.add(clip_text_entry("p", Dir::ToPc, "a", false));
     s.flush();
     std::fs::remove_file(d.join(FILE)).unwrap();
     s.flush_if_due(Instant::now() + Duration::from_secs(5));
@@ -209,7 +209,7 @@ fn a_read_error_keeps_the_file_and_never_overwrites_it() {
     let mut s = Store::open(&d, Box::new(Plain));
     let msgs = collect_log(&mut s);
     assert!(msgs.lock().unwrap()[0].starts_with("TIMELINE read failed: "));
-    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.add(clip_text_entry("p", Dir::ToPc, "a", false));
     s.flush();
     assert_eq!(s.entries().len(), 1, "still recorded in memory");
     assert!(d.join(FILE).is_dir(), "not replaced");
@@ -220,17 +220,17 @@ fn a_read_error_keeps_the_file_and_never_overwrites_it() {
 fn switching_history_off_deletes_it() {
     let d = tmpdir("off");
     let mut s = Store::open(&d, Box::new(Plain));
-    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.add(clip_text_entry("p", Dir::ToPc, "a", false));
     s.flush();
     assert!(d.join(FILE).exists());
     s.set_enabled(false);
     assert!(!d.join(FILE).exists());
     assert!(s.entries().is_empty());
-    s.add(clip_text_entry("p", Dir::ToPc, "b"));
+    s.add(clip_text_entry("p", Dir::ToPc, "b", false));
     s.flush();
     assert!(s.entries().is_empty() && !d.join(FILE).exists());
     s.set_enabled(true);
-    s.add(clip_text_entry("p", Dir::ToPc, "c"));
+    s.add(clip_text_entry("p", Dir::ToPc, "c", false));
     assert_eq!(s.entries().len(), 1);
 }
 
@@ -241,7 +241,7 @@ fn failed_write_logs_and_keeps_data() {
     let msgs = collect_log(&mut s);
     // A directory where the file should be makes the swap fail.
     std::fs::create_dir_all(d.join(FILE).join("blocker")).unwrap();
-    s.add(clip_text_entry("p", Dir::ToPc, "a"));
+    s.add(clip_text_entry("p", Dir::ToPc, "a", false));
     s.flush();
     assert!(msgs.lock().unwrap()[0].starts_with("TIMELINE write failed: "));
     assert_eq!(s.entries().len(), 1);
@@ -252,7 +252,7 @@ fn version_changes_with_the_entries_only() {
     let d = tmpdir("version");
     let mut s = Store::open(&d, Box::new(Plain));
     let v0 = s.version();
-    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
+    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi", false));
     let v1 = s.version();
     assert_ne!(v1, v0, "add");
     // Writing to disk does not change what is shown.
@@ -262,13 +262,13 @@ fn version_changes_with_the_entries_only() {
     s.clear();
     let v2 = s.version();
     assert_ne!(v2, v1, "clear");
-    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
+    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi", false));
     let v3 = s.version();
     s.set_enabled(false);
     assert_ne!(s.version(), v3, "history off clears");
     // Off: adds are dropped, nothing changes.
     let v4 = s.version();
-    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi"));
+    s.add(clip_text_entry("Pixel", Dir::ToPc, "hi", false));
     assert_eq!(s.version(), v4);
 }
 
@@ -287,4 +287,55 @@ fn wants_a_flush_only_while_an_add_is_unwritten() {
     s.set_enabled(false);
     assert!(!s.wants_flush(), "history off: nothing to write");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_sensitive_clip_keeps_no_length() {
+    let e = clip_text_entry("Pixel", Dir::ToPc, "hunter2", true);
+    assert_eq!(e.chars, None);
+    assert_eq!(summary(&e), "Text");
+    assert!(parse(&encode(std::slice::from_ref(&e))).unwrap()[0]
+        .chars
+        .is_none());
+    // An ordinary one still counts.
+    let e = clip_text_entry("Pixel", Dir::ToPhone, "hello", false);
+    assert_eq!(summary(&e), "Text, 5 characters");
+}
+
+#[test]
+fn failed_writes_back_off_to_a_minute() {
+    let secs: Vec<u64> = (0..10).map(|n| retry_after(n).as_secs()).collect();
+    assert_eq!(secs, [1, 1, 2, 4, 8, 16, 32, 60, 60, 60]);
+    assert_eq!(retry_after(u32::MAX), Duration::from_secs(60));
+}
+
+#[test]
+fn a_failing_write_is_retried_on_the_back_off_and_logged_once() {
+    let d = tmpdir("backoff");
+    let mut s = Store::open(&d, Box::new(Plain));
+    let msgs = collect_log(&mut s);
+    std::fs::create_dir_all(d.join(FILE).join("blocker")).unwrap();
+    s.add(clip_text_entry("p", Dir::ToPc, "a", false));
+    let t0 = Instant::now();
+    s.flush_if_due(t0); // failure 1: next try after 1 s
+    s.flush_if_due(t0 + Duration::from_millis(1100)); // failure 2: then 2 s
+    s.flush_if_due(t0 + Duration::from_millis(2200)); // too early
+    s.flush_if_due(t0 + Duration::from_millis(3200)); // failure 3: then 4 s
+    s.flush_if_due(t0 + Duration::from_millis(6000)); // too early
+    assert_eq!(s.write_failures, 3);
+    assert_eq!(msgs.lock().unwrap().len(), 1, "{:?}", msgs.lock().unwrap());
+    assert!(s.wants_flush(), "the data is still unwritten");
+    // The blocker goes: the next due write succeeds and the streak ends.
+    std::fs::remove_dir_all(d.join(FILE)).unwrap();
+    s.flush_if_due(t0 + Duration::from_millis(7300));
+    assert!(!s.wants_flush());
+    assert_eq!(s.write_failures, 0);
+    assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
+}
+
+#[test]
+fn a_notification_row_always_names_a_device() {
+    assert_eq!(notification_peer("Pixel 8"), "Pixel 8");
+    assert_eq!(notification_peer(""), "your phone");
+    assert_eq!(notification_peer("  "), "your phone");
 }

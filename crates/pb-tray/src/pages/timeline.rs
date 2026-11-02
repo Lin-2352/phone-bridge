@@ -512,7 +512,7 @@ mod tests {
     fn text(at: u64) -> Entry {
         Entry {
             at,
-            ..timeline::clip_text_entry("Pixel 8", Dir::ToPc, "hello")
+            ..timeline::clip_text_entry("Pixel 8", Dir::ToPc, "hello", false)
         }
     }
 

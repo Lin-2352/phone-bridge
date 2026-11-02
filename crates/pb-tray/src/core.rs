@@ -384,6 +384,8 @@ pub enum UiEvent {
     /// A phone notification arrived (or was re-sent quietly).
     Notify {
         peer: PeerId,
+        /// The session's device name (the Timeline row names it).
+        from: String,
         n: Box<pb_protocol::control::Notification>,
         logo: Option<PathBuf>,
         picture: Option<PathBuf>,
@@ -698,7 +700,7 @@ pub async fn run(
                                 seen(&node, &id);
                                 record(
                                     &settings,
-                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
+                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text, sensitive),
                                 );
                             }
                             match r {
@@ -871,7 +873,7 @@ pub async fn run(
                                 if !link {
                                     record(
                                         &settings,
-                                        crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
+                                        crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text, false),
                                     );
                                 }
                                 log.line(&format!("SHARE sent {} to \"{name}\"", if link { "link" } else { "text" }));
@@ -909,7 +911,7 @@ pub async fn run(
                                 seen(&node, &id);
                                 record(
                                     &settings,
-                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text),
+                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text, false),
                                 );
                                 log.line(&format!("SENT {} bytes to \"{name}\"", text.len()));
                                 ui(UiEvent::Info(format!("Sent to {name}")));
@@ -1094,6 +1096,7 @@ async fn pump_session(
                 ));
                 ui(UiEvent::Notify {
                     peer: s.peer,
+                    from: s.peer_name.clone(),
                     n: Box::new(n),
                     logo,
                     picture,
@@ -1123,6 +1126,7 @@ async fn pump_session(
                         &s.peer_name,
                         crate::timeline::Dir::ToPc,
                         &c.text,
+                        c.sensitive,
                     ),
                 );
                 ui(UiEvent::Clipboard {
@@ -1141,17 +1145,25 @@ async fn pump_session(
                     continue;
                 }
                 clip.lock().unwrap_or_else(|p| p.into_inner()).last_remote = clip_hash(&u.text);
-                log.line(&format!(
-                    "CLIPSYNC received {} chars from \"{}\"",
-                    u.text.chars().count(),
-                    s.peer_name
-                ));
+                if u.sensitive {
+                    log.line(&format!(
+                        "CLIPSYNC received a sensitive clip from \"{}\"",
+                        s.peer_name
+                    ));
+                } else {
+                    log.line(&format!(
+                        "CLIPSYNC received {} chars from \"{}\"",
+                        u.text.chars().count(),
+                        s.peer_name
+                    ));
+                }
                 record(
                     &settings,
                     crate::timeline::clip_text_entry(
                         &s.peer_name,
                         crate::timeline::Dir::ToPc,
                         &u.text,
+                        u.sensitive,
                     ),
                 );
                 ui(UiEvent::RemoteClipboard {
@@ -1266,7 +1278,12 @@ async fn pump_session(
                     Ok(Received::Text(t)) => {
                         record(
                             &settings,
-                            crate::timeline::clip_text_entry(&from, crate::timeline::Dir::ToPc, &t),
+                            crate::timeline::clip_text_entry(
+                                &from,
+                                crate::timeline::Dir::ToPc,
+                                &t,
+                                false,
+                            ),
                         );
                         ui(UiEvent::Clipboard {
                             from,

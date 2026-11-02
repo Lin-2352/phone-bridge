@@ -128,6 +128,12 @@ struct Shown {
     note: Option<Box<Notification>>,
 }
 
+/// A notification for `tag` is a new Timeline event: not a refresh at
+/// unlock, and not an update or re-send of a toast already shown.
+pub fn is_new_event(m: &Mirror, tag: &str, refresh: bool) -> bool {
+    !refresh && m.get(tag).is_none()
+}
+
 /// Toasts currently shown for phone notifications, by tag.
 #[derive(Default)]
 pub struct Mirror {
@@ -533,6 +539,24 @@ mod tests {
             package: package.into(),
             otp: String::new(),
         }
+    }
+
+    #[test]
+    fn only_a_notification_not_shown_yet_is_a_new_event() {
+        let mut m = Mirror::default();
+        let a = tag(&peer(1), "a");
+        assert!(is_new_event(&m, &a, false));
+        assert!(!is_new_event(&m, &a, true), "a refresh at unlock is old");
+        m.insert(a.clone(), entry(peer(1), "a", "p"));
+        // An update or quiet re-send with the same key: not new.
+        assert!(!is_new_event(&m, &a, false));
+        // Restored from the notification centre at start: not new.
+        let b = tag(&peer(1), "b");
+        m.restore(b.clone(), entry(peer(1), "b", "p"));
+        assert!(!is_new_event(&m, &b, false));
+        // Removed, then posted again: new.
+        m.remove_key(&peer(1), "a");
+        assert!(is_new_event(&m, &a, false));
     }
 
     #[test]

@@ -22,6 +22,18 @@ pub const MAX_ENTRIES: usize = 1000;
 pub const MAX_AGE_SECS: u64 = 30 * 24 * 3600;
 const WRITE_EVERY: Duration = Duration::from_secs(1);
 
+/// How long to wait before the next write after `failures` failed ones
+/// in a row.
+pub fn retry_after(failures: u32) -> Duration {
+    const CAP: Duration = Duration::from_secs(60);
+    match failures {
+        0 => WRITE_EVERY,
+        n => WRITE_EVERY
+            .checked_mul(1u32.checked_shl(n - 1).unwrap_or(u32::MAX))
+            .map_or(CAP, |d| d.min(CAP)),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     File,
@@ -83,9 +95,10 @@ pub fn file_entry(peer: &str, dir: Dir, name: &str, size: u64, path: Option<&Pat
 }
 
 /// Takes the text only to count its characters; the text itself is dropped.
-pub fn clip_text_entry(peer: &str, dir: Dir, text: &str) -> Entry {
+/// A sensitive clip (a password) keeps not even its length.
+pub fn clip_text_entry(peer: &str, dir: Dir, text: &str, sensitive: bool) -> Entry {
     Entry {
-        chars: Some(text.chars().count().min(u32::MAX as usize) as u32),
+        chars: (!sensitive).then(|| text.chars().count().min(u32::MAX as usize) as u32),
         ..blank(Kind::ClipText, dir, peer)
     }
 }
@@ -102,6 +115,15 @@ pub fn clip_image_entry(peer: &str, dir: Dir, png: &[u8]) -> Entry {
         size: Some(png.len() as u64),
         dims,
         ..blank(Kind::ClipImage, dir, peer)
+    }
+}
+
+/// Who a notification row names: the session's device name.
+pub fn notification_peer(name: &str) -> &str {
+    if name.trim().is_empty() {
+        "your phone"
+    } else {
+        name
     }
 }
 
@@ -362,6 +384,8 @@ pub struct Store {
     /// Bumped whenever `entries` changes, so readers copy them only then.
     version: u64,
     last_write: Option<Instant>,
+    /// Failed writes in a row (0 after a success); spaces out retries.
+    pub(crate) write_failures: u32,
     log: Box<dyn Fn(&str) + Send>,
     pending_log: Vec<String>,
 }
@@ -379,6 +403,7 @@ impl Store {
             dirty: false,
             version: 0,
             last_write: None,
+            write_failures: 0,
             log: Box::new(|_| {}),
             pending_log: Vec::new(),
         };
@@ -444,11 +469,11 @@ impl Store {
     /// Writes if something changed and the last write was over a second ago.
     pub fn flush_if_due(&mut self, now: Instant) {
         if self.dirty
-            && self
-                .last_write
-                .is_none_or(|t| now.saturating_duration_since(t) >= WRITE_EVERY)
+            && self.last_write.is_none_or(|t| {
+                now.saturating_duration_since(t) >= retry_after(self.write_failures)
+            })
         {
-            self.flush();
+            self.write_at(now);
         }
     }
 
@@ -459,18 +484,32 @@ impl Store {
     }
 
     pub fn flush(&mut self) {
+        self.write_at(Instant::now());
+    }
+
+    /// Writes now; `now` is when (the back-off counts from it).
+    fn write_at(&mut self, now: Instant) {
         if !self.dirty || !self.enabled || self.write_locked {
             return;
         }
-        self.last_write = Some(Instant::now());
+        self.last_write = Some(now);
         let r = self
             .wrapper
             .wrap(&encode(&self.entries))
             .and_then(|sealed| write_atomic(&self.path, &sealed));
         match r {
-            Ok(()) => self.dirty = false,
-            // The data stays in memory and the next flush tries again.
-            Err(e) => (self.log)(&format!("TIMELINE write failed: {e}")),
+            Ok(()) => {
+                self.dirty = false;
+                self.write_failures = 0;
+            }
+            // The data stays in memory; `flush_if_due` tries again later
+            // and later (`retry_after`). One line per failure streak.
+            Err(e) => {
+                if self.write_failures == 0 {
+                    (self.log)(&format!("TIMELINE write failed: {e}"));
+                }
+                self.write_failures = self.write_failures.saturating_add(1);
+            }
         }
     }
 

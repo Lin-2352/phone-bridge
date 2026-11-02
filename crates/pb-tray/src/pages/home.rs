@@ -902,7 +902,9 @@ mod tests {
         let s = Settings::default();
         let notes: Vec<Notification> = (0..8).map(|k| note(&k.to_string())).collect();
         let entries: Vec<timeline::Entry> = (0..9)
-            .map(|k| timeline::clip_text_entry("Pixel 8", timeline::Dir::ToPc, &"x".repeat(k + 1)))
+            .map(|k| {
+                timeline::clip_text_entry("Pixel 8", timeline::Dir::ToPc, &"x".repeat(k + 1), false)
+            })
             .collect();
         let mut i = inputs(&s, &notes);
         i.recent = &entries;
