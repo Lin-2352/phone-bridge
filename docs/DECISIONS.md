@@ -410,3 +410,9 @@ What was built (`feature/ui-v2`, from `feature/clipboard-images`; not merged, no
 PayZapp (HDFC) checks for security risks and refuses to run while either of these is on: (1) a non-screen-reader **accessibility service** (its dialog names "Relay control"), and (2) **USB debugging**. Relay's Control feature needs the accessibility service, so Control on means PayZapp will not open. Relay cannot and will not hide this from the bank app.
 
 Workaround: keep Relay Control off except while controlling the phone (Relay now switches it off about 1.5 s after a PC session ends; checked on the realme: session end 01:01:13.8, switch-off 01:01:15.3, `enabled_accessibility_services` empty), and turn USB debugging off (some banking apps also object to Developer options being on at all) when using PayZapp.
+
+## Phase 8b (2026-11-03): the release APK crashed on start (found on the phone)
+
+The first release APK built from the whole UI v2 branch crashed at launch with "Failed to create an instance of androidx.work.impl.WorkDatabase". WorkManager arrived with the Glance widget library; it creates its Room database by reflection on the generated `WorkDatabase_Impl`, and R8 (full mode) kept the class but removed its default constructor. Unit tests, lint and CI only exercise debug or non-shrunk code, so none of them could see it (the constructor stays in debug builds).
+
+Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `android/app/proguard-rules.pro`; verified on the realme (app starts, MainActivity focused, no crash). Lesson, now a release rule: **install the minified release APK on a real phone and start it before any tag or release**; do not rely on CI alone for shrinker problems.

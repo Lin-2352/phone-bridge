@@ -8,3 +8,9 @@
 -keep class dev.phonebridge.app.NativeInit { *; }
 # Callback interfaces implemented in Kotlin and invoked from Rust.
 -keep class dev.phonebridge.app.KeystoreWrapper { *; }
+# WorkManager (pulled in by the Glance widget) creates its Room database
+# through reflection on the generated WorkDatabase_Impl. R8 full mode keeps
+# the class but removes its default constructor, so the app crashed at start
+# ("Failed to create an instance of androidx.work.impl.WorkDatabase"). Keep it
+# for every Room database.
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
