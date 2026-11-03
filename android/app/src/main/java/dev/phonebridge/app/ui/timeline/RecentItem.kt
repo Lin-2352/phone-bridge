@@ -6,8 +6,8 @@ import dev.phonebridge.app.TlKind
 import dev.phonebridge.app.summary
 
 /** One line in a Recent list (Home's short one, later the Timeline tab). */
-data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: String? = null) {
-    enum class Kind { File, Clipboard, Link }
+data class RecentItem(val title: String, val subtitle: String, val kind: Kind, val uri: String? = null, val hint: String? = null) {
+    enum class Kind { File, Clipboard, Link, Picture, Notification, Audio }
 }
 
 /** A timeline entry in the Recent list's shape: metadata only, as stored. */
@@ -17,7 +17,11 @@ fun recentItem(e: TlEntry) = RecentItem(
     kind = when (e.kind) {
         TlKind.File -> RecentItem.Kind.File
         TlKind.Link -> RecentItem.Kind.Link
-        else -> RecentItem.Kind.Clipboard
+        TlKind.ClipImage -> RecentItem.Kind.Picture
+        TlKind.Notification -> RecentItem.Kind.Notification
+        TlKind.Audio -> RecentItem.Kind.Audio
+        TlKind.ClipText -> RecentItem.Kind.Clipboard
     },
     uri = e.uri,
+    hint = tapHint(e),
 )

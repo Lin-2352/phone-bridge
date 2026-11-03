@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ContentPaste
@@ -284,12 +286,17 @@ fun HomeTab(onTimeline: () -> Unit) {
                             RecentItem.Kind.File -> IconBadge(Icons.AutoMirrored.Filled.InsertDriveFile, tintColor(RelayTint.Primary))
                             RecentItem.Kind.Clipboard -> IconBadge(Icons.Filled.ContentPaste, tintColor(RelayTint.Accent))
                             RecentItem.Kind.Link -> IconBadge(Icons.Filled.Link, tintColor(RelayTint.Primary))
+                            RecentItem.Kind.Picture -> IconBadge(Icons.Filled.Image, tintColor(RelayTint.Success))
+                            RecentItem.Kind.Notification -> IconBadge(Icons.Filled.Notifications, tintColor(RelayTint.Warning))
+                            RecentItem.Kind.Audio -> IconBadge(Icons.AutoMirrored.Filled.VolumeUp, tintColor(RelayTint.Accent))
                         }
                     },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).background(cardColor()).clickable(enabled = isOpenable(r.kind == RecentItem.Kind.File, r.uri)) {
+                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).background(cardColor()).clickable(onClickLabel = if (r.hint == null) "Open" else "Why this cannot be opened") {
                         val uri = r.uri
-                        if (uri != null && !opening) {
+                        if (!isOpenable(r.kind == RecentItem.Kind.File, uri)) {
+                            r.hint?.let { h -> scope.launch { snack.showSnackbar(h) } }
+                        } else if (uri != null && !opening) {
                             opening = true // one tap, one viewer or one message, as in Timeline
                             scope.launch {
                                 val msg = try { openSavedFile(ctx, uri) } finally { opening = false }
