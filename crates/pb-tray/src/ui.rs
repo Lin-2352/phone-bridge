@@ -857,7 +857,10 @@ fn save_settings(st: &State) {
         st.log.line(&format!("SETTINGS save failed: {e}"));
     }
     if tell_save_failure(res.is_ok(), &SAVE_FAILING) {
-        pill("Couldn't save settings. They apply now but will be lost when Relay restarts.", 8);
+        pill(
+            "Couldn't save settings. They apply now but will be lost when Relay restarts.",
+            8,
+        );
     }
 }
 

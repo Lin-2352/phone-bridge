@@ -427,7 +427,10 @@ mod tests {
         let p = super::Presence::new();
         assert!(!p.running() && !p.streaming());
         p.device.store(true, super::Ordering::Release);
-        assert!(p.running() && !p.streaming(), "device kept across a reconnect");
+        assert!(
+            p.running() && !p.streaming(),
+            "device kept across a reconnect"
+        );
         p.session.store(true, super::Ordering::Release);
         assert!(p.running() && p.streaming());
         p.device.store(false, super::Ordering::Release);

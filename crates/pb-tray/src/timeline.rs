@@ -479,7 +479,11 @@ impl Store {
                         let kept = std::fs::rename(&s.path, PathBuf::from(&bad)).is_ok();
                         s.pending_log.push(format!(
                             "TIMELINE unreadable, starting empty (old file {}): {e}",
-                            if kept { "kept as .bad" } else { "left in place" }
+                            if kept {
+                                "kept as .bad"
+                            } else {
+                                "left in place"
+                            }
                         ));
                         if !kept {
                             s.write_locked = true;
