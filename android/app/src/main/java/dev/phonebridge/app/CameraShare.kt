@@ -227,6 +227,8 @@ class CameraCapture(private val ctx: Context, private var ask: CameraAsk) {
             }
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
                 Log.e(TAG, "CAMERA encoder error: ${e.diagnosticInfo}")
+                // A retry may fix a transient error; anything else ends the share, visibly (F4).
+                if (!e.isTransient) CameraShare.encoderFailed()
             }
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) = Unit
         }, handler)
@@ -517,6 +519,15 @@ object CameraShare : CameraListener {
         // keep repeating the last frame for ever), and that PC is declined
         // quietly for a moment instead of being asked again at once.
         main.post { stop(userStopped = true) }
+    }
+
+    /** The encoder died: the share would show a frozen frame. End it and say so on the phone. */
+    fun encoderFailed() = main.post {
+        if (capture == null) return@post
+        Log.e(TAG, "CAMERA share ended: encoder failed")
+        AppLog.event("events", "camera_encoder_failed")
+        stop(userStopped = true)
+        (PbService.instance ?: appContext)?.let { notifyInfo(it, "Camera sharing stopped", "The video encoder failed. Start the webcam again from your PC") }
     }
 
     /** End the session: the camera, the encoder and the service type go. */

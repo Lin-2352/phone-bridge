@@ -66,8 +66,13 @@ class ControlService : AccessibilityService(), InputListener {
     /** A PC session has used this service since it was turned on. */
     private var sessionSeen = false
 
+    /** A screen share started while this service is on: the auto-off applies after it, even if the PC never touches (F19). */
+    fun noteSession() { sessionSeen = true }
+
     override fun onServiceConnected() {
         instance = this
+        // A share that started while control was off now really can be used (notification wording).
+        ScreenShare.refreshNotification()
         Bridge.node?.setInputListener(this)
         readBounds()
         Log.i(TAG, "CONTROL service on (${w}x$h)")
@@ -101,6 +106,7 @@ class ControlService : AccessibilityService(), InputListener {
     override fun onDestroy() {
         if (instance === this) {
             instance = null
+            ScreenShare.refreshNotification()
             Bridge.node?.setInputListener(null)
             // Turned off mid-session: end it, or the PC keeps "controlling" nothing.
             if (Bridge.controlledBy.value != null) Bridge.node?.stopControl()

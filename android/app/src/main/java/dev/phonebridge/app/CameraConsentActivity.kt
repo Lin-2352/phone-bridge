@@ -110,6 +110,8 @@ class CameraConsentActivity : ComponentActivity() {
             begin()
         } else {
             Log.i(TAG, "CAMERA permission denied")
+            // Silent otherwise, and after "don't ask again" every request declines at once (F11).
+            notifyInfo(this, "Camera access is off for $APP_NAME", "Allow it in Android Settings, Apps, $APP_NAME, Permissions, to use the phone as a webcam")
             decline()
         }
     }

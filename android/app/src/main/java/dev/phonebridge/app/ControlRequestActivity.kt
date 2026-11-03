@@ -22,6 +22,7 @@ private const val TAG = "PhoneBridge"
 class ControlRequestActivity : ComponentActivity() {
     private var answered = false
     private var id = -1L
+    private var peerId = ""
     private var peerName by mutableStateOf<String?>(null)
     private val main = Handler(Looper.getMainLooper())
 
@@ -36,7 +37,7 @@ class ControlRequestActivity : ComponentActivity() {
                         body = "Its mouse and keyboard will work here. Stop any time from $APP_NAME or with Ctrl+Alt+P on the PC.",
                         onAllow = { answer(true, always = false) },
                         onDeny = { answer(false, always = false) },
-                        onAlways = { answer(true, always = true) },
+                        onAlways = if (peerId.isNotEmpty()) ({ answer(true, always = true) }) else null,
                     )
                 }
             }
@@ -54,6 +55,7 @@ class ControlRequestActivity : ComponentActivity() {
 
     private fun show(intent: android.content.Intent) {
         id = intent.getLongExtra("id", -1)
+        peerId = intent.getStringExtra("peerId").orEmpty()
         val peer = intent.getStringExtra("peer") ?: "Your PC"
         // The phone stops waiting 30 s after the request arrived, not after
         // this window opened (it may be opened late from the notification).
@@ -71,7 +73,11 @@ class ControlRequestActivity : ComponentActivity() {
         if (answered) return
         answered = true
         peerName = null
-        if (always) Bridge.setAllowControl(this, true)
+        if (always) {
+            // Only this PC, as for the camera: another PC's request still asks.
+            Prefs(this).let { it.allowedControlPcs = withAllowed(it.allowedControlPcs, peerId, true) }
+            Bridge.allowControl.value = true
+        }
         Bridge.node?.answerOffer(id.toULong(), accept)
         getSystemService(NotificationManager::class.java).cancel(CONTROL_ASK_ID)
         Log.i(TAG, "CONTROL request answered accept=$accept always=$always")
