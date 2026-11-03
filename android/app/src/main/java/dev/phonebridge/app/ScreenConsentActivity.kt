@@ -128,6 +128,8 @@ class ScreenConsentActivity : ComponentActivity() {
         val projection = getSystemService(MediaProjectionManager::class.java).getMediaProjection(resultCode, data)
         if (projection == null || !ScreenShare.start(this, projection, a)) {
             PbService.instance?.leaveProjection()
+            // Not taken over by a capture: release the grant instead of leaving it to the GC.
+            runCatching { projection?.stop() }
             if (projection == null) Bridge.node?.answerScreen(a.id, null)
         }
         finish()

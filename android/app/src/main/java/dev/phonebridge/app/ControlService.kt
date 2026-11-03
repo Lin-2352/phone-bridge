@@ -111,6 +111,11 @@ class ControlService : AccessibilityService(), InputListener {
             // Turned off mid-session: end it, or the PC keeps "controlling" nothing.
             if (Bridge.controlledBy.value != null) Bridge.node?.stopControl()
         }
+        // Turned off during a dimmed mirror: drop the overlay and receiver, and tell the PC dim is over.
+        val dimmed = dimView != null
+        endDim()
+        if (dimmed) ScreenShare.dimEnded()
+        main.removeCallbacksAndMessages(null)
         hideCursor()
         holdWifi(false)
         Bridge.controlledBy.value = null
