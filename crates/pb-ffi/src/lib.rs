@@ -1381,8 +1381,13 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         // takes a picture for one (see `recover_incoming`).
                         let images = sh.incoming_dir.join(IMAGE_DIR);
                         let path = images.join(image_file_name(&png));
-                        let saved = std::fs::create_dir_all(&images)
-                            .and_then(|()| std::fs::write(&path, &png));
+                        // Up to 10 MiB: off the async threads (2 on the phone).
+                        let p = path.clone();
+                        let saved = tokio::task::spawn_blocking(move || {
+                            std::fs::create_dir_all(&images).and_then(|()| std::fs::write(&p, &png))
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         push(
                             &sh.events,
                             match saved {
