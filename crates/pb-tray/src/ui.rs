@@ -834,9 +834,30 @@ fn page_model(st: &State) -> crate::pages::Model {
     }
 }
 
+static SAVE_FAILING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True when a save result should tell the user: the first failure of a streak
+/// (a locked or full disk fails every toggle, one message is enough), and not again
+/// until a save succeeds.
+fn tell_save_failure(ok: bool, failing: &std::sync::atomic::AtomicBool) -> bool {
+    use std::sync::atomic::Ordering::SeqCst;
+    if ok {
+        failing.store(false, SeqCst);
+        false
+    } else {
+        !failing.swap(true, SeqCst)
+    }
+}
+
 fn save_settings(st: &State) {
-    if let Ok(s) = st.settings.lock() {
-        let _ = s.save(&st.settings_path);
+    let Ok(s) = st.settings.lock() else { return };
+    let res = s.save(&st.settings_path);
+    drop(s);
+    if let Err(e) = &res {
+        st.log.line(&format!("SETTINGS save failed: {e}"));
+    }
+    if tell_save_failure(res.is_ok(), &SAVE_FAILING) {
+        pill("Couldn't save settings. They apply now but will be lost when Relay restarts.", 8);
     }
 }
 
@@ -971,6 +992,16 @@ fn shell_balloon(hwnd: HWND, title: &str, text: &str) {
     let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }
 
+/// What the tray tooltip says now, from the real core, pause and audio state.
+fn current_tip(st: &State) -> String {
+    let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
+    let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+    let audio = crate::audio_state::Dir::ALL
+        .iter()
+        .any(|d| crate::audio::phase(*d) == crate::audio_state::Phase::Running);
+    crate::pause::current_tooltip(core_error().as_deref(), paused, &fp, audio)
+}
+
 fn set_tip(hwnd: HWND, tip: &str) {
     let mut nid = icon_data(hwnd);
     nid.uFlags = NIF_TIP;
@@ -1050,8 +1081,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             if let Ok(mut f) = MY_FINGERPRINT.lock() {
                 *f = fingerprint[..9].to_owned();
             }
-            let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
-            set_tip(hwnd, &crate::pause::tooltip(paused, &fingerprint[..9]));
+            set_tip(hwnd, &current_tip(st));
             // Toasts restored from the notification centre whose phone is no
             // longer paired go now.
             let paired: Vec<pb_identity::PeerId> = st
@@ -1273,7 +1303,10 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         UiEvent::PeersChecked => {}
         UiEvent::Pill(text, secs) => crate::status::show(&text, secs),
         // The menu, Home and the flyout read the state when they draw.
-        UiEvent::AudioChanged => refresh_flyout(st),
+        UiEvent::AudioChanged => {
+            set_tip(hwnd, &current_tip(st));
+            refresh_flyout(st);
+        }
         UiEvent::AudioAsking(text) => crate::status::show(&text, 40),
         UiEvent::AudioAskEnded => crate::status::close_if_asking(),
         UiEvent::AskAudioShare { from, reply } => {
@@ -1938,8 +1971,7 @@ fn set_paused(hwnd: HWND, st: &State, on: bool) {
     } else {
         st.log.line("PAUSE Relay resumed");
     }
-    let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
-    set_tip(hwnd, &crate::pause::tooltip(on, &fp));
+    set_tip(hwnd, &current_tip(st));
     // The main window and an open flyout show it now.
     refresh_flyout(st);
     post_settings_action(hwnd.0 as isize);
@@ -2561,9 +2593,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     let taskbar = TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed);
     if taskbar != 0 && msg == taskbar {
         // Explorer restarted: our icon is gone, add it again (same tooltip).
-        let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
-        let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
-        add_icon(hwnd, &crate::pause::tooltip(paused, &fp));
+        add_icon(hwnd, &current_tip(st));
         return LRESULT(0);
     }
     match msg {
@@ -2592,8 +2622,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             for e in drained {
                 handle_event(hwnd, st, e);
             }
-            if let Some(why) = core_error() {
-                set_tip(hwnd, &crate::pause::failed_tooltip(&why));
+            if core_error().is_some() {
+                set_tip(hwnd, &current_tip(st));
             }
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
@@ -3013,6 +3043,16 @@ pub fn message_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_settings_save_is_announced_once_per_streak() {
+        let f = std::sync::atomic::AtomicBool::new(false);
+        assert!(!tell_save_failure(true, &f));
+        assert!(tell_save_failure(false, &f));
+        assert!(!tell_save_failure(false, &f));
+        assert!(!tell_save_failure(true, &f));
+        assert!(tell_save_failure(false, &f));
+    }
 
     #[test]
     fn timeline_timer_runs_only_while_needed() {
