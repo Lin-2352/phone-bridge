@@ -40,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material3.ListItem
@@ -100,6 +101,7 @@ import dev.phonebridge.app.TouchpadActivity
 import dev.phonebridge.app.hasNotifyAccess
 import dev.phonebridge.app.notifyAccessMissing
 import dev.phonebridge.app.pruneAllowed
+import dev.phonebridge.app.liveTileText
 import dev.phonebridge.app.quickTiles
 import dev.phonebridge.app.startsOnPcText
 import dev.phonebridge.app.setBridgeEnabled
@@ -245,14 +247,15 @@ fun HomeTab(onTimeline: () -> Unit) {
             }
             item(key = "grid") {
                 QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null, audioOut != null, audioIn != null), running, pc != null, { scope.launch { snack.showSnackbar(it) } }) { q ->
+                    fun liveTile(name: String) { scope.launch { snack.showSnackbar(liveTileText(name)) } }
                     when (q) {
                         Quick.SendFile -> pickFiles.launch(arrayOf("*/*"))
                         // The activity reads the clipboard once it has focus (Android's rule), then closes.
                         Quick.SendClipboard -> ctx.startActivity(Intent(ctx, SendClipboardActivity::class.java))
-                        Quick.Screen -> if (screenTo != null) ScreenShare.stop(userStopped = true) else startsOnPc(ctx, "Screen")
-                        Quick.Camera -> if (cameraTo != null) CameraShare.stop(userStopped = true) else startsOnPc(ctx, "Camera")
-                        Quick.PhoneAudio -> if (audioOut != null) AudioShare.stop(AudioDirection.PHONE_TO_PC) else startsOnPc(ctx, "Phone audio")
-                        Quick.PcAudio -> if (audioIn != null) AudioShare.stop(AudioDirection.PC_TO_PHONE) else startsOnPc(ctx, "PC audio")
+                        Quick.Screen -> if (screenTo != null) liveTile("Screen") else startsOnPc(ctx, "Screen")
+                        Quick.Camera -> if (cameraTo != null) liveTile("Camera") else startsOnPc(ctx, "Camera")
+                        Quick.PhoneAudio -> if (audioOut != null) liveTile("Phone audio") else startsOnPc(ctx, "Phone audio")
+                        Quick.PcAudio -> if (audioIn != null) liveTile("PC audio") else startsOnPc(ctx, "PC audio")
                         Quick.Touchpad -> ctx.startActivity(Intent(ctx, TouchpadActivity::class.java))
                         Quick.Pair -> ctx.startActivity(Intent(ctx, ScanActivity::class.java))
                     }
@@ -317,7 +320,7 @@ private fun HeroCard(pc: String?, pcDim: Boolean, running: Boolean, ready: Boole
         when {
             !running -> {
                 HeroText("$APP_NAME is off", "Your PC cannot reach this phone.")
-                Button(onClick = { setBridgeEnabled(ctx, true) }) { Text("Turn on") }
+                Button(onClick = { setBridgeEnabled(ctx, true) }, modifier = Modifier.semantics { contentDescription = "Turn on $APP_NAME" }) { Text("Turn on") }
             }
             !ready -> HeroText("Starting…", null)
             pc == null -> {
@@ -393,7 +396,7 @@ private fun NeedRow(title: String, body: String, fix: String, onFix: () -> Unit)
     Column(Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         Text(title, style = MaterialTheme.typography.bodyLarge)
         Text(body, style = MaterialTheme.typography.bodyMedium, color = LocalContentColor.current.copy(alpha = 0.8f))
-        FilledTonalButton(onClick = onFix, modifier = Modifier.align(Alignment.End)) { Text(fix) }
+        FilledTonalButton(onClick = onFix, modifier = Modifier.align(Alignment.End).semantics { contentDescription = "$fix. $title" }) { Text(fix) }
     }
 }
 
@@ -447,7 +450,7 @@ private fun QuickCard(tile: QuickTile, modifier: Modifier, onClick: () -> Unit) 
             if (tile.on) Icon(tile.quick.icon(), null, Modifier.size(24.dp))
             else IconBadge(tile.quick.icon(), tintColor(if (tile.quick == Quick.Pair) RelayTint.Muted else RelayTint.Primary))
             Text(tile.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (tile.on) Text("On · tap to stop", style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.7f))
+            if (tile.on) Text("On", style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.7f))
         }
     }
 }
@@ -468,7 +471,7 @@ private fun SessionCard(title: String, body: String, modifier: Modifier, onStop:
             Text(title, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.titleSmall)
             Text(body, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f), style = MaterialTheme.typography.bodySmall)
         }
-        Button(onClick = onStop) { Text("Stop") }
+        Button(onClick = onStop, modifier = Modifier.semantics { contentDescription = "Stop. $title" }) { Text("Stop") }
     }
 }
 
