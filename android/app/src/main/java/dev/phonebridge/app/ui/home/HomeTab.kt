@@ -83,6 +83,7 @@ import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.AudioShare
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.Bridge
+import dev.phonebridge.app.notifyInfo
 import dev.phonebridge.app.heroPc
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
@@ -496,7 +497,12 @@ private fun removeForgottenPcs(ctx: Context) {
     runCatching {
         val gone = node.peers().filter { node.peerChanged(it.id) }
         if (gone.isEmpty()) return
-        gone.forEach { node.unpair(it.id) }
+        // A removal that could not be saved keeps the PC paired: say so, and go on with the rest.
+        gone.forEach { p ->
+            runCatching { node.tryUnpair(p.id) }.exceptionOrNull()?.let {
+                notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
+            }
+        }
         val prefs = Prefs(ctx)
         prefs.allowedCameraPcs = pruneAllowed(prefs.allowedCameraPcs, node.peers().map { it.id })
         Bridge.linked.value = node.peers().firstOrNull()?.name

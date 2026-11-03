@@ -26,6 +26,24 @@ private const val ASK_MS = 30_000L
  * capture starts and the PC gets its answer.
  */
 class ScreenConsentActivity : ComponentActivity() {
+    companion object {
+        /** The question window on screen now (not the streaming one). */
+        @Volatile private var showing: ScreenConsentActivity? = null
+
+        /** The PC gave up on request `id` before the user answered: close the question. */
+        fun withdrawn(id: ULong) {
+            val a = showing ?: return
+            a.main.post {
+                if (a.ask?.id == id && !a.answered) {
+                    a.answered = true
+                    a.asking = false
+                    android.widget.Toast.makeText(a, "${a.ask?.peer ?: "Your PC"} cancelled the request", android.widget.Toast.LENGTH_SHORT).show()
+                    a.finish()
+                }
+            }
+        }
+    }
+
     private var ask: ScreenAsk? = null
     private var peerId = ""
     private var answered = false
@@ -46,6 +64,7 @@ class ScreenConsentActivity : ComponentActivity() {
             codecs = i.getIntArrayExtra("codecs")?.toList().orEmpty(),
         )
         ask = a
+        showing = this
         peerId = i.getStringExtra("peerId").orEmpty()
         askedAt = i.getLongExtra("at", SystemClock.elapsedRealtime())
         Log.i(TAG, "SCREEN ask window open after ${SystemClock.elapsedRealtime() - askedAt} ms")
@@ -145,6 +164,7 @@ class ScreenConsentActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (showing === this) showing = null
         main.removeCallbacksAndMessages(null)
         super.onDestroy()
     }

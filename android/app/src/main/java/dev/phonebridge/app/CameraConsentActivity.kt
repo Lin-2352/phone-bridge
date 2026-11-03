@@ -35,6 +35,22 @@ class CameraConsentActivity : ComponentActivity() {
         fun close() {
             current?.let { a -> a.runOnUiThread { a.finish() } }
         }
+
+        /** The question window on screen now (not the streaming one). */
+        @Volatile private var showing: CameraConsentActivity? = null
+
+        /** The PC gave up on request `id` before the user answered: close the question. */
+        fun withdrawn(id: ULong) {
+            val a = showing ?: return
+            a.main.post {
+                if (a.ask?.id == id && !a.answered) {
+                    a.answered = true
+                    a.asking = false
+                    android.widget.Toast.makeText(a, "${a.ask?.peer ?: "Your PC"} cancelled the request", android.widget.Toast.LENGTH_SHORT).show()
+                    a.finish()
+                }
+            }
+        }
     }
 
     private var ask: CameraAsk? = null
@@ -55,6 +71,7 @@ class CameraConsentActivity : ComponentActivity() {
             codecs = i.getIntArrayExtra("codecs")?.toList().orEmpty(),
         )
         ask = a
+        showing = this
         peerId = i.getStringExtra("peerId").orEmpty()
         getSystemService(NotificationManager::class.java).cancel(CAMERA_ASK_ID)
         val left = ASK_MS - (SystemClock.elapsedRealtime() - i.getLongExtra("at", SystemClock.elapsedRealtime()))
@@ -149,6 +166,7 @@ class CameraConsentActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (current === this) current = null
+        if (showing === this) showing = null
         main.removeCallbacksAndMessages(null)
         super.onDestroy()
     }

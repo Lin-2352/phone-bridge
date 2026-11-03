@@ -440,6 +440,24 @@ class PbService : Service() {
         }
     }
 
+    /** Question id -> notification id still on screen for it (file offers get a new id each). */
+    private val askNotes = java.util.concurrent.ConcurrentHashMap<ULong, Int>()
+
+    /** Answered (from a notification button or a window): AskEnded will not come for it. */
+    fun askAnswered(id: ULong) { askNotes.remove(id) }
+
+    /** The PC gave up on question `id` before it was answered (or the time ran out). */
+    private fun askEnded(id: ULong) {
+        val note = askNotes.remove(id) ?: return
+        getSystemService(NotificationManager::class.java).cancel(note)
+        when (note) {
+            CONTROL_ASK_ID -> ControlRequestActivity.answeredElsewhere(id.toLong())
+            SCREEN_ASK_ID -> ScreenConsentActivity.withdrawn(id)
+            CAMERA_ASK_ID -> CameraConsentActivity.withdrawn(id)
+        }
+        Log.i(TAG, "ASK $id ended without an answer")
+    }
+
     private fun handle(e: PbEvent) {
         // Late events from a node that is shutting down: no progress bar or
         // offer that nothing can update or answer any more. A file that
@@ -449,6 +467,7 @@ class PbService : Service() {
             is PbEvent.ScreenRequest -> askScreen(e)
             is PbEvent.CameraRequest -> askCamera(e)
             is PbEvent.AudioRequest -> askAudio(e)
+            is PbEvent.AskEnded -> askEnded(e.id)
             is PbEvent.AudioAskEnded, is PbEvent.AudioStarted, is PbEvent.AudioEnded, is PbEvent.AudioRefused -> AudioShare.onEvent(e)
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
@@ -621,6 +640,7 @@ class PbService : Service() {
             .setAutoCancel(true)
             .build()
         getSystemService(NotificationManager::class.java).notify(id, n)
+        askNotes[e.id] = id
     }
 
     private fun notifyClip(from: String, text: String, sensitive: Boolean) {
@@ -667,6 +687,7 @@ class PbService : Service() {
             Log.i(TAG, "SCREEN request from ${e.peerName}: instant")
             return
         }
+        askNotes[e.id] = SCREEN_ASK_ID
         val ask = Intent(this, ScreenConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
@@ -699,6 +720,7 @@ class PbService : Service() {
     /** A PC asks to use this camera: resume within the grace, else ask. */
     private fun askCamera(e: PbEvent.CameraRequest) {
         if (e.resume && CameraShare.resume(e.id)) return
+        askNotes[e.id] = CAMERA_ASK_ID
         val ask = Intent(this, CameraConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
@@ -832,6 +854,7 @@ class PbService : Service() {
             Log.i(TAG, "CONTROL request from ${e.peerName}: always allowed")
             return
         }
+        askNotes[e.id] = CONTROL_ASK_ID
         fun answer(accept: Boolean) = PendingIntent.getBroadcast(
             this, if (accept) 41 else 40,
             Intent(this, OfferReceiver::class.java).putExtra("offer", e.id.toLong()).putExtra("accept", accept).putExtra("nid", CONTROL_ASK_ID),
@@ -1071,6 +1094,7 @@ class OfferReceiver : BroadcastReceiver() {
         val offer = intent.getLongExtra("offer", -1)
         val accept = intent.getBooleanExtra("accept", false)
         Bridge.node?.answerOffer(offer.toULong(), accept)
+        PbService.instance?.askAnswered(offer.toULong())
         context.getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra("nid", 0))
         // Answered from the notification: close the popup asking the same thing.
         ControlRequestActivity.answeredElsewhere(offer)

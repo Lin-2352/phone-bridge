@@ -66,6 +66,7 @@ import dev.phonebridge.app.AppLog
 import dev.phonebridge.app.AudioShare
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.Bridge
+import dev.phonebridge.app.notifyInfo
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
 import dev.phonebridge.app.ControlService
@@ -404,7 +405,10 @@ fun SettingsTab(onDone: () -> Unit) {
             destructive = true,
             onConfirm = {
                 removing = null
-                Bridge.node?.unpair(p.id)
+                // A failed save keeps the PC paired; the list below is re-read either way.
+                runCatching { Bridge.node?.tryUnpair(p.id) }.exceptionOrNull()?.let {
+                    notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
+                }
                 Prefs(ctx).let { it.allowedCameraPcs = pruneAllowed(it.allowedCameraPcs, Bridge.node?.peers()?.map { q -> q.id }.orEmpty()) }
                 Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
                 PbService.refresh(ctx)
