@@ -44,3 +44,21 @@ fun clockText(at: Long, zone: ZoneId): String {
 fun emptyText(historyOn: Boolean): String =
     if (historyOn) "Nothing yet. Files and clipboard you send or receive show up here."
     else "History is off. Turn it on to see what you send and receive."
+
+/*
+ * Collapsible day groups. [overrides] holds only what the user chose; everything else follows the default:
+ * all days open up to three days, otherwise only Today.
+ */
+fun isDayExpanded(label: String, isToday: Boolean, groupCount: Int, overrides: Map<String, Boolean>): Boolean =
+    overrides[label] ?: (groupCount <= 3 || isToday)
+
+fun toggleDay(overrides: Map<String, Boolean>, label: String, currentlyExpanded: Boolean): Map<String, Boolean> =
+    overrides + (label to !currentlyExpanded)
+
+fun setAllDays(labels: List<String>, expanded: Boolean): Map<String, Boolean> = labels.associateWith { expanded }
+
+/** [days] is (label, isToday) in list order. */
+fun allDaysExpanded(days: List<Pair<String, Boolean>>, overrides: Map<String, Boolean>): Boolean =
+    days.all { (label, today) -> isDayExpanded(label, today, days.size, overrides) }
+
+fun itemCountText(n: Int): String = if (n == 1) "1 item" else "$n items"

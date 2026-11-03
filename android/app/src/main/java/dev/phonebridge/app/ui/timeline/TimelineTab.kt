@@ -7,6 +7,18 @@ import android.content.IntentFilter
 import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import dev.phonebridge.app.ui.components.animationsEnabled
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,7 +90,7 @@ import java.time.ZoneId
 import kotlinx.coroutines.launch
 
 /** A day with its entries; each entry has a key that is unique and survives new entries at the top. */
-private class Day(val label: String, val key: String, val rows: List<Pair<String, TlEntry>>)
+private class Day(val label: String, val isToday: Boolean, val key: String, val rows: List<Pair<String, TlEntry>>)
 
 private fun days(entries: List<TlEntry>, now: Long, zone: ZoneId): List<Day> {
     val seen = HashMap<String, Int>()
@@ -86,6 +98,7 @@ private fun days(entries: List<TlEntry>, now: Long, zone: ZoneId): List<Day> {
     return groupByDay(entries, now, zone).map { (label, group) ->
         Day(
             label,
+            label == "Today",
             // Unique even if a day repeats (clock went backwards).
             "h:$label#${seenDays.merge(label, 1, Int::plus)}",
             group.map { e ->
@@ -129,7 +142,17 @@ fun TimelineTab() {
         onDispose { lifecycle.removeObserver(o) }
     }
     val zone = ZoneId.systemDefault()
+    // What the user opened or closed, by day label; survives rotation. Days not in it follow the default rule.
+    var overrides by rememberSaveable(
+        stateSaver = listSaver<Map<String, Boolean>, String>(
+            save = { m -> m.flatMap { listOf(it.key, it.value.toString()) } },
+            restore = { l -> l.chunked(2).associate { it[0] to (it[1] == "true") } },
+        ),
+    ) { mutableStateOf(emptyMap<String, Boolean>()) }
+    val animate = remember { animationsEnabled(ctx) }
     val grouped = remember(entries, dayTick) { days(entries, System.currentTimeMillis(), ZoneId.systemDefault()) }
+
+    fun expandedOf(d: Day, count: Int) = isDayExpanded(d.label, d.isToday, count, overrides)
 
     // The check touches storage, so it runs off the main thread, and only on a tap.
     fun open(e: TlEntry) {
@@ -157,6 +180,12 @@ fun TimelineTab() {
                             text = { Text("Clear history") },
                             enabled = entries.isNotEmpty(),
                             onClick = { menu = false; confirmClear = true },
+                        )
+                        val allOpen = allDaysExpanded(grouped.map { it.label to it.isToday }, overrides)
+                        DropdownMenuItem(
+                            text = { Text(if (allOpen) "Collapse all" else "Expand all") },
+                            enabled = grouped.isNotEmpty(),
+                            onClick = { menu = false; overrides = setAllDays(grouped.map { it.label }, !allOpen) },
                         )
                     }
                 },
@@ -187,9 +216,14 @@ fun TimelineTab() {
                 }
             }
             for (day in grouped) {
-                stickyHeader(key = day.key, contentType = "header") { DayHeader(day.label) }
-                items(day.rows, key = { it.first }, contentType = { "row" }) { (_, e) ->
-                    EntryRow(e, zone) { open(e) }
+                val isOpen = expandedOf(day, grouped.size)
+                stickyHeader(key = day.key, contentType = "header") {
+                    DayHeader(day.label, day.rows.size, isOpen, animate) { overrides = toggleDay(overrides, day.label, isOpen) }
+                }
+                if (isOpen) {
+                    items(day.rows, key = { it.first }, contentType = { "row" }) { (_, e) ->
+                        Box(if (animate) Modifier.animateItem() else Modifier) { EntryRow(e, zone) { open(e) } }
+                    }
                 }
             }
         }
@@ -224,9 +258,25 @@ fun TimelineTab() {
 }
 
 @Composable
-private fun DayHeader(label: String) {
-    // Opaque, so rows scroll under it while it sticks.
-    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) { SectionHeader(label) }
+private fun DayHeader(label: String, count: Int, expanded: Boolean, animate: Boolean, onToggle: () -> Unit) {
+    val turn by animateFloatAsState(if (expanded) 0f else -90f, tween(if (animate) 150 else 0), label = "day chevron")
+    // Opaque, so rows scroll under it while it sticks. The whole row is the 48 dp target.
+    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable(role = Role.Button, onClick = onToggle)
+                .semantics(mergeDescendants = true) { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+                .padding(start = 24.dp, end = 24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Filled.KeyboardArrowDown, null, Modifier.size(20.dp).rotate(turn), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Text(itemCountText(count), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 private fun kindIcon(k: TlKind) = when (k) {
