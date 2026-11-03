@@ -241,17 +241,24 @@ class ScanActivity : ComponentActivity() {
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
         future.addListener({
-            val provider = future.get()
-            val p = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
-            val analysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-            val reader = QRCodeReader()
-            val hints = mapOf(DecodeHintType.TRY_HARDER to true)
-            analysis.setAnalyzer(executor) { img -> analyze(img, reader, hints) }
-            provider.unbindAll()
-            provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, p, analysis)
-            Log.i(TAG, "SCAN camera started")
+            try {
+                val provider = future.get()
+                val p = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
+                val analysis = ImageAnalysis.Builder()
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .build()
+                val reader = QRCodeReader()
+                val hints = mapOf(DecodeHintType.TRY_HARDER to true)
+                analysis.setAnalyzer(executor) { img -> analyze(img, reader, hints) }
+                provider.unbindAll()
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, p, analysis)
+                Log.i(TAG, "SCAN camera started")
+            } catch (t: Throwable) {
+                // No back camera, or the camera is busy (Relay's own webcam session): say so instead of crashing.
+                Log.e(TAG, "SCAN camera could not start: ${t.javaClass.simpleName}")
+                android.widget.Toast.makeText(this, "The camera is not available. Close other apps that use it and try again", android.widget.Toast.LENGTH_LONG).show()
+                finish()
+            }
         }, mainExecutor)
     }
 
