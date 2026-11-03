@@ -443,7 +443,7 @@ fun SettingsTab(onDone: () -> Unit) {
                             }
                         }
                     }
-                    Group.Notifications -> item { RelayCard { NotificationsOnPc() } }
+                    Group.Notifications -> { item { RelayCard { NotificationsOnPc() } }; item { RelayCard { NotifyBlockRow() } } } // F7 (features agent): per-app block row, ui/settings/NotifyBlockRow.kt
                     Group.Files -> {
                         item { SectionHeader("Receiving") }
                         item {
