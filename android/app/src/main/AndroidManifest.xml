@@ -20,6 +20,8 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Wi-Fi lock while the PC controls the phone (no power-save batching of pointer moves). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Off until the user turns it on: lets a PC's audio request open its window from the background. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- "Silence" on a call toast: ringer to vibrate for that call (user grants it). -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />

@@ -192,11 +192,31 @@ private fun AudioToPc() {
     if (from != null) LiveBanner("Playing audio from $from") { AudioShare.stop(AudioDirection.PC_TO_PHONE) }
     RelayRow(
         title = "Share this phone's audio without asking",
-        supporting = if (skip) "On. $APP_NAME's own question is skipped. Android's capture prompt still appears every time, and the microphone is never skipped" else "Off. This phone asks you first, then Android asks to capture",
+        supporting = if (skip) "On. $APP_NAME's own question is skipped. The microphone is never skipped" else "Off. This phone asks you first, then Android asks to capture",
         checked = skip,
         onChecked = { v ->
             skip = v
             prefs.audioSkipConfirmPhoneToPc = v
+        },
+    )
+    // Re-read when the row is drawn: the user comes back from Android's page.
+    val overDisplay = android.provider.Settings.canDrawOverlays(ctx)
+    val captureAllowed = runCatching {
+        ctx.getSystemService(android.app.AppOpsManager::class.java).unsafeCheckOpNoThrow(
+            "android:project_media",
+            android.os.Process.myUid(),
+            ctx.packageName,
+        ) == android.app.AppOpsManager.MODE_ALLOWED
+    }.getOrDefault(false)
+    RelayRow(
+        title = "Start from the PC with nothing to tap",
+        supporting = dev.phonebridge.app.handsFreeAudioText(overDisplay, captureAllowed),
+        onClick = {
+            val i = android.content.Intent(
+                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:${ctx.packageName}"),
+            )
+            runCatching { ctx.startActivity(i) }
         },
     )
     RelayRow(

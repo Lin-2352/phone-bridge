@@ -142,7 +142,9 @@ pub fn confirm_text(phone: &str) -> (String, String, &'static str, &'static str)
 pub fn refused_text(d: Dir, phone: &str, e: &Error) -> String {
     match e {
         Error::Declined | Error::AudioRefused(AudioReason::Declined) => match d {
-            Dir::PhoneToPc => format!("{phone} declined to share its audio"),
+            Dir::PhoneToPc => format!(
+                "{phone} didn't share its audio. The request was declined or nobody answered it on the phone."
+            ),
             Dir::PcToPhone => format!("{phone} declined to play this PC's audio"),
         },
         Error::AudioRefused(AudioReason::Busy) => match d {
