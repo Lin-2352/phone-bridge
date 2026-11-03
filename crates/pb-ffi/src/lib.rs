@@ -159,6 +159,38 @@ pub enum PbEvent {
     },
 }
 
+/// Cancel handles of the transfers running now, by direction (true = incoming): the phone shows
+/// one progress slot per direction, so its Cancel stops everything running that way.
+static CANCELS: Mutex<Vec<(u64, bool, pb_transport::files::Cancel)>> = Mutex::new(Vec::new());
+static CANCEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A cancel handle for one transfer, registered until dropped.
+struct CancelGuard {
+    id: u64,
+    cancel: pb_transport::files::Cancel,
+}
+
+impl CancelGuard {
+    fn new(incoming: bool) -> Self {
+        let cancel = pb_transport::files::Cancel::new();
+        let id = CANCEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CANCELS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((id, incoming, cancel.clone()));
+        Self { id, cancel }
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        CANCELS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(id, _, _)| *id != self.id);
+    }
+}
+
 /// Progress callback for a transfer, rate-limited so the UI is not flooded.
 fn progress_events(
     events: Events,
@@ -940,7 +972,7 @@ fn fd_to_file(_fd: i32) -> Result<std::fs::File, PbError> {
 }
 
 async fn pump(mut s: Session, sh: Arc<Shared>) {
-    use pb_transport::files::{receive_offer, Received, DEFAULT_MAX_FILE};
+    use pb_transport::files::{receive_offer_with, Received, DEFAULT_MAX_FILE};
     let name = s.peer_name.clone();
     applog::session_open();
     push(
@@ -1143,20 +1175,26 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 };
                 let file_name = offer.name.clone();
                 let started = std::time::Instant::now();
-                match receive_offer(
+                let guard = CancelGuard::new(true);
+                let received = receive_offer_with(
                     &mut s,
                     offer,
                     accept,
                     &sh.incoming_dir,
                     DEFAULT_MAX_FILE,
-                    Some(progress_events(
-                        sh.events.clone(),
-                        name.clone(),
-                        file_name.clone(),
-                        true,
-                    )),
+                    pb_transport::files::TransferOpts::new(
+                        Some(progress_events(
+                            sh.events.clone(),
+                            name.clone(),
+                            file_name.clone(),
+                            true,
+                        )),
+                        Some(guard.cancel.clone()),
+                    ),
                 )
-                .await
+                .await;
+                drop(guard);
+                match received
                 {
                     Ok(Received::File { path, size }) => {
                         applog::file_done(
@@ -1742,27 +1780,32 @@ impl PbNode {
         let peer = self.find(&peer_id)?;
         let reader = tokio::fs::File::from_std(file);
         let started = std::time::Instant::now();
+        let guard = CancelGuard::new(false);
         let sent = self
             .node
-            .send_file(
+            .send_file_with(
                 &peer,
                 &name,
                 size,
                 &mime,
                 reader,
-                Some(progress_events(
-                    self.shared.events.clone(),
-                    self.node
-                        .paired_peers()
-                        .into_iter()
-                        .find(|p| p.id == peer)
-                        .map(|p| p.name)
-                        .unwrap_or_default(),
-                    name.clone(),
-                    false,
-                )),
+                pb_transport::files::TransferOpts::new(
+                    Some(progress_events(
+                        self.shared.events.clone(),
+                        self.node
+                            .paired_peers()
+                            .into_iter()
+                            .find(|p| p.id == peer)
+                            .map(|p| p.name)
+                            .unwrap_or_default(),
+                        name.clone(),
+                        false,
+                    )),
+                    Some(guard.cancel.clone()),
+                ),
             )
             .await;
+        drop(guard);
         match &sent {
             Ok(_) => applog::file_done("sent", &name, size, started.elapsed().as_secs_f64()),
             Err(e) => applog::file_failed("sent", &name, &e.to_string()),
@@ -2051,6 +2094,16 @@ impl PbNode {
         self.shared
             .clipboard_images
             .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Stop the file transfers running in one direction (`incoming` true: files from the PC,
+    /// false: files this phone sends). Partial files are deleted; the PC is told.
+    pub fn cancel_transfers(&self, incoming: bool) {
+        for (_, inc, c) in CANCELS.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+            if *inc == incoming {
+                c.cancel();
+            }
+        }
     }
 
     /// Reply to an `IncomingOffer` event.
