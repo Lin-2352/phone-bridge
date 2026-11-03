@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Not grantable by the user's taps: Relay grants it to itself once over adb during the helper's
+         one-time setup, to turn Wireless debugging on for a moment when the helper needs starting. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- Phone screen on the PC (only while sharing). -->
@@ -228,6 +233,7 @@
         <receiver android:name=".ScreenReceiver" android:exported="false" />
         <receiver android:name=".CameraReceiver" android:exported="false" />
         <receiver android:name=".AudioReceiver" android:exported="false" />
+        <receiver android:name=".HelperPairReceiver" android:exported="false" />
         <receiver android:name=".TransferReceiver" android:exported="false" />
     </application>
 </manifest>

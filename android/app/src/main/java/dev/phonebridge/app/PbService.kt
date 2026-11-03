@@ -248,6 +248,7 @@ class PbService : Service() {
         Timeline.init(this)
         PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
         Prefs(this).audioHelperSecret()
+        HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do
         // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
         // Bars from a process that was killed mid-transfer never end by themselves.
@@ -755,6 +756,18 @@ class PbService : Service() {
      */
     private fun askAudio(e: PbEvent.AudioRequest) {
         val mic = e.source.toInt() == 1
+        // Starting the helper takes seconds and the PC waits for up to 40: never on the events thread.
+        if (!mic && Prefs(this).audioHelperPaired && Prefs(this).audioSilencePhone) {
+            Thread({
+                HelperStarter.ensure(this, asked = true)
+                answerAudio(e, mic)
+            }, "pb-audio-ask").start()
+        } else {
+            answerAudio(e, mic)
+        }
+    }
+
+    private fun answerAudio(e: PbEvent.AudioRequest, mic: Boolean) {
         if (AudioShare.debugTone && applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             val src = dev.phonebridge.app.audio.AudioSource.PLAYBACK
             AudioShare.launchTone(this, AudioAsk(e.id, e.peerName, src, e.sampleRate.toInt(), e.channels.toInt()))

@@ -42,6 +42,11 @@ object HelperAudio {
         }
     }
 
+    /** Asks a running helper to exit. Nothing to do when none is running. */
+    fun quit(ctx: Context) {
+        runCatching { connect(ctx).use { it.getOutputStream().write(HelperProtocol.CMD_QUIT.toInt()) } }
+    }
+
     /** A real round trip: never remembered, since the helper can die at any time. */
     fun alive(ctx: Context): Boolean = try {
         connect(ctx).use { s ->

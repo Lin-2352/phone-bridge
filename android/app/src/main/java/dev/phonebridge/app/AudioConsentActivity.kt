@@ -33,7 +33,8 @@ private const val ASK_MS = 30_000L
 /**
  * "Let <PC> hear ...?" then, as needed, the RECORD_AUDIO grant and Android's capture dialog.
  * Microphone: Relay's dialog is shown every time, no setting skips it. Playback: Relay's dialog is
- * skipped by the "don't ask" setting, Android's capture dialog never is.
+ * skipped by the "don't ask" setting, and Android's capture dialog is only skipped when the audio
+ * helper does the capture, or when the user allowed it outside Relay.
  */
 class AudioConsentActivity : ComponentActivity() {
     private var ask: AudioAsk? = null
@@ -106,7 +107,11 @@ class AudioConsentActivity : ComponentActivity() {
                         body = if (mic) {
                             "Your microphone is recorded and played on the PC for as long as sharing runs. $APP_NAME asks every time. Stop any time from the notification."
                         } else {
-                            "Whatever this phone plays is sent to the PC and plays there. Android asks once more before it starts. Stop any time from the notification."
+                            if (useHelper) {
+                                "Whatever this phone plays is sent to the PC and plays there, and this phone stays silent. Stop any time from the notification."
+                            } else {
+                                "Whatever this phone plays is sent to the PC and plays there. Android asks once more before it starts. Stop any time from the notification."
+                            }
                         },
                         onAllow = { allow() },
                         onDeny = { if (!finished) refuse(AudioReason.DECLINED) },

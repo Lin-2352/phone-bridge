@@ -26,6 +26,7 @@ private const val LEGACY_JOB_ID = 4701
 class RecoveryJob : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         ensureRunning(this, "job")
+        HelperStarter.maintain(this)
         return false
     }
 

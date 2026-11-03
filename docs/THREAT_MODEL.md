@@ -54,6 +54,22 @@ Out of scope (for now): a fully compromised OS or kernel, hardware attacks, nati
 - Spike 1 used an unauthenticated test protocol on throw-away keys; it proves transport, not authorisation. Do not treat spike code as secure.
 - The first GSO send failure on USB tethering (DECISIONS.md) is an availability bug, not a confidentiality one, but a flaky transport invites insecure retries; do not add silent fallbacks.
 
+## Audio capture without Android's prompt (2026-11-04)
+Both of these remove a protection Android normally gives, so both are the user's explicit choice, and Relay's notification with Stop is then the only sign of a share. The rule that the PC can only ask, and that the microphone asks every time, is unchanged.
+
+**The hands-free grant.** If the user allows `PROJECT_MEDIA` for Relay outside the app, Android approves its capture prompt automatically, for audio and for screen sharing alike, with the capture icon still shown. Only a paired PC can request a capture, subject to Relay's own settings. Undone with `appops set ... PROJECT_MEDIA default`.
+
+**The audio helper.** After its one-time setup:
+- Relay holds a paired adb identity, which amounts to shell access to this phone. It is kept outside backups, encrypted under a key in Android's keystore, and used only for fixed commands. Anything that takes over Relay's process can use it: that is the main cost of this feature, and why it is off until the user sets it up after being told this.
+- Relay holds `WRITE_SECURE_SETTINGS`, which covers far more than Wireless debugging. Same reasoning.
+- While starting the helper, Wireless debugging is on for a few seconds, listening on the network and open to paired keys only. It goes back to how the user had it.
+- The helper records everything routed to `REMOTE_SUBMIX`, including apps that opt out of capture, with no capture icon. Android routes media there; alarm, ringtone and notification sounds stayed on the speaker when measured.
+- Any local app can reach the helper's loopback port. It gets a random nonce and nothing more without the secret (tested). Any app could also occupy the port first: the helper then can't start and Relay falls back, and Relay takes no audio from whatever holds the port, because it must prove the secret too.
+- Other apps can't read the secret: it is in Relay's private storage and the shell's environment, and it never goes on a command line or in a log.
+- A dead helper or Relay stops recording: recording exists only while Relay holds the connection. The helper exits when the APK it came from goes away.
+- `libadb-android` has never had a security audit, and it runs in Relay's process during setup and starts.
+- Turning the helper off stops it, revokes the grant when it can reach adb, and deletes the identity. The phone's Paired devices list still shows Relay until the user removes it, though the key is gone.
+
 ## Rules that follow from this
 1. No feature acts on a peer that is not in the paired-peer store.
 2. Anything that reads from or controls the other device needs its own explicit, revocable permission.

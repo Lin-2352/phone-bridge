@@ -17,3 +17,12 @@
 
 # The audio helper is started by name with app_process; nothing in the app calls its entry point.
 -keep class dev.phonebridge.helper.Main { public static void main(java.lang.String[]); }
+
+# The adb library finds Conscrypt and SPAKE2 by name and through JNI.
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
+-keep class io.github.muntashirakon.crypto.** { *; }
+-keep class io.github.muntashirakon.adb.** { *; }
+-dontwarn org.bouncycastle.**
+-dontwarn com.android.org.conscrypt.**
+-dontwarn org.apache.harmony.xnet.provider.jsse.**

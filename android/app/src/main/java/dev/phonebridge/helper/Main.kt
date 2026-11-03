@@ -99,6 +99,7 @@ object Main {
                 val input = DataInputStream(s.getInputStream())
                 when (input.readByte()) {
                     HelperProtocol.CMD_PING -> s.getOutputStream().write(HelperProtocol.VERSION.toInt())
+                    HelperProtocol.CMD_QUIT -> exitProcess(0)
                     HelperProtocol.CMD_CAPTURE -> {
                         val raw = ByteArray(HelperProtocol.PARAMS_BYTES)
                         input.readFully(raw)

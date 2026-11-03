@@ -26,6 +26,7 @@ object HelperProtocol {
     const val VERSION: Byte = 1
     const val CMD_PING: Byte = 'P'.code.toByte()
     const val CMD_CAPTURE: Byte = 'C'.code.toByte()
+    const val CMD_QUIT: Byte = 'Q'.code.toByte()
     const val REPLY_OK: Byte = 'O'.code.toByte()
     const val REPLY_BUSY: Byte = 'B'.code.toByte()
     const val REPLY_FAILED: Byte = 'F'.code.toByte()

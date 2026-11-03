@@ -75,6 +75,11 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
     implementation("com.google.zxing:core:3.5.3")
+    // The audio helper's one-time setup: talks to this phone's own adb daemon. Versions pinned, and
+    // the JitPack artifacts' hashes are checked in gradle/verification-metadata.xml.
+    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
+    implementation("org.bouncycastle:bcpkix-jdk15to18:1.81")
 
     testImplementation("junit:junit:4.13.2")
     // android.jar's org.json is a stub in JVM tests; the real one for Timeline encode/decode.

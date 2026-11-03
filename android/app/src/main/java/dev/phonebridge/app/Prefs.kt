@@ -111,6 +111,19 @@ class Prefs(context: Context) {
         get() = sp.getInt("audio_held_index", -1)
         set(v) = sp.edit().putInt("audio_held_index", v).commit().let {}
 
+    /** The one-time pairing is done: Relay may start the helper by itself. */
+    var audioHelperPaired: Boolean
+        get() = sp.getBoolean("audio_helper_paired", false)
+        set(v) = sp.edit().putBoolean("audio_helper_paired", v).commit().let {}
+
+    var audioHelperLastAttempt: Long
+        get() = sp.getLong("audio_helper_last_attempt", 0)
+        set(v) = sp.edit().putLong("audio_helper_last_attempt", v).apply()
+
+    var audioHelperLastConnect: Long
+        get() = sp.getLong("audio_helper_last_connect", 0)
+        set(v) = sp.edit().putLong("audio_helper_last_connect", v).apply()
+
     /** Shared with the helper Relay starts, and with nothing else. Made once, on first need. */
     fun audioHelperSecret(): ByteArray {
         dev.phonebridge.helper.HelperProtocol.secretFromHex(sp.getString("audio_helper_secret", null))?.let { return it }
