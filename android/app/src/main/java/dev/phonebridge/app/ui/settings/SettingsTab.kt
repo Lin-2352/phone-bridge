@@ -45,6 +45,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -189,7 +191,7 @@ private fun ScreenToPc() {
 
 /** "Camera for my PC": who uses it now (with Stop), and the opt-in to skip the question. */
 @Composable
-private fun CameraForPc() {
+private fun CameraForPc(say: (String, String?, () -> Unit) -> Unit) {
     val resumed = LocalResumeCount.current
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
@@ -198,13 +200,19 @@ private fun CameraForPc() {
     if (user != null) LiveBanner("$user is using the camera") { CameraShare.stop(userStopped = true) }
     RelayRow(
         title = "PCs always allowed to use the camera",
-        supporting = if (allowed.isNotEmpty()) "${allowed.size} PC(s) skip the question. Android's camera indicator still shows"
+        supporting = if (allowed.isNotEmpty()) "${pcCount(allowed.size)} skip${if (allowed.size == 1) "s" else ""} the question. Android's camera indicator still shows"
         else "None. This phone asks you first (choose Always allow in the question)",
         // Turning off forgets every PC; a PC is added from the question.
         checked = allowed.isNotEmpty(),
         onChecked = { _ ->
+            val before = allowed
             allowed = emptySet()
             prefs.allowedCameraPcs = emptySet()
+            // Switching off forgets every PC at once: offer the way back.
+            say("Camera question is back on for ${pcCount(before.size)}", "Undo") {
+                allowed = before
+                prefs.allowedCameraPcs = before
+            }
         },
         switchEnabled = allowed.isNotEmpty(),
     )
@@ -285,9 +293,17 @@ fun SettingsTab(onDone: () -> Unit) {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
-    var nav by remember { mutableStateOf(SettingsNav()) }
+    var nav by rememberSaveable(stateSaver = androidx.compose.runtime.saveable.listSaver<SettingsNav, String>(save = { it.toSaved() }, restore = { settingsNavFromSaved(it) })) { mutableStateOf(SettingsNav()) }
     val goBack = { nav.back()?.let { nav = it } }
     BackHandler(enabled = nav.back() != null) { goBack() }
+    val snack = remember { androidx.compose.material3.SnackbarHostState() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val say: (String, String?, () -> Unit) -> Unit = { text, action, onAction ->
+        scope.launch {
+            snack.currentSnackbarData?.dismiss()
+            if (snack.showSnackbar(text, action, duration = androidx.compose.material3.SnackbarDuration.Long) == androidx.compose.material3.SnackbarResult.ActionPerformed) onAction()
+        }
+    }
     var clipOn by remember(resumed) { mutableStateOf(prefs.clipboardSync) }
     var sens by remember(resumed) { mutableStateOf(prefs.sendSensitive) }
     var images by remember(resumed) { mutableStateOf(prefs.clipboardImages) }
@@ -297,6 +313,16 @@ fun SettingsTab(onDone: () -> Unit) {
         shots = granted
         prefs.shareScreenshots = granted
         ScreenshotWatcher.sync(ctx)
+        // The switch snapped back off: say why, and once Android will not ask again, open its settings page.
+        val act = ctx as? android.app.Activity
+        when (photoDenial(granted, act?.shouldShowRequestPermissionRationale(ClipImages.imagePermission) ?: false)) {
+            PhotoDenial.None -> {}
+            PhotoDenial.Explain -> say("Screenshots need access to photos. Try again and choose Allow.", null) {}
+            PhotoDenial.OpenSettings -> {
+                say("Allow Photos in $APP_NAME's Android settings to send screenshots.", null) {}
+                dev.phonebridge.app.ui.home.openAppDetails(ctx)
+            }
+        }
     }
     var auto by remember(resumed) { mutableStateOf(prefs.autoAccept) }
     var tree by remember { mutableStateOf(prefs.saveTree) }
@@ -347,6 +373,7 @@ fun SettingsTab(onDone: () -> Unit) {
     val fadeMs = if (animationsEnabled(ctx)) 160 else 0
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
+        snackbarHost = { androidx.compose.material3.SnackbarHost(snack) },
         topBar = {
             RelayTopBar(
                 title = nav.page?.let(::groupTitle) ?: "Settings",
@@ -397,7 +424,8 @@ fun SettingsTab(onDone: () -> Unit) {
                         item { SectionHeader("Paired PCs") }
                         item {
                             RelayCard {
-                                if (peers.isEmpty()) RelayRow("No PC paired yet", "Scan the QR code shown on your PC")
+                                // The row below says how to pair; this one only states the fact.
+                                if (peers.isEmpty()) RelayRow("No PC paired yet")
                                 peers.forEachIndexed { i, p ->
                                     if (i > 0) RowDivider()
                                     RelayRow(
@@ -424,7 +452,7 @@ fun SettingsTab(onDone: () -> Unit) {
                             }
                         }
                     }
-                    Group.Camera -> item { RelayCard { CameraForPc() } }
+                    Group.Camera -> item { RelayCard { CameraForPc(say) } }
                     Group.Screen -> {
                         item { SectionHeader("Control from your PC") }
                         item { RelayCard { ControlFromPc() } }
@@ -501,7 +529,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                 RowDivider()
                                 RelayRow(
                                     title = "Passwords and codes",
-                                    supporting = "Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC",
+                                    supporting = (if (!clipOn) "Turn on Share clipboard first. " else "") + "Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC",
                                     checked = sens,
                                     onChecked = { sens = it; prefs.sendSensitive = it },
                                     switchEnabled = clipOn,
@@ -585,7 +613,7 @@ fun SettingsTab(onDone: () -> Unit) {
                             }
                         }
                         item { SectionHeader("Logs") }
-                        item { RelayCard { LogRows() } }
+                        item { RelayCard { LogRows(say) } }
                     }
                 }
             }
@@ -595,7 +623,7 @@ fun SettingsTab(onDone: () -> Unit) {
 
 /** Keep logs, Log size, Export logs and Clear all logs: the day-by-day log on this phone. */
 @Composable
-private fun LogRows() {
+private fun LogRows(say: (String, String?, () -> Unit) -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     var keep by remember { mutableStateOf(prefs.keepLogs) }
@@ -604,6 +632,7 @@ private fun LogRows() {
     var confirming by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     fun refresh() {
+        note = null // a stale "No logs to export" must not hide the real size
         size = AppLog.sizeBytes()
         days = AppLog.dayCount()
     }
@@ -615,8 +644,9 @@ private fun LogRows() {
             destructive = true,
             onConfirm = {
                 confirming = false
-                note = if (AppLog.clearAll()) null else "Could not clear the logs"
+                val cleared = AppLog.clearAll()
                 refresh()
+                if (!cleared) note = "Could not clear the logs"
             },
             dismissText = "Cancel",
         ) {
@@ -641,7 +671,8 @@ private fun LogRows() {
         supporting = "Share a zip of the daily logs",
         onClick = {
             val i = runCatching { AppLog.exportIntent(ctx) }.getOrNull()
-            if (i == null) note = "No logs to export" else runCatching { ctx.startActivity(i) }
+            if (i == null) say("No logs to export", null) {}
+            else if (runCatching { ctx.startActivity(i) }.isFailure) say("No app can share the logs", null) {}
         },
     )
     RowDivider()
