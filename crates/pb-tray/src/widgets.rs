@@ -1,6 +1,8 @@
 //! Widget kit for the Relay windows: scrolling, virtual list range, nav rail,
 //! rows, cards, badges, info bars, empty states and skeletons. Layout is pure
 //! (testable); the draw parts run over a Direct2D `Canvas`.
+pub mod scrollbar;
+
 use std::{ops::Range, sync::OnceLock, time::Instant};
 
 use crate::{
@@ -14,7 +16,7 @@ use crate::{
 /// One mouse-wheel notch (120) scrolls this many logical px.
 const WHEEL_STEP: f32 = 48.0;
 /// The scrollbar thumb never gets shorter than this.
-const MIN_THUMB: f32 = 24.0;
+const MIN_THUMB: f32 = scrollbar::MIN_THUMB;
 
 /// Scroll state of a list or page. Lengths share one unit chosen by the
 /// caller; the wheel step of 48 is in logical px, so use logical px.
@@ -57,6 +59,30 @@ impl Scroll {
             return;
         }
         self.anim = Some(Anim::new(self.offset, target, now, motion::FAST_MS));
+    }
+
+    /// Where the offset is heading: the end of the ease in flight, else the
+    /// offset itself.
+    pub fn target(&self) -> f32 {
+        self.anim.map_or(self.offset, |a| a.to)
+    }
+
+    /// Eases to `target` (clamped), like a wheel step of any size: paging
+    /// keys and track clicks.
+    pub fn ease_to(&mut self, target: f32, now: Instant) {
+        let target = target.clamp(0.0, self.max_offset());
+        if target == self.target() {
+            return;
+        }
+        self.anim = Some(Anim::new(self.offset, target, now, motion::FAST_MS));
+    }
+
+    /// Jumps to `offset` (clamped) with no animation: dragging the thumb,
+    /// or keeping the view still while the content changes.
+    pub fn jump(&mut self, offset: f32) {
+        self.anim = None;
+        self.offset = offset;
+        self.clamp();
     }
 
     /// True while a wheel ease still runs at `now` (read-only; `tick` advances).
@@ -338,6 +364,22 @@ mod tests {
         s.offset = 1600.0;
         let (top, h) = s.thumb().unwrap();
         assert_eq!(top + h, 400.0);
+    }
+
+    #[test]
+    fn jump_and_ease_to_clamp_and_cancel_the_ease() {
+        let t0 = Instant::now();
+        let mut s = Scroll::new(2000.0, 400.0);
+        s.ease_to(5000.0, t0);
+        assert_eq!(s.target(), 1600.0);
+        assert!(!s.tick(t0 + Duration::from_millis(500)));
+        assert_eq!(s.offset, 1600.0);
+        s.ease_to(0.0, t0);
+        s.jump(300.0);
+        assert!(!s.animating(t0), "a jump ends the ease");
+        assert_eq!((s.offset, s.target()), (300.0, 300.0));
+        s.jump(-10.0);
+        assert_eq!(s.offset, 0.0);
     }
 
     #[test]
