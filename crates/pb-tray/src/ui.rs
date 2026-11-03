@@ -590,7 +590,7 @@ fn failed_text(path: &str, open: bool) -> String {
 
 /// `ShellExecuteW` "open" on `file` (with `params`); false when the shell
 /// reports an error (a result of 32 or less).
-fn shell_open(file: &str, params: Option<&str>) -> bool {
+pub(crate) fn shell_open(file: &str, params: Option<&str>) -> bool {
     use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let file = wide(file);
     let params = params.map(wide);
@@ -613,7 +613,7 @@ fn shell_open(file: &str, params: Option<&str>) -> bool {
 
 /// Explorer with the file selected. The one way Relay shows a file in its
 /// folder (Timeline, toasts, balloons).
-fn show_in_folder(path: &str) -> bool {
+pub(crate) fn show_in_folder(path: &str) -> bool {
     select_arg(path).is_some_and(|p| shell_open("explorer.exe", Some(&p)))
 }
 
