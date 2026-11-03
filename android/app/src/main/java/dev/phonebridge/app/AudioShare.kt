@@ -203,7 +203,12 @@ object AudioShare {
 
     @Synchronized
     fun stopAll() {
-        for (d in AudioDirection.entries) if (sessions.isActive(d)) stop(d)
+        for (d in AudioDirection.entries) {
+            if (!sessions.isActive(d)) continue
+            stop(d)
+            // The node is going away: its "ended" event may never arrive, and the recorder must not outlive the service.
+            if (sessions.isActive(d)) ended(d, EndCause.LOCAL_STOP)
+        }
     }
 
     /** The capture ended by itself (app blocks capture, projection closed, read error). Worker thread. */

@@ -140,6 +140,18 @@ class ControlService : AccessibilityService(), InputListener {
         }
     }
 
+    /** Relay itself is stopping: the node's own "control ended" may never arrive, so drop the cursor and Wi-Fi locks now. */
+    fun endForServiceStop() {
+        main.post {
+            ctrl = false
+            stopWheel()
+            finger.release()
+            hideCursor()
+            holdWifi(false)
+            Bridge.controlledBy.value = null
+        }
+    }
+
     override fun onControl(active: Boolean, peerName: String) {
         main.post {
             ctrl = false

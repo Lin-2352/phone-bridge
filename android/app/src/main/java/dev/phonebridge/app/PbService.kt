@@ -224,25 +224,18 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        AppLog.init(this)
-        AppLog.event("events", "service_start")
-        Timeline.init(this)
-        PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
-        // A new process shares nothing yet: drop the old process's ongoing notifications.
-        clearStaleSharing()
+        // Foreground first: the start deadline is short, and the log, timeline and stale-notice work below is not needed for it.
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
         nm.createNotificationChannel(NotificationChannel(CH_EVENTS, "Files and clipboard", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(CH_PROGRESS, "Transfer progress", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CH_CONTROL, "Control requests", NotificationManager.IMPORTANCE_HIGH))
-        // Bars from a process that was killed mid-transfer never end by themselves.
-        nm.cancel(PROGRESS_IN_ID)
-        nm.cancel(PROGRESS_OUT_ID)
         try {
             startForeground(ONGOING_ID, statusNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } catch (t: Throwable) {
             // A background restart (after a low-memory kill) may be refused on
             // Android 12+. Stop cleanly instead of crash-looping; RecoveryJob retries.
+            AppLog.init(this)
             Log.e(TAG, "SERVICE could not go foreground: $t")
             AppLog.event("events", "service_refused", "type" to t.javaClass.simpleName)
             Bridge.startingSince = 0L
@@ -250,6 +243,15 @@ class PbService : Service() {
             stopSelf()
             return
         }
+        AppLog.init(this)
+        AppLog.event("events", "service_start")
+        Timeline.init(this)
+        PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
+        // A new process shares nothing yet: drop the old process's ongoing notifications.
+        clearStaleSharing()
+        // Bars from a process that was killed mid-transfer never end by themselves.
+        nm.cancel(PROGRESS_IN_ID)
+        nm.cancel(PROGRESS_OUT_ID)
         Bridge.running.value = true
         Bridge.startingSince = 0L
         // Running now: an earlier system "Stop" must not read as new and switch it off again.
@@ -261,6 +263,13 @@ class PbService : Service() {
         scheduleRecovery(this)
         scope.launch { start() }
         scope.launch { AppLog.sampleLoop(this@PbService) }
+        // "<PC> not reachable, last seen 5 min ago" only moves when redrawn: do it while the PC is away.
+        scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(STATUS_REDRAW_MS)
+                if (Bridge.nodeReady.value && !Bridge.isConnected()) updateStatus()
+            }
+        }
         AppLog.permissionsChanged(this)
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
@@ -309,6 +318,7 @@ class PbService : Service() {
         // The webcam goes with the service: its camera, encoder and "in use" notice must not outlive "Relay is off".
         if (CameraShare.capture != null || CameraShare.usedBy.value != null) CameraShare.stop(userStopped = true)
         AudioShare.stopAll()
+        ControlService.instance?.endForServiceStop()
         val n = synchronized(Bridge) {
             destroyed = true
             Bridge.node.also { Bridge.node = null }
@@ -923,6 +933,8 @@ class PbService : Service() {
     companion object {
         /** The running service (screen sharing changes its foreground type). */
         @Volatile var instance: PbService? = null
+
+        private const val STATUS_REDRAW_MS = 60_000L
 
         const val ACTION_STOP = "dev.phonebridge.app.STOP"
         private const val ACTION_REFRESH = "dev.phonebridge.app.REFRESH"
