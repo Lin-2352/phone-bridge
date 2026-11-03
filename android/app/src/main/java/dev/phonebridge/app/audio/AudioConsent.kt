@@ -64,7 +64,7 @@ fun endNotice(cause: EndCause, direction: AudioDirection): String? {
         EndCause.LINK_LOST -> "$what stopped because the connection to the PC was lost. Check that both are on the same network, then ask again."
         EndCause.VIOLATION -> "$what stopped because the PC sent audio Relay could not accept. Update Relay on both devices, then ask again."
         EndCause.WRITE_FAILED -> "$what stopped because sending to the PC failed. Check the connection, then ask again."
-        EndCause.APP_BLOCKS_CAPTURE -> "$what stopped: the app that is playing sound does not allow capture. Play it in another app, or use the microphone mode if you really want that."
+        EndCause.APP_BLOCKS_CAPTURE -> "$what stopped: the app that is playing sound does not allow capture. Play it in another app, then ask again."
         EndCause.SOURCE_ENDED -> "$what stopped because Android ended the capture (the sharing was closed from the status bar, or the phone ran low on resources). Ask again to restart it."
     }
 }

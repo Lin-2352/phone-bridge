@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
@@ -75,6 +77,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.phonebridge.app.APP_NAME
+import dev.phonebridge.app.AudioShare
+import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.heroPc
 import dev.phonebridge.app.CameraShare
@@ -139,8 +143,10 @@ fun HomeTab(onTimeline: () -> Unit) {
     val controller = Bridge.controlledBy.value
     val screenTo = ScreenShare.sharingWith.value
     val cameraTo = CameraShare.usedBy.value
+    val audioOut = AudioShare.sharingWith.value
+    val audioIn = AudioShare.playingFrom.value
     // Live, as on the PC: only while the PC really has a session open with this phone.
-    val live = widgetConnected(running, pc, Bridge.liveSessions.intValue, controller, screenTo, cameraTo)
+    val live = widgetConnected(running, pc, Bridge.liveSessions.intValue, controller, screenTo, cameraTo, audioOut ?: audioIn)
     val storedSeen = remember(resumed) { prefs.lastSeenMs }
     val lastSeen = maxOf(Bridge.lastSeen.longValue, storedSeen)
     // "Last seen 5 min ago" moves on, and the node-side needs are re-read, while Home is on screen
@@ -237,13 +243,15 @@ fun HomeTab(onTimeline: () -> Unit) {
                 }
             }
             item(key = "grid") {
-                QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null), running, pc != null, { scope.launch { snack.showSnackbar(it) } }) { q ->
+                QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null, audioOut != null, audioIn != null), running, pc != null, { scope.launch { snack.showSnackbar(it) } }) { q ->
                     when (q) {
                         Quick.SendFile -> pickFiles.launch(arrayOf("*/*"))
                         // The activity reads the clipboard once it has focus (Android's rule), then closes.
                         Quick.SendClipboard -> ctx.startActivity(Intent(ctx, SendClipboardActivity::class.java))
                         Quick.Screen -> if (screenTo != null) ScreenShare.stop(userStopped = true) else startsOnPc(ctx, "Screen")
                         Quick.Camera -> if (cameraTo != null) CameraShare.stop(userStopped = true) else startsOnPc(ctx, "Camera")
+                        Quick.PhoneAudio -> if (audioOut != null) AudioShare.stop(AudioDirection.PHONE_TO_PC) else startsOnPc(ctx, "Phone audio on this PC")
+                        Quick.PcAudio -> if (audioIn != null) AudioShare.stop(AudioDirection.PC_TO_PHONE) else startsOnPc(ctx, "PC audio on the phone")
                         Quick.Touchpad -> ctx.startActivity(Intent(ctx, TouchpadActivity::class.java))
                         Quick.Pair -> ctx.startActivity(Intent(ctx, ScanActivity::class.java))
                     }
@@ -252,6 +260,8 @@ fun HomeTab(onTimeline: () -> Unit) {
             controller?.let { item(key = "session-control") { SessionCard("$it is controlling this phone", "Its mouse and keyboard work here", Modifier.animateItem()) { Bridge.node?.stopControl() } } }
             screenTo?.let { item(key = "session-screen") { SessionCard("Sharing your screen with $it", "Everything on this screen shows on your PC", Modifier.animateItem()) { ScreenShare.stop(userStopped = true) } } }
             cameraTo?.let { item(key = "session-camera") { SessionCard("$it is using the camera", "This phone is your PC's webcam", Modifier.animateItem()) { CameraShare.stop(userStopped = true) } } }
+            audioOut?.let { item(key = "session-audio-out") { SessionCard("Sharing this phone's audio with $it", "What this phone plays also plays on your PC", Modifier.animateItem()) { AudioShare.stop(AudioDirection.PHONE_TO_PC) } } }
+            audioIn?.let { item(key = "session-audio-in") { SessionCard("Playing audio from $it", "Your PC's sound plays on this phone", Modifier.animateItem()) { AudioShare.stop(AudioDirection.PC_TO_PHONE) } } }
             item(key = "recent-head") {
                 Row(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
                     Text("Recent", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.lg))
@@ -411,6 +421,8 @@ private fun Quick.icon(): ImageVector = when (this) {
     Quick.SendClipboard -> Icons.Filled.ContentPaste
     Quick.Screen -> Icons.AutoMirrored.Filled.ScreenShare
     Quick.Camera -> Icons.Filled.Cameraswitch
+    Quick.PhoneAudio -> Icons.AutoMirrored.Filled.VolumeUp
+    Quick.PcAudio -> Icons.Filled.Computer
     Quick.Touchpad -> Icons.Filled.TouchApp
     Quick.Pair -> Icons.Filled.QrCodeScanner
 }

@@ -10,10 +10,10 @@ class HomeCardsTest {
         quickTiles(running, paired, cameraOn, screenOn).first { it.quick == q }
 
     @Test
-    fun grid_is_two_by_three_in_order() {
+    fun grid_is_two_wide_in_order() {
         val tiles = quickTiles(running = true, paired = true, cameraOn = false, screenOn = false)
-        assertEquals(listOf(Quick.SendFile, Quick.SendClipboard, Quick.Screen, Quick.Camera, Quick.Touchpad, Quick.Pair), tiles.map { it.quick })
-        assertEquals(3, tiles.chunked(2).size)
+        assertEquals(listOf(Quick.SendFile, Quick.SendClipboard, Quick.Screen, Quick.Camera, Quick.PhoneAudio, Quick.PcAudio, Quick.Touchpad, Quick.Pair), tiles.map { it.quick })
+        assertEquals(4, tiles.chunked(2).size)
     }
 
     @Test
@@ -26,7 +26,7 @@ class HomeCardsTest {
         val tiles = quickTiles(running = true, paired = false, cameraOn = false, screenOn = false)
         assertTrue(tiles.none { it.quick == Quick.Pair })
         assertTrue(tiles.none { it.enabled })
-        assertEquals(5, tiles.size)
+        assertEquals(7, tiles.size)
     }
 
     @Test
@@ -41,6 +41,15 @@ class HomeCardsTest {
         assertTrue(quickTiles(running = false, paired = true, cameraOn = false, screenOn = false).none { it.enabled })
         val live = quickTiles(running = false, paired = false, cameraOn = true, screenOn = true)
         assertEquals(listOf(Quick.Screen, Quick.Camera), live.filter { it.enabled }.map { it.quick })
+    }
+
+    @Test
+    fun audio_tiles_start_on_the_pc_so_only_a_live_one_works_without_a_link() {
+        assertEquals(listOf("Phone audio", "PC audio"), listOf(Quick.PhoneAudio, Quick.PcAudio).map { tile(it).label })
+        val live = quickTiles(running = false, paired = false, cameraOn = false, screenOn = false, phoneAudioOn = true, pcAudioOn = false)
+        assertEquals(listOf(Quick.PhoneAudio), live.filter { it.enabled }.map { it.quick })
+        assertTrue(live.first { it.quick == Quick.PhoneAudio }.on)
+        assertFalse(live.first { it.quick == Quick.PcAudio }.on)
     }
 
     @Test

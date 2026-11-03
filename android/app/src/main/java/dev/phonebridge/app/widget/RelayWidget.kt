@@ -36,6 +36,7 @@ import androidx.glance.text.TextStyle
 import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.MainActivity
+import dev.phonebridge.app.AudioShare
 import dev.phonebridge.app.ScreenShare
 import dev.phonebridge.app.SendClipboardActivity
 import dev.phonebridge.app.relayStatus
@@ -70,7 +71,7 @@ class RelayWidget : GlanceAppWidget() {
         val pc = Bridge.linked.value
         val connected = widgetConnected(
             Bridge.running.value, pc, Bridge.liveSessions.intValue, Bridge.controlledBy.value,
-            ScreenShare.sharingWith.value, CameraShare.usedBy.value,
+            ScreenShare.sharingWith.value, CameraShare.usedBy.value, AudioShare.activePeer(),
         )
         val now = System.currentTimeMillis()
         val label = relayStatus(Bridge.running.value, Bridge.nodeReady.value, pc, connected, Bridge.lastSeenAny(ctx), now).line

@@ -63,6 +63,16 @@ class TimelineTest {
         assertEquals(3, clipTextEntry("PC", "a😀b").chars)
     }
 
+    @Test fun audio_sessions_keep_who_which_way_and_how_long_never_audio() {
+        val e = audioEntry("Lin's PC", TlDir.ToPc, audioTitle(TlDir.ToPc), 252, now)
+        assertEquals("Phone audio on this PC, 4 min 12 s", summary(e))
+        assertEquals("PC audio on the phone, 12 s", summary(audioEntry("p", TlDir.ToPhone, audioTitle(TlDir.ToPhone), 12, now)))
+        assertNull(e.size)
+        assertNull(e.uri)
+        assertEquals(listOf(e), decode(encode(listOf(e))))
+        assertEquals(listOf("0 s", "59 s", "1 min", "4 min 12 s", "1 h", "1 h 3 min"), listOf(0L, 59, 60, 252, 3600, 3780).map(::durationText))
+    }
+
     @Test fun summaries_match_the_pc_wording() {
         assertEquals("Picture, 1080 × 2412, 1.2 MB", summary(pic()))
         assertEquals("Picture, 1.2 MB", summary(clipImageEntry("p", TlDir.ToPc, 1_200_000, null)))

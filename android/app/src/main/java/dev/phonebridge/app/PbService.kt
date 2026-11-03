@@ -111,7 +111,7 @@ object Bridge {
 
     /** A PC session is live right now (Home's "Connected"). */
     fun isConnected(): Boolean =
-        widgetConnected(running.value, linked.value, liveSessions.intValue, controlledBy.value, ScreenShare.sharingWith.value, CameraShare.usedBy.value)
+        widgetConnected(running.value, linked.value, liveSessions.intValue, controlledBy.value, ScreenShare.sharingWith.value, CameraShare.usedBy.value, AudioShare.activePeer())
 
     /** The PC was in contact just now. */
     fun stampSeen(ctx: Context) {

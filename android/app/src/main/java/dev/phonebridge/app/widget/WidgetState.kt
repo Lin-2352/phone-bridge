@@ -13,5 +13,5 @@ fun widgetLabel(running: Boolean, pcName: String?, connected: Boolean, starting:
  * Connected as Home means it (ui/home/HomeTab.kt `live`, worded "Connected" by `pcStatus`): only while
  * the PC really has a session open with this phone, or controls it, or sees its screen or camera.
  */
-fun widgetConnected(running: Boolean, pc: String?, sessions: Int, controlledBy: String?, screenTo: String?, cameraTo: String?): Boolean =
-    running && pc != null && (sessions > 0 || controlledBy != null || screenTo != null || cameraTo != null)
+fun widgetConnected(running: Boolean, pc: String?, sessions: Int, controlledBy: String?, screenTo: String?, cameraTo: String?, audioWith: String? = null): Boolean =
+    running && pc != null && (sessions > 0 || controlledBy != null || screenTo != null || cameraTo != null || audioWith != null)

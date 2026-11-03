@@ -31,7 +31,7 @@ import org.json.JSONObject
 
 private const val TAG = "PhoneBridge"
 
-enum class TlKind { File, ClipText, ClipImage, Link, Notification }
+enum class TlKind { File, ClipText, ClipImage, Link, Notification, Audio }
 enum class TlDir { ToPc, ToPhone }
 
 data class TlEntry(
@@ -60,6 +60,7 @@ private fun kindCode(k: TlKind) = when (k) {
     TlKind.ClipImage -> "I"
     TlKind.Link -> "L"
     TlKind.Notification -> "N"
+    TlKind.Audio -> "A"
 }
 private fun kindOf(c: String) = TlKind.entries.firstOrNull { kindCode(it) == c } ?: throw IllegalArgumentException("bad kind")
 private fun dirCode(d: TlDir) = if (d == TlDir.ToPc) "c" else "p"
@@ -90,6 +91,23 @@ fun clipImageEntry(peer: String, dir: TlDir, size: Long, dims: Pair<Int, Int>?, 
 /** The source app's name only: never the title or text. */
 fun notificationEntry(peer: String, app: String, at: Long = System.currentTimeMillis()) =
     TlEntry(TlKind.Notification, TlDir.ToPc, peer, at, app = app)
+
+/**
+ * A finished audio session: who, which way, how long, never any audio. [title] is the session's name
+ * ([audioTitle]); the length in seconds goes in `chars`, as on the PC.
+ */
+fun audioEntry(peer: String, dir: TlDir, title: String, seconds: Long, at: Long = System.currentTimeMillis()) =
+    TlEntry(TlKind.Audio, dir, peer, at, name = title, chars = seconds.coerceIn(0, Int.MAX_VALUE.toLong()).toInt())
+
+/** The session title, worded as on the PC. */
+fun audioTitle(dir: TlDir) = if (dir == TlDir.ToPc) "Phone audio on this PC" else "PC audio on the phone"
+
+/** "12 s", "4 min 12 s", "1 h 3 min": as the PC words a length. */
+fun durationText(secs: Long): String = when {
+    secs < 60 -> "$secs s"
+    secs < 3600 -> if (secs % 60 == 0L) "${secs / 60} min" else "${secs / 60} min ${secs % 60} s"
+    else -> if (secs % 3600 / 60 == 0L) "${secs / 3600} h" else "${secs / 3600} h ${secs % 3600 / 60} min"
+}
 
 /** Width and height from a PNG's IHDR (its first 24 bytes), or null. */
 fun pngDims(head: ByteArray): Pair<Int, Int>? {
@@ -137,6 +155,10 @@ fun summary(e: TlEntry): String = when (e.kind) {
         e.size?.let { append(", ${humanSize(it)}") }
     }
     TlKind.Notification -> "${e.app ?: "App"} notification"
+    TlKind.Audio -> {
+        val title = e.name ?: "Audio"
+        e.chars?.let { "$title, ${durationText(it.toLong())}" } ?: title
+    }
 }
 
 /** `{"v":1,"e":[...]}`, newest first; absent fields are left out. */

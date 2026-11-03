@@ -40,6 +40,7 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -330,6 +331,7 @@ private fun kindIcon(k: TlKind) = when (k) {
     TlKind.ClipImage -> Icons.Filled.Image
     TlKind.Link -> Icons.Filled.Link
     TlKind.Notification -> Icons.Filled.Notifications
+    TlKind.Audio -> Icons.AutoMirrored.Filled.VolumeUp
 }
 
 private fun kindTint(k: TlKind) = when (k) {
@@ -337,6 +339,7 @@ private fun kindTint(k: TlKind) = when (k) {
     TlKind.ClipText -> RelayTint.Accent
     TlKind.ClipImage -> RelayTint.Success
     TlKind.Notification -> RelayTint.Warning
+    TlKind.Audio -> RelayTint.Accent
 }
 
 private fun actionLabel(a: EntryAction) = when (a) {

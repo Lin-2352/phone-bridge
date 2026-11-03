@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjection
 import android.util.Log
+import androidx.compose.runtime.mutableStateOf
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.audio.AudioReason
 import dev.phonebridge.app.audio.AudioSessions
@@ -45,6 +46,18 @@ class AudioAsk(
  */
 object AudioShare {
     val sessions = AudioSessions()
+
+    /** The PC this phone's audio is going to, while it is (Home's card and the Stop button read it). */
+    val sharingWith = mutableStateOf<String?>(null)
+
+    /** The PC whose audio plays on this phone, while it does. */
+    val playingFrom = mutableStateOf<String?>(null)
+
+    /** Either direction's PC, for the "Connected" answer. */
+    fun activePeer(): String? = sharingWith.value ?: playingFrom.value
+
+    private val startedAt = LongArray(AudioDirection.entries.size)
+    private val peerOf = arrayOfNulls<String>(AudioDirection.entries.size)
 
     private val out = AtomicReference<PbAudioOut?>(null)
     @Volatile private var player: AudioPlayer? = null
@@ -97,6 +110,7 @@ object AudioShare {
             return
         }
         out.set(o)
+        began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
         Log.i(TAG, "AUDIO phone to PC started source=${a.source}")
     }
@@ -164,12 +178,14 @@ object AudioShare {
             return
         }
         player = p
+        began(AudioDirection.PC_TO_PHONE, e.peerName)
         notifySession(ctx, AudioDirection.PC_TO_PHONE, AudioSource.PLAYBACK, e.peerName)
         Log.i(TAG, "AUDIO PC to phone started")
     }
 
     private fun ended(d: AudioDirection, cause: EndCause) {
         val ctx = PbService.instance
+        finished(d)
         when (d) {
             AudioDirection.PHONE_TO_PC -> {
                 val src = captureSource
@@ -190,6 +206,25 @@ object AudioShare {
             }
         }
         if (ctx != null) endNotice(cause, d)?.let { notice(ctx, "Audio stopped", it) }
+    }
+
+    /** A session is up: Home shows it until [finished]. */
+    private fun began(d: AudioDirection, peer: String) {
+        startedAt[d.ordinal] = System.currentTimeMillis()
+        peerOf[d.ordinal] = peer
+        if (d == AudioDirection.PHONE_TO_PC) sharingWith.value = peer else playingFrom.value = peer
+    }
+
+    /** The session is over: leave Home and write the Timeline entry (who, which way, how long; never audio). */
+    private fun finished(d: AudioDirection) {
+        val peer = peerOf[d.ordinal]
+        val began = startedAt[d.ordinal]
+        peerOf[d.ordinal] = null
+        startedAt[d.ordinal] = 0
+        if (d == AudioDirection.PHONE_TO_PC) sharingWith.value = null else playingFrom.value = null
+        if (peer == null || began == 0L) return
+        val dir = if (d == AudioDirection.PHONE_TO_PC) TlDir.ToPc else TlDir.ToPhone
+        Timeline.add(audioEntry(peer, dir, audioTitle(dir), (System.currentTimeMillis() - began) / 1000))
     }
 
     private fun teardownCapture() {

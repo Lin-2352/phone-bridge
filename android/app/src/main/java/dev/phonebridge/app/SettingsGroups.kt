@@ -1,13 +1,14 @@
 package dev.phonebridge.app
 
 /** The phone's settings groups; declaration order is display order. */
-enum class Group { Connection, Camera, Screen, Notifications, Files, Settings }
+enum class Group { Connection, Camera, Screen, Audio, Notifications, Files, Settings }
 
 /** Which group a settings section (by its title) is shown under; unknown sections land in Settings. */
 fun groupFor(section: String): Group = when (section) {
     "Devices" -> Group.Connection
     "Camera" -> Group.Camera
     "Control from PC" -> Group.Screen
+    "Audio" -> Group.Audio
     "Notifications" -> Group.Notifications
     "Sharing" -> Group.Files
     else -> Group.Settings
@@ -31,6 +32,7 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Screen, "Accessibility permission", "$APP_NAME control lets your PC tap and type here"),
     SettingEntry(Group.Files, "Accept from my devices automatically", "Only paired devices can send"),
     SettingEntry(Group.Files, "Save files to", "Choose the folder for received files"),
+    SettingEntry(Group.Audio, "Share this phone's audio without asking", "Skip $APP_NAME's question; Android's capture prompt still appears"),
     SettingEntry(Group.Settings, "Theme", "System, Light or Dark"),
     SettingEntry(Group.Settings, "Share clipboard", "Share what you copy with your paired PC"),
     SettingEntry(Group.Settings, "Passwords and codes", "Whether text marked sensitive is sent"),
@@ -60,6 +62,7 @@ fun pageSummary(g: Group): String = when (g) {
     Group.Connection -> "Paired PCs and pairing a new one"
     Group.Camera -> "Which PCs may use this phone's camera"
     Group.Screen -> "Control and screen sharing with your PC"
+    Group.Audio -> "Sharing this phone's audio and playing your PC's"
     Group.Notifications -> "Show this phone's notifications on your PC"
     Group.Files -> "Accepting files and where they are saved"
     Group.Settings -> "Theme, clipboard, background and logs"
@@ -84,6 +87,7 @@ data class StatusInput(
     val cameraAllowedCount: Int = 0,
     val controlAllowed: Boolean = false,
     val controlServiceOn: Boolean = false,
+    val audioSkipAsk: Boolean = false,
     val notifyOn: Boolean = false,
     val notifyAccess: Boolean = false,
     val saveLabel: String = "",
@@ -105,6 +109,7 @@ fun statusLine(g: Group, s: StatusInput): String = when (g) {
         s.controlAllowed -> "PC control allowed"
         else -> "PC control asks first"
     }
+    Group.Audio -> if (s.audioSkipAsk) "Phone audio starts without our question" else "Phone audio asks first"
     Group.Notifications -> when {
         !s.notifyOn -> "Off"
         !s.notifyAccess -> "On, needs notification access"

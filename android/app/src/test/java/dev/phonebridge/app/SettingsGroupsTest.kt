@@ -34,7 +34,7 @@ class SettingsGroupsTest {
     @Test
     fun groups_are_listed_in_display_order() {
         assertEquals(
-            listOf("Connection", "Camera", "Screen", "Notifications", "Files", "General"),
+            listOf("Connection", "Camera", "Screen", "Audio", "Notifications", "Files", "General"),
             Group.entries.map(::groupTitle),
         )
     }

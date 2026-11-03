@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Link
@@ -57,6 +58,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.AppLog
+import dev.phonebridge.app.AudioShare
+import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
@@ -144,6 +147,31 @@ private fun ControlFromPc() {
             if (on && !serviceOn) ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         },
         onClick = if (!serviceOn) ({ ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) else null,
+    )
+}
+
+/**
+ * "Audio": who hears this phone now (with Stop), and whether a PC's request needs Relay's own yes first.
+ * Android's capture prompt always shows. PC audio playing here is asked on the PC, so it has no switch here;
+ * the microphone is never offered by the PC and has no switch either.
+ */
+@Composable
+private fun AudioToPc() {
+    val ctx = LocalContext.current
+    val prefs = remember { Prefs(ctx) }
+    var skip by remember { mutableStateOf(prefs.audioSkipConfirmPhoneToPc) }
+    val listener = AudioShare.sharingWith.value
+    if (listener != null) LiveBanner("$listener can hear this phone") { AudioShare.stop(AudioDirection.PHONE_TO_PC) }
+    val from = AudioShare.playingFrom.value
+    if (from != null) LiveBanner("Playing audio from $from") { AudioShare.stop(AudioDirection.PC_TO_PHONE) }
+    RelayRow(
+        title = "Share this phone's audio without asking",
+        supporting = if (skip) "On. Your PC's request goes straight to Android's capture prompt" else "Off. This phone asks you first, then Android asks to capture",
+        checked = skip,
+        onChecked = { v ->
+            skip = v
+            prefs.audioSkipConfirmPhoneToPc = v
+        },
     )
 }
 
@@ -266,6 +294,7 @@ private val GroupIcon: Map<Group, ImageVector> = mapOf(
     Group.Connection to Icons.Filled.Link,
     Group.Camera to Icons.Filled.PhotoCamera,
     Group.Screen to Icons.Filled.ScreenShare,
+    Group.Audio to Icons.AutoMirrored.Filled.VolumeUp,
     Group.Notifications to Icons.Filled.Notifications,
     Group.Files to Icons.Filled.Folder,
     Group.Settings to Icons.Filled.Tune,
@@ -277,6 +306,7 @@ private fun groupTint(g: Group): Color = tintColor(
         Group.Connection, Group.Files -> RelayTint.Primary
         Group.Camera -> RelayTint.Accent
         Group.Screen -> RelayTint.Success
+        Group.Audio -> RelayTint.Accent
         Group.Notifications -> RelayTint.Warning
         Group.Settings -> RelayTint.Muted
     },
@@ -358,6 +388,7 @@ fun SettingsTab(onDone: () -> Unit) {
     // Live status lines; re-read on resume and whenever a page is left, so they follow what was changed there.
     val status = remember(resumed, nav.page, peers, tree, Bridge.allowControl.value) {
         StatusInput(
+            audioSkipAsk = prefs.audioSkipConfirmPhoneToPc,
             pairedNames = peers.map { it.name },
             cameraAllowedCount = prefs.allowedCameraPcs.size,
             controlAllowed = Bridge.allowControl.value,
@@ -405,7 +436,7 @@ fun SettingsTab(onDone: () -> Unit) {
                     } else {
                         for ((header, groups) in listOf(
                             "Your PC" to listOf(Group.Connection),
-                            "Share with your PC" to listOf(Group.Camera, Group.Screen, Group.Notifications, Group.Files),
+                            "Share with your PC" to listOf(Group.Camera, Group.Screen, Group.Audio, Group.Notifications, Group.Files),
                             "This phone" to listOf(Group.Settings),
                         )) {
                             item { SectionHeader(header) }
@@ -470,6 +501,10 @@ fun SettingsTab(onDone: () -> Unit) {
                                 )
                             }
                         }
+                    }
+                    Group.Audio -> {
+                        item { SectionHeader("Sharing this phone's audio") }
+                        item { RelayCard { AudioToPc() } }
                     }
                     Group.Notifications -> { item { RelayCard { NotificationsOnPc() } }; item { RelayCard { NotifyBlockRow() } } } // F7 (features agent): per-app block row, ui/settings/NotifyBlockRow.kt
                     Group.Files -> {

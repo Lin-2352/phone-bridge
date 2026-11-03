@@ -4,6 +4,7 @@ import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.TlDir
 import dev.phonebridge.app.TlEntry
 import dev.phonebridge.app.TlKind
+import dev.phonebridge.app.durationText
 import dev.phonebridge.app.humanSize
 import java.time.Instant
 import java.time.ZoneId
@@ -33,6 +34,7 @@ fun tapHint(e: TlEntry): String? = when {
     e.kind == TlKind.ClipText -> "$APP_KEEPS the length of copied text, never the text itself."
     e.kind == TlKind.Link -> "$APP_KEEPS the length of a link, never the address."
     e.kind == TlKind.ClipImage -> "$APP_KEEPS the size of a picture, never the picture."
+    e.kind == TlKind.Audio -> "$APP_KEEPS who shared audio and for how long, never the audio."
     else -> "$APP_KEEPS the app name of a notification, never its content."
 }
 
@@ -42,6 +44,7 @@ private fun kindName(k: TlKind) = when (k) {
     TlKind.ClipImage -> "Picture"
     TlKind.Link -> "Link"
     TlKind.Notification -> "Notification"
+    TlKind.Audio -> "Audio"
 }
 
 /** The stored facts of an entry, label then value, for the Details dialog. Only what the timeline keeps. */
@@ -54,7 +57,8 @@ fun detailLines(e: TlEntry, zone: ZoneId): List<Pair<String, String>> = buildLis
     e.app?.let { add("App" to it) }
     e.size?.let { add("Size" to humanSize(it)) }
     if (e.width != null && e.height != null) add("Dimensions" to "${e.width} \u00d7 ${e.height}")
-    e.chars?.let { add("Characters" to it.toString()) }
+    if (e.kind == TlKind.Audio) e.chars?.let { add("Length" to durationText(it.toLong())) }
+    else e.chars?.let { add("Characters" to it.toString()) }
 }
 
 /** A calendar-day key for remembering which days the user opened or closed; a new day is a new key, whatever its label. */
