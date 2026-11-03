@@ -1246,8 +1246,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 )
                 .await;
                 drop(guard);
-                match received
-                {
+                match received {
                     Ok(Received::File { path, size }) => {
                         applog::file_done(
                             "received",
