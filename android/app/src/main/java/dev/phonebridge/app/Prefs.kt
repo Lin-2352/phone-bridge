@@ -52,6 +52,16 @@ class Prefs(context: Context) {
         get() = sp.getLong("last_exit_seen", 0L)
         set(v) = sp.edit().putLong("last_exit_seen", v).apply()
 
+    /** Phone audio to the PC: skip Relay's own confirmation (never Android's capture dialog, never for the microphone). Off by default. */
+    var audioSkipConfirmPhoneToPc: Boolean
+        get() = sp.getBoolean("audio_skip_confirm_phone_to_pc", false)
+        set(v) = sp.edit().putBoolean("audio_skip_confirm_phone_to_pc", v).apply()
+
+    /** PC audio on this phone: skip the PC's tray confirmation (the PC asks; kept here so Settings has one place). Off by default. */
+    var audioSkipConfirmPcToPhone: Boolean
+        get() = sp.getBoolean("audio_skip_confirm_pc_to_phone", false)
+        set(v) = sp.edit().putBoolean("audio_skip_confirm_pc_to_phone", v).apply()
+
     var autoAccept: Boolean
         get() = sp.getBoolean("auto_accept", true)
         set(v) = sp.edit().putBoolean("auto_accept", v).apply()

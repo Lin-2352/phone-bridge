@@ -260,6 +260,7 @@ class PbService : Service() {
         if (instance === this) instance = null
         ScreenshotWatcher.stop(this)
         ScreenShare.stop(userStopped = true)
+        AudioShare.stopAll()
         val n = synchronized(Bridge) {
             destroyed = true
             Bridge.node.also { Bridge.node = null }
@@ -332,6 +333,7 @@ class PbService : Service() {
             n.setAllowControl(prefs.allowControl)
             n.setNotifyEnabled(prefs.notifyToPc)
             n.setNotifyHandler(NotifyActions)
+            n.setAudioSink(AudioShare.sink)
             Bridge.allowControl.value = prefs.allowControl
             ControlService.instance?.let { n.setInputListener(it) }
             // Published under the same lock onDestroy takes, so a stop racing
@@ -383,6 +385,8 @@ class PbService : Service() {
         when (e) {
             is PbEvent.ScreenRequest -> askScreen(e)
             is PbEvent.CameraRequest -> askCamera(e)
+            is PbEvent.AudioRequest -> askAudio(e)
+            is PbEvent.AudioAskEnded, is PbEvent.AudioStarted, is PbEvent.AudioEnded, is PbEvent.AudioRefused -> AudioShare.onEvent(e)
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
                 // Share clipboard: writing the clipboard is allowed in the background.
@@ -651,20 +655,55 @@ class PbService : Service() {
         Log.i(TAG, "CAMERA request from ${e.peerName} resume=${e.resume}")
     }
 
-    /** The service types in force: connectedDevice always, plus mediaProjection and camera while in use. */
+    /**
+     * A PC asks for this phone's audio. Playback: Relay's dialog (unless the setting skips it), then
+     * Android's capture dialog. Microphone: Relay's dialog every time. The window does the steps; the
+     * notification is the fallback when Android refuses to open it from the background.
+     */
+    private fun askAudio(e: PbEvent.AudioRequest) {
+        val mic = e.source.toInt() == 1
+        val ask = Intent(this, AudioConsentActivity::class.java)
+            .putExtra("id", e.id.toLong())
+            .putExtra("peer", e.peerName)
+            .putExtra("source", e.source.toInt())
+            .putExtra("rate", e.sampleRate.toInt())
+            .putExtra("channels", e.channels.toInt())
+            .putExtra("at", android.os.SystemClock.elapsedRealtime())
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val locked = getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+        val n = Notification.Builder(this, CH_CONTROL)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle(askTitle(if (mic) "hear your microphone" else "hear this phone's audio", e.peerName, locked))
+            .setContentText(askBody(locked))
+            .setContentIntent(PendingIntent.getActivity(this, 45, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+            .setTimeoutAfter(30_000)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(AUDIO_ASK_ID, n)
+        runCatching { startActivity(ask) }.onFailure { Log.i(TAG, "AUDIO ask window not allowed: $it") }
+        Log.i(TAG, "AUDIO request from ${e.peerName} source=${e.source}")
+    }
+
+    /** The service types in force: connectedDevice always, plus mediaProjection, camera and microphone while in use. */
     private var projecting = false
     private var cameraOn = false
+    private var audioProjecting = false
+    private var micOn = false
 
     /** Ongoing "sharing" notifications of a process that was killed are stale: nothing is shared now. */
     private fun clearStaleSharing() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.cancel(SCREEN_SHARE_ID)
         nm.cancel(CAMERA_SHARE_ID)
+        nm.cancel(AUDIO_SHARE_ID)
+        nm.cancel(AUDIO_PLAY_ID)
+        nm.cancel(AUDIO_ASK_ID)
     }
 
     private fun applyTypes(): Boolean = try {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        if (projecting) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        if (projecting || audioProjecting) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+        if (micOn && Build.VERSION.SDK_INT >= 30) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         if (cameraOn && Build.VERSION.SDK_INT >= 30) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         startForeground(ONGOING_ID, statusNotification(), types)
         true
@@ -677,6 +716,22 @@ class PbService : Service() {
     fun enterProjection(): Boolean {
         projecting = true
         return applyTypes().also { if (!it) projecting = false }
+    }
+
+    /** Phone audio sharing: playback capture needs the mediaProjection type, the microphone the microphone type. */
+    fun enterAudio(source: dev.phonebridge.app.audio.AudioSource): Boolean {
+        val mic = source == dev.phonebridge.app.audio.AudioSource.MICROPHONE
+        if (mic) micOn = true else audioProjecting = true
+        return applyTypes().also {
+            if (!it) {
+                if (mic) micOn = false else audioProjecting = false
+            }
+        }
+    }
+
+    fun leaveAudio(source: dev.phonebridge.app.audio.AudioSource) {
+        if (source == dev.phonebridge.app.audio.AudioSource.MICROPHONE) micOn = false else audioProjecting = false
+        applyTypes()
     }
 
     fun leaveProjection() {

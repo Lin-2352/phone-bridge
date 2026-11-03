@@ -106,6 +106,14 @@
             android:excludeFromRecents="true"
             android:taskAffinity=""
             android:theme="@style/Theme.Relay.Translucent" />
+        <!-- "Let <PC> hear ...?" then the audio permission and Android's capture dialog. -->
+        <activity
+            android:name=".AudioConsentActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Relay.Translucent" />
         <!-- "Let <PC> use your camera?", then the camera permission. -->
         <activity
             android:name=".CameraConsentActivity"
@@ -217,5 +225,6 @@
         <receiver android:name=".OfferReceiver" android:exported="false" />
         <receiver android:name=".ScreenReceiver" android:exported="false" />
         <receiver android:name=".CameraReceiver" android:exported="false" />
+        <receiver android:name=".AudioReceiver" android:exported="false" />
     </application>
 </manifest>
