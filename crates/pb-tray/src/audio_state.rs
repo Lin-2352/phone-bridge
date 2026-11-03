@@ -235,6 +235,8 @@ pub struct Arrivals {
     pub frames: u64,
     pub bytes: u64,
     pub max_gap_ms: u64,
+    /// Loudest sample in this window, 0..=32767. A level, never the audio.
+    pub peak: u16,
     last_ms: Option<u64>,
 }
 
@@ -249,11 +251,19 @@ impl Arrivals {
         self.bytes += len as u64;
     }
 
+    /// Note the loudest sample of a PCM chunk (16-bit LE).
+    pub fn level(&mut self, pcm: &[u8]) {
+        for b in pcm.chunks_exact(2) {
+            let v = i16::from_le_bytes([b[0], b[1]]).unsigned_abs().min(32767);
+            self.peak = self.peak.max(v);
+        }
+    }
+
     /// One log line; the unit of every number is in its name.
     pub fn line(&self, dropped_ms: u64, underruns: u64) -> String {
         format!(
-            "frames={} bytes={} max_gap_ms={} dropped_ms={} underruns={}",
-            self.frames, self.bytes, self.max_gap_ms, dropped_ms, underruns
+            "frames={} bytes={} max_gap_ms={} peak={} dropped_ms={} underruns={}",
+            self.frames, self.bytes, self.max_gap_ms, self.peak, dropped_ms, underruns
         )
     }
 
@@ -262,6 +272,7 @@ impl Arrivals {
         self.frames = 0;
         self.bytes = 0;
         self.max_gap_ms = 0;
+        self.peak = 0;
     }
 }
 
@@ -391,6 +402,18 @@ mod tests {
         assert!(t.contains("Pixel") && t.contains("If the phone asks"));
         assert!(!t.contains("approve it on the phone"));
         assert!(asking_text(Dir::PcToPhone, "Pixel").contains("Pixel"));
+    }
+
+    #[test]
+    fn arrivals_note_the_loudest_sample() {
+        let mut a = Arrivals::default();
+        a.level(&[0, 0, 0x10, 0, 0xF0, 0xFF]);
+        assert_eq!(a.peak, 16);
+        a.level(&[0, 0x80]);
+        assert_eq!(a.peak, 32767, "i16::MIN stays in range");
+        assert!(a.line(0, 0).contains("peak=32767"));
+        a.reset_window();
+        assert_eq!(a.peak, 0);
     }
 
     #[test]

@@ -91,6 +91,21 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putLong("last_exit_seen", v).apply()
 
     /** Phone audio to the PC: skip Relay's own confirmation (never Android's capture dialog, never for the microphone). Off by default. */
+    /** Mute the media stream while this phone's audio goes to a PC. */
+    var audioSilencePhone: Boolean
+        get() = sp.getBoolean("audio_silence_phone", false)
+        set(v) = sp.edit().putBoolean("audio_silence_phone", v).apply()
+
+    /** Muting was tried here and silenced the capture too. */
+    var audioSilenceUnsupported: Boolean
+        get() = sp.getBoolean("audio_silence_unsupported", false)
+        set(v) = sp.edit().putBoolean("audio_silence_unsupported", v).apply()
+
+    /** Relay muted the stream and has not given it back yet (survives a crash). */
+    var audioMutedByRelay: Boolean
+        get() = sp.getBoolean("audio_muted_by_relay", false)
+        set(v) = sp.edit().putBoolean("audio_muted_by_relay", v).commit().let {}
+
     var audioSkipConfirmPhoneToPc: Boolean
         get() = sp.getBoolean("audio_skip_confirm_phone_to_pc", false)
         set(v) = sp.edit().putBoolean("audio_skip_confirm_phone_to_pc", v).apply()

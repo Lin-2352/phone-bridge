@@ -209,6 +209,11 @@ fn main() {
             "--camera-window" => ui_request = Some(ipc::Request::CameraWindow),
             "--start-camera" => ui_request = Some(ipc::Request::StartCamera),
             "--stop-camera" => ui_request = Some(ipc::Request::StopCamera),
+            "--audio-phone" => ui_request = Some(ipc::Request::AudioPhone),
+            "--audio-pc" => ui_request = Some(ipc::Request::AudioPc),
+            "--test-audio-synth" => {
+                audio::TEST_SYNTH.store(true, std::sync::atomic::Ordering::Relaxed)
+            }
             // Everything after --send is a file (Explorer "Send to" passes paths).
             "--send" => send_files.extend(args.by_ref().map(PathBuf::from)),
             _ => {}
@@ -372,6 +377,8 @@ fn main() {
                     ipc::Request::CameraWindow => ui::ID_CAMERA_WINDOW,
                     ipc::Request::StartCamera => ui::ID_CAMERA_START,
                     ipc::Request::StopCamera => ui::ID_CAMERA_STOP,
+                    ipc::Request::AudioPhone => menu_model::ID_AUDIO_PHONE,
+                    ipc::Request::AudioPc => menu_model::ID_AUDIO_PC,
                     _ => ui::ID_SEND_CLIPBOARD,
                 },
             )

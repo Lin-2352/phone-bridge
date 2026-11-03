@@ -143,6 +143,7 @@ class MainActivity : ComponentActivity() {
         // Test hooks: MainActivity is exported, so in a release build any app
         // could use them to pair this phone with its own PC. Debug builds only.
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        if (intent.hasExtra("audio_test_tone")) AudioShare.debugTone = intent.getBooleanExtra("audio_test_tone", false)
         if (!intent.hasExtra("pair_code") && !intent.hasExtra("confirm") && !intent.hasExtra("send_text")) return
         Bridge.scope.launch {
             val node = Bridge.awaitNode() ?: return@launch

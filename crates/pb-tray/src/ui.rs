@@ -1877,7 +1877,6 @@ fn show_menu(hwnd: HWND) {
                 crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
                 crate::audio::phase(crate::audio_state::Dir::PcToPhone),
             ],
-            logs_available: crate::applog::handle().is_some(),
         },
         &Ids {
             open: ID_OPEN_MAIN,
@@ -1885,7 +1884,6 @@ fn show_menu(hwnd: HWND) {
             send_clipboard: ID_SEND_CLIPBOARD,
             screen: ID_SCREEN,
             camera: ID_CAMERA,
-            clipboard_sync: ID_TOGGLE_CLIP,
             settings: ID_SETTINGS,
             quit: ID_QUIT,
         },
@@ -2396,20 +2394,10 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             set_paused(hwnd, st, !now);
         }
         // The menu's quick settings run the Settings page's own setters.
-        crate::menu_model::ID_TOGGLE_NOTIFY => apply_settings_action(
-            hwnd,
-            st,
-            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::Notify),
-        ),
         crate::menu_model::ID_TOGGLE_ALLOW_CONTROL => apply_settings_action(
             hwnd,
             st,
             crate::settings_rows::Action::Toggle(crate::settings_rows::Key::Control),
-        ),
-        crate::menu_model::ID_TOGGLE_LOGS => apply_settings_action(
-            hwnd,
-            st,
-            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::KeepLogs),
         ),
         ID_CONTROL => toggle_control(hwnd, st),
         crate::menu_model::ID_AUDIO_PHONE => toggle_audio(st, crate::audio_state::Dir::PhoneToPc),

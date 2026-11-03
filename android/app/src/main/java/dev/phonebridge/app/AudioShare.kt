@@ -63,6 +63,11 @@ object AudioShare {
     private val out = AtomicReference<PbAudioOut?>(null)
     @Volatile private var player: AudioPlayer? = null
     private var streamer: AudioStreamer? = null
+    private var tone: Thread? = null
+    private var locks: AudioSessionLocks? = null
+
+    /** Debug builds only, set over adb: send a test tone instead of asking and capturing. */
+    @Volatile var debugTone = false
     private var captureSource: AudioSource? = null
 
     /** Set when our own source ended; read when the node reports the end. */
@@ -70,8 +75,14 @@ object AudioShare {
 
     /** Frames of a PC to phone session; dropped until the player exists. */
     val sink = object : AudioSink {
+        private var seen = 0L
+
         override fun onFrame(frame: ByteArray) {
-            player?.push(frame)
+            val p = player
+            p?.push(frame)
+            if (++seen % 1500 == 0L && p != null) { // about every 10 s
+                Log.i(TAG, "AUDIO playing ${Bridge.node?.audioRxStats()} buffered_ms=${p.bufferedMs} dropped_ms=${p.droppedMs} underruns=${p.underruns}")
+            }
         }
     }
 
@@ -92,10 +103,23 @@ object AudioShare {
     @Synchronized
     fun launch(ctx: Context, a: AudioAsk, projection: MediaProjection?) {
         endOverride = null
+        val app = ctx.applicationContext
+        var frames = 0L
         val s = AudioStreamer(
-            ctx.applicationContext, a.source, projection, a.sampleRate, a.channels,
+            app, a.source, projection, a.sampleRate, a.channels,
             onEnded = { reason -> sourceEnded(reason) },
-            onFrame = { buf, len -> out.get()?.sendFrame(buf.copyOf(len)) },
+            onLevel = { silent ->
+                if (PhoneSpeaker.onFrame(app, silent)) {
+                    notice(app, "This phone can't stay silent while sharing", "Muting it also silences what Relay captures, so the speaker stays on.")
+                }
+            },
+            onFrame = { buf, len ->
+                val o = out.get()
+                o?.sendFrame(buf.copyOf(len))
+                if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
+                    Log.i(TAG, "AUDIO sharing captured_frames=$frames ${o?.statsLine()}")
+                }
+            },
         )
         val r = s.start()
         if (!r.ok) {
@@ -111,9 +135,52 @@ object AudioShare {
             return
         }
         out.set(o)
+        if (a.source == AudioSource.PLAYBACK) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
         Log.i(TAG, "AUDIO phone to PC started source=${a.source}")
+    }
+
+    /** Debug builds only ([debugTone]): the real path from accept onward, with a tone as the source. */
+    @Synchronized
+    fun launchTone(ctx: Context, a: AudioAsk) {
+        if (!sessions.tryBegin(AudioDirection.PHONE_TO_PC)) return
+        val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt())
+        if (o == null) {
+            sessions.end(AudioDirection.PHONE_TO_PC)
+            return
+        }
+        out.set(o)
+        began(AudioDirection.PHONE_TO_PC, a.peer)
+        notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
+        tone = Thread({
+            val bytes = a.sampleRate * 2 * a.channels * AudioStreamer.FRAME_MS / 1000
+            val samples = bytes / 2 / a.channels
+            val buf = ByteArray(bytes)
+            var n = 0L
+            var frames = 0L
+            val start = android.os.SystemClock.elapsedRealtime()
+            try {
+                while (!Thread.currentThread().isInterrupted) {
+                    for (i in 0 until samples) {
+                        val v = (kotlin.math.sin(n++ % 109 / 109.0 * 2 * Math.PI) * 800).toInt()
+                        for (c in 0 until a.channels) {
+                            val at = (i * a.channels + c) * 2
+                            buf[at] = v.toByte()
+                            buf[at + 1] = (v shr 8).toByte()
+                        }
+                    }
+                    o.sendFrame(buf.copyOf())
+                    frames++
+                    if (frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) Log.i(TAG, "AUDIO tone frames=$frames ${o.statsLine()}")
+                    val due = start + frames * AudioStreamer.FRAME_MS
+                    val wait = due - android.os.SystemClock.elapsedRealtime()
+                    if (wait > 0) Thread.sleep(wait)
+                }
+            } catch (_: Exception) {
+            }
+        }, "pb-audio-tone").apply { start() }
+        Log.i(TAG, "AUDIO test tone to the PC started")
     }
 
     /** Could not start: the PC gets the reason, the user gets what to do next. */
@@ -211,6 +278,11 @@ object AudioShare {
 
     /** A session is up: Home shows it until [finished]. */
     private fun began(d: AudioDirection, peer: String) {
+        val app = PbService.instance
+        if (app != null) {
+            val l = locks ?: AudioSessionLocks(app).also { locks = it }
+            l.acquire()
+        }
         startedAt[d.ordinal] = System.currentTimeMillis()
         peerOf[d.ordinal] = peer
         if (d == AudioDirection.PHONE_TO_PC) sharingWith.value = peer else playingFrom.value = peer
@@ -223,6 +295,7 @@ object AudioShare {
         peerOf[d.ordinal] = null
         startedAt[d.ordinal] = 0
         if (d == AudioDirection.PHONE_TO_PC) sharingWith.value = null else playingFrom.value = null
+        if (sharingWith.value == null && playingFrom.value == null) locks?.release()
         if (peer == null || began == 0L) return
         val dir = if (d == AudioDirection.PHONE_TO_PC) TlDir.ToPc else TlDir.ToPhone
         Timeline.add(audioEntry(peer, dir, audioTitle(dir), (System.currentTimeMillis() - began) / 1000))
@@ -230,6 +303,9 @@ object AudioShare {
 
     private fun teardownCapture() {
         val src = captureSource
+        tone?.interrupt()
+        tone = null
+        PbService.instance?.let { PhoneSpeaker.restore(it) }
         streamer?.stop()
         streamer = null
         out.set(null)

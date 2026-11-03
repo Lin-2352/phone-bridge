@@ -805,7 +805,11 @@ mod queue_tests {
         assert_eq!(fill_bytes(0, 960, 48_000, 2), 0);
         assert_eq!(fill_bytes(2, 960, 48_000, 2), 1920);
         assert_eq!(fill_bytes(8, 960, 48_000, 2), 7680);
-        assert_eq!(fill_bytes(9, 960, 48_000, 2), 0, "a stall leaves no silence");
+        assert_eq!(
+            fill_bytes(9, 960, 48_000, 2),
+            0,
+            "a stall leaves no silence"
+        );
         assert_eq!(fill_bytes(u32::MAX, 65_536, 48_000, 2), 0);
     }
 

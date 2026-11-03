@@ -6,6 +6,7 @@
 //!
 //! The PC always dials. The microphone is never involved on this side.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,15 @@ type Ui = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 /// How long the PC's own question waits before it counts as "no".
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `--test-audio-synth`: no device on this PC. Received audio is measured and
+/// thrown away, and a test tone is sent instead of captured sound. Sends
+/// nothing of the user's and plays nothing here.
+pub static TEST_SYNTH: AtomicBool = AtomicBool::new(false);
+
+fn synth() -> bool {
+    TEST_SYNTH.load(Ordering::Relaxed)
+}
 
 static TRACK: Mutex<Tracker> = Mutex::new(Tracker::new());
 /// The stop signal of each direction's running task.
@@ -114,7 +124,7 @@ async fn run(
         .unwrap_or(false);
 
     // 1. The PC's own question (PC audio on the phone only).
-    if st::needs_pc_confirm(d, skip) {
+    if st::needs_pc_confirm(d, skip) && !synth() {
         let (tx, rx) = oneshot::channel();
         ui(UiEvent::AskAudioShare {
             from: name.clone(),
@@ -244,13 +254,26 @@ async fn play_phone_audio(
     stop: &Notify,
     log: &Log,
 ) -> End {
-    let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
-    let out = match AudioOut::start(sess.accept.sample_rate, sess.accept.channels, rx) {
-        Ok(o) => o,
-        Err(e) => {
-            log.line(&format!("AUDIO output could not start: {e}"));
-            return End::DeviceFailed(st::device_text(Dir::PhoneToPc, &e.to_string()));
+    // Packets are about 6 ms each, so this bounds a scheduling hiccup, not
+    // the latency: the ring behind it keeps that.
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(32);
+    let out = if synth() {
+        None
+    } else {
+        match AudioOut::start(sess.accept.sample_rate, sess.accept.channels, rx) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                log.line(&format!("AUDIO output could not start: {e}"));
+                return End::DeviceFailed(st::device_text(Dir::PhoneToPc, &e.to_string()));
+            }
         }
+    };
+    let (dropped, underruns) = {
+        let o = out.as_ref();
+        (
+            move || o.map_or(0, AudioOut::dropped_ms),
+            move || o.map_or(0, AudioOut::underruns),
+        )
     };
     // `recv_frame` borrows the whole session: watch its events separately.
     let mut events = std::mem::replace(&mut sess.events, mpsc::unbounded_channel().1);
@@ -264,9 +287,15 @@ async fn play_phone_audio(
                 // side keeps its own latency bound.
                 Some(f) => {
                     arrivals.frame(began.elapsed().as_millis() as u64, f.samples.len());
+                    arrivals.level(&f.samples);
                     let _ = tx.try_send(f.samples);
                     if window.elapsed() >= Duration::from_secs(10) {
-                        log.line(&format!("AUDIO arrivals {}", arrivals.line(out.dropped_ms(), out.underruns())));
+                        let n = sess.stats();
+                        log.line(&format!(
+                            "AUDIO arrivals {} packets={} lost={} late={} max_age_ms={} quic_lost={}",
+                            arrivals.line(dropped(), underruns()),
+                            n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost
+                        ));
                         arrivals.reset_window();
                         window = Instant::now();
                     }
@@ -279,10 +308,9 @@ async fn play_phone_audio(
     };
     log.line(&format!(
         "AUDIO playback dropped_ms={} underruns={} (counted per sample frame, not per network chunk)",
-        out.dropped_ms(),
-        out.underruns()
+        dropped(),
+        underruns()
     ));
-    drop(out);
     end
 }
 
@@ -292,6 +320,9 @@ async fn capture_pc_audio(
     stop: &Notify,
     log: &Log,
 ) -> End {
+    if synth() {
+        return send_test_tone(sess, stop, log).await;
+    }
     let (ftx, mut frx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (etx, mut erx) = mpsc::unbounded_channel::<String>();
     let started = tokio::task::spawn_blocking(move || {
@@ -333,4 +364,38 @@ async fn capture_pc_audio(
     // Joining the capture thread may wait on the device: not on the runtime.
     let _ = tokio::task::spawn_blocking(move || drop(cap)).await;
     end
+}
+
+/// `--test-audio-synth`, PC to phone: a quiet tone at the real rate.
+async fn send_test_tone(
+    sess: &mut pb_transport::audio::AudioSession,
+    stop: &Notify,
+    log: &Log,
+) -> End {
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
+    let (mut n, mut last_log) = (0u64, Instant::now());
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let mut f = Vec::with_capacity(3840);
+                for _ in 0..960 {
+                    let phase = (n % 109) as f32 / 109.0 * std::f32::consts::TAU;
+                    let v = ((phase.sin() * 800.0) as i16).to_le_bytes();
+                    f.extend_from_slice(&v);
+                    f.extend_from_slice(&v);
+                    n += 1;
+                }
+                if sess.send_frame(f).is_err() {
+                    return cause_of(sess.events.recv().await);
+                }
+                if last_log.elapsed() >= Duration::from_secs(10) {
+                    let st = sess.stats();
+                    log.line(&format!("AUDIO test tone packets={} quic_lost={}", st.packets, st.quic_lost));
+                    last_log = Instant::now();
+                }
+            }
+            ev = sess.events.recv() => return cause_of(ev),
+            () = stop.notified() => return End::LocalStop,
+        }
+    }
 }

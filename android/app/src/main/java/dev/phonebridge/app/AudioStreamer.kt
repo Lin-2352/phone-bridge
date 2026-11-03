@@ -15,6 +15,7 @@ import android.util.Log
 import dev.phonebridge.app.audio.AudioReason
 import dev.phonebridge.app.audio.AudioSource
 import dev.phonebridge.app.audio.SilenceDetector
+import dev.phonebridge.app.audio.isSilentPcm16
 import dev.phonebridge.app.audio.planCapture
 import dev.phonebridge.app.audio.reasonForFailure
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,7 +28,7 @@ class AudioStartResult(val reason: AudioReason?) {
 }
 
 /**
- * Captures phone audio as 20 ms frames of raw 16-bit LE PCM (48 kHz stereo by default).
+ * Captures phone audio as 10 ms frames of raw 16-bit LE PCM (48 kHz stereo by default).
  *
  * The [source] is chosen by the caller and is never substituted:
  *  - [AudioSource.PLAYBACK]: AudioPlaybackCaptureConfiguration. Needs Android 10+, RECORD_AUDIO and a
@@ -52,6 +53,8 @@ class AudioStreamer(
         (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager).isMusicActive
     },
     private val onEnded: (AudioReason?) -> Unit = {},
+    /** Each frame's verdict, before the silence check: true when it held no sound. */
+    private val onLevel: (Boolean) -> Unit = {},
     private val onFrame: (ByteArray, Int) -> Unit,
 ) {
     private val isRunning = AtomicBoolean(false)
@@ -75,7 +78,8 @@ class AudioStreamer(
         val channelConfig = if (channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
         val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
         val chunkBytes = sampleRate * 2 * channels * FRAME_MS / 1000
-        val bufferSize = maxOf(minBuf * 2, chunkBytes * 4)
+        // What this holds is delay when the reader stalls: the least Android accepts.
+        val bufferSize = maxOf(minBuf, chunkBytes * 4)
 
         try {
             val rec = when (source) {
@@ -136,6 +140,7 @@ class AudioStreamer(
                     filled += n
                     if (filled < chunkBytes) continue
                     filled = 0
+                    onLevel(isSilentPcm16(buf, chunkBytes))
                     if (source == AudioSource.PLAYBACK && detector.onFrame(buf, chunkBytes, expectSound())) {
                         endReason = AudioReason.APP_BLOCKS_CAPTURE
                         break
@@ -189,7 +194,7 @@ class AudioStreamer(
     }
 
     companion object {
-        const val FRAME_MS = 20
+        const val FRAME_MS = 10
         const val BLOCKED_AFTER_MS = 2000
         private const val JOIN_MS = 1000L
 

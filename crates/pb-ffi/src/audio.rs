@@ -81,6 +81,17 @@ impl PbAudioOut {
     pub fn stop(&self) {
         self.ctl.stop();
     }
+
+    /// One log line about the sending side (counts only).
+    pub fn stats_line(&self) -> String {
+        match self.session.get() {
+            Some(s) => {
+                let n = s.stats();
+                format!("packets={} quic_lost={}", n.packets, n.quic_lost)
+            }
+            None => "no session yet".into(),
+        }
+    }
 }
 
 /// The user's answer to an audio request.
@@ -152,6 +163,8 @@ pub(crate) struct AudioHub {
     dirs: [Dir; 2],
     pending: Mutex<HashMap<u64, oneshot::Sender<Answer>>>,
     next_id: AtomicU64,
+    /// The receiving session's last stats line (PC to phone).
+    rx_line: Mutex<String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -171,7 +184,12 @@ impl AudioHub {
             dirs: [Dir::default(), Dir::default()],
             pending: Mutex::default(),
             next_id: AtomicU64::new(1),
+            rx_line: Mutex::default(),
         }
+    }
+
+    pub(crate) fn rx_stats_line(&self) -> String {
+        lock(&self.rx_line).clone()
     }
 
     pub(crate) fn set_sink(&self, sink: Option<Arc<dyn AudioSink>>) {
@@ -359,10 +377,19 @@ impl AudioHub {
             end_cause(ev, ctl.local.load(Ordering::SeqCst))
         } else {
             let ev;
+            let mut seen = 0u32;
             loop {
                 tokio::select! {
                     f = session.recv_frame() => match f {
                         Some(f) => {
+                            seen += 1;
+                            if seen.is_multiple_of(500) {
+                                let n = session.stats();
+                                *lock(&self.rx_line) = format!(
+                                    "packets={} lost={} late={} max_age_ms={} quic_lost={}",
+                                    n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost
+                                );
+                            }
                             let sink = lock(&self.sink).clone();
                             if let Some(sink) = sink {
                                 let _ = sink.on_frame(f.samples);
@@ -655,8 +682,9 @@ mod tests {
         }
     }
 
+    /// Fits one datagram, so it arrives as it was sent.
     fn frame(i: u8) -> Vec<u8> {
-        vec![i; 3840]
+        vec![i; 960]
     }
 
     #[tokio::test(flavor = "multi_thread")]

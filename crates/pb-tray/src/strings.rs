@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn the_tray_menu_uses_the_settings_wording() {
         let labels = menu_model::toggle_labels();
-        assert_eq!(labels.len(), 4);
+        assert_eq!(labels.len(), 1);
         for l in labels {
             assert!(
                 OPTIONS.contains(&l.as_str()),

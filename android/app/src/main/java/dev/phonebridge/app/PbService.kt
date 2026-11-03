@@ -227,6 +227,7 @@ class PbService : Service() {
         AppLog.init(this)
         AppLog.event("events", "service_start")
         Timeline.init(this)
+        PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
         // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
         val nm = getSystemService(NotificationManager::class.java)
@@ -715,6 +716,11 @@ class PbService : Service() {
      */
     private fun askAudio(e: PbEvent.AudioRequest) {
         val mic = e.source.toInt() == 1
+        if (AudioShare.debugTone && applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            val src = dev.phonebridge.app.audio.AudioSource.PLAYBACK
+            AudioShare.launchTone(this, AudioAsk(e.id, e.peerName, src, e.sampleRate.toInt(), e.channels.toInt()))
+            return
+        }
         val ask = Intent(this, AudioConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)

@@ -12,8 +12,8 @@ private const val TAG = "PhoneBridgeAudio"
 /**
  * Plays PC audio (raw 16-bit LE PCM frames, mono or stereo, 44.1 or 48 kHz) on the phone.
  *
- * Frames go through [PcmConverter] to 48 kHz stereo and into a [JitterBuffer] (target 120 ms,
- * drops the oldest above 300 ms, silence on underrun). A writer thread feeds a low-latency
+ * Frames go through [PcmConverter] to 48 kHz stereo and into a [JitterBuffer] (target 150 ms,
+ * drops the oldest above 260 ms, silence on underrun). A writer thread feeds a low-latency
  * USAGE_MEDIA AudioTrack in 20 ms blocks.
  *
  * Threading: [push] is for ONE producer thread (the network receive loop). [start], [stop] and
@@ -133,8 +133,8 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
 
     private companion object {
         const val OUT_RATE = 48000
-        const val TARGET_MS = 120
-        const val MAX_MS = 300
+        const val TARGET_MS = 150
+        const val MAX_MS = 260
         const val BLOCK_SHORTS = OUT_RATE * 2 * 20 / 1000
     }
 }

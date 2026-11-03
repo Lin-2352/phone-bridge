@@ -2101,6 +2101,11 @@ impl PbNode {
         self.shared.audio.stop(direction)
     }
 
+    /// One log line about the audio arriving from the PC (counts only).
+    pub fn audio_rx_stats(&self) -> String {
+        self.shared.audio.rx_stats_line()
+    }
+
     /// Whether `direction` has a question open or a session running.
     pub fn audio_active(&self, direction: u8) -> bool {
         self.shared.audio.active(direction)

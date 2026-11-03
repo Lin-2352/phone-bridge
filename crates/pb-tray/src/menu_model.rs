@@ -1,14 +1,13 @@
-//! What the tray's right-click menu lists: a few urgent actions, a group of
-//! quick settings that apply at once, then Settings and Quit. Pure: the
-//! caller reads the real state each time the menu opens and draws the rows.
-//! Everything that needs more than a couple of clicks stays in Settings.
+//! What the tray's right-click menu lists: only what is urgent. Whatever is
+//! running comes first so stopping it is one click, then the two senders, the
+//! off switches (Pause and phone control), then Settings and Quit. Starting
+//! the screen, camera or audio is on Home; other toggles are in Settings.
+//! Pure: the caller reads the real state each time the menu opens.
 
 use crate::{fluent::glyph, menu::Item, settings::Settings};
 
 pub const ID_PAUSE: usize = 26;
-pub const ID_TOGGLE_NOTIFY: usize = 27;
 pub const ID_TOGGLE_ALLOW_CONTROL: usize = 28;
-pub const ID_TOGGLE_LOGS: usize = 29;
 pub const ID_AUDIO_PHONE: usize = 30;
 pub const ID_AUDIO_PC: usize = 31;
 
@@ -19,7 +18,6 @@ pub struct Ids {
     pub send_clipboard: usize,
     pub screen: usize,
     pub camera: usize,
-    pub clipboard_sync: usize,
     pub settings: usize,
     pub quit: usize,
 }
@@ -40,16 +38,14 @@ pub struct Inputs<'a> {
     /// What each audio direction is doing (phone audio on this PC, PC audio
     /// on the phone).
     pub audio: [crate::audio_state::Phase; 2],
-    /// The log writer could open its folder (otherwise the toggle cannot apply).
-    pub logs_available: bool,
 }
 
 use crate::strings::{NO_PEER, PAUSED};
-const NO_LOGS: &str = "Log folder is not available";
 
 pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
+    use crate::audio_state::{Dir, Phase};
     let s = i.settings;
-    // Starting anything needs a phone and an unpaused Relay.
+    // Sending needs a phone and an unpaused Relay.
     let start_block = if s.paused {
         Some(PAUSED)
     } else if !i.has_peer {
@@ -57,92 +53,67 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
     } else {
         None
     };
-    let action = |g, label: &str, id, block: Option<&str>| {
+    let toggle = |label: &str, id, on: bool| Item::new(' ', label, id).checked(on);
+    let send = |g, label: &str, id| {
         let it = Item::new(g, label, id);
-        match block {
+        match start_block {
             Some(r) => it.disabled(r),
             None => it,
         }
     };
-    let toggle = |label: &str, id, on: bool| Item::new(' ', label, id).checked(on);
-    let screen = if i.screen_open {
-        action(glyph::PHONE, "Hide phone screen", ids.screen, None)
-    } else {
-        action(glyph::PHONE, "Show phone screen", ids.screen, start_block)
-    };
-    let camera = match i.camera {
-        Camera::Pending => action(
+    // What is running, so it can be stopped in one click even when paused.
+    let mut items = Vec::new();
+    if i.screen_open {
+        items.push(Item::new(glyph::PHONE, "Hide phone screen", ids.screen));
+    }
+    match i.camera {
+        Camera::Pending => items.push(Item::new(
             glyph::PHONE,
             "Cancel phone camera request",
             ids.camera,
-            None,
-        ),
-        Camera::Running => action(glyph::PHONE, "Stop phone camera", ids.camera, None),
-        Camera::Idle => action(glyph::PHONE, "Use phone as camera", ids.camera, start_block),
-    };
-    let audio = |d: crate::audio_state::Dir, id| {
-        use crate::audio_state::{Dir, Phase};
-        match (i.audio[d.index()], d) {
-            (Phase::Asking, Dir::PhoneToPc) => {
-                action(glyph::PHONE, "Cancel phone audio request", id, None)
-            }
-            (Phase::Asking, Dir::PcToPhone) => {
-                action(glyph::PHONE, "Cancel PC audio request", id, None)
-            }
-            (Phase::Running, Dir::PhoneToPc) => {
-                action(glyph::PHONE, "Stop phone audio on this PC", id, None)
-            }
-            (Phase::Running, Dir::PcToPhone) => {
-                action(glyph::PHONE, "Stop PC audio on the phone", id, None)
-            }
-            (Phase::Idle, d) => action(glyph::PHONE, d.title(), id, start_block),
-        }
-    };
-    let mut logs = toggle(crate::strings::KEEP_LOGS, ID_TOGGLE_LOGS, s.keep_logs);
-    if !i.logs_available {
-        logs = logs.disabled(NO_LOGS);
+        )),
+        Camera::Running => items.push(Item::new(glyph::PHONE, "Stop phone camera", ids.camera)),
+        Camera::Idle => {}
     }
-    vec![
+    for (d, id, asking, running) in [
+        (
+            Dir::PhoneToPc,
+            ID_AUDIO_PHONE,
+            "Cancel phone audio request",
+            "Stop phone audio on this PC",
+        ),
+        (
+            Dir::PcToPhone,
+            ID_AUDIO_PC,
+            "Cancel PC audio request",
+            "Stop PC audio on the phone",
+        ),
+    ] {
+        match i.audio[d.index()] {
+            Phase::Asking => items.push(Item::new(glyph::PHONE, asking, id)),
+            Phase::Running => items.push(Item::new(glyph::PHONE, running, id)),
+            Phase::Idle => {}
+        }
+    }
+    if !items.is_empty() {
+        items.push(Item::separator());
+    }
+    items.extend([
         Item::new(glyph::PHONE, "Open Relay", ids.open),
-        action(
-            glyph::SEND,
-            "Send files\u{2026}",
-            ids.send_files,
-            start_block,
-        ),
-        action(
-            glyph::CLIPBOARD,
-            "Send clipboard now",
-            ids.send_clipboard,
-            start_block,
-        ),
-        screen,
-        camera,
-        audio(crate::audio_state::Dir::PhoneToPc, ID_AUDIO_PHONE),
-        audio(crate::audio_state::Dir::PcToPhone, ID_AUDIO_PC),
+        send(glyph::SEND, "Send files\u{2026}", ids.send_files),
+        send(glyph::CLIPBOARD, "Send clipboard now", ids.send_clipboard),
         Item::separator(),
-        Item::heading("Quick settings"),
         toggle("Pause Relay", ID_PAUSE, s.paused),
-        toggle(
-            crate::strings::SHARE_CLIPBOARD,
-            ids.clipboard_sync,
-            s.universal_clipboard,
-        ),
-        toggle(
-            crate::strings::PHONE_NOTIFICATIONS,
-            ID_TOGGLE_NOTIFY,
-            s.notify_enabled,
-        ),
         toggle(
             crate::strings::PHONE_CONTROL,
             ID_TOGGLE_ALLOW_CONTROL,
             s.allow_control,
         ),
-        logs,
         Item::separator(),
         Item::new(glyph::SETTINGS, "Settings", ids.settings),
         Item::new(glyph::POWER, "Quit Relay", ids.quit),
-    ]
+    ]);
+    items
 }
 
 /// The labels of the menu's setting toggles other than Pause (the ones
@@ -155,7 +126,6 @@ pub fn toggle_labels() -> Vec<String> {
         send_clipboard: 0,
         screen: 0,
         camera: 0,
-        clipboard_sync: 0,
         settings: 0,
         quit: 0,
     };
@@ -166,7 +136,6 @@ pub fn toggle_labels() -> Vec<String> {
         screen_open: false,
         camera: Camera::Idle,
         audio: Default::default(),
-        logs_available: true,
     };
     build(&inputs, &ids)
         .into_iter()
@@ -178,6 +147,7 @@ pub fn toggle_labels() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_state::Phase;
 
     const IDS: Ids = Ids {
         open: 24,
@@ -185,7 +155,6 @@ mod tests {
         send_clipboard: 2,
         screen: 14,
         camera: 17,
-        clipboard_sync: 5,
         settings: 11,
         quit: 3,
     };
@@ -197,7 +166,6 @@ mod tests {
             screen_open: false,
             camera: Camera::Idle,
             audio: Default::default(),
-            logs_available: true,
         }
     }
 
@@ -213,30 +181,20 @@ mod tests {
         items.iter().find(|i| i.label == label).expect(label)
     }
 
+    const IDLE: [&str; 7] = [
+        "Open Relay",
+        "Send files\u{2026}",
+        "Send clipboard now",
+        "Pause Relay",
+        "Let my phone control this PC",
+        "Settings",
+        "Quit Relay",
+    ];
+
     #[test]
-    fn lists_the_decided_rows_in_order() {
+    fn idle_lists_only_the_urgent_rows() {
         let s = Settings::default();
-        let items = build(&inputs(&s), &IDS);
-        assert_eq!(
-            labels(&items),
-            [
-                "Open Relay",
-                "Send files\u{2026}",
-                "Send clipboard now",
-                "Show phone screen",
-                "Use phone as camera",
-                "Phone audio on this PC",
-                "PC audio on the phone",
-                "Quick settings",
-                "Pause Relay",
-                "Share clipboard",
-                "Show phone notifications",
-                "Let my phone control this PC",
-                "Keep logs",
-                "Settings",
-                "Quit Relay",
-            ]
-        );
+        assert_eq!(labels(&build(&inputs(&s), &IDS)), IDLE);
     }
 
     #[test]
@@ -254,6 +212,10 @@ mod tests {
                 "unpair",
                 "permission",
                 "retention",
+                "clipboard sync",
+                "share clipboard",
+                "notifications",
+                "logs",
             ] {
                 assert!(!l.contains(banned), "{l} must stay in Settings");
             }
@@ -261,56 +223,63 @@ mod tests {
     }
 
     #[test]
-    fn toggle_checks_follow_the_settings() {
-        let off = Settings {
-            paused: false,
-            universal_clipboard: false,
-            notify_enabled: false,
-            allow_control: false,
-            keep_logs: false,
-            ..Settings::default()
-        };
-        let on = Settings {
-            paused: true,
-            universal_clipboard: true,
-            notify_enabled: true,
-            allow_control: true,
-            keep_logs: true,
-            ..Settings::default()
-        };
-        let toggles = [
-            "Pause Relay",
-            "Share clipboard",
-            "Show phone notifications",
-            "Let my phone control this PC",
-            "Keep logs",
-        ];
-        for t in toggles {
-            assert_eq!(
-                find(&build(&inputs(&off), &IDS), t).checked,
-                Some(false),
-                "{t}"
-            );
-            assert_eq!(
-                find(&build(&inputs(&on), &IDS), t).checked,
-                Some(true),
-                "{t}"
-            );
-        }
-        // Actions are never checkable.
-        assert_eq!(find(&build(&inputs(&on), &IDS), "Open Relay").checked, None);
+    fn whatever_is_running_comes_first_with_its_stop() {
+        let s = Settings::default();
+        let mut i = inputs(&s);
+        i.screen_open = true;
+        i.camera = Camera::Running;
+        i.audio = [Phase::Running, Phase::Asking];
+        let items = build(&i, &IDS);
+        assert_eq!(
+            labels(&items)[..4],
+            [
+                "Hide phone screen",
+                "Stop phone camera",
+                "Stop phone audio on this PC",
+                "Cancel PC audio request",
+            ]
+        );
+        assert_eq!(
+            find(&items, "Stop phone audio on this PC").id,
+            ID_AUDIO_PHONE
+        );
+        assert_eq!(find(&items, "Cancel PC audio request").id, ID_AUDIO_PC);
+        assert_eq!(labels(&items)[4..], IDLE);
+        assert!(items[4].label.is_empty(), "a separator ends the live rows");
     }
 
     #[test]
-    fn ids_are_unique_and_reuse_the_existing_command() {
+    fn toggle_checks_follow_the_settings() {
+        for on in [false, true] {
+            let s = Settings {
+                paused: on,
+                allow_control: on,
+                ..Settings::default()
+            };
+            let items = build(&inputs(&s), &IDS);
+            for t in ["Pause Relay", "Let my phone control this PC"] {
+                assert_eq!(find(&items, t).checked, Some(on), "{t}");
+            }
+            assert_eq!(find(&items, "Open Relay").checked, None);
+        }
+    }
+
+    #[test]
+    fn ids_are_unique() {
         let s = Settings::default();
-        let items = build(&inputs(&s), &IDS);
-        assert_eq!(find(&items, "Share clipboard").id, IDS.clipboard_sync);
-        let ids: Vec<usize> = items.iter().filter(|i| i.id != 0).map(|i| i.id).collect();
+        let mut i = inputs(&s);
+        i.screen_open = true;
+        i.camera = Camera::Running;
+        i.audio = [Phase::Running, Phase::Running];
+        let ids: Vec<usize> = build(&i, &IDS)
+            .iter()
+            .filter(|i| i.id != 0)
+            .map(|i| i.id)
+            .collect();
         let mut uniq = ids.clone();
         uniq.sort_unstable();
         uniq.dedup();
-        assert_eq!(uniq.len(), ids.len(), "ids are unique");
+        assert_eq!(uniq.len(), ids.len());
     }
 
     #[test]
@@ -319,12 +288,7 @@ mod tests {
         let mut i = inputs(&s);
         i.has_peer = false;
         let items = build(&i, &IDS);
-        for l in [
-            "Send files\u{2026}",
-            "Send clipboard now",
-            "Show phone screen",
-            "Use phone as camera",
-        ] {
+        for l in ["Send files\u{2026}", "Send clipboard now"] {
             assert_eq!(
                 find(&items, l).disabled.as_deref(),
                 Some("Pair a phone first")
@@ -335,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_disables_starting_but_not_stopping() {
+    fn paused_disables_sending_but_not_stopping() {
         let s = Settings {
             paused: true,
             ..Settings::default()
@@ -346,50 +310,20 @@ mod tests {
         let items = build(&i, &IDS);
         assert_eq!(find(&items, "Hide phone screen").disabled, None);
         assert_eq!(find(&items, "Stop phone camera").disabled, None);
-        let mut i = inputs(&s);
-        i.has_peer = false;
-        let items = build(&i, &IDS);
-        for l in [
-            "Send files\u{2026}",
-            "Send clipboard now",
-            "Show phone screen",
-        ] {
-            assert_eq!(find(&items, l).disabled.as_deref(), Some("Relay is paused"));
-        }
+        assert_eq!(
+            find(&items, "Send files\u{2026}").disabled.as_deref(),
+            Some("Relay is paused")
+        );
         // Pause itself stays clickable: it is how to resume.
         assert_eq!(find(&items, "Pause Relay").disabled, None);
     }
 
     #[test]
-    fn keep_logs_is_disabled_when_the_log_folder_cannot_open() {
-        let s = Settings::default();
-        let mut i = inputs(&s);
-        i.logs_available = false;
-        let items = build(&i, &IDS);
-        assert_eq!(
-            find(&items, "Keep logs").disabled.as_deref(),
-            Some("Log folder is not available")
-        );
-    }
-
-    #[test]
-    fn camera_and_screen_labels_follow_their_state() {
-        let s = Settings::default();
-        let mut i = inputs(&s);
-        i.camera = Camera::Pending;
-        i.screen_open = true;
-        let items = build(&i, &IDS);
-        find(&items, "Cancel phone camera request");
-        find(&items, "Hide phone screen");
-    }
-
-    #[test]
-    fn headings_and_disabled_rows_are_not_clickable() {
+    fn disabled_rows_and_separators_are_not_clickable() {
         let s = Settings::default();
         let mut i = inputs(&s);
         i.has_peer = false;
         let items = build(&i, &IDS);
-        assert!(!find(&items, "Quick settings").clickable());
         assert!(!find(&items, "Send files\u{2026}").clickable());
         assert!(find(&items, "Open Relay").clickable());
         assert!(!Item::separator().clickable());

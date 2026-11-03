@@ -4,9 +4,10 @@
 //! Data path: a tokio task converts each chunk to the device's channel count
 //! and sample rate and pushes it into a single-producer/single-consumer ring of
 //! atomics. The cpal callback only reads the ring and converts samples: no
-//! locks, no allocation. It plays nothing until 100 ms are buffered, keeps the
-//! queue between 100 and 150 ms (excess incoming audio is dropped and counted),
-//! and outputs silence on underrun (counted, then re-prebuffers).
+//! locks, no allocation. It plays nothing until 140 ms are buffered, keeps the
+//! queue between 140 and 200 ms (past that the oldest audio is skipped and
+//! counted, so a burst after a stall plays the newest sound, never the stale
+//! part), and outputs silence on underrun (counted, then re-prebuffers).
 
 use std::sync::atomic::{AtomicI16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -21,11 +22,11 @@ use tokio::task::JoinHandle;
 use crate::audio_conv::{i16_to_f32, remix, Resampler};
 
 /// Audio that must be buffered before playback starts, in ms.
-pub const PREBUFFER_MS: usize = 100;
-/// When the queue would exceed this, incoming audio is dropped, in ms.
-pub const MAX_LATENCY_MS: usize = 150;
-/// Queue length after a drop (the target), in ms.
-pub const TARGET_MS: usize = 100;
+pub const PREBUFFER_MS: usize = 140;
+/// When the queue would exceed this, the oldest audio is skipped, in ms.
+pub const MAX_LATENCY_MS: usize = 200;
+/// Queue length after a skip (the target), in ms.
+pub const TARGET_MS: usize = 140;
 const RING_MS: usize = 500;
 
 /// Typed errors for audio output.
@@ -83,6 +84,10 @@ struct Shared {
     /// Total samples ever written / read (monotonic).
     head: AtomicUsize,
     tail: AtomicUsize,
+    /// The producer's request: the consumer skips ahead to this position.
+    /// Only the consumer moves `tail`, so the ring stays single-producer,
+    /// single-consumer.
+    skip_to: AtomicUsize,
 }
 
 /// Queue limits in interleaved samples.
@@ -118,6 +123,7 @@ pub struct RingProducer {
 pub struct RingConsumer {
     shared: Arc<Shared>,
     limits: Limits,
+    channels: usize,
     playing: bool,
     stats: Arc<Stats>,
 }
@@ -129,6 +135,7 @@ pub fn ring(rate: u32, channels: usize) -> (RingProducer, RingConsumer, Arc<Stat
         buf: (0..limits.capacity).map(|_| AtomicI16::new(0)).collect(),
         head: AtomicUsize::new(0),
         tail: AtomicUsize::new(0),
+        skip_to: AtomicUsize::new(0),
     });
     let stats = Arc::new(Stats::default());
     (
@@ -141,6 +148,7 @@ pub fn ring(rate: u32, channels: usize) -> (RingProducer, RingConsumer, Arc<Stat
         RingConsumer {
             shared,
             limits,
+            channels,
             playing: false,
             stats: stats.clone(),
         },
@@ -149,28 +157,31 @@ pub fn ring(rate: u32, channels: usize) -> (RingProducer, RingConsumer, Arc<Stat
 }
 
 impl RingProducer {
-    /// Queue interleaved device-format samples. If they would push the queue
-    /// past the maximum latency, only enough is kept to reach the target and
-    /// the rest is dropped (counted in frames). Returns samples stored.
+    /// Queue interleaved device-format samples. If they push the queue past
+    /// the maximum latency, the consumer is told to skip the oldest audio down
+    /// to the target. Returns samples stored (fewer than given only when the
+    /// consumer has stopped reading and the ring is full).
     pub fn push(&mut self, samples: &[i16]) -> usize {
         let sh = &self.shared;
         let head = sh.head.load(Ordering::Relaxed);
         let fill = head - sh.tail.load(Ordering::Acquire);
-        let mut n = samples.len();
-        if fill + n > self.limits.max {
-            let room = self.limits.target.saturating_sub(fill);
-            let keep = room.min(n) / self.channels * self.channels;
-            let dropped = (n - keep) / self.channels;
+        let cap = sh.buf.len();
+        let n = samples.len().min(cap - fill) / self.channels * self.channels;
+        if n < samples.len() {
+            let lost = (samples.len() - n) / self.channels;
             self.stats
                 .dropped_frames
-                .fetch_add(dropped as u64, Ordering::Relaxed);
-            n = keep;
+                .fetch_add(lost as u64, Ordering::Relaxed);
         }
-        let cap = sh.buf.len();
         for (k, &s) in samples[..n].iter().enumerate() {
             sh.buf[(head + k) % cap].store(s, Ordering::Relaxed);
         }
-        sh.head.store(head + n, Ordering::Release);
+        let new_head = head + n;
+        sh.head.store(new_head, Ordering::Release);
+        if fill + n > self.limits.max {
+            sh.skip_to
+                .store(new_head - self.limits.target, Ordering::Release);
+        }
         n
     }
 }
@@ -180,7 +191,16 @@ impl RingConsumer {
     /// safe: no locks, no allocation.
     pub fn render<T: Copy>(&mut self, out: &mut [T], conv: impl Fn(i16) -> T, silence: T) {
         let sh = &self.shared;
-        let tail = sh.tail.load(Ordering::Relaxed);
+        let mut tail = sh.tail.load(Ordering::Relaxed);
+        let skip_to = sh.skip_to.load(Ordering::Acquire);
+        if skip_to > tail {
+            let skipped = (skip_to - tail) / self.channels;
+            self.stats
+                .dropped_frames
+                .fetch_add(skipped as u64, Ordering::Relaxed);
+            tail = skip_to;
+            sh.tail.store(tail, Ordering::Release);
+        }
         let fill = sh.head.load(Ordering::Acquire) - tail;
         if !self.playing {
             if fill < self.limits.prebuffer {
@@ -324,7 +344,7 @@ impl Drop for AudioOut {
 mod tests {
     use super::*;
 
-    /// 1 kHz stereo: prebuffer 200 samples, target 200, max 300, capacity 1000.
+    /// 1 kHz stereo: prebuffer 280 samples, target 280, max 400, capacity 1000.
     fn small() -> (RingProducer, RingConsumer, Arc<Stats>) {
         ring(1000, 2)
     }
@@ -338,9 +358,9 @@ mod tests {
     #[test]
     fn limits_follow_the_documented_latencies() {
         let l = Limits::new(48000, 2);
-        assert_eq!(l.prebuffer, 9600);
-        assert_eq!(l.target, 9600);
-        assert_eq!(l.max, 14400);
+        assert_eq!(l.prebuffer, 13440);
+        assert_eq!(l.target, 13440);
+        assert_eq!(l.max, 19200);
         assert_eq!(l.capacity, 48000);
     }
 
@@ -349,7 +369,7 @@ mod tests {
         let (mut p, mut c, stats) = small();
         p.push(&[5; 100]);
         assert_eq!(render_i16(&mut c, 50), vec![0; 50]);
-        p.push(&[5; 100]); // now 200 = prebuffer
+        p.push(&[5; 180]); // now 280 = prebuffer
         assert_eq!(render_i16(&mut c, 4), vec![5; 4]);
         assert_eq!(stats.underruns.load(Ordering::Relaxed), 0);
     }
@@ -361,7 +381,7 @@ mod tests {
         let mut got = Vec::new();
         for i in 0..20 {
             // Prime with the prebuffer, then keep 200 queued (never overflows).
-            let n = if i == 0 { 200 } else { 100 };
+            let n = if i == 0 { 280 } else { 100 };
             let chunk: Vec<i16> = (0..n)
                 .map(|_| {
                     next += 1;
@@ -379,10 +399,10 @@ mod tests {
     #[test]
     fn underrun_outputs_silence_counts_once_and_reprebuffers() {
         let (mut p, mut c, stats) = small();
-        p.push(&[9; 200]);
-        let out = render_i16(&mut c, 300);
-        assert_eq!(&out[..200], &[9; 200][..]);
-        assert_eq!(&out[200..], &[0; 100][..]);
+        p.push(&[9; 280]);
+        let out = render_i16(&mut c, 380);
+        assert_eq!(&out[..280], &[9; 280][..]);
+        assert_eq!(&out[280..], &[0; 100][..]);
         assert_eq!(stats.underruns.load(Ordering::Relaxed), 1);
         // Below the prebuffer again: silence, and no second underrun counted.
         p.push(&[9; 100]);
@@ -399,22 +419,40 @@ mod tests {
     }
 
     #[test]
-    fn overflow_drops_incoming_audio_down_to_the_target_and_counts_frames() {
+    fn overflow_skips_the_oldest_audio_down_to_the_target_and_counts_frames() {
         let (mut p, mut c, stats) = small();
-        assert_eq!(p.push(&[1; 250]), 250); // within max 300
-                                            // 250 + 100 > 300: keep up to target 200 -> room for 0, drop 100 samples = 50 frames.
-        assert_eq!(p.push(&[2; 100]), 0);
-        assert_eq!(stats.dropped_frames.load(Ordering::Relaxed), 50);
-        // Drain below target, then a big push keeps only up to the target.
-        render_i16(&mut c, 250);
-        assert_eq!(p.push(&[3; 400]), 200);
-        assert_eq!(stats.dropped_frames.load(Ordering::Relaxed), 50 + 100);
+        assert_eq!(p.push(&[1; 350]), 350); // within max 400
+        assert_eq!(p.push(&[2; 100]), 100); // 450 > 400: skip down to target 280
+        let out = render_i16(&mut c, 280);
+        assert_eq!(&out[..180], &[1; 180][..], "the newest of the old audio");
+        assert_eq!(&out[180..], &[2; 100][..], "all of the new audio");
+        assert_eq!(stats.dropped_frames.load(Ordering::Relaxed), 85);
+    }
+
+    #[test]
+    fn a_burst_after_a_stall_plays_the_newest_sound() {
+        let (mut p, mut c, stats) = small();
+        p.push(&[1; 280]);
+        render_i16(&mut c, 100);
+        // A stall's backlog arrives at once.
+        p.push(&[2; 400]);
+        let out = render_i16(&mut c, 200);
+        assert_eq!(out, vec![2; 200], "nothing stale is played");
+        assert!(stats.dropped_frames.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn a_consumer_that_stopped_reading_cannot_overrun_the_ring() {
+        let (mut p, _c, stats) = small();
+        assert_eq!(p.push(&[1; 2000]), 1000, "capacity is 1000 samples");
+        assert_eq!(p.push(&[1; 10]), 0);
+        assert_eq!(stats.dropped_frames.load(Ordering::Relaxed), 505);
     }
 
     #[test]
     fn f32_rendering_converts_samples() {
         let (mut p, mut c, _) = small();
-        p.push(&[16384; 200]);
+        p.push(&[16384; 280]);
         let mut out = vec![9.0f32; 4];
         c.render(&mut out, i16_to_f32, 0.0);
         assert_eq!(out, vec![0.5; 4]);

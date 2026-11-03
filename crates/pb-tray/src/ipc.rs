@@ -50,6 +50,10 @@ pub enum Request {
     /// Start / stop the phone camera (for checks without clicking).
     StartCamera,
     StopCamera,
+    /// Start or stop phone audio on this PC.
+    AudioPhone,
+    /// Start or stop PC audio on the phone.
+    AudioPc,
     /// Open the phone-camera window.
     CameraWindow,
     /// Text or a link from the share sheet.
@@ -71,6 +75,8 @@ fn encode(r: &Request) -> String {
         Request::HideScreen => "hide-screen\n".into(),
         Request::StartCamera => "start-camera\n".into(),
         Request::StopCamera => "stop-camera\n".into(),
+        Request::AudioPhone => "audio-phone\n".into(),
+        Request::AudioPc => "audio-pc\n".into(),
         Request::CameraWindow => "camera-window\n".into(),
         Request::Text { link, text } => format!("text\n{}\n{text}", u8::from(*link)),
         Request::Send(files) => {
@@ -97,6 +103,8 @@ pub fn decode(text: &str) -> Option<Request> {
         "hide-screen" => Some(Request::HideScreen),
         "start-camera" => Some(Request::StartCamera),
         "stop-camera" => Some(Request::StopCamera),
+        "audio-phone" => Some(Request::AudioPhone),
+        "audio-pc" => Some(Request::AudioPc),
         "camera-window" => Some(Request::CameraWindow),
         "text" => {
             let link = lines.next()? == "1";
@@ -264,6 +272,8 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
                     | Request::HideScreen
                     | Request::StartCamera
                     | Request::StopCamera
+                    | Request::AudioPhone
+                    | Request::AudioPc
                     | Request::CameraWindow),
                 ) => on_ui(&r),
                 None => {}
@@ -306,6 +316,14 @@ mod tests {
         assert!(matches!(
             decode(&encode(&Request::HideScreen)),
             Some(Request::HideScreen)
+        ));
+        assert!(matches!(
+            decode(&encode(&Request::AudioPhone)),
+            Some(Request::AudioPhone)
+        ));
+        assert!(matches!(
+            decode(&encode(&Request::AudioPc)),
+            Some(Request::AudioPc)
         ));
         assert!(matches!(
             decode(&encode(&Request::StartCamera)),

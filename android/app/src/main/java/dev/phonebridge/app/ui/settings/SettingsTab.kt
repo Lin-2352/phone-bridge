@@ -160,6 +160,8 @@ private fun AudioToPc() {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     var skip by remember { mutableStateOf(prefs.audioSkipConfirmPhoneToPc) }
+    var silence by remember { mutableStateOf(prefs.audioSilencePhone) }
+    val silenceWorks = !prefs.audioSilenceUnsupported
     val listener = AudioShare.sharingWith.value
     if (listener != null) LiveBanner("$listener can hear this phone") { AudioShare.stop(AudioDirection.PHONE_TO_PC) }
     val from = AudioShare.playingFrom.value
@@ -171,6 +173,20 @@ private fun AudioToPc() {
         onChecked = { v ->
             skip = v
             prefs.audioSkipConfirmPhoneToPc = v
+        },
+    )
+    RelayRow(
+        title = "Silence this phone while streaming",
+        supporting = when {
+            !silenceWorks -> "Not available on this phone: muting it also silences what $APP_NAME captures"
+            silence -> "On. Audio plays only on the PC. Your volume comes back when streaming stops"
+            else -> "Off. Audio plays on this phone and on the PC. Applies from the next stream"
+        },
+        checked = silence && silenceWorks,
+        switchEnabled = silenceWorks,
+        onChecked = { v ->
+            silence = v
+            prefs.audioSilencePhone = v
         },
     )
 }
