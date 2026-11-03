@@ -122,9 +122,9 @@ fun TimelineTab() {
     val snack = remember { SnackbarHostState() }
     val entries by Timeline.entries.collectAsState()
     val historyOn by Timeline.historyOn.collectAsState()
-    var confirmOff by remember { mutableStateOf(false) }
-    var confirmClear by remember { mutableStateOf(false) }
-    var menu by remember { mutableStateOf(false) }
+    var confirmOff by rememberSaveable { mutableStateOf(false) }
+    var confirmClear by rememberSaveable { mutableStateOf(false) }
+    var menu by rememberSaveable { mutableStateOf(false) }
     // Bumped when the date, time or time zone changes, and on resume, so "Today" and the clock times are redrawn.
     var dayTick by remember { mutableIntStateOf(0) }
     var opening by remember { mutableStateOf(false) }

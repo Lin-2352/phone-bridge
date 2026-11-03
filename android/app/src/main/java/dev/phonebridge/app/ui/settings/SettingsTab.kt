@@ -692,7 +692,7 @@ private fun LogRows(say: (String, String?, () -> Unit) -> Unit) {
     var keep by remember { mutableStateOf(prefs.keepLogs) }
     var size by remember { mutableStateOf(AppLog.sizeBytes()) }
     var days by remember { mutableStateOf(AppLog.dayCount()) }
-    var confirming by remember { mutableStateOf(false) }
+    var confirming by rememberSaveable { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     fun refresh() {
         note = null // a stale "No logs to export" must not hide the real size
