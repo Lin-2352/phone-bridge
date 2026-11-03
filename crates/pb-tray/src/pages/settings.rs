@@ -763,7 +763,7 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             let b = right_button(card, s, 100.0, 18.0);
             let right = left_of(il, b.left, s);
             let w = right - il;
-            let shown = shorten_path(&m.log_dir, |t| text_width(c, Font::Caption, t) <= w);
+            let shown = shorten_path(&m.log_folder_text(), |t| text_width(c, Font::Caption, t) <= w);
             two_lines(c, card, il, right, "Log folder", &shown, p.text);
             fluent::button(c, b, "Open", false);
         }

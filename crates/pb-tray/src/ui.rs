@@ -2017,6 +2017,7 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         audio_skip_confirm: n.audio_skip_confirm_pc_to_phone,
         log_dir: crate::applog::dir().display().to_string(),
         log_bytes: crate::applog::size_bytes(),
+        logs_failed: crate::applog::handle().is_none(),
         devices: paired_devices(st),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
         notify: n.notify_enabled,

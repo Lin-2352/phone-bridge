@@ -55,6 +55,8 @@ pub struct Model {
     /// Where the logs go, and how big they are now (bytes).
     pub log_dir: String,
     pub log_bytes: u64,
+    /// The log writer could not open: Keep logs may read On but nothing is recorded.
+    pub logs_failed: bool,
     /// (name, fingerprint, answers as a different device now)
     pub devices: Vec<(String, String, bool)>,
     pub my_fingerprint: String,
@@ -73,6 +75,15 @@ pub struct Model {
 }
 
 impl Model {
+    /// The Log folder row's second line: the folder, or why nothing is recorded.
+    pub fn log_folder_text(&self) -> String {
+        if self.logs_failed {
+            "Can't write logs, so nothing is recorded".to_owned()
+        } else {
+            self.log_dir.clone()
+        }
+    }
+
     pub fn get(&self, k: Key) -> bool {
         match k {
             Key::Share => self.share,
@@ -381,6 +392,17 @@ mod log_rows_tests {
         let at = |f: &dyn Fn(&Row) -> bool| r.iter().position(f).unwrap();
         let clear = at(&|x| *x == Row::ClearHistory);
         let keep = at(&|x| matches!(x, Row::Toggle(Key::KeepLogs, ..)));
+        let bad = Model {
+            logs_failed: true,
+            log_dir: "D:/logs".into(),
+            ..Default::default()
+        };
+        assert!(bad.log_folder_text().contains("nothing is recorded"));
+        let ok = Model {
+            log_dir: "D:/logs".into(),
+            ..Default::default()
+        };
+        assert_eq!(ok.log_folder_text(), "D:/logs");
         let folder = at(&|x| *x == Row::LogFolder);
         let wipe = at(&|x| *x == Row::ClearLogs);
         assert!(clear < keep && keep < folder && folder < wipe);
