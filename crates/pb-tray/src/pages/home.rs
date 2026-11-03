@@ -71,6 +71,8 @@ pub struct HomeModel {
     /// Unix seconds when the model was built, for "5 min ago" (whole
     /// minutes, so the model only changes when a label can).
     pub now: u64,
+    /// Relay is paused from the tray menu (from the settings).
+    pub paused: bool,
 }
 
 /// The paired phone as the tray knows it.
@@ -189,6 +191,7 @@ pub fn build(i: Inputs) -> HomeModel {
         notes_hidden,
         recent: i.recent.iter().take(RECENT).cloned().collect(),
         now: i.now,
+        paused: i.settings.paused,
     }
 }
 
@@ -207,6 +210,16 @@ fn ago(at: u64, now: u64) -> String {
         3600..86_400 => format!("{} h ago", d / 3600),
         _ if d < 2 * 86_400 => "yesterday".into(),
         _ => format!("{} days ago", d / 86_400),
+    }
+}
+
+/// The line under the phone's name: while Relay is paused it says so,
+/// whatever the phone's last state was.
+pub fn status_text(c: &PhoneCard, now: u64, paused: bool) -> String {
+    if paused {
+        "Relay is paused".to_owned()
+    } else {
+        status_line(c, now)
     }
 }
 
@@ -563,14 +576,18 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
             round_rect(c, &disc, Some((tint, 0.14)), None, 24.0 * s, false);
             fluent::icon_sized(c, Font::IconLarge, fluent::glyph::PHONE, disc, tint);
             let tx = disc.right + SPACE[3] * s;
-            let badge_w = if card.connected { 96.0 * s } else { 0.0 };
+            let badge_w = if card.connected && !m.paused {
+                96.0 * s
+            } else {
+                0.0
+            };
             let tr = (body.right - badge_w - SPACE[2] * s).max(tx);
             let name = rectf(tx, cy - 24.0 * s, tr, cy);
             text(c, Font::Subtitle, &card.name, name, pal.text, Align::Left);
             let line = rectf(tx, cy, tr, cy + 22.0 * s);
-            let status = status_line(card, m.now);
+            let status = status_text(card, m.now, m.paused);
             text(c, Font::Body, &status, line, pal.text2, Align::Left);
-            if card.connected {
+            if card.connected && !m.paused {
                 let b = rectf(
                     body.right - badge_w,
                     cy - 12.0 * s,
@@ -797,6 +814,20 @@ mod tests {
         assert!(card.connected);
         assert_eq!(warning(&card), None);
         assert_eq!(status_line(&card, NOW), "Connected \u{b7} Wi-Fi");
+    }
+
+    #[test]
+    fn paused_status_text_overrides_the_phone_state() {
+        let card = PhoneCard {
+            connected: true,
+            last_seen: None,
+            path: Path::Usb,
+            changed: false,
+            name: "P".into(),
+            fingerprint: String::new(),
+        };
+        assert_eq!(status_text(&card, 0, true), "Relay is paused");
+        assert_eq!(status_text(&card, 0, false), "Connected \u{b7} USB");
     }
 
     #[test]

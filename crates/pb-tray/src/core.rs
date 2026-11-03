@@ -254,6 +254,19 @@ static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None
 /// The phone -> PC control session running now, so turning the setting off ends it.
 static PHONE_CONTROL: Mutex<Option<pb_transport::SessionCloser>> = Mutex::new(None);
 
+/// Pause Relay now (the setting is already on): every open session ends and
+/// the requests still waiting for a phone are dropped. The caller stops what
+/// lives on the UI side (screen window, control hooks, camera).
+pub fn pause_now() {
+    crate::pause::close_all();
+    stop_phone_control();
+    for slot in [&CONTROL_REQUEST, &CAMERA_REQUEST] {
+        if let Some(h) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            h.abort();
+        }
+    }
+}
+
 /// End phone -> PC control now (the user turned "Let my phone control this PC" off).
 pub fn stop_phone_control() {
     if let Some(c) = PHONE_CONTROL
@@ -522,7 +535,8 @@ pub async fn run(
     let clip: Arc<Mutex<ClipSync>> = Arc::default();
     // Ask each phone once what notifications it has (quiet copies and the
     // active keys), so toasts left from before match the phone again.
-    for p in node.paired_peers() {
+    let start_paused = settings.lock().map(|s| s.paused).unwrap_or(false);
+    for p in node.paired_peers().into_iter().filter(|_| !start_paused) {
         let (node, log, ui, settings, clip, images) = (
             node.clone(),
             log.clone(),
@@ -561,6 +575,14 @@ pub async fn run(
         tokio::select! {
             cmd = cmds.recv() => match cmd {
                 None => break,
+                // Paused: nothing talks to a phone.
+                Some(c) if crate::pause::needs_network(&c)
+                    && settings.lock().map(|s| s.paused).unwrap_or(false) =>
+                {
+                    if !crate::pause::is_quiet(&c) {
+                        ui(UiEvent::Info("Relay is paused".into()));
+                    }
+                }
                 Some(Cmd::Pair) => {
                     if let Some(r) = rotation.take() {
                         r.abort();
@@ -931,12 +953,21 @@ pub async fn run(
                     r.abort();
                 }
                 node.close_pairing();
+                if settings.lock().map(|s| s.paused).unwrap_or(false) {
+                    log.line("PAIRING refused: Relay is paused");
+                    continue;
+                }
                 next_id += 1;
                 log.line(&format!("SAS={} peer=\"{}\"", p.sas, p.peer_name));
                 ui(UiEvent::Sas { id: next_id, peer_name: p.peer_name.clone(), sas: p.sas.clone() });
                 pending.insert(next_id, p);
             }
             Some(s) = ev.sessions.recv() => {
+                if settings.lock().map(|x| x.paused).unwrap_or(false) {
+                    s.closer().close(b"paused");
+                    log.line("SESSION refused: Relay is paused");
+                    continue;
+                }
                 tokio::spawn(pump(s, node.clone(), log.clone(), ui.clone(), settings.clone(), clip.clone(), images.clone()));
             }
         }
@@ -1041,6 +1072,8 @@ async fn pump(
     images: Arc<ToastImages>,
 ) {
     let peer = s.peer;
+    // A pause ends it from outside.
+    let _registered = crate::pause::register(s.closer());
     with_session_notes(
         &node,
         &peer,

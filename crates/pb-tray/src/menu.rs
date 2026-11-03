@@ -33,8 +33,11 @@ use crate::{
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const CLASS: PCWSTR = w!("PhoneBridgeMenu");
-const W: i32 = 248;
+const W: i32 = 296;
 const ITEM: i32 = 36;
+/// A row that also says why it is off.
+const ITEM_REASON: i32 = 52;
+const HEADING: i32 = 28;
 const SEP: i32 = 9;
 const PAD: i32 = 4;
 
@@ -44,6 +47,12 @@ pub struct Item {
     pub glyph: char,
     pub label: String,
     pub id: usize,
+    /// A checkable row: `Some(on)`.
+    pub checked: Option<bool>,
+    /// Why the row cannot be used now; it is shown dimmed under the label.
+    pub disabled: Option<String>,
+    /// A group title, not a choice.
+    pub heading: bool,
 }
 
 impl Item {
@@ -52,13 +61,41 @@ impl Item {
             glyph,
             label: label.to_owned(),
             id,
+            checked: None,
+            disabled: None,
+            heading: false,
         }
     }
     pub fn separator() -> Self {
+        Self::new(' ', "", 0)
+    }
+    pub fn heading(label: &str) -> Self {
         Self {
-            glyph: ' ',
-            label: String::new(),
-            id: 0,
+            heading: true,
+            ..Self::new(' ', label, 0)
+        }
+    }
+    pub fn checked(mut self, on: bool) -> Self {
+        self.checked = Some(on);
+        self
+    }
+    pub fn disabled(mut self, reason: &str) -> Self {
+        self.disabled = Some(reason.to_owned());
+        self
+    }
+    /// Whether a click on the row does anything.
+    pub fn clickable(&self) -> bool {
+        self.id != 0 && !self.heading && self.disabled.is_none()
+    }
+    fn height(&self) -> i32 {
+        if self.heading {
+            HEADING
+        } else if self.id == 0 {
+            SEP
+        } else if self.disabled.is_some() {
+            ITEM_REASON
+        } else {
+            ITEM
         }
     }
 }
@@ -83,7 +120,7 @@ fn rows(s: f32, items: &[Item]) -> Vec<RECT> {
     items
         .iter()
         .map(|i| {
-            let h = px(s, if i.id == 0 { SEP } else { ITEM });
+            let h = px(s, i.height());
             let r = RECT {
                 left: px(s, PAD),
                 top: y,
@@ -128,6 +165,11 @@ fn draw(c: &mut Canvas, items: &[Item], hover: Option<usize>) {
     let (s, p) = (c.s, c.p);
     for (i, (item, r)) in items.iter().zip(rows(s, items)).enumerate() {
         let r = from_rect(r);
+        if item.heading {
+            let tr = rectf(r.left + 12.0 * s, r.top, r.right - 8.0 * s, r.bottom);
+            text(c, Font::Caption, &item.label, tr, p.text2, Align::Left);
+            continue;
+        }
         if item.id == 0 {
             let line = rectf(
                 r.left + 8.0 * s,
@@ -138,13 +180,31 @@ fn draw(c: &mut Canvas, items: &[Item], hover: Option<usize>) {
             round_rect(c, &line, Some((p.stroke, 1.0)), None, 0.0, false);
             continue;
         }
-        if hover == Some(i) {
+        if hover == Some(i) && item.clickable() {
             round_rect(c, &r, Some((p.hover, 1.0)), None, RADIUS[0] * s, false);
         }
+        let ink = if item.disabled.is_some() {
+            p.text2
+        } else {
+            p.text
+        };
         let ic = rectf(r.left + 8.0 * s, r.top, r.left + 36.0 * s, r.bottom);
-        fluent::icon(c, item.glyph, ic, p.text);
+        match item.checked {
+            Some(true) => fluent::icon(c, fluent::glyph::CHECK, ic, p.accent),
+            Some(false) => {}
+            None => fluent::icon(c, item.glyph, ic, ink),
+        }
         let tr = rectf(r.left + 44.0 * s, r.top, r.right - 8.0 * s, r.bottom);
-        text(c, Font::Body, &item.label, tr, p.text, Align::Left);
+        match &item.disabled {
+            Some(why) => {
+                let mid = r.top + 28.0 * s;
+                let label = rectf(tr.left, r.top + 4.0 * s, tr.right, mid);
+                let reason = rectf(tr.left, mid - 6.0 * s, tr.right, r.bottom - 2.0 * s);
+                text(c, Font::Body, &item.label, label, ink, Align::Left);
+                text(c, Font::Caption, why, reason, p.text2, Align::Left);
+            }
+            None => text(c, Font::Body, &item.label, tr, ink, Align::Left),
+        }
     }
 }
 
@@ -155,7 +215,7 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Option<usize> {
     rows(s, &st.items)
         .iter()
         .position(|r| fluent::inside(r, x, y))
-        .filter(|&i| st.items[i].id != 0)
+        .filter(|&i| st.items[i].clickable())
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -350,6 +410,11 @@ mod tests {
         vec![
             Item::new(fluent::glyph::PHONE, "Open Relay", 24),
             Item::separator(),
+            Item::heading("Quick settings"),
+            Item::new(' ', "Pause Relay", 26).checked(true),
+            Item::new(' ', "Sync clipboard", 5).checked(false),
+            Item::new(fluent::glyph::SEND, "Send files", 4).disabled("Pair a phone first"),
+            Item::separator(),
             Item::new(fluent::glyph::POWER, "Quit Relay", 2),
         ]
     }
@@ -358,11 +423,21 @@ mod tests {
     fn menu_rows_stack_and_separators_are_thin() {
         for s in [1.0, 1.5, 2.0] {
             let r = rows(s, &items());
-            assert_eq!(r.len(), 3);
+            assert_eq!(r.len(), 8);
             assert!(r.windows(2).all(|w| w[0].bottom == w[1].top));
             assert!(r[1].bottom - r[1].top < r[0].bottom - r[0].top);
-            assert_eq!(height(s, &items()), r[2].bottom + px(s, PAD));
+            // A heading is shorter, a row with a reason is taller.
+            assert!(r[2].bottom - r[2].top < r[0].bottom - r[0].top);
+            assert!(r[5].bottom - r[5].top > r[0].bottom - r[0].top);
+            assert_eq!(height(s, &items()), r[7].bottom + px(s, PAD));
         }
+    }
+
+    #[test]
+    fn only_plain_enabled_rows_take_clicks() {
+        let it = items();
+        let live: Vec<bool> = it.iter().map(Item::clickable).collect();
+        assert_eq!(live, [true, false, false, true, true, false, false, true]);
     }
 
     #[cfg(windows)]

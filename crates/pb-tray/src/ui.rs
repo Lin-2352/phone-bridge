@@ -54,7 +54,7 @@ struct State {
 }
 
 pub const ID_SEND_FILES: usize = 4;
-const ID_TOGGLE_CLIP: usize = 5;
+pub const ID_TOGGLE_CLIP: usize = 5;
 const ID_TOGGLE_AUTO: usize = 6;
 const ID_OPEN_FOLDER: usize = 7;
 const ID_SENDTO: usize = 8;
@@ -63,10 +63,10 @@ pub const ID_OPEN_FLYOUT: usize = 10;
 pub const ID_SETTINGS: usize = 11;
 pub const ID_MENU: usize = 12;
 const ID_CONTROL: usize = 13;
-const ID_SCREEN: usize = 14;
+pub const ID_SCREEN: usize = 14;
 pub const ID_SCREEN_SHOW: usize = 15;
 pub const ID_SCREEN_HIDE: usize = 16;
-const ID_CAMERA: usize = 17;
+pub const ID_CAMERA: usize = 17;
 pub const ID_CAMERA_START: usize = 18;
 pub const ID_CAMERA_STOP: usize = 19;
 const ID_CAMERA_LENS: usize = 20;
@@ -946,10 +946,11 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     }
     match e {
         UiEvent::Ready { fingerprint } => {
-            set_tip(hwnd, &format!("Relay ({})", &fingerprint[..9]));
             if let Ok(mut f) = MY_FINGERPRINT.lock() {
                 *f = fingerprint[..9].to_owned();
             }
+            let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+            set_tip(hwnd, &crate::pause::tooltip(paused, &fingerprint[..9]));
             // Toasts restored from the notification centre whose phone is no
             // longer paired go now.
             let paired: Vec<pb_identity::PeerId> = st
@@ -1737,41 +1738,69 @@ fn end_control(hwnd: HWND, why: &str) {
 }
 
 fn show_menu(hwnd: HWND) {
-    use crate::fluent::glyph;
-    use crate::menu::Item;
-    let running = crate::camera::is_running();
-    let camera_items = vec![Item::new(
-        glyph::PHONE,
-        if crate::camera::pending() {
-            "Cancel phone camera request"
-        } else if running {
-            "Stop phone camera"
-        } else {
-            "Use phone as camera"
+    use crate::menu_model::{build, Camera, Ids, Inputs};
+    let Some(st) = STATE.get() else { return };
+    // Read fresh every time: the rows show the real settings and sessions.
+    let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
+    let has_peer = st.peers.lock().map(|g| !g.is_empty()).unwrap_or(false);
+    let camera = if crate::camera::pending() {
+        Camera::Pending
+    } else if crate::camera::is_running() {
+        Camera::Running
+    } else {
+        Camera::Idle
+    };
+    let items = build(
+        &Inputs {
+            settings: &settings,
+            has_peer,
+            screen_open: crate::screen_window::is_open(),
+            camera,
+            logs_available: crate::applog::handle().is_some(),
         },
-        ID_CAMERA,
-    )];
-    let mut items = vec![
-        Item::new(glyph::PHONE, "Open Relay", ID_OPEN_MAIN),
-        Item::new(
-            glyph::PHONE,
-            if crate::screen_window::is_open() {
-                "Hide phone screen"
-            } else {
-                "Show phone screen"
-            },
-            ID_SCREEN,
-        ),
-        Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
-        Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
-        Item::separator(),
-        Item::new(glyph::POWER, "Quit Relay", ID_QUIT),
-    ];
-    // The camera entries sit right after the phone-screen entry.
-    for (i, it) in camera_items.into_iter().enumerate() {
-        items.insert(2 + i, it);
-    }
+        &Ids {
+            open: ID_OPEN_MAIN,
+            send_files: ID_SEND_FILES,
+            send_clipboard: ID_SEND_CLIPBOARD,
+            screen: ID_SCREEN,
+            camera: ID_CAMERA,
+            clipboard_sync: ID_TOGGLE_CLIP,
+            settings: ID_SETTINGS,
+            quit: ID_QUIT,
+        },
+    );
     crate::menu::show(hwnd, items);
+}
+
+/// Pause or resume Relay: saved, logged, and what is open is closed.
+fn set_paused(hwnd: HWND, st: &State, on: bool) {
+    let was = st
+        .settings
+        .lock()
+        .map(|mut s| std::mem::replace(&mut s.paused, on))
+        .unwrap_or(false);
+    save_settings(st);
+    let Some(t) = crate::pause::transition(was, on) else {
+        return;
+    };
+    crate::applog::emit(crate::applog::pause(on));
+    if t == crate::pause::Transition::Paused {
+        st.log.line("PAUSE Relay paused: sessions closed");
+        // The setting is already on, so nothing new slips in while closing.
+        crate::core::pause_now();
+        if crate::control::is_active() {
+            end_control(hwnd, "Relay is paused");
+        }
+        crate::screen_window::close();
+        crate::camera_window::close();
+        crate::camera::stop();
+    } else {
+        st.log.line("PAUSE Relay resumed");
+    }
+    let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
+    set_tip(hwnd, &crate::pause::tooltip(on, &fp));
+    // The main window shows it now.
+    post_settings_action(hwnd.0 as isize);
 }
 
 /// Snapshot of everything the Settings page shows.
@@ -2227,6 +2256,26 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             crate::main_window::open(crate::main_window::Page::Settings);
         }
         ID_MENU => show_menu(hwnd),
+        crate::menu_model::ID_PAUSE => {
+            let now = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+            set_paused(hwnd, st, !now);
+        }
+        // The menu's quick settings run the Settings page's own setters.
+        crate::menu_model::ID_TOGGLE_NOTIFY => apply_settings_action(
+            hwnd,
+            st,
+            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::Notify),
+        ),
+        crate::menu_model::ID_TOGGLE_ALLOW_CONTROL => apply_settings_action(
+            hwnd,
+            st,
+            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::Control),
+        ),
+        crate::menu_model::ID_TOGGLE_LOGS => apply_settings_action(
+            hwnd,
+            st,
+            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::KeepLogs),
+        ),
         ID_CONTROL => toggle_control(hwnd, st),
         ID_CONTROL_STOP => {
             if crate::control::is_active() {

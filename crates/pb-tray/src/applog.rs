@@ -90,6 +90,14 @@ pub fn clipsync(dir: &'static str, what: &'static str, size: u64, ok: bool, why:
 pub fn notify(what: &'static str) -> Ev {
     ev(Stream::Events, "notify", vec![("what", what.into())])
 }
+/// Relay was paused or resumed from the tray menu.
+pub fn pause(on: bool) -> Ev {
+    ev(
+        Stream::Events,
+        if on { "paused" } else { "resumed" },
+        vec![],
+    )
+}
 pub fn device_released() -> Ev {
     ev(Stream::Events, "device_released", vec![])
 }

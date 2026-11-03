@@ -54,6 +54,8 @@ mod ipc;
 mod main_window;
 #[cfg(windows)]
 mod menu;
+#[cfg(windows)]
+mod menu_model;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod netpath;
 #[cfg(windows)]
@@ -62,6 +64,8 @@ mod netsample;
 mod notify;
 #[cfg(windows)]
 mod pages;
+#[cfg(windows)]
+mod pause;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
