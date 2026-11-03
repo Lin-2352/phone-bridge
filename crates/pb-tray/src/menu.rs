@@ -73,6 +73,7 @@ impl Item {
     pub fn separator() -> Self {
         Self::new(' ', "", 0)
     }
+    #[cfg(test)]
     pub fn heading(label: &str) -> Self {
         Self {
             heading: true,

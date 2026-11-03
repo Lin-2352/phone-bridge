@@ -144,6 +144,7 @@ fn corrupt_file_is_replaced_but_a_missing_one_is_just_empty() {
     assert!(s.entries().is_empty());
     assert_eq!(msgs.lock().unwrap().len(), 1);
     assert!(!d.join(FILE).exists());
+    assert!(d.join("timeline.sealed.bad").exists(), "old file is kept");
     s.add(clip_text_entry("p", Dir::ToPc, "x", false));
     s.flush();
     assert_eq!(Store::open(&d, Box::new(Plain)).entries().len(), 1);
@@ -343,4 +344,20 @@ fn a_notification_row_always_names_a_device() {
     assert_eq!(notification_peer("Pixel 8"), "Pixel 8");
     assert_eq!(notification_peer(""), "your phone");
     assert_eq!(notification_peer("  "), "your phone");
+}
+
+#[test]
+fn one_bad_line_costs_only_that_line() {
+    let d = tmpdir("badline");
+    let good = clip_text_entry("p", Dir::ToPc, "x", false);
+    let mut plain = encode(std::slice::from_ref(&good));
+    plain.extend_from_slice(b"Z\tp\t1\tPhone\t\t\t\t\t\t\t\n");
+    plain.extend_from_slice(b"F\tp\n");
+    let sealed = Plain.wrap(&plain).unwrap();
+    std::fs::write(d.join(FILE), sealed).unwrap();
+    let mut s = Store::open(&d, Box::new(Plain));
+    let msgs = collect_log(&mut s);
+    assert_eq!(s.entries().len(), 1);
+    assert!(d.join(FILE).exists());
+    assert_eq!(msgs.lock().unwrap().len(), 1);
 }

@@ -242,50 +242,71 @@ pub fn encode(v: &[Entry]) -> Vec<u8> {
     o.into_bytes()
 }
 
+/// Strict: the first bad line fails it. (The store uses [`parse_lossy`].)
+#[cfg(test)]
 pub fn parse(b: &[u8]) -> Result<Vec<Entry>, String> {
+    let (v, bad) = parse_lossy(b)?;
+    match bad.into_iter().next() {
+        Some(e) => Err(e),
+        None => Ok(v),
+    }
+}
+
+/// Keeps every line that parses and reports why each other one was skipped. Only a bad header
+/// (not UTF-8, unknown version) fails the whole file, so one odd line (another build's row kind,
+/// a hand edit) never costs the rest of the history.
+pub fn parse_lossy(b: &[u8]) -> Result<(Vec<Entry>, Vec<String>), String> {
     let text = std::str::from_utf8(b).map_err(|_| "not UTF-8".to_string())?;
     let mut lines = text.split('\n');
     if lines.next() != Some(HEADER) {
         return Err("unknown version".into());
     }
     let mut out = Vec::new();
+    let mut bad = Vec::new();
     for line in lines.filter(|l| !l.is_empty()) {
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() != 11 {
-            return Err("wrong field count".into());
+        match parse_line(line) {
+            Ok(e) => out.push(e),
+            Err(e) => bad.push(e),
         }
-        let kind = match f[0] {
-            "F" => Kind::File,
-            "T" => Kind::ClipText,
-            "I" => Kind::ClipImage,
-            "N" => Kind::Notification,
-            "A" => Kind::Audio,
-            _ => return Err("bad kind".into()),
-        };
-        let dir = match f[1] {
-            "p" => Dir::ToPhone,
-            "c" => Dir::ToPc,
-            _ => return Err("bad direction".into()),
-        };
-        let dims = match (parse_opt_n::<u32>(f[8])?, parse_opt_n::<u32>(f[9])?) {
-            (Some(w), Some(h)) => Some((w, h)),
-            (None, None) => None,
-            _ => return Err("half a size".into()),
-        };
-        out.push(Entry {
-            kind,
-            dir,
-            at: f[2].parse().map_err(|_| "bad time".to_string())?,
-            peer: unesc(f[3])?,
-            name: parse_opt_s(f[4])?,
-            size: parse_opt_n(f[5])?,
-            path: parse_opt_s(f[6])?,
-            chars: parse_opt_n(f[7])?,
-            dims,
-            app: parse_opt_s(f[10])?,
-        });
     }
-    Ok(out)
+    Ok((out, bad))
+}
+
+fn parse_line(line: &str) -> Result<Entry, String> {
+    let f: Vec<&str> = line.split('\t').collect();
+    if f.len() != 11 {
+        return Err("wrong field count".into());
+    }
+    let kind = match f[0] {
+        "F" => Kind::File,
+        "T" => Kind::ClipText,
+        "I" => Kind::ClipImage,
+        "N" => Kind::Notification,
+        "A" => Kind::Audio,
+        _ => return Err("bad kind".into()),
+    };
+    let dir = match f[1] {
+        "p" => Dir::ToPhone,
+        "c" => Dir::ToPc,
+        _ => return Err("bad direction".into()),
+    };
+    let dims = match (parse_opt_n::<u32>(f[8])?, parse_opt_n::<u32>(f[9])?) {
+        (Some(w), Some(h)) => Some((w, h)),
+        (None, None) => None,
+        _ => return Err("half a size".into()),
+    };
+    Ok(Entry {
+        kind,
+        dir,
+        at: f[2].parse().map_err(|_| "bad time".to_string())?,
+        peer: unesc(f[3])?,
+        name: parse_opt_s(f[4])?,
+        size: parse_opt_n(f[5])?,
+        path: parse_opt_s(f[6])?,
+        chars: parse_opt_n(f[7])?,
+        dims,
+        app: parse_opt_s(f[10])?,
+    })
 }
 
 /// Drops entries older than 30 days, then keeps the newest 1,000 (newest first).
@@ -437,16 +458,36 @@ impl Store {
                     .wrapper
                     .unwrap(&sealed)
                     .map_err(|e| e.to_string())
-                    .and_then(|plain| parse(&plain));
+                    .and_then(|plain| parse_lossy(&plain));
                 match parsed {
-                    Ok(v) => {
+                    Ok((v, bad)) => {
+                        if !bad.is_empty() {
+                            s.pending_log.push(format!(
+                                "TIMELINE skipped {} unreadable line(s), kept {}: {}",
+                                bad.len(),
+                                v.len(),
+                                bad[0]
+                            ));
+                        }
                         s.entries = v;
                         prune(&mut s.entries, now_unix());
                     }
                     Err(e) => {
-                        s.pending_log
-                            .push(format!("TIMELINE unreadable, starting empty: {e}"));
-                        let _ = std::fs::remove_file(&s.path);
+                        // Keep the old file for a build that can read it; never delete history.
+                        let mut bad = s.path.as_os_str().to_owned();
+                        bad.push(".bad");
+                        let kept = std::fs::rename(&s.path, PathBuf::from(&bad)).is_ok();
+                        s.pending_log.push(format!(
+                            "TIMELINE unreadable, starting empty (old file {}): {e}",
+                            if kept {
+                                "kept as .bad"
+                            } else {
+                                "left in place"
+                            }
+                        ));
+                        if !kept {
+                            s.write_locked = true;
+                        }
                     }
                 }
             }

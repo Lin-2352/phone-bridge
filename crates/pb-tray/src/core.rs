@@ -253,6 +253,8 @@ impl Drop for OpenSession {
 static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The task that is setting up the camera or waiting for the phone's answer.
 static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
+/// The task that is waiting for the phone to accept a screen request.
+static SCREEN_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The phone -> PC control session running now, so turning the setting off ends it.
 static PHONE_CONTROL: Mutex<Option<pb_transport::SessionCloser>> = Mutex::new(None);
 
@@ -286,13 +288,37 @@ impl OfferReply {
     }
 }
 
+/// True while the request in `slot` still waits for the phone.
+fn request_pending(slot: &Mutex<Option<tokio::task::AbortHandle>>) -> bool {
+    slot.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|h| !h.is_finished())
+}
+
+/// Aborts the request in `slot`; true if one was still waiting.
+fn cancel_request(slot: &Mutex<Option<tokio::task::AbortHandle>>) -> bool {
+    match slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        Some(h) if !h.is_finished() => {
+            h.abort();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A phone-screen request is waiting for the phone's answer (not a window yet).
+pub fn screen_pending() -> bool {
+    request_pending(&SCREEN_REQUEST)
+}
+
 pub fn pause_now() {
     // Transfers first: they end as "Relay is paused" (and tell the peer),
     // not as a vanished connection.
     crate::transfers::cancel_all(crate::transfers::CancelBy::Pause);
     crate::pause::close_all();
     stop_phone_control();
-    for slot in [&CONTROL_REQUEST, &CAMERA_REQUEST] {
+    for slot in [&CONTROL_REQUEST, &CAMERA_REQUEST, &SCREEN_REQUEST] {
         if let Some(h) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
             h.abort();
         }
@@ -332,6 +358,8 @@ pub enum Cmd {
     ControlPhone,
     /// Show the phone's screen in a window.
     ShowScreen,
+    /// Give up on a phone-screen request the phone has not answered yet.
+    CancelScreen,
     /// Use the phone's camera as a webcam on this PC.
     StartCamera,
     /// Stop the phone camera (and remove the virtual camera).
@@ -434,6 +462,8 @@ pub enum UiEvent {
     /// check finished, or a session opened or closed): the UI repaints.
     PeersChecked,
     Info(String),
+    /// A pill only (no balloon), asked for from a thread that is not the UI thread.
+    Pill(String, u32),
     /// A phone notification arrived (or was re-sent quietly).
     Notify {
         peer: PeerId,
@@ -470,6 +500,7 @@ pub enum UiEvent {
     ScreenShown,
     /// The phone-screen window's Pin changed (to remember it).
     ScreenPinned(bool),
+    ScreenDim(bool),
     /// Files dropped on the phone-screen window.
     ScreenFiles(Vec<PathBuf>),
     /// An action on a toast did not work on the phone.
@@ -722,6 +753,8 @@ pub async fn run(
                     });
                 }
                 Some(Cmd::Unpair(id)) => {
+                    // A local stop first: removing the device must not read as a lost link.
+                    crate::audio::stop_all();
                     node.unpair(&id);
                     refresh_changed(&node);
                     log.line(&format!("UNPAIRED {id}"));
@@ -871,9 +904,25 @@ pub async fn run(
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
                     };
+                    let mut request = SCREEN_REQUEST.lock().unwrap_or_else(|p| p.into_inner());
+                    // One request at a time: a second click must not ask the phone twice.
+                    if crate::screen_window::is_open()
+                        || request.as_ref().is_some_and(|h| !h.is_finished())
+                    {
+                        continue;
+                    }
                     let (node, log, settings) = (node.clone(), log.clone(), settings.clone());
                     let ui: Arc<dyn Fn(UiEvent) + Send + Sync> = ui.clone();
-                    tokio::spawn(show_screen(node, id, name, log, ui, settings, false));
+                    *request = Some(
+                        tokio::spawn(show_screen(node, id, name, log, ui, settings, false))
+                            .abort_handle(),
+                    );
+                }
+                Some(Cmd::CancelScreen) => {
+                    if cancel_request(&SCREEN_REQUEST) {
+                        log.line("SCREEN request cancelled by the user");
+                        ui(UiEvent::Info("You cancelled the screen request".into()));
+                    }
                 }
                 Some(Cmd::StartCamera) => {
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
@@ -1777,6 +1826,10 @@ fn show_screen(
                             let ui = ui.clone();
                             move |p| ui(UiEvent::ScreenPinned(p))
                         }),
+                        on_dim: Box::new({
+                            let ui = ui.clone();
+                            move |d| ui(UiEvent::ScreenDim(d))
+                        }),
                         on_files: Box::new({
                             let ui = ui.clone();
                             move |f| ui(UiEvent::ScreenFiles(f))
@@ -2034,6 +2087,19 @@ fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_waiting_request_is_pending_until_cancelled() {
+        let slot = Mutex::new(None);
+        assert!(!request_pending(&slot));
+        assert!(!cancel_request(&slot));
+        let h = tokio::spawn(std::future::pending::<()>()).abort_handle();
+        *slot.lock().unwrap() = Some(h);
+        assert!(request_pending(&slot));
+        assert!(cancel_request(&slot));
+        assert!(!request_pending(&slot));
+        assert!(!cancel_request(&slot));
+    }
 
     /// Node calls that dial a peer (each one can set or clear the
     /// transport's "changed" flag). Split so this test does not match itself.

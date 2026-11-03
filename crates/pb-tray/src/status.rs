@@ -204,6 +204,22 @@ pub fn show(text: &str, secs: u32) {
     }
 }
 
+/// Closes the pill only while it still shows an "Asking ..." / "Connecting ..." message, so a
+/// finished request never wipes an unrelated message ("Sent x to phone") that replaced it.
+pub fn close_if_asking() {
+    let text = CURRENT
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.text.clone()));
+    if is_asking(text.as_deref()) {
+        close();
+    }
+}
+
+fn is_asking(text: Option<&str>) -> bool {
+    text.is_some_and(|t| t.starts_with("Asking ") || t.starts_with("Connecting "))
+}
+
 pub fn close() {
     let h = CURRENT.lock().ok().and_then(|g| g.as_ref().map(|p| p.hwnd));
     if let Some(h) = h {
@@ -215,6 +231,14 @@ pub fn close() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_asking_pill_is_closed_by_a_finished_request() {
+        assert!(is_asking(Some("Asking Phone to share its screen…")));
+        assert!(is_asking(Some("Connecting to Phone…")));
+        assert!(!is_asking(Some("Sent photo.jpg to Phone")));
+        assert!(!is_asking(None));
+    }
 
     #[cfg(windows)]
     #[test]

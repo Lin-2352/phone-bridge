@@ -45,6 +45,7 @@ pub fn needs_network(c: &Cmd) -> bool {
         | Cmd::NotifyAction { .. } => true,
         Cmd::CancelPair
         | Cmd::StopCamera
+        | Cmd::CancelScreen
         | Cmd::StopAudio(_)
         | Cmd::SwitchCameraLens
         | Cmd::RepairCamera
@@ -79,6 +80,27 @@ pub fn tooltip(paused: bool, fingerprint: &str) -> String {
         (false, true) => "Relay".to_owned(),
         (false, false) => format!("Relay ({fingerprint})"),
     }
+}
+
+/// The tray tooltip: a stopped core wins (nothing works), then paused, then
+/// running audio, then the plain name. One function, so every place that sets
+/// the tooltip (start, pause or resume, Explorer restart, audio) agrees.
+pub fn current_tooltip(
+    stopped: Option<&str>,
+    paused: bool,
+    fingerprint: &str,
+    audio_running: bool,
+) -> String {
+    if let Some(why) = stopped {
+        return failed_tooltip(why);
+    }
+    if audio_running && !paused {
+        return match fingerprint.is_empty() {
+            true => "Relay: sharing audio".to_owned(),
+            false => format!("Relay ({fingerprint}): sharing audio"),
+        };
+    }
+    tooltip(paused, fingerprint)
 }
 
 static OPEN: Mutex<Vec<(u64, SessionCloser)>> = Mutex::new(Vec::new());
@@ -148,6 +170,7 @@ mod tests {
         )));
         assert!(needs_network(&Cmd::Pair));
         assert!(!needs_network(&Cmd::StopCamera));
+        assert!(!needs_network(&Cmd::CancelScreen));
         assert!(!needs_network(&Cmd::CancelPair));
         assert!(!needs_network(&Cmd::Decide {
             id: 1,
@@ -162,6 +185,18 @@ mod tests {
             sensitive: false
         }));
         assert!(!is_quiet(&Cmd::SendFiles(vec![])));
+    }
+
+    #[test]
+    fn the_tooltip_keeps_a_stopped_core_and_names_running_audio() {
+        let t = current_tooltip(Some("port in use"), true, "ABC", true);
+        assert!(t.starts_with("Relay stopped"), "{t}");
+        assert_eq!(current_tooltip(None, true, "ABC", true), "Relay is paused");
+        assert_eq!(
+            current_tooltip(None, false, "ABC", true),
+            "Relay (ABC): sharing audio"
+        );
+        assert_eq!(current_tooltip(None, false, "ABC", false), "Relay (ABC)");
     }
 
     #[test]

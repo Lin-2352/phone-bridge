@@ -307,7 +307,7 @@ fn act(row: &Row, a: Action) {
             let Some(p) = row.path.clone() else { return };
             std::thread::spawn(move || {
                 if !transfers::file_actions(Some(&p)).open {
-                    crate::status::show("File moved or deleted", 5);
+                    crate::ui::pill("File moved or deleted", 5);
                     return;
                 }
                 let s = p.to_string_lossy().into_owned();
@@ -317,7 +317,7 @@ fn act(row: &Row, a: Action) {
                     crate::ui::show_in_folder(&s)
                 };
                 if !ok {
-                    crate::status::show("Windows couldn't open that file", 5);
+                    crate::ui::pill("Windows couldn't open that file", 5);
                 }
             });
         }

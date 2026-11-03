@@ -85,6 +85,8 @@ pub struct WindowOpts {
     /// The PC's codecs, best first (for fallback).
     pub codecs: Vec<Codec>,
     pub on_pin: Box<dyn Fn(bool) + Send + Sync>,
+    /// Dim was switched in the toolbar: remembered for the next window.
+    pub on_dim: Box<dyn Fn(bool) + Send + Sync>,
     pub on_files: Box<dyn Fn(Vec<PathBuf>) + Send + Sync>,
     /// The session ended; the text says why (for the status pill).
     pub on_ended: Box<dyn Fn(String) + Send + Sync>,
@@ -929,8 +931,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                             }
                         }
                         Target::Dim => {
-                            with(|sh| sh.dim = !sh.dim);
+                            let dim = with(|sh| {
+                                sh.dim = !sh.dim;
+                                (sh.dim, sh.opts.clone())
+                            });
                             push_state();
+                            if let Some((d, opts)) = dim {
+                                (opts.on_dim)(d);
+                            }
                         }
                     }
                     redraw_bars();

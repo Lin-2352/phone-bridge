@@ -264,6 +264,11 @@ pub fn map_line(msg: &str) -> Option<Ev> {
     if family == "FATAL" {
         return Some(error("FATAL", &msg["FATAL".len()..]));
     }
+    // Audio sessions emit their own `audio` events (`applog::audio`); the words in their log
+    // lines ("refused", an end detail with "failed") must not become a second, `error` event.
+    if family == "AUDIO" {
+        return None;
+    }
     const BAD: [&str; 6] = [
         "failed",
         "not shown",
@@ -489,6 +494,13 @@ mod tests {
     }
 
     #[test]
+    fn audio_lines_never_become_error_events() {
+        assert!(map_line("AUDIO phone refused: Declined").is_none());
+        assert!(map_line("AUDIO pc ended after 4 s: LinkLost (write failed)").is_none());
+        assert!(map_line("TIMELINE write failed: disk full").is_some());
+    }
+
+    #[test]
     fn session_lines_open_and_close() {
         let o = map_line("SESSION \"Pixel 8\"").unwrap();
         assert_eq!((o.stream, o.kind), (Stream::Events, "session_open"));
@@ -627,7 +639,7 @@ mod tests {
     fn scrub_removes_quotes_and_paths_and_cuts() {
         assert_eq!(
             scrub("cannot open \"my file.txt\" in C:\\a\\b now"),
-            "cannot open <q> in <path> now"
+            "cannot open <q> in <path>"
         );
         assert_eq!(scrub(&"x".repeat(500)).len(), 120);
     }

@@ -43,6 +43,31 @@ struct Active {
 
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
 static DEVICE: Mutex<Option<CameraDevice<MfVirtualCamera>>> = Mutex::new(None);
+
+/// What `ACTIVE` and `DEVICE` hold, readable without their locks. Start and
+/// stop keep those locks across blocking Frame Server calls, and the UI thread
+/// asks "is the camera on" while it draws, so it must never wait for them.
+struct Presence {
+    session: AtomicBool,
+    device: AtomicBool,
+}
+
+impl Presence {
+    const fn new() -> Self {
+        Self {
+            session: AtomicBool::new(false),
+            device: AtomicBool::new(false),
+        }
+    }
+    fn running(&self) -> bool {
+        self.session.load(Ordering::Acquire) || self.device.load(Ordering::Acquire)
+    }
+    fn streaming(&self) -> bool {
+        self.session.load(Ordering::Acquire)
+    }
+}
+
+static PRESENT: Presence = Presence::new();
 /// Frames per second written into the frames file (0 when idle).
 static FPS: AtomicU32 = AtomicU32::new(0);
 
@@ -169,13 +194,13 @@ pub fn clear_frames() {
 
 /// A session or the reconnect wait is under way (the device exists).
 pub fn is_running() -> bool {
-    lock(&ACTIVE).is_some() || lock(&DEVICE).is_some()
+    PRESENT.running()
 }
 
 /// A session is live (not the reconnect wait, where only the device is
 /// kept).
 pub fn is_streaming() -> bool {
-    lock(&ACTIVE).is_some()
+    PRESENT.streaming()
 }
 
 /// The user asked for the other lens.
@@ -214,12 +239,22 @@ async fn follow_lens(mut updates: tokio::sync::watch::Receiver<Option<u8>>) {
 /// End everything now: the session, then the virtual camera (Stop, Remove,
 /// Shutdown). Safe to call twice.
 pub fn stop() {
-    if let Some(a) = lock(&ACTIVE).take() {
+    let active = {
+        let mut a = lock(&ACTIVE);
+        PRESENT.session.store(false, Ordering::Release);
+        a.take()
+    };
+    if let Some(a) = active {
         a.stop.store(true, Ordering::Release);
         a.remote.close();
     }
-    // Dropping the device runs its teardown.
-    drop(lock(&DEVICE).take());
+    // Dropping the device runs its teardown (the lock is not held for it).
+    let device = {
+        let mut d = lock(&DEVICE);
+        PRESENT.device.store(false, Ordering::Release);
+        d.take()
+    };
+    drop(device);
 }
 
 /// Begin a session whose records arrive in `view`. The virtual camera is
@@ -246,6 +281,7 @@ fn start_session(
         if dev.is_none() {
             let cam = MfVirtualCamera::spawn()?;
             *dev = Some(CameraDevice::open(cam)?);
+            PRESENT.device.store(true, Ordering::Release);
             (opts.log)("CAMERA virtual camera started");
         }
     }
@@ -255,10 +291,14 @@ fn start_session(
     };
     rt.spawn(follow_lens(remote.lens_updates()));
     let stop = Arc::new(AtomicBool::new(false));
-    *lock(&ACTIVE) = Some(Active {
-        remote: remote.clone(),
-        stop: stop.clone(),
-    });
+    {
+        let mut a = lock(&ACTIVE);
+        *a = Some(Active {
+            remote: remote.clone(),
+            stop: stop.clone(),
+        });
+        PRESENT.session.store(true, Ordering::Release);
+    }
     let (tx, rx) = mpsc::channel::<Record>();
     rt.spawn(async move {
         while let Some(r) = records.recv().await {
@@ -276,6 +316,7 @@ fn start_session(
             let mut a = lock(&ACTIVE);
             if a.as_ref().is_some_and(|x| Arc::ptr_eq(&x.stop, &stop)) {
                 *a = None;
+                PRESENT.session.store(false, Ordering::Release);
             }
         }
         if !user_stopped {
@@ -381,6 +422,22 @@ fn pipe(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn presence_follows_the_session_and_the_device_without_locks() {
+        let p = super::Presence::new();
+        assert!(!p.running() && !p.streaming());
+        p.device.store(true, super::Ordering::Release);
+        assert!(
+            p.running() && !p.streaming(),
+            "device kept across a reconnect"
+        );
+        p.session.store(true, super::Ordering::Release);
+        assert!(p.running() && p.streaming());
+        p.device.store(false, super::Ordering::Release);
+        p.session.store(false, super::Ordering::Release);
+        assert!(!p.running());
+    }
+
     use super::*;
 
     async fn until(want: u32) {

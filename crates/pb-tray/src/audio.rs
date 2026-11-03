@@ -218,6 +218,8 @@ async fn run(
         }
     };
     sess.stop();
+    // The last contact is the end of the session, not its start.
+    crate::core::touch(&peer);
     let secs = began.elapsed().as_secs();
     log.line(&format!(
         "AUDIO {word} ended after {secs} s: {end:?} ({})",

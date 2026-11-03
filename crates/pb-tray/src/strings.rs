@@ -2,8 +2,10 @@
 //! Settings). The Settings phrasing is the source of truth.
 
 pub const SHARE_CLIPBOARD: &str = "Share clipboard";
+#[cfg(test)]
 pub const PHONE_NOTIFICATIONS: &str = "Show phone notifications";
 pub const PHONE_CONTROL: &str = "Let my phone control this PC";
+#[cfg(test)]
 pub const KEEP_LOGS: &str = "Keep logs";
 pub const NO_PEER: &str = "Pair a phone first";
 pub const PAIR_DEVICE: &str = "Pair device";
