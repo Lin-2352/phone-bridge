@@ -2509,7 +2509,15 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
             // Running transfers end cleanly: the peers are told. Best effort,
             // the process exits right after.
-            if crate::transfers::cancel_all(crate::transfers::CancelBy::Quit) > 0 {
+            let ended = crate::transfers::cancel_all(crate::transfers::CancelBy::Quit) > 0;
+            // Audio and the phone-screen window are stopped the same way, so the phone shows
+            // "stopped" and not "lost the connection".
+            let audio = crate::audio_state::Dir::ALL
+                .iter()
+                .any(|d| crate::audio::phase(*d) == crate::audio_state::Phase::Running);
+            crate::audio::stop_all();
+            crate::screen_window::close();
+            if ended || audio {
                 std::thread::sleep(std::time::Duration::from_millis(400));
             }
             crate::camera_window::close();

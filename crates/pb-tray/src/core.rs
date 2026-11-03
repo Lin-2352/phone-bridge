@@ -752,6 +752,8 @@ pub async fn run(
                     });
                 }
                 Some(Cmd::Unpair(id)) => {
+                    // A local stop first: removing the device must not read as a lost link.
+                    crate::audio::stop_all();
                     node.unpair(&id);
                     refresh_changed(&node);
                     log.line(&format!("UNPAIRED {id}"));
