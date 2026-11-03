@@ -1256,6 +1256,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         UiEvent::PeersChecked => {}
         // The menu, Home and the flyout read the state when they draw.
         UiEvent::AudioChanged => refresh_flyout(st),
+        UiEvent::AudioAsking(text) => crate::status::show(&text, 40),
+        UiEvent::AudioAskEnded => crate::status::close(),
         UiEvent::AskAudioShare { from, reply } => {
             let alive = reply.clone();
             let (title, body, yes, no) = crate::audio_state::confirm_text(&from);

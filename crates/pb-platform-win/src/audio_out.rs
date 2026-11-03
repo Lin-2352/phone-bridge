@@ -62,6 +62,15 @@ impl std::fmt::Display for AudioOutError {
 
 impl std::error::Error for AudioOutError {}
 
+/// Milliseconds of sound in `frames` sample frames at `rate` Hz.
+pub fn frames_to_ms(frames: u64, rate: u32) -> u64 {
+    if rate == 0 {
+        0
+    } else {
+        frames * 1000 / u64::from(rate)
+    }
+}
+
 /// Counters shared between the callback, the producer and the owner.
 #[derive(Default)]
 pub struct Stats {
@@ -196,6 +205,8 @@ impl RingConsumer {
 
 /// A running audio output stream. Drop (or `stop`) to stop playback.
 pub struct AudioOut {
+    /// Device sample rate: converts the dropped-frame count to time.
+    rate: u32,
     stream: Option<Stream>,
     task: JoinHandle<()>,
     stats: Arc<Stats>,
@@ -272,13 +283,22 @@ impl AudioOut {
             }
         };
         Ok(Self {
+            rate: dev_rate,
             stream: Some(stream),
             task,
             stats,
         })
     }
 
-    /// Audio frames dropped because the queue exceeded the maximum latency.
+    /// Audio discarded because the queue exceeded the maximum latency, in
+    /// milliseconds of sound (the counter itself counts sample frames, one
+    /// per channel group, not network chunks).
+    pub fn dropped_ms(&self) -> u64 {
+        frames_to_ms(self.dropped_frames(), self.rate)
+    }
+
+    /// Sample frames (one sample per channel) dropped because the queue
+    /// exceeded the maximum latency.
     pub fn dropped_frames(&self) -> u64 {
         self.stats.dropped_frames.load(Ordering::Relaxed)
     }
@@ -368,6 +388,14 @@ mod tests {
         p.push(&[9; 100]);
         assert_eq!(render_i16(&mut c, 50), vec![0; 50]);
         assert_eq!(stats.underruns.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn the_dropped_counter_is_sample_frames_and_converts_to_time() {
+        // The log said 157440 "chunks" in 196 s: that is sample frames, 3.28 s of sound.
+        assert_eq!(frames_to_ms(157_440, 48_000), 3280);
+        assert_eq!(frames_to_ms(44_100, 44_100), 1000);
+        assert_eq!(frames_to_ms(5, 0), 0);
     }
 
     #[test]

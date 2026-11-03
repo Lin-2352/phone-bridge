@@ -461,6 +461,11 @@ pub enum UiEvent {
     },
     /// An audio session started, ended or is being asked for: repaint.
     AudioChanged,
+    /// The request for audio is waiting: show this on the pill only (no
+    /// balloon, it would outlive the question).
+    AudioAsking(String),
+    /// The wait is over (started or cancelled): the pill goes.
+    AudioAskEnded,
     /// The phone shares its screen: the "Asking…" pill goes.
     ScreenShown,
     /// The phone-screen window's Pin changed (to remember it).

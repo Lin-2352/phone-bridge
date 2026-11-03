@@ -34,6 +34,9 @@ fun quickTiles(
     )
 }
 
+/** The toast for a tile that only the PC can start; short enough that Android does not cut it off. */
+fun startsOnPcText(tile: String): String = "Start it from your PC: choose $tile in $APP_NAME"
+
 /** Why a dimmed tile does nothing, for the message when it is tapped. */
 fun tileDisabledReason(running: Boolean, paired: Boolean): String =
     if (!running) "Turn on $APP_NAME first" else if (!paired) "Pair a PC first" else ""

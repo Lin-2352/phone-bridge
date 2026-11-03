@@ -101,6 +101,7 @@ import dev.phonebridge.app.hasNotifyAccess
 import dev.phonebridge.app.notifyAccessMissing
 import dev.phonebridge.app.pruneAllowed
 import dev.phonebridge.app.quickTiles
+import dev.phonebridge.app.startsOnPcText
 import dev.phonebridge.app.setBridgeEnabled
 import dev.phonebridge.app.ui.LocalResumeCount
 import dev.phonebridge.app.ui.components.IconBadge
@@ -250,8 +251,8 @@ fun HomeTab(onTimeline: () -> Unit) {
                         Quick.SendClipboard -> ctx.startActivity(Intent(ctx, SendClipboardActivity::class.java))
                         Quick.Screen -> if (screenTo != null) ScreenShare.stop(userStopped = true) else startsOnPc(ctx, "Screen")
                         Quick.Camera -> if (cameraTo != null) CameraShare.stop(userStopped = true) else startsOnPc(ctx, "Camera")
-                        Quick.PhoneAudio -> if (audioOut != null) AudioShare.stop(AudioDirection.PHONE_TO_PC) else startsOnPc(ctx, "Phone audio on this PC")
-                        Quick.PcAudio -> if (audioIn != null) AudioShare.stop(AudioDirection.PC_TO_PHONE) else startsOnPc(ctx, "PC audio on the phone")
+                        Quick.PhoneAudio -> if (audioOut != null) AudioShare.stop(AudioDirection.PHONE_TO_PC) else startsOnPc(ctx, "Phone audio")
+                        Quick.PcAudio -> if (audioIn != null) AudioShare.stop(AudioDirection.PC_TO_PHONE) else startsOnPc(ctx, "PC audio")
                         Quick.Touchpad -> ctx.startActivity(Intent(ctx, TouchpadActivity::class.java))
                         Quick.Pair -> ctx.startActivity(Intent(ctx, ScanActivity::class.java))
                     }
@@ -473,7 +474,7 @@ private fun SessionCard(title: String, body: String, modifier: Modifier, onStop:
 
 /** Screen and camera shares start on the PC; tapping them on the phone says where. */
 private fun startsOnPc(ctx: Context, what: String) {
-    Toast.makeText(ctx, "$what starts from your PC: open $APP_NAME there and choose $what", Toast.LENGTH_LONG).show()
+    Toast.makeText(ctx, startsOnPcText(what), Toast.LENGTH_LONG).show()
 }
 
 /**

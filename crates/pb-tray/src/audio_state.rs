@@ -215,6 +215,56 @@ pub fn device_text(d: Dir, e: &str) -> String {
     }
 }
 
+/// The line on the PC's pill while the request waits. The PC cannot know
+/// whether the phone will ask (its own setting may skip that question), so it
+/// is true either way.
+pub fn asking_text(d: Dir, phone: &str) -> String {
+    match d {
+        Dir::PhoneToPc => {
+            format!("Asking {phone} to share its audio. If the phone asks, approve it there.")
+        }
+        Dir::PcToPhone => format!("Asking {phone} to play this PC's audio\u{2026}"),
+    }
+}
+
+/// What the receiving end learned about frame arrival, for the log: how many
+/// frames came and the longest silence between two of them. Jitter shows up
+/// here before it shows as an underrun.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Arrivals {
+    pub frames: u64,
+    pub bytes: u64,
+    pub max_gap_ms: u64,
+    last_ms: Option<u64>,
+}
+
+impl Arrivals {
+    /// A frame of `len` bytes arrived `now_ms` after the session began.
+    pub fn frame(&mut self, now_ms: u64, len: usize) {
+        if let Some(last) = self.last_ms {
+            self.max_gap_ms = self.max_gap_ms.max(now_ms.saturating_sub(last));
+        }
+        self.last_ms = Some(now_ms);
+        self.frames += 1;
+        self.bytes += len as u64;
+    }
+
+    /// One log line; the unit of every number is in its name.
+    pub fn line(&self, dropped_ms: u64, underruns: u64) -> String {
+        format!(
+            "frames={} bytes={} max_gap_ms={} dropped_ms={} underruns={}",
+            self.frames, self.bytes, self.max_gap_ms, dropped_ms, underruns
+        )
+    }
+
+    /// Start a new reporting window, keeping the last arrival time.
+    pub fn reset_window(&mut self) {
+        self.frames = 0;
+        self.bytes = 0;
+        self.max_gap_ms = 0;
+    }
+}
+
 /// "12 s", "4 min 12 s", "1 h 3 min".
 pub fn duration_text(secs: u64) -> String {
     match secs {
@@ -333,6 +383,37 @@ mod tests {
         assert!(ended_text(Dir::PhoneToPc, "P", &End::LinkLost)
             .unwrap()
             .contains("again"));
+    }
+
+    #[test]
+    fn the_asking_line_is_true_whether_or_not_the_phone_asks() {
+        let t = asking_text(Dir::PhoneToPc, "Pixel");
+        assert!(t.contains("Pixel") && t.contains("If the phone asks"));
+        assert!(!t.contains("approve it on the phone"));
+        assert!(asking_text(Dir::PcToPhone, "Pixel").contains("Pixel"));
+    }
+
+    #[test]
+    fn arrivals_track_the_longest_gap_and_name_their_units() {
+        let mut a = Arrivals::default();
+        a.frame(0, 3840);
+        a.frame(20, 3840);
+        a.frame(520, 3840);
+        a.frame(540, 3840);
+        assert_eq!((a.frames, a.bytes, a.max_gap_ms), (4, 15_360, 500));
+        let l = a.line(80, 3);
+        assert!(
+            l.contains("max_gap_ms=500")
+                && l.contains("dropped_ms=80")
+                && l.contains("underruns=3")
+        );
+        a.reset_window();
+        assert_eq!((a.frames, a.max_gap_ms), (0, 0));
+        a.frame(560, 1);
+        assert_eq!(
+            a.max_gap_ms, 20,
+            "the gap across the window edge still counts"
+        );
     }
 
     #[test]

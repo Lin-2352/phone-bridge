@@ -30,6 +30,15 @@ class HomeCardsTest {
     }
 
     @Test
+    fun the_starts_from_the_pc_message_fits_a_toast_and_names_the_tile() {
+        for (tile in listOf("Screen", "Camera", "Phone audio", "PC audio")) {
+            val t = startsOnPcText(tile)
+            assertTrue(t, t.contains(tile))
+            assertTrue("$t is too long for a two-line toast", t.length <= 55)
+        }
+    }
+
+    @Test
     fun a_dimmed_tile_says_why() {
         assertEquals("Turn on $APP_NAME first", tileDisabledReason(running = false, paired = true))
         assertEquals("Turn on $APP_NAME first", tileDisabledReason(running = false, paired = false))

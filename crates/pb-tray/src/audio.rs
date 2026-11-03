@@ -146,9 +146,7 @@ async fn run(
         let (ui, name) = (ui.clone(), name.clone());
         move || {
             if d == Dir::PhoneToPc {
-                ui(UiEvent::Info(format!(
-                    "Asking {name} to share its audio\u{2026} approve it on the phone"
-                )));
+                ui(UiEvent::AudioAsking(st::asking_text(d, &name)));
             }
         }
     };
@@ -157,6 +155,7 @@ async fn run(
     let opened = tokio::select! {
         r = crate::core::dial(&node, &peer, node.open_audio(&peer, req, asked)) => r,
         () = stop.notified() => {
+            ui(UiEvent::AudioAskEnded);
             log.line(&format!("AUDIO {word} request cancelled by the user"));
             crate::applog::emit(crate::applog::audio("cancelled", word, 0, ""));
             return;
@@ -176,6 +175,7 @@ async fn run(
         return;
     }
     crate::core::touch(&peer);
+    ui(UiEvent::AudioAskEnded);
     log.line(&format!(
         "AUDIO {word} started ({} Hz, {} ch)",
         sess.accept.sample_rate, sess.accept.channels
@@ -209,7 +209,10 @@ async fn run(
     };
     sess.stop();
     let secs = began.elapsed().as_secs();
-    log.line(&format!("AUDIO {word} ended after {secs} s: {end:?}"));
+    log.line(&format!(
+        "AUDIO {word} ended after {secs} s: {end:?} ({})",
+        sess.end_detail()
+    ));
     crate::applog::emit(crate::applog::audio(
         "ended",
         word,
@@ -251,12 +254,23 @@ async fn play_phone_audio(
     };
     // `recv_frame` borrows the whole session: watch its events separately.
     let mut events = std::mem::replace(&mut sess.events, mpsc::unbounded_channel().1);
+    let began = Instant::now();
+    let mut arrivals = st::Arrivals::default();
+    let mut window = Instant::now();
     let end = loop {
         tokio::select! {
             f = sess.recv_frame() => match f {
                 // A full player queue drops the newest chunk; the device
                 // side keeps its own latency bound.
-                Some(f) => { let _ = tx.try_send(f.samples); }
+                Some(f) => {
+                    arrivals.frame(began.elapsed().as_millis() as u64, f.samples.len());
+                    let _ = tx.try_send(f.samples);
+                    if window.elapsed() >= Duration::from_secs(10) {
+                        log.line(&format!("AUDIO arrivals {}", arrivals.line(out.dropped_ms(), out.underruns())));
+                        arrivals.reset_window();
+                        window = Instant::now();
+                    }
+                }
                 None => break cause_of(events.recv().await),
             },
             ev = events.recv() => break cause_of(ev),
@@ -264,8 +278,8 @@ async fn play_phone_audio(
         }
     };
     log.line(&format!(
-        "AUDIO playback dropped {} chunks, {} underruns",
-        out.dropped_frames(),
+        "AUDIO playback dropped_ms={} underruns={} (counted per sample frame, not per network chunk)",
+        out.dropped_ms(),
         out.underruns()
     ));
     drop(out);

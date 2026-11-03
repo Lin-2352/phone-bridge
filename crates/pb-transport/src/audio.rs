@@ -186,6 +186,8 @@ struct Shared {
     /// `stop` was called: the control task is telling the peer, then waits
     /// for it to close, so letting go of the session must not cut that off.
     stopping: AtomicBool,
+    /// What ended it, in words (metadata only, for logs): the first reason wins.
+    detail: Mutex<String>,
     events: mpsc::UnboundedSender<AudioEvent>,
     closer: SessionCloser,
     slot: AudioSlot,
@@ -202,8 +204,17 @@ impl Shared {
         self.slot.release();
     }
 
+    /// Record why, unless the session already ended for another reason.
+    fn why(&self, text: impl Into<String>) {
+        let mut d = lock(&self.detail);
+        if !self.ended.load(Ordering::SeqCst) && d.is_empty() {
+            *d = text.into();
+        }
+    }
+
     /// `end`, and close the connection (a violation or a local close).
     fn end_and_close(&self, ev: AudioEvent, reason: &[u8]) {
+        self.why(String::from_utf8_lossy(reason).into_owned());
         self.end(ev);
         self.closer.close(reason);
     }
@@ -235,6 +246,11 @@ pub struct AudioSession {
 
 impl AudioSession {
     /// Whether this end sends the PCM (else it receives it).
+    /// Why the session ended, in words for the log (empty while it runs).
+    pub fn end_detail(&self) -> String {
+        lock(&self.shared.detail).clone()
+    }
+
     pub fn is_sender(&self) -> bool {
         self.sender
     }
@@ -518,6 +534,7 @@ fn start_session(
     let shared = Arc::new(Shared {
         queue: FrameQueue::new(queue_cap_bytes(accept.sample_rate, accept.channels)),
         ended: AtomicBool::new(false),
+        detail: Mutex::new(String::new()),
         stopping: AtomicBool::new(false),
         events: ev_tx,
         closer: session.closer(),
@@ -543,6 +560,7 @@ fn start_session(
                 c = cmd_rx.recv() => match c {
                     Some(Cmd::Stop) => {
                         let _ = session.send(ControlMsg::AudioStop(AudioStop { id })).await;
+                        ctl_shared.why("stopped here");
                         ctl_shared.end(AudioEvent::Stopped { by_peer: false });
                         // Waits for the peer to close, so the stop is not lost.
                         session.finish().await;
@@ -552,11 +570,17 @@ fn start_session(
                 },
                 r = session.recv() => match r {
                     Ok(Some(ControlMsg::AudioStop(st))) if st.id == id => {
+                        ctl_shared.why("the peer sent AudioStop");
                         ctl_shared.end(AudioEvent::Stopped { by_peer: true });
                         break;
                     }
                     Ok(Some(_)) => {}
-                    _ => {
+                    other => {
+                        ctl_shared.why(match other {
+                            Err(Error::Timeout) => "control channel silent for 15 s (heartbeat timeout)".to_owned(),
+                            Err(e) => format!("control channel error: {e}"),
+                            _ => "control channel closed by the peer".to_owned(),
+                        });
                         ctl_shared.end(AudioEvent::Stopped { by_peer: false });
                         break;
                     }
@@ -585,6 +609,7 @@ async fn write_loop(mut out: SendStream, shared: Arc<Shared>) {
             Err(e) => Err(e),
         };
         if let Err(e) = res {
+            shared.why(format!("data stream write error: {e}"));
             shared.end_and_close(
                 AudioEvent::WriteFailed(e.to_string()),
                 b"audio write failed",
@@ -614,7 +639,8 @@ async fn read_loop(mut input: RecvStream, channels: u32, shared: Arc<Shared>) {
                 );
                 return;
             }
-            Err(ReadExactError::ReadError(_)) => {
+            Err(ReadExactError::ReadError(e)) => {
+                shared.why(format!("data stream read error: {e}"));
                 shared.end(AudioEvent::Stopped { by_peer: false });
                 return;
             }
@@ -638,7 +664,8 @@ async fn read_loop(mut input: RecvStream, channels: u32, shared: Arc<Shared>) {
                 );
                 return;
             }
-            Err(ReadExactError::ReadError(_)) => {
+            Err(ReadExactError::ReadError(e)) => {
+                shared.why(format!("data stream read error: {e}"));
                 shared.end(AudioEvent::Stopped { by_peer: false });
                 return;
             }
