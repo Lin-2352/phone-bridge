@@ -64,6 +64,12 @@ object AudioShare {
     @Volatile private var player: AudioPlayer? = null
     private var streamer: AudioStreamer? = null
     private var tone: Thread? = null
+    private var encoder: OpusEncoder? = null
+
+    /** Sends one capture frame to the PC: as Opus when this phone can, else as it is. */
+    private fun send(o: PbAudioOut, enc: OpusEncoder?, buf: ByteArray, len: Int) {
+        if (enc != null) enc.encode(buf, len) { o.sendFrame(it) } else o.sendFrame(buf.copyOf(len))
+    }
     private var locks: AudioSessionLocks? = null
 
     /** Debug builds only, set over adb: send a test tone instead of asking and capturing. */
@@ -105,6 +111,8 @@ object AudioShare {
         endOverride = null
         val app = ctx.applicationContext
         var frames = 0L
+        val enc = OpusEncoder.create(a.sampleRate, a.channels)
+        encoder = enc
         val s = AudioStreamer(
             app, a.source, projection, a.sampleRate, a.channels,
             onEnded = { reason -> sourceEnded(reason) },
@@ -115,7 +123,7 @@ object AudioShare {
             },
             onFrame = { buf, len ->
                 val o = out.get()
-                o?.sendFrame(buf.copyOf(len))
+                if (o != null) send(o, enc, buf, len)
                 if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
                     Log.i(TAG, "AUDIO sharing captured_frames=$frames ${o?.statsLine()}")
                 }
@@ -128,7 +136,7 @@ object AudioShare {
             return
         }
         streamer = s
-        val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt())
+        val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt(), if (enc != null) 1u else 0u)
         if (o == null) {
             // The question timed out or the PC left meanwhile.
             teardownCapture()
@@ -145,8 +153,10 @@ object AudioShare {
     @Synchronized
     fun launchTone(ctx: Context, a: AudioAsk) {
         if (!sessions.tryBegin(AudioDirection.PHONE_TO_PC)) return
-        val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt())
+        val enc = OpusEncoder.create(a.sampleRate, a.channels)
+        val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt(), if (enc != null) 1u else 0u)
         if (o == null) {
+            enc?.release()
             sessions.end(AudioDirection.PHONE_TO_PC)
             return
         }
@@ -170,7 +180,7 @@ object AudioShare {
                             buf[at + 1] = (v shr 8).toByte()
                         }
                     }
-                    o.sendFrame(buf.copyOf())
+                    send(o, enc, buf, bytes)
                     frames++
                     if (frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) Log.i(TAG, "AUDIO tone frames=$frames ${o.statsLine()}")
                     val due = start + frames * AudioStreamer.FRAME_MS
@@ -179,6 +189,7 @@ object AudioShare {
                 }
             } catch (_: Exception) {
             }
+            enc?.release()
         }, "pb-audio-tone").apply { start() }
         Log.i(TAG, "AUDIO test tone to the PC started")
     }
@@ -313,6 +324,9 @@ object AudioShare {
         PbService.instance?.let { PhoneSpeaker.restore(it) }
         streamer?.stop()
         streamer = null
+        // After the capture thread stopped: it is the encoder's only user.
+        encoder?.release()
+        encoder = null
         out.set(null)
         captureSource = null
         endOverride = null

@@ -2188,14 +2188,16 @@ impl PbNode {
     }
 
     /// Accept an `AudioRequest`: send audio in this format (the request's
-    /// rate and channels). Returns the handle to feed PCM into.
+    /// rate and channels) with `codec` (0 raw PCM, 1 Opus). Returns the handle
+    /// to feed frames into: PCM, or one Opus packet per call.
     pub fn answer_audio_accept(
         &self,
         id: u64,
         sample_rate: u32,
         channels: u32,
+        codec: u32,
     ) -> Option<Arc<PbAudioOut>> {
-        self.shared.audio.accept(id, sample_rate, channels)
+        self.shared.audio.accept(id, sample_rate, channels, codec)
     }
 
     /// Refuse an `AudioRequest` with a wire reason code (1 declined,

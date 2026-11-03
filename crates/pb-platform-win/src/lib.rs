@@ -12,6 +12,7 @@ pub mod dib;
 mod dpapi;
 #[cfg(windows)]
 pub mod input;
+pub mod opus;
 #[cfg(windows)]
 pub mod power;
 

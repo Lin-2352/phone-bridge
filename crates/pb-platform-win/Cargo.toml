@@ -16,6 +16,7 @@ unsafe_code = "deny"
 all = "warn"
 
 [dependencies]
+unsafe-libopus = "0.2"
 pb-identity = { path = "../pb-identity" }
 pb-protocol = { path = "../pb-protocol" }
 png = "0.18"

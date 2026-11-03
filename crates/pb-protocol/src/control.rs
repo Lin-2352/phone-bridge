@@ -214,6 +214,13 @@ pub const AUDIO_SOURCE_PLAYBACK: u32 = 0;
 pub const AUDIO_SOURCE_MIC: u32 = 1;
 /// Largest PCM frame on the audio stream, in bytes.
 pub const AUDIO_MAX_FRAME: usize = 64 * 1024;
+/// Raw 16-bit PCM.
+pub const AUDIO_CODEC_PCM: u32 = 0;
+/// One Opus packet per datagram, always 48 kHz. Raw stereo PCM needs about
+/// 1.5 Mbit/s, and a phone can cap a background app far below that.
+pub const AUDIO_CODEC_OPUS: u32 = 1;
+/// The largest Opus packet of one frame (RFC 6716).
+pub const AUDIO_MAX_OPUS_PACKET: usize = 1275;
 
 /// Why an audio request was not accepted (`AudioAccept.reason`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +267,8 @@ pub enum AudioParamError {
     Source(u32),
     /// The microphone was requested in the PC to phone direction.
     MicWrongDirection,
+    /// Not [`AUDIO_CODEC_PCM`] or [`AUDIO_CODEC_OPUS`], or Opus below 48 kHz.
+    Codec(u32),
 }
 
 impl fmt::Display for AudioParamError {
@@ -270,6 +279,7 @@ impl fmt::Display for AudioParamError {
             Self::Direction(d) => write!(f, "audio direction {d} is not 0 or 1"),
             Self::Source(s) => write!(f, "audio source {s} is not 0 or 1"),
             Self::MicWrongDirection => f.write_str("microphone audio only goes phone to PC"),
+            Self::Codec(c) => write!(f, "audio codec {c} is not usable with this format"),
         }
     }
 }
@@ -292,6 +302,16 @@ pub fn validate_audio_format(sample_rate: u32, channels: u32) -> Result<(), Audi
 pub fn audio_frame_len_ok(len: usize, channels: u32) -> bool {
     let group = 2 * channels as usize;
     group != 0 && (1..=AUDIO_MAX_FRAME).contains(&len) && len.is_multiple_of(group)
+}
+
+/// Whether a packet's payload fits the session's codec: whole PCM samples, or
+/// one Opus packet.
+pub fn audio_payload_ok(codec: u32, len: usize, channels: u32) -> bool {
+    if codec == AUDIO_CODEC_OPUS {
+        (1..=AUDIO_MAX_OPUS_PACKET).contains(&len)
+    } else {
+        audio_frame_len_ok(len, channels)
+    }
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -347,6 +367,10 @@ pub struct AudioAccept {
     /// [`AudioReason`] code when `accepted` is false, else 0.
     #[prost(uint32, tag = "5")]
     pub reason: u32,
+    /// What the datagrams carry: [`AUDIO_CODEC_PCM`] or [`AUDIO_CODEC_OPUS`].
+    /// The sending side chooses.
+    #[prost(uint32, tag = "6")]
+    pub codec: u32,
 }
 
 impl AudioAccept {
@@ -357,12 +381,19 @@ impl AudioAccept {
             channels: 0,
             accepted: false,
             reason: reason.code(),
+            codec: AUDIO_CODEC_PCM,
         }
     }
 
     /// Check the format of an accepting reply.
     pub fn validate(&self) -> Result<(), AudioParamError> {
-        validate_audio_format(self.sample_rate, self.channels)
+        validate_audio_format(self.sample_rate, self.channels)?;
+        let usable = self.codec == AUDIO_CODEC_PCM
+            || (self.codec == AUDIO_CODEC_OPUS && self.sample_rate == 48_000);
+        if !usable {
+            return Err(AudioParamError::Codec(self.codec));
+        }
+        Ok(())
     }
 }
 
@@ -921,6 +952,7 @@ mod tests {
                 channels: 2,
                 accepted: true,
                 reason: 0,
+                codec: AUDIO_CODEC_OPUS,
             }),
             ControlMsg::AudioAccept(AudioAccept::refused(7, AudioReason::Busy)),
             ControlMsg::AudioStop(AudioStop { id: 7 }),
@@ -1229,6 +1261,44 @@ mod tests {
         assert!(!audio_frame_len_ok(1, 1));
         assert!(!audio_frame_len_ok(6, 2), "not a whole stereo sample");
         assert!(!audio_frame_len_ok(4, 0));
+    }
+
+    #[test]
+    fn a_payload_is_checked_by_its_codec() {
+        assert!(audio_payload_ok(AUDIO_CODEC_OPUS, 1, 2), "any byte count");
+        assert!(audio_payload_ok(AUDIO_CODEC_OPUS, 3, 2));
+        assert!(audio_payload_ok(AUDIO_CODEC_OPUS, AUDIO_MAX_OPUS_PACKET, 2));
+        assert!(!audio_payload_ok(AUDIO_CODEC_OPUS, 0, 2));
+        assert!(!audio_payload_ok(
+            AUDIO_CODEC_OPUS,
+            AUDIO_MAX_OPUS_PACKET + 1,
+            2
+        ));
+        assert!(audio_payload_ok(AUDIO_CODEC_PCM, 4, 2));
+        assert!(
+            !audio_payload_ok(AUDIO_CODEC_PCM, 3, 2),
+            "whole samples only"
+        );
+    }
+
+    #[test]
+    fn an_accept_names_a_usable_codec() {
+        let a = |sample_rate, codec| AudioAccept {
+            id: 1,
+            sample_rate,
+            channels: 2,
+            accepted: true,
+            reason: 0,
+            codec,
+        };
+        assert_eq!(a(48_000, AUDIO_CODEC_OPUS).validate(), Ok(()));
+        assert_eq!(a(44_100, AUDIO_CODEC_PCM).validate(), Ok(()));
+        assert_eq!(
+            a(44_100, AUDIO_CODEC_OPUS).validate(),
+            Err(AudioParamError::Codec(AUDIO_CODEC_OPUS)),
+            "Opus has no 44.1 kHz"
+        );
+        assert_eq!(a(48_000, 9).validate(), Err(AudioParamError::Codec(9)));
     }
 
     #[test]

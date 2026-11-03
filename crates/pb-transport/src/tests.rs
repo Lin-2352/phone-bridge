@@ -2418,6 +2418,7 @@ mod identity_changed {
                 channels: 2,
                 accepted: true,
                 reason: 0,
+                codec: 0,
             }
         }
 
@@ -2986,6 +2987,52 @@ mod identity_changed {
                     return s;
                 }
             }
+        }
+
+        fn opus_accept() -> AudioAccept {
+            AudioAccept {
+                codec: pb_protocol::control::AUDIO_CODEC_OPUS,
+                ..ok_accept()
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_opus_session_keeps_packets_whole_and_marks_a_lost_one_empty() {
+            let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+            let phone_id = phone.peer_id();
+            let (a, b) = tokio::join!(
+                pc.open_audio(&phone_id, req(AUDIO_PHONE_TO_PC), || {}),
+                responder(&phone, &mut phone_ev, Ok(opus_accept())),
+            );
+            let (tx, mut rx) = by_role(a.unwrap(), b.unwrap());
+            assert_eq!(rx.accept.codec, pb_protocol::control::AUDIO_CODEC_OPUS);
+            // An odd size: PCM would refuse it.
+            tx.send_frame(vec![5u8; 401]).unwrap();
+            assert_eq!(next_frame(&mut rx).await.samples, vec![5u8; 401]);
+            assert!(tx.send_frame(Vec::new()).is_err(), "empty is not a packet");
+            assert!(tx.send_frame(vec![0; 1276]).is_err(), "over the Opus limit");
+            drop(tx);
+
+            // Sequence 0 was the packet above; 1 is lost, 2 arrives.
+            let (pc2, _e, phone2, mut phone_ev2) = paired().await;
+            let id2 = phone2.peer_id();
+            let (view, raw) = tokio::join!(
+                pc2.open_audio(&id2, req(AUDIO_PHONE_TO_PC), || {}),
+                raw_responder(&mut phone_ev2, opus_accept()),
+            );
+            let mut view = view.unwrap();
+            raw.conn
+                .send_datagram(encode_packet(0, 0, &[1, 2, 3]).into())
+                .unwrap();
+            assert_eq!(next_frame(&mut view).await.samples, vec![1, 2, 3]);
+            raw.conn
+                .send_datagram(encode_packet(2, 0, &[7]).into())
+                .unwrap();
+            assert!(
+                next_frame(&mut view).await.samples.is_empty(),
+                "the lost packet, for the decoder to conceal"
+            );
+            assert_eq!(next_frame(&mut view).await.samples, vec![7]);
         }
 
         #[tokio::test(flavor = "multi_thread")]

@@ -102,6 +102,7 @@ enum Answer {
     Accept {
         sample_rate: u32,
         channels: u32,
+        codec: u32,
         out: Arc<PbAudioOut>,
     },
     Refuse(AudioReason),
@@ -224,6 +225,7 @@ impl AudioHub {
         id: u64,
         sample_rate: u32,
         channels: u32,
+        codec: u32,
     ) -> Option<Arc<PbAudioOut>> {
         let tx = lock(&self.pending).remove(&id)?;
         let out = Arc::new(PbAudioOut {
@@ -233,6 +235,7 @@ impl AudioHub {
         tx.send(Answer::Accept {
             sample_rate,
             channels,
+            codec,
             out: out.clone(),
         })
         .ok()?;
@@ -306,6 +309,7 @@ impl AudioHub {
                 Some(Answer::Accept {
                     sample_rate,
                     channels,
+                    codec,
                     out: o,
                 }) => {
                     ctl = o.ctl.clone();
@@ -317,6 +321,7 @@ impl AudioHub {
                         channels,
                         accepted: true,
                         reason: 0,
+                        codec,
                     })
                 }
                 other => {
@@ -339,6 +344,7 @@ impl AudioHub {
                 channels: start.channels,
                 accepted: true,
                 reason: 0,
+                codec: pb_protocol::control::AUDIO_CODEC_PCM,
             })
         };
         let source = start.source as u8;
@@ -708,7 +714,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!((source, sample_rate, channels), (0, 48000, 2));
-        let out = r.hub.accept(id, 48000, 2).expect("accepted");
+        let out = r.hub.accept(id, 48000, 2, 0).expect("accepted");
         let mut pc_session = req.await.unwrap().expect("pc side");
         assert!(matches!(
             r.rec.wait_for("started").await,

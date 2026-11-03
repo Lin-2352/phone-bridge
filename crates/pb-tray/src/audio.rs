@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pb_identity::PeerId;
-use pb_platform_win::{audio_capture::AudioCapture, audio_out::AudioOut};
+use pb_platform_win::{audio_capture::AudioCapture, audio_out::AudioOut, opus::OpusDec};
 use pb_protocol::control::{AudioStart, AUDIO_SOURCE_PLAYBACK};
 use pb_transport::{audio::AudioEvent, Node};
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -187,8 +187,8 @@ async fn run(
     crate::core::touch(&peer);
     ui(UiEvent::AudioAskEnded);
     log.line(&format!(
-        "AUDIO {word} started ({} Hz, {} ch)",
-        sess.accept.sample_rate, sess.accept.channels
+        "AUDIO {word} started ({} Hz, {} ch, codec {})",
+        sess.accept.sample_rate, sess.accept.channels, sess.accept.codec
     ));
     crate::applog::emit(crate::applog::audio("started", word, 0, ""));
     ui(UiEvent::AudioChanged);
@@ -259,6 +259,16 @@ async fn play_phone_audio(
     // Packets are about 6 ms each, so this bounds a scheduling hiccup, not
     // the latency: the ring behind it keeps that.
     let (tx, rx) = mpsc::channel::<Vec<u8>>(32);
+    let mut opus = None;
+    if sess.accept.codec == pb_protocol::control::AUDIO_CODEC_OPUS {
+        match OpusDec::new(sess.accept.sample_rate, sess.accept.channels) {
+            Ok(d) => opus = Some(d),
+            Err(e) => {
+                log.line(&format!("AUDIO decoder could not start: {e}"));
+                return End::DeviceFailed(st::device_text(Dir::PhoneToPc, &e));
+            }
+        }
+    }
     let out = if synth() {
         None
     } else {
@@ -282,6 +292,7 @@ async fn play_phone_audio(
     let began = Instant::now();
     let mut arrivals = st::Arrivals::default();
     let mut window = Instant::now();
+    let (mut decode_us_total, mut decode_us_max) = (0u64, 0u64);
     let end = loop {
         tokio::select! {
             f = sess.recv_frame() => match f {
@@ -289,16 +300,30 @@ async fn play_phone_audio(
                 // side keeps its own latency bound.
                 Some(f) => {
                     arrivals.frame(began.elapsed().as_millis() as u64, f.samples.len());
-                    arrivals.level(&f.samples);
-                    let _ = tx.try_send(f.samples);
+                    let t0 = Instant::now();
+                    let pcm = match opus.as_mut() {
+                        Some(d) => d.decode(&f.samples),
+                        None => f.samples,
+                    };
+                    let spent = t0.elapsed().as_micros() as u64;
+                    decode_us_total += spent;
+                    decode_us_max = decode_us_max.max(spent);
+                    arrivals.level(&pcm);
+                    if !pcm.is_empty() {
+                        let _ = tx.try_send(pcm);
+                    }
                     if window.elapsed() >= Duration::from_secs(10) {
                         let n = sess.stats();
                         log.line(&format!(
-                            "AUDIO arrivals {} packets={} lost={} late={} max_age_ms={} quic_lost={} paths={} rtt_ms={}",
+                            "AUDIO arrivals {} packets={} lost={} late={} queue_dropped={} decode_avg_us={} decode_max_us={} max_age_ms={} quic_lost={} paths={} rtt_ms={}",
                             arrivals.line(dropped(), underruns()),
-                            n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost, n.paths, n.rtt_ms
+                            n.packets, n.lost, n.late, n.queue_dropped,
+                            decode_us_total / arrivals.frames.max(1), decode_us_max,
+                            n.max_age_ms, n.quic_lost, n.paths, n.rtt_ms
                         ));
                         arrivals.reset_window();
+                        decode_us_total = 0;
+                        decode_us_max = 0;
                         window = Instant::now();
                     }
                 }

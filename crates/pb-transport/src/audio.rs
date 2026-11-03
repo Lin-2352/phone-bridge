@@ -13,11 +13,13 @@
 //! short gap; a stall leaves nothing behind it.
 //!
 //! Each datagram: `[4 bytes: sequence, u32 LE] [4 bytes: sender clock in ms,
-//! u32 LE] [raw PCM, i16 LE]`.
+//! u32 LE] [payload]`. The payload is what `AudioAccept.codec` says: raw PCM
+//! (i16 LE), split to fit, or one Opus packet. An empty [`AudioFrame`] from
+//! an Opus session stands for a lost packet, for the decoder to conceal.
 //!
 //! Every peer-supplied field is checked before it is trusted: the format on
-//! `AudioStart` and `AudioAccept`, and each packet's length (a header, then
-//! 1..=64 KiB of whole sample groups). The sender's QUIC buffer holds about
+//! `AudioStart` and `AudioAccept`, and each packet's length (a header, then a
+//! payload [`audio_payload_ok`] accepts). The sender's QUIC buffer holds about
 //! 100 ms ([`crate::tuning::DATAGRAM_SEND_BUFFER`]) and the receiver queue
 //! [`QUEUE_MS`], each dropping the oldest, so neither end can fall behind.
 
@@ -29,8 +31,8 @@ use std::time::{Duration, Instant};
 use iroh::endpoint::{Connection, SendDatagramError};
 use pb_identity::PeerId;
 use pb_protocol::control::{
-    audio_frame_len_ok, AudioAccept, AudioReason, AudioStart, AudioStop, ControlMsg,
-    AUDIO_PHONE_TO_PC,
+    audio_payload_ok, AudioAccept, AudioReason, AudioStart, AudioStop, ControlMsg,
+    AUDIO_CODEC_OPUS, AUDIO_PHONE_TO_PC,
 };
 use pb_protocol::CAP_AUDIO;
 use tokio::sync::{mpsc, Notify};
@@ -47,6 +49,14 @@ pub const PACKET_HEADER: usize = 8;
 /// its timing; a longer one is a stall, and filling it would only add delay.
 pub const FILL_MAX_MS: usize = 40;
 
+/// Unsent Opus QUIC may hold before new packets are skipped: about 200 ms at
+/// 160 kbit/s. The shared datagram buffer is sized for PCM and would hold a
+/// whole second of Opus.
+pub const OPUS_SEND_BACKLOG: usize = 4 * 1024;
+
+/// Length of an Opus packet the phone sends, for counting what a gap cost.
+const OPUS_FRAME_MS: usize = 20;
+
 /// One audio datagram.
 pub fn encode_packet(seq: u32, sent_ms: u32, pcm: &[u8]) -> Vec<u8> {
     let mut p = Vec::with_capacity(PACKET_HEADER + pcm.len());
@@ -56,11 +66,11 @@ pub fn encode_packet(seq: u32, sent_ms: u32, pcm: &[u8]) -> Vec<u8> {
     p
 }
 
-/// (sequence, sender clock, PCM) of a datagram, `None` when it is malformed:
-/// too short, or PCM that breaks the format limits.
-pub fn decode_packet(p: &[u8], channels: u32) -> Option<(u32, u32, &[u8])> {
+/// (sequence, sender clock, payload) of a datagram, `None` when it is
+/// malformed: too short, or a payload that breaks the limits of `codec`.
+pub fn decode_packet(p: &[u8], codec: u32, channels: u32) -> Option<(u32, u32, &[u8])> {
     let (head, pcm) = p.split_at_checked(PACKET_HEADER)?;
-    if !audio_frame_len_ok(pcm.len(), channels) {
+    if !audio_payload_ok(codec, pcm.len(), channels) {
         return None;
     }
     let seq = u32::from_le_bytes(head[..4].try_into().ok()?);
@@ -184,6 +194,8 @@ pub struct AudioStats {
     pub paths: usize,
     /// Round trip on the selected path, in ms (0 when unknown).
     pub rtt_ms: u64,
+    /// Receiver: frames dropped because the consumer fell behind.
+    pub queue_dropped: u64,
 }
 
 /// One chunk of raw PCM (i16 LE samples, interleaved channels).
@@ -258,6 +270,15 @@ pub fn queue_cap_bytes(sample_rate: u32, channels: u32) -> usize {
     sample_rate as usize * channels as usize * 2 * QUEUE_MS / 1000
 }
 
+/// Lost Opus packets to conceal: none for a stall, which would only add delay.
+pub fn opus_frames_to_conceal(missing: u32) -> u32 {
+    if (missing as usize).saturating_mul(OPUS_FRAME_MS) <= FILL_MAX_MS {
+        missing
+    } else {
+        0
+    }
+}
+
 #[derive(Default)]
 struct RxCounters {
     packets: AtomicU64,
@@ -278,6 +299,7 @@ struct FrameQueue {
     state: Mutex<QueueState>,
     notify: Notify,
     cap: usize,
+    dropped: AtomicU64,
 }
 
 impl FrameQueue {
@@ -286,6 +308,7 @@ impl FrameQueue {
             state: Mutex::default(),
             notify: Notify::new(),
             cap,
+            dropped: AtomicU64::new(0),
         }
     }
 
@@ -301,6 +324,7 @@ impl FrameQueue {
         while st.bytes > self.cap && st.frames.len() > 1 {
             if let Some(old) = st.frames.pop_front() {
                 st.bytes -= old.len();
+                self.dropped.fetch_add(1, Ordering::Relaxed);
             }
         }
         drop(st);
@@ -423,20 +447,22 @@ impl AudioSession {
                 .find(|p| p.is_selected())
                 .and_then(|p| self.conn.rtt(p.id()))
                 .map_or(0, |d| d.as_millis() as u64),
+            queue_dropped: self.shared.queue.dropped.load(Ordering::Relaxed),
         }
     }
 
     /// Sending end: send one PCM frame, split into datagrams that fit the
-    /// path. Never blocks; QUIC drops the oldest unsent audio beyond about
-    /// 100 ms. Fails on the receiving end, on an invalid frame (see
-    /// [`audio_frame_len_ok`]) and once the session has ended.
+    /// path, or one Opus packet whole. Never blocks; QUIC drops the oldest
+    /// unsent audio beyond about 100 ms. Fails on the receiving end, on an
+    /// invalid frame (see [`audio_payload_ok`]) and once the session has ended.
     pub fn send_frame(&self, pcm: Vec<u8>) -> Result<(), Error> {
         if !self.sender {
             return Err(Error::Protocol("this end receives audio".into()));
         }
-        if !audio_frame_len_ok(pcm.len(), self.accept.channels) {
+        let opus = self.accept.codec == AUDIO_CODEC_OPUS;
+        if !audio_payload_ok(self.accept.codec, pcm.len(), self.accept.channels) {
             return Err(Error::Protocol(format!(
-                "audio frame of {} bytes is empty, over 64 KiB or not whole samples",
+                "audio frame of {} bytes breaks the limits of its codec",
                 pcm.len()
             )));
         }
@@ -446,7 +472,17 @@ impl AudioSession {
         let Some(max) = self.conn.max_datagram_size() else {
             return Err(Error::Closed);
         };
-        let per_packet = pcm_per_packet(max, self.accept.channels);
+        let per_packet = if opus {
+            // Never split: half a packet decodes to nothing.
+            let backlog = crate::tuning::DATAGRAM_SEND_BUFFER
+                .saturating_sub(self.conn.datagram_send_buffer_space());
+            if backlog > OPUS_SEND_BACKLOG {
+                return Ok(()); // skipped: the receiver conceals the gap
+            }
+            pcm.len()
+        } else {
+            pcm_per_packet(max, self.accept.channels)
+        };
         if per_packet == 0 {
             return Err(Error::Protocol("the path is too small for audio".into()));
         }
@@ -692,7 +728,11 @@ fn start_session(
     let (ev_tx, events) = mpsc::unbounded_channel();
     let (cmd, mut cmd_rx) = mpsc::unbounded_channel::<Cmd>();
     let shared = Arc::new(Shared {
-        queue: FrameQueue::new(queue_cap_bytes(accept.sample_rate, accept.channels)),
+        queue: FrameQueue::new(if accept.codec == AUDIO_CODEC_OPUS {
+            OPUS_SEND_BACKLOG
+        } else {
+            queue_cap_bytes(accept.sample_rate, accept.channels)
+        }),
         ended: AtomicBool::new(false),
         detail: Mutex::new(String::new()),
         stopping: AtomicBool::new(false),
@@ -705,6 +745,7 @@ fn start_session(
     if !sender {
         tokio::spawn(read_loop(
             conn.clone(),
+            accept.codec,
             accept.sample_rate,
             accept.channels,
             shared.clone(),
@@ -766,7 +807,18 @@ fn start_session(
 
 /// Receiving end: datagrams to queue. Never waits for the consumer; the
 /// queue drops the oldest instead.
-async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Arc<Shared>) {
+async fn read_loop(
+    conn: Connection,
+    codec: u32,
+    sample_rate: u32,
+    channels: u32,
+    shared: Arc<Shared>,
+) {
+    let format = Format {
+        codec,
+        sample_rate,
+        channels,
+    };
     let began = Instant::now();
     let mut order = Reorder::default();
     let mut waiting_since: Option<Instant> = None;
@@ -788,7 +840,7 @@ async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Ar
                         // The missing packet is not coming.
                         let outs = order.release();
                         waiting_since = None;
-                        play(&shared, outs, packet_len, sample_rate, channels, &order);
+                        play(&shared, outs, packet_len, &format, &order);
                         continue;
                     }
                 }
@@ -803,7 +855,7 @@ async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Ar
                 return;
             }
         };
-        let Some((seq, sent_ms, pcm)) = decode_packet(&packet, channels) else {
+        let Some((seq, sent_ms, pcm)) = decode_packet(&packet, codec, channels) else {
             shared.end_and_close(
                 AudioEvent::Violation(format!("bad audio packet of {} bytes", packet.len())),
                 b"bad audio packet",
@@ -824,18 +876,25 @@ async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Ar
             (true, None) => Some(Instant::now()),
             (false, _) => None,
         };
-        play(&shared, outs, packet_len, sample_rate, channels, &order);
+        play(&shared, outs, packet_len, &format, &order);
     }
 }
 
-/// Queue what the reorder step released (silence for a short gap), and
-/// publish its counters.
+/// What a session's packets hold.
+struct Format {
+    codec: u32,
+    sample_rate: u32,
+    channels: u32,
+}
+
+/// Queue what the reorder step released, standing in for a short gap (silence
+/// for PCM, empty frames for the Opus decoder to conceal), and publish the
+/// counters.
 fn play(
     shared: &Shared,
     outs: Vec<Reordered>,
     packet_len: usize,
-    sample_rate: u32,
-    channels: u32,
+    format: &Format,
     order: &Reorder,
 ) {
     for o in outs {
@@ -843,8 +902,13 @@ fn play(
             Reordered::Pcm(p) => {
                 shared.queue.push(p);
             }
+            Reordered::Gap(missing) if format.codec == AUDIO_CODEC_OPUS => {
+                for _ in 0..opus_frames_to_conceal(missing) {
+                    shared.queue.push(Vec::new());
+                }
+            }
             Reordered::Gap(missing) => {
-                let fill = fill_bytes(missing, packet_len, sample_rate, channels);
+                let fill = fill_bytes(missing, packet_len, format.sample_rate, format.channels);
                 if fill > 0 {
                     shared.queue.push(vec![0; fill]);
                 }
@@ -869,21 +933,48 @@ mod queue_tests {
     #[test]
     fn a_packet_round_trips() {
         let p = encode_packet(7, 1234, &[1, 0, 2, 0]);
-        assert_eq!(decode_packet(&p, 2), Some((7, 1234, &[1u8, 0, 2, 0][..])));
+        assert_eq!(
+            decode_packet(&p, 0, 2),
+            Some((7, 1234, &[1u8, 0, 2, 0][..]))
+        );
     }
 
     #[test]
     fn malformed_packets_are_refused() {
-        assert_eq!(decode_packet(&[], 2), None);
-        assert_eq!(decode_packet(&[0; 7], 2), None, "short header");
-        assert_eq!(decode_packet(&[0; 8], 2), None, "no PCM");
-        assert_eq!(decode_packet(&[0; 14], 2), None, "not whole stereo samples");
-        assert!(decode_packet(&[0; 14], 1).is_some());
+        assert_eq!(decode_packet(&[], 0, 2), None);
+        assert_eq!(decode_packet(&[0; 7], 0, 2), None, "short header");
+        assert_eq!(decode_packet(&[0; 8], 0, 2), None, "no PCM");
         assert_eq!(
-            decode_packet(&vec![0; PACKET_HEADER + 65_536 + 4], 2),
+            decode_packet(&[0; 14], 0, 2),
+            None,
+            "not whole stereo samples"
+        );
+        assert!(decode_packet(&[0; 14], 0, 1).is_some());
+        assert_eq!(
+            decode_packet(&vec![0; PACKET_HEADER + 65_536 + 4], 0, 2),
             None,
             "over the frame limit"
         );
+    }
+
+    #[test]
+    fn an_opus_packet_is_any_size_up_to_its_limit() {
+        let p = encode_packet(1, 2, &[9, 8, 7]);
+        assert_eq!(
+            decode_packet(&p, AUDIO_CODEC_OPUS, 2),
+            Some((1, 2, &[9u8, 8, 7][..])),
+            "three bytes would not be whole PCM samples"
+        );
+        assert_eq!(decode_packet(&[0; 8], AUDIO_CODEC_OPUS, 2), None, "empty");
+        assert_eq!(decode_packet(&[0; 8 + 1276], AUDIO_CODEC_OPUS, 2), None);
+    }
+
+    #[test]
+    fn short_opus_gaps_are_concealed_and_stalls_are_not() {
+        assert_eq!(opus_frames_to_conceal(0), 0);
+        assert_eq!(opus_frames_to_conceal(2), 2, "40 ms");
+        assert_eq!(opus_frames_to_conceal(3), 0, "a stall adds no delay");
+        assert_eq!(opus_frames_to_conceal(u32::MAX), 0);
     }
 
     #[test]
