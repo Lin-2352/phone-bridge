@@ -167,6 +167,67 @@ pub struct PairedPeer {
     pub addrs: Vec<String>,
 }
 
+/// Addresses kept per peer (also the most a peer may hand us at pairing).
+pub const MAX_PEER_ADDRS: usize = 6;
+/// Characters kept of a peer-chosen device name.
+pub const MAX_PEER_NAME: usize = 64;
+
+/// Invisible characters that reorder or hide text (bidi overrides and
+/// isolates, zero-width marks, the BOM). `char::is_control` misses them.
+pub fn is_hidden_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
+}
+
+/// A device name another device sent: controls become spaces, hidden format
+/// characters go, at most [`MAX_PEER_NAME`] characters. Never holds a tab
+/// or a line break.
+pub fn clean_peer_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_hidden_format(*c))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_PEER_NAME)
+        .collect()
+}
+
+/// Addresses another device sent: only those that parse as `ip:port`
+/// (written back in canonical form), no repeats, at most [`MAX_PEER_ADDRS`].
+pub fn clean_peer_addrs<S: AsRef<str>>(addrs: &[S]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in addrs {
+        let Ok(sa) = a.as_ref().parse::<std::net::SocketAddr>() else {
+            continue;
+        };
+        let s = sa.to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+        if out.len() == MAX_PEER_ADDRS {
+            break;
+        }
+    }
+    out
+}
+
+impl PairedPeer {
+    /// The same peer with its name and addresses made safe to keep and show.
+    pub fn cleaned(self) -> Self {
+        Self {
+            name: clean_peer_name(&self.name),
+            addrs: clean_peer_addrs(&self.addrs),
+            id: self.id,
+        }
+    }
+}
+
 /// Persistent set of pinned peers. Only peers in the store may connect.
 pub trait PeerStore {
     fn get(&self, id: &PeerId) -> Option<PairedPeer>;
@@ -215,8 +276,8 @@ impl PeerStore for MemoryPeerStore {
 
 /// [`PeerStore`] persisted to a small text file (one peer per line:
 /// `hex id<TAB>name<TAB>addr,addr`). Every change is written atomically
-/// and durably (temp file, flushed to disk, then rename). Names have tabs and
-/// newlines replaced.
+/// and durably (temp file, flushed to disk, then rename). What is kept is
+/// [`PairedPeer::cleaned`]: names without controls, only `ip:port` addresses.
 pub struct FilePeerStore {
     path: std::path::PathBuf,
     mem: MemoryPeerStore,
@@ -245,18 +306,10 @@ impl FilePeerStore {
     fn save(&self, peers: &MemoryPeerStore) -> std::io::Result<()> {
         let mut out = String::new();
         for p in peers.list() {
-            let name: String = p
-                .name
-                .chars()
-                .map(|c| {
-                    if matches!(c, '\t' | '\n' | '\r') {
-                        ' '
-                    } else {
-                        c
-                    }
-                })
-                .collect();
-            out.push_str(&format!("{}\t{}\t{}\n", p.id, name, p.addrs.join(",")));
+            // Never a tab, line break or comma inside a field, whatever the
+            // caller pinned: one line is exactly one peer.
+            let p = p.cleaned();
+            out.push_str(&format!("{}\t{}\t{}\n", p.id, p.name, p.addrs.join(",")));
         }
         write_atomic(&self.path, out.as_bytes())
     }
@@ -302,22 +355,24 @@ fn rename_over(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<
     }
 }
 
+/// One store line: `id<TAB>name<TAB>addrs` (every version wrote three
+/// fields; two are accepted). More fields mean the line was tampered with.
 fn parse_peer_line(line: &str) -> Option<PairedPeer> {
-    let mut parts = line.split('\t');
-    let hex = parts.next()?;
-    let name = parts.next()?.to_owned();
-    let addrs = parts
-        .next()
-        .unwrap_or("")
-        .split(',')
-        .filter(|a| !a.is_empty())
-        .map(str::to_owned)
-        .collect();
-    Some(PairedPeer {
-        id: PeerId::from_hex(hex).ok()?,
-        name,
-        addrs,
-    })
+    let parts: Vec<&str> = line.split('\t').collect();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    let addrs: Vec<String> = parts
+        .get(2)
+        .map_or(Vec::new(), |a| a.split(',').map(str::to_owned).collect());
+    Some(
+        PairedPeer {
+            id: PeerId::from_hex(parts[0]).ok()?,
+            name: parts[1].to_owned(),
+            addrs,
+        }
+        .cleaned(),
+    )
 }
 
 impl PeerStore for FilePeerStore {
@@ -330,7 +385,7 @@ impl PeerStore for FilePeerStore {
     /// and reaches the file with the next successful save. Use
     /// [`PeerStore::try_pin`] when the user is told the peer is paired.
     fn pin(&mut self, peer: PairedPeer) {
-        self.mem.pin(peer);
+        self.mem.pin(peer.cleaned());
         let _ = self.save(&self.mem);
     }
 
@@ -345,7 +400,7 @@ impl PeerStore for FilePeerStore {
 
     fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
         let mut next = self.mem.clone();
-        next.pin(peer);
+        next.pin(peer.cleaned());
         self.save(&next)?;
         self.mem = next;
         Ok(())
@@ -590,6 +645,71 @@ mod tests {
         std::fs::remove_dir(&block).unwrap();
         s.try_pin(renamed.clone()).unwrap();
         assert_eq!(FilePeerStore::open(&path).unwrap().list(), vec![renamed]);
+    }
+
+    #[test]
+    fn a_peer_supplied_address_cannot_plant_a_second_peer() {
+        let path = temp_dir("plant").join("peers.txt");
+        let planted = id(2).peer_id();
+        let evil = PairedPeer {
+            id: id(1).peer_id(),
+            name: format!("A\n{planted}\tB\t"),
+            addrs: vec![
+                format!("1.2.3.4:1\n{planted}\tMy Phone\t10.0.0.9:1"),
+                "10.0.0.2:47100".into(),
+                "1.2.3.4:5,6.7.8.9:10".into(),
+                "not an address".into(),
+            ],
+        };
+        let mut s = FilePeerStore::open(&path).unwrap();
+        s.try_pin(evil.clone()).unwrap();
+        s.pin(evil.clone());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        let back = FilePeerStore::open(&path).unwrap();
+        assert_eq!(back.list().len(), 1);
+        assert!(back.get(&planted).is_none());
+        let got = back.get(&evil.id).unwrap();
+        assert_eq!(got.addrs, vec!["10.0.0.2:47100".to_string()]);
+        assert!(!got.name.contains(['\t', '\n', '\r']));
+        assert_eq!(s.get(&evil.id), Some(got), "memory matches the file");
+    }
+
+    #[test]
+    fn names_and_address_lists_are_bounded() {
+        let addrs: Vec<String> = (1..=9).map(|i| format!("10.0.0.{i}:1")).collect();
+        assert_eq!(clean_peer_addrs(&addrs), addrs[..MAX_PEER_ADDRS].to_vec());
+        assert_eq!(
+            clean_peer_addrs(&["[::1]:5", "[::1]:5", "x:1", "10.0.0.1"]),
+            vec!["[::1]:5".to_string()]
+        );
+        let long = "é".repeat(500);
+        assert_eq!(clean_peer_name(&long).chars().count(), MAX_PEER_NAME);
+        assert_eq!(
+            clean_peer_name("Pixel\u{202e}gpj.exe\t\n"),
+            "Pixelgpj.exe  "
+        );
+    }
+
+    #[test]
+    fn open_refuses_lines_with_extra_fields_and_keeps_old_ones() {
+        let path = temp_dir("fields").join("peers.txt");
+        let (a, b, c) = (id(1).peer_id(), id(2).peer_id(), id(3).peer_id());
+        std::fs::write(
+            &path,
+            format!(
+                "{a}\tOld\t10.0.0.2:47100,[::1]:5\n{b}\tTwo fields\n{c}\tX\t10.0.0.3:1\textra\n"
+            ),
+        )
+        .unwrap();
+        let s = FilePeerStore::open(&path).unwrap();
+        let ids: Vec<PeerId> = s.list().iter().map(|p| p.id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b), "old lines still load");
+        assert!(!ids.contains(&c), "a line with a fourth field is refused");
+        assert_eq!(
+            s.get(&a).unwrap().addrs,
+            vec!["10.0.0.2:47100".to_string(), "[::1]:5".to_string()]
+        );
     }
 
     #[test]

@@ -537,11 +537,11 @@ impl Node {
         write_frame(&mut send, &Pair::from(PairMsg::Reveal(reveal))).await?;
         let peer = PairedPeer {
             id: host,
-            name: nonce.device_name.clone(),
-            addrs: code.addrs.clone(),
+            name: pb_identity::clean_peer_name(&nonce.device_name),
+            addrs: pb_identity::clean_peer_addrs(&code.addrs),
         };
         Ok(Joining {
-            peer_name: nonce.device_name,
+            peer_name: pb_identity::clean_peer_name(&nonce.device_name),
             sas,
             conn,
             send,
@@ -832,7 +832,7 @@ impl Node {
         let (done_tx, done_rx) = oneshot::channel();
         let pending = PendingPairing {
             peer: joiner,
-            peer_name: start.device_name.clone(),
+            peer_name: pb_identity::clean_peer_name(&start.device_name),
             sas,
             decide: decide_tx,
             done: done_rx,
@@ -857,8 +857,8 @@ impl Node {
         );
         let peer = PairedPeer {
             id: joiner,
-            name: start.device_name,
-            addrs: start.addrs,
+            name: pb_identity::clean_peer_name(&start.device_name),
+            addrs: pb_identity::clean_peer_addrs(&start.addrs),
         };
         let mut result = if accept && remote_ok {
             self.store_try_pin(peer.clone()).await.map(|()| peer)

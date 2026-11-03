@@ -307,6 +307,28 @@ async fn a_pairing_the_joiner_cannot_save_is_reported_on_both_sides() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn names_a_peer_sends_at_pairing_are_cleaned_and_capped() {
+    let evil = format!("Phone\n{}\tx\u{202e}{}", "a".repeat(64), "b".repeat(200));
+    let (pc, mut pc_ev, pc_store) = node(1, "PC\tbox").await;
+    let (phone, _pev, phone_store) = node(2, &evil).await;
+    let code = pc.open_pairing(loopback(&pc)).unwrap();
+    let joining = phone.join(&code).await.unwrap();
+    assert_eq!(joining.peer_name, "PC box");
+    let pending = pc_ev.pairings.recv().await.unwrap();
+    assert_eq!(pending.peer_name, pb_identity::clean_peer_name(&evil));
+    let (h, j) = tokio::join!(pending.decide(true), joining.decide(true));
+    let (h, j) = (h.unwrap(), j.unwrap());
+    assert_eq!(h.name.chars().count(), pb_identity::MAX_PEER_NAME);
+    assert!(!h.name.contains(['\n', '\t', '\u{202e}']));
+    assert_eq!(lock(&pc_store).get(&phone.peer_id()).unwrap().name, h.name);
+    assert_eq!(
+        lock(&phone_store).get(&pc.peer_id()).unwrap().name,
+        "PC box"
+    );
+    assert_eq!(j.name, "PC box");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rotating_codes_invalidate_the_previous_one_and_closing_kills_the_current() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (phone, _pev, _) = node(2, "Phone").await;
