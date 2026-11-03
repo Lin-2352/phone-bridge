@@ -1,7 +1,7 @@
 //! Fluent-style flyout opened by left-clicking the tray icon: a header with
 //! the phone's name and status (the Home hero card's builder), a drop zone
 //! for files, Quick Settings style toggle tiles (Camera, Phone screen,
-//! Control phone or Pair device, Clipboard, Send files) under small group
+//! Phone audio, Clipboard, Send files, Control phone or Pair device) under small group
 //! captions, a status line with "Open Relay", plus settings and close.
 //! Drawn with Direct2D over Mica (opaque token surface when Mica is
 //! unavailable). Hover and press fade in and out (`ease`). It stays open
@@ -64,6 +64,7 @@ const STATUS_CHARS: usize = 56;
 /// Opacity of cards and tiles over Mica, so the backdrop shows through.
 const MICA_ALPHA: f32 = 0.6;
 const CAMERA: char = '\u{E722}';
+const VOLUME: char = '\u{E767}';
 const CHEVRON: char = '\u{E76C}';
 
 /// What the flyout shows; filled in by the UI before opening and again
@@ -103,6 +104,7 @@ pub enum Action {
     ControlPhone,
     ShowScreen,
     ToggleCamera,
+    TogglePhoneAudio,
     CameraWindow,
     Settings,
     /// The main window on Home.
@@ -139,7 +141,8 @@ enum Hit {
     OpenRelay,
 }
 
-const SLOTS: usize = 10;
+const SLOTS: usize = 11;
+const CAPTIONS: [&str; 3] = ["Camera, screen & audio", "Files", "Connection"];
 
 impl Hit {
     fn slot(self) -> usize {
@@ -147,13 +150,14 @@ impl Hit {
             Hit::Drop => 0,
             Hit::Tile(TileKind::Camera) => 1,
             Hit::Tile(TileKind::Screen) => 2,
-            Hit::Tile(TileKind::Clipboard) => 3,
-            Hit::Tile(TileKind::SendFile) => 4,
-            Hit::Tile(TileKind::Pair) => 5,
-            Hit::CameraInfo => 6,
-            Hit::Settings => 7,
-            Hit::Close => 8,
-            Hit::OpenRelay => 9,
+            Hit::Tile(TileKind::Audio) => 3,
+            Hit::Tile(TileKind::Clipboard) => 4,
+            Hit::Tile(TileKind::SendFile) => 5,
+            Hit::Tile(TileKind::Pair) => 6,
+            Hit::CameraInfo => 7,
+            Hit::Settings => 8,
+            Hit::Close => 9,
+            Hit::OpenRelay => 10,
         }
     }
 }
@@ -189,13 +193,13 @@ struct Layout {
     settings: RECT,
     close: RECT,
     drop: RECT,
-    /// Group captions: Camera & Screen, Connection, Files.
+    /// Group captions, in the order of `CAPTIONS`.
     captions: [RECT; 3],
     /// Horizontal rules between the tile rows and above the status line.
     dividers: [RECT; 2],
-    /// Indexed like `Hit::slot` minus one: Camera, Screen, Clipboard,
+    /// Indexed like `Hit::slot` minus one: Camera, Screen, Audio, Clipboard,
     /// SendFile, Pair.
-    tiles: [RECT; 5],
+    tiles: [RECT; 6],
     camera_info: RECT,
     status: RECT,
     open_relay: RECT,
@@ -219,8 +223,8 @@ fn layout(s: f32) -> Layout {
         right: p(W - 16),
         bottom: p(b),
     };
-    // Three columns: Camera, Screen | Pair on the first row, Clipboard and
-    // Send files on the second.
+    // Three columns: Camera, Screen, Audio on the first row; Clipboard, Send
+    // files | Pair on the second.
     let tw = (p(W) - 2 * p(16) - 2 * p(8)) / 3;
     let col = |c: i32| p(16) + c * (tw + p(8));
     let cell = |c: i32, top: i32| RECT {
@@ -252,14 +256,15 @@ fn layout(s: f32) -> Layout {
         settings,
         close: sq(W - 16 - 32, 20, 32),
         drop: row(72, 124),
-        captions: [caption(0, 2, 136), caption(2, 1, 136), caption(0, 3, 256)],
+        captions: [caption(0, 3, 136), caption(0, 2, 256), caption(2, 1, 256)],
         dividers: [row(246, 247), row(354, 355)],
         tiles: [
             camera,
             cell(1, 158),
+            cell(2, 158),
             cell(0, 276),
             cell(1, 276),
-            cell(2, 158),
+            cell(2, 276),
         ],
         camera_info: RECT {
             left: camera.right - p(32),
@@ -414,11 +419,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     text(c, Font::Caption, &label, lr, p.text2, Align::Left);
 
     // Group captions and dividers.
-    for (r, cap) in l
-        .captions
-        .iter()
-        .zip(["Camera & Screen", "Connection", "Files"])
-    {
+    for (r, cap) in l.captions.iter().zip(CAPTIONS) {
         text(c, Font::Caption, cap, from_rect(*r), p.text2, Align::Left);
     }
     for r in &l.dividers {
@@ -444,6 +445,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         let g = match t.kind {
             TileKind::Camera => CAMERA,
             TileKind::Screen => glyph::PHONE,
+            TileKind::Audio => VOLUME,
             TileKind::Clipboard => glyph::CLIPBOARD,
             TileKind::SendFile => glyph::SEND,
             TileKind::Pair if m.peer.is_some() => glyph::KEYBOARD,
@@ -556,6 +558,10 @@ fn activate(hwnd: HWND, target: Option<Hit>, paired: bool) {
             act(Action::ShowScreen);
             close();
         }
+        Some(Hit::Tile(TileKind::Audio)) => {
+            act(Action::TogglePhoneAudio);
+            close();
+        }
         Some(Hit::Tile(TileKind::Camera)) => {
             act(Action::ToggleCamera);
             close();
@@ -584,6 +590,7 @@ fn tab_order(m: &Model) -> Vec<Hit> {
         Hit::Tile(TileKind::Camera),
         Hit::CameraInfo,
         Hit::Tile(TileKind::Screen),
+        Hit::Tile(TileKind::Audio),
         Hit::Tile(TileKind::Clipboard),
         Hit::Tile(TileKind::SendFile),
         Hit::Tile(TileKind::Pair),
@@ -627,6 +634,7 @@ fn hit_at(l: &Layout, x: i32, y: i32) -> Option<Hit> {
         (l.camera_info, Hit::CameraInfo),
         t(TileKind::Camera),
         t(TileKind::Screen),
+        t(TileKind::Audio),
         t(TileKind::Clipboard),
         t(TileKind::SendFile),
         t(TileKind::Pair),
@@ -1164,6 +1172,7 @@ mod tests {
             Hit::Drop,
             Hit::Tile(TileKind::Camera),
             Hit::Tile(TileKind::Screen),
+            Hit::Tile(TileKind::Audio),
             Hit::Tile(TileKind::Clipboard),
             Hit::Tile(TileKind::SendFile),
             Hit::Tile(TileKind::Pair),

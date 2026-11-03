@@ -223,7 +223,7 @@ private fun AudioToPc() {
         title = "Silence this phone while streaming",
         supporting = when {
             !silenceWorks -> "Off. Muting this phone also silenced what $APP_NAME captures. Turn on to try again"
-            silence -> "On. Audio plays only on the PC. Your sound comes back when streaming stops"
+            silence -> "On. Audio plays only on the PC, and the volume keys set its level there. Your sound comes back when streaming stops"
             else -> "Off. Audio plays on this phone and on the PC"
         },
         checked = silence && silenceWorks,

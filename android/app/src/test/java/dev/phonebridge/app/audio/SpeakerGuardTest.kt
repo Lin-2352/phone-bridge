@@ -44,6 +44,31 @@ class SpeakerGuardTest {
         assertEquals(SpeakerAction.NONE, g.silence(1000, expected = false))
     }
 
+    private fun settling() = SpeakerGuard(frameMs = 10, silentLimitMs = 100, checkMs = 50, settleMs = 50)
+
+    @Test
+    fun sound_heard_while_muted_proves_the_capture_survives_so_it_never_unmutes() {
+        val g = settling()
+        repeat(6) { assertEquals(SpeakerAction.NONE, g.onFrame(silent = false, soundExpected = true)) }
+        assertTrue(g.proven)
+        assertEquals(SpeakerAction.NONE, g.silence(1000))
+        assertFalse(g.isChecking)
+    }
+
+    @Test
+    fun sound_right_after_muting_proves_nothing_since_it_was_captured_before_the_mute() {
+        val g = settling()
+        repeat(2) { g.onFrame(silent = false, soundExpected = true) }
+        assertFalse(g.proven)
+        assertEquals(SpeakerAction.UNMUTE_TO_CHECK, g.silence(10))
+    }
+
+    @Test
+    fun a_phone_already_proven_never_checks() {
+        val g = SpeakerGuard(frameMs = 10, silentLimitMs = 100, checkMs = 50, proven = true)
+        assertEquals(SpeakerAction.NONE, g.silence(1000))
+    }
+
     @Test
     fun any_sound_restarts_the_count() {
         val g = guard()

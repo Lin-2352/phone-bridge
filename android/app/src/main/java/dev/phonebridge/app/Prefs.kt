@@ -101,6 +101,21 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("audio_silence_unsupported", false)
         set(v) = sp.edit().putBoolean("audio_silence_unsupported", v).apply()
 
+    /** What the volume keys last set the PC's level to while the phone was silent. */
+    var audioPcLevel: Int
+        get() = sp.getInt("audio_pc_level", dev.phonebridge.app.audio.PC_LEVEL_STEPS)
+        set(v) = sp.edit().putInt("audio_pc_level", v).apply()
+
+    /** The volume to give back when the share ends, -1 when none is held (survives a crash). */
+    var audioHeldIndex: Int
+        get() = sp.getInt("audio_held_index", -1)
+        set(v) = sp.edit().putInt("audio_held_index", v).commit().let {}
+
+    /** Sound was captured while muted on this phone, so muting never needs checking again. */
+    var audioMuteKeepsCapture: Boolean
+        get() = sp.getBoolean("audio_mute_keeps_capture", false)
+        set(v) = sp.edit().putBoolean("audio_mute_keeps_capture", v).apply()
+
     /** Relay muted the stream and has not given it back yet (survives a crash). */
     var audioMutedByRelay: Boolean
         get() = sp.getBoolean("audio_muted_by_relay", false)

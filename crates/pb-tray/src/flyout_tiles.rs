@@ -7,6 +7,7 @@ use crate::flyout::Model;
 pub enum TileKind {
     Camera,
     Screen,
+    Audio,
     Clipboard,
     SendFile,
     Pair,
@@ -21,9 +22,9 @@ pub struct Tile {
     pub enabled: bool,
 }
 
-/// The five tiles, in grid order: Camera, Screen, Clipboard, SendFile, Pair.
-/// Camera, Screen and SendFile need a paired phone, except that a running
-/// camera or an open screen window stays clickable so it can be stopped.
+/// The six tiles, in grid order: Camera, Screen, Audio, Clipboard, SendFile,
+/// Pair. All but Clipboard and Pair need a paired phone, except that a running
+/// camera, screen window or audio share stays clickable so it can be stopped.
 pub fn tiles(m: &Model) -> Vec<Tile> {
     // Paused: the core refuses everything that needs the phone, so say so up
     // front instead of after the click (a live session may still be stopped).
@@ -42,6 +43,8 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
     } else {
         "Camera on".to_owned()
     };
+    let audio = m.audio[crate::audio_state::Dir::PhoneToPc.index()];
+    let audio_live = audio != crate::audio_state::Phase::Idle;
     vec![
         Tile {
             kind: TileKind::Camera,
@@ -59,6 +62,17 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
             .to_owned(),
             on: m.screen_on || screen_wait,
             enabled: phone || m.screen_on || screen_wait,
+        },
+        Tile {
+            kind: TileKind::Audio,
+            label: match audio {
+                crate::audio_state::Phase::Idle => "Phone audio",
+                crate::audio_state::Phase::Asking => "Cancel start",
+                crate::audio_state::Phase::Running => "Stop audio",
+            }
+            .to_owned(),
+            on: audio_live,
+            enabled: phone || audio_live,
         },
         Tile {
             kind: TileKind::Clipboard,
@@ -153,18 +167,65 @@ mod tests {
     }
 
     #[test]
-    fn five_tiles_in_order() {
+    fn six_tiles_in_order() {
         let kinds: Vec<TileKind> = tiles(&paired()).iter().map(|t| t.kind).collect();
         assert_eq!(
             kinds,
             [
                 TileKind::Camera,
                 TileKind::Screen,
+                TileKind::Audio,
                 TileKind::Clipboard,
                 TileKind::SendFile,
                 TileKind::Pair,
             ]
         );
+    }
+
+    fn audio_tile(m: &Model) -> Tile {
+        tiles(m)
+            .into_iter()
+            .find(|t| t.kind == TileKind::Audio)
+            .expect("the audio tile")
+    }
+
+    #[test]
+    fn the_audio_tile_follows_the_phone_to_pc_session() {
+        use crate::audio_state::{Dir, Phase};
+        let mut m = paired();
+        let idle = audio_tile(&m);
+        assert_eq!(idle.label, "Phone audio");
+        assert!(!idle.on && idle.enabled);
+        m.audio[Dir::PhoneToPc.index()] = Phase::Asking;
+        let asking = audio_tile(&m);
+        assert_eq!(asking.label, "Cancel start");
+        assert!(asking.on && asking.enabled);
+        m.audio[Dir::PhoneToPc.index()] = Phase::Running;
+        let running = audio_tile(&m);
+        assert_eq!(running.label, "Stop audio");
+        assert!(running.on && running.enabled);
+    }
+
+    #[test]
+    fn pc_audio_on_the_phone_does_not_light_the_phone_audio_tile() {
+        use crate::audio_state::{Dir, Phase};
+        let mut m = paired();
+        m.audio[Dir::PcToPhone.index()] = Phase::Running;
+        let t = audio_tile(&m);
+        assert_eq!(t.label, "Phone audio");
+        assert!(!t.on);
+    }
+
+    #[test]
+    fn a_running_share_can_be_stopped_while_paused_but_not_started() {
+        use crate::audio_state::{Dir, Phase};
+        let mut m = Model {
+            paused: true,
+            ..paired()
+        };
+        assert!(!audio_tile(&m).enabled);
+        m.audio[Dir::PhoneToPc.index()] = Phase::Running;
+        assert!(audio_tile(&m).enabled);
     }
 
     #[test]
@@ -213,7 +274,7 @@ mod tests {
         for t in tiles(&Model::default()) {
             let needs_phone = matches!(
                 t.kind,
-                TileKind::Camera | TileKind::Screen | TileKind::SendFile
+                TileKind::Camera | TileKind::Screen | TileKind::Audio | TileKind::SendFile
             );
             assert_eq!(t.enabled, !needs_phone, "{:?}", t.kind);
         }

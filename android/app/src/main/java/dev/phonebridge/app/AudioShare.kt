@@ -67,7 +67,8 @@ object AudioShare {
     private var encoder: OpusEncoder? = null
 
     /** Sends one capture frame to the PC: as Opus when this phone can, else as it is. */
-    private fun send(o: PbAudioOut, enc: OpusEncoder?, buf: ByteArray, len: Int) {
+    private fun send(o: PbAudioOut, enc: OpusEncoder?, buf: ByteArray, len: Int, channels: Int) {
+        PhoneSpeaker.applyLevel(buf, len, channels)
         if (enc != null) enc.encode(buf, len) { o.sendFrame(it) } else o.sendFrame(buf.copyOf(len))
     }
     private var locks: AudioSessionLocks? = null
@@ -123,7 +124,7 @@ object AudioShare {
             },
             onFrame = { buf, len ->
                 val o = out.get()
-                if (o != null) send(o, enc, buf, len)
+                if (o != null) send(o, enc, buf, len, a.channels)
                 if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
                     Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
                 }
@@ -161,6 +162,7 @@ object AudioShare {
             return
         }
         out.set(o)
+        PhoneSpeaker.begin(ctx.applicationContext, AudioStreamer.FRAME_MS)
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
         tone = Thread({
@@ -180,7 +182,7 @@ object AudioShare {
                             buf[at + 1] = (v shr 8).toByte()
                         }
                     }
-                    send(o, enc, buf, bytes)
+                    send(o, enc, buf, bytes, a.channels)
                     frames++
                     if (frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) Log.i(TAG, "AUDIO tone frames=$frames ${o.statsLine()}")
                     val due = start + frames * AudioStreamer.FRAME_MS

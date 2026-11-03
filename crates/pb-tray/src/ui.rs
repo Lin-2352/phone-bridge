@@ -511,6 +511,9 @@ fn flyout_action(raw: isize, cmds: &UnboundedSender<Cmd>, a: crate::flyout::Acti
         crate::flyout::Action::ControlPhone => post_command(raw, ID_CONTROL),
         crate::flyout::Action::ShowScreen => post_command(raw, ID_SCREEN),
         crate::flyout::Action::ToggleCamera => post_command(raw, ID_CAMERA),
+        crate::flyout::Action::TogglePhoneAudio => {
+            post_command(raw, crate::menu_model::ID_AUDIO_PHONE)
+        }
         crate::flyout::Action::CameraWindow => post_command(raw, ID_CAMERA_WINDOW),
         // Opens the main window on Home.
         crate::flyout::Action::OpenRelay => post_command(raw, ID_OPEN_MAIN),
