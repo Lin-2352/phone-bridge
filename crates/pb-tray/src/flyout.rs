@@ -82,6 +82,8 @@ pub struct Model {
     pub camera_on: bool,
     pub camera_fps: u32,
     pub last: String,
+    /// Relay is paused: tiles and the drop zone are disabled, the header says so.
+    pub paused: bool,
 }
 
 /// User actions the flyout reports back to the UI thread.
@@ -151,7 +153,7 @@ fn clickable(m: &Model, h: Hit) -> bool {
     match h {
         Hit::Tile(k) => tiles(m).iter().any(|t| t.kind == k && t.enabled),
         // Like the dimmed Send files tile: nothing to send to without a phone.
-        Hit::Drop => m.peer.is_some(),
+        Hit::Drop => m.peer.is_some() && !m.paused,
         _ => true,
     }
 }
@@ -327,7 +329,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
                 Some(w) => (card.name.clone(), w, p.warning, tint),
                 None => (
                     card.name.clone(),
-                    home::status_line(card, m.now),
+                    home::status_text(card, m.now, m.paused),
                     p.text2,
                     tint,
                 ),
@@ -487,6 +489,9 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
 
 /// The drop zone's hint.
 fn drop_label(m: &Model) -> String {
+    if m.paused {
+        return "Relay is paused".to_owned();
+    }
     match &m.peer {
         Some(n) => format!("Drop files here to send to {n}"),
         None => "Pair a device to send files".to_owned(),

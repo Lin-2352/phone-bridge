@@ -428,6 +428,7 @@ fn flyout_model(st: &State) -> crate::flyout::Model {
         camera_on: crate::camera::is_running(),
         camera_fps: crate::camera::fps(),
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
+        paused: st.settings.lock().map(|s| s.paused).unwrap_or(false),
     }
 }
 
@@ -485,6 +486,8 @@ fn page_action(a: crate::pages::Action) {
         Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
         // The same path as the hotkey and IPC: private clips are refused.
         Action::SendClipboard => post_command(raw, ID_SEND_CLIPBOARD),
+        // The page only offers Resume while paused, so the menu's toggle resumes.
+        Action::Resume => post_command(raw, crate::menu_model::ID_PAUSE),
         Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
         Action::Stop(SessionKind::Camera) => post_command(raw, ID_CAMERA_STOP),
         Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
@@ -731,6 +734,7 @@ fn page_model(st: &State) -> crate::pages::Model {
             camera,
             camera_live,
             control,
+            camera_pending: crate::camera::pending(),
             notes: &notes,
             settings: &settings,
             locked,
@@ -1794,12 +1798,16 @@ fn set_paused(hwnd: HWND, st: &State, on: bool) {
         crate::screen_window::close();
         crate::camera_window::close();
         crate::camera::stop();
+        // A pairing code on screen would be refused by the core: take it down.
+        let _ = st.cmds.send(crate::core::Cmd::CancelPair);
+        crate::qr_window::close();
     } else {
         st.log.line("PAUSE Relay resumed");
     }
     let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
     set_tip(hwnd, &crate::pause::tooltip(on, &fp));
-    // The main window shows it now.
+    // The main window and an open flyout show it now.
+    refresh_flyout(st);
     post_settings_action(hwnd.0 as isize);
 }
 
@@ -2388,12 +2396,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     if taskbar != 0 && msg == taskbar {
         // Explorer restarted: our icon is gone, add it again (same tooltip).
         let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
-        let tip = if fp.is_empty() {
-            "Relay".to_owned()
-        } else {
-            format!("Relay ({fp})")
-        };
-        add_icon(hwnd, &tip);
+        let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+        add_icon(hwnd, &crate::pause::tooltip(paused, &fp));
         return LRESULT(0);
     }
     match msg {
@@ -2722,7 +2726,18 @@ pub fn create(
             std::sync::atomic::Ordering::Relaxed,
         );
         TRAY_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        add_icon(hwnd, "Relay (starting)");
+        let paused = STATE
+            .get()
+            .and_then(|st| st.settings.lock().ok().map(|s| s.paused))
+            .unwrap_or(false);
+        add_icon(
+            hwnd,
+            &if paused {
+                crate::pause::tooltip(true, "")
+            } else {
+                "Relay (starting)".to_owned()
+            },
+        );
         // Real toasts with Phone Bridge's identity; balloons if that fails.
         let raw = hwnd.0 as isize;
         let push = move |ev: ToastEvent| {
