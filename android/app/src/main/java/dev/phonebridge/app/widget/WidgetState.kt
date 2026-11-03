@@ -1,17 +1,13 @@
 package dev.phonebridge.app.widget
 
-import dev.phonebridge.app.APP_NAME
+import dev.phonebridge.app.relayStatus
 
 /**
- * The widget's status line. [running] means the service runs and its node is up; [pcName] is the
- * paired PC (null when none); [connected] is [widgetConnected].
+ * The widget's status line: the shared [relayStatus] on one line. [running] means the service runs and
+ * its node is up; [starting] the service runs but the node is not up yet.
  */
-fun widgetLabel(running: Boolean, pcName: String?, connected: Boolean): String = when {
-    !running -> "$APP_NAME is off"
-    pcName == null -> "Not paired"
-    connected -> "Connected to $pcName"
-    else -> "$pcName not reachable"
-}
+fun widgetLabel(running: Boolean, pcName: String?, connected: Boolean, starting: Boolean = false, lastSeenMs: Long = 0L, nowMs: Long = 0L): String =
+    relayStatus(running || starting, running, pcName, connected, lastSeenMs, nowMs).line
 
 /**
  * Connected as Home means it (ui/home/HomeTab.kt `live`, worded "Connected" by `pcStatus`): only while

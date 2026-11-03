@@ -35,6 +35,15 @@ class TileLogicTest {
     fun theSubtitleFollowsTheRealState() {
         assertEquals("Starting\u2026", tileSubtitle(wished = true, running = false, starting = true, linked = null))
         assertEquals("On", tileSubtitle(wished = true, running = true, starting = false, linked = null))
-        assertEquals("RMX PC", tileSubtitle(wished = true, running = true, starting = false, linked = "RMX PC"))
+        assertEquals("RMX PC", tileSubtitle(wished = true, running = true, starting = false, linked = "RMX PC", live = true))
+    }
+
+    @Test
+    fun aPairedPcNotInContactIsNotShownAsHealthy() {
+        // F1: the active tile used to print the PC name whether or not it was reachable.
+        val now = 10_000_000_000L
+        assertEquals("Last seen 3 h ago", tileSubtitle(true, true, false, "RMX PC", live = false, lastSeenMs = now - 3 * 3600_000L, nowMs = now))
+        assertEquals("Paired", tileSubtitle(true, true, false, "RMX PC", live = false, lastSeenMs = 0L, nowMs = now))
+        assertEquals("On", tileSubtitle(true, true, false, null, live = false, lastSeenMs = 0L, nowMs = now))
     }
 }

@@ -38,6 +38,7 @@ import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.MainActivity
 import dev.phonebridge.app.ScreenShare
 import dev.phonebridge.app.SendClipboardActivity
+import dev.phonebridge.app.relayStatus
 import dev.phonebridge.app.ui.relayDarkScheme
 import dev.phonebridge.app.ui.relayLightScheme
 import kotlinx.coroutines.delay
@@ -59,18 +60,22 @@ class RelayWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(COMPACT, ROOMY))
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
+        scheduleStale(context, Bridge.isConnected())
         provideContent { GlanceTheme(colors = widgetColors) { Content(context) } }
     }
 
     @Composable
     private fun Content(ctx: Context) {
-        // The node up, not only the service: until then the PC name is unknown (it would read "Not paired").
-        val running = Bridge.running.value && Bridge.nodeReady.value
+        // The same answer as the status notification, tile and Home (relayStatus): "Starting" until the node is up.
         val pc = Bridge.linked.value
         val connected = widgetConnected(
-            running, pc, Bridge.liveSessions.intValue, Bridge.controlledBy.value,
+            Bridge.running.value, pc, Bridge.liveSessions.intValue, Bridge.controlledBy.value,
             ScreenShare.sharingWith.value, CameraShare.usedBy.value,
         )
+        val now = System.currentTimeMillis()
+        val label = relayStatus(Bridge.running.value, Bridge.nodeReady.value, pc, connected, Bridge.lastSeenAny(ctx), now).line
+        // "As of": a Connected drawn by a process that was killed later cannot be told from a live one otherwise.
+        val asOf = if (connected) java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(now)) else null
         // Compact: 2 + 14 + 2 + 22 = 40 dp; roomy: 4 + 17 + 4 + 30 + 4 = 59 dp.
         val compact = LocalSize.current.height < ROOMY.height
         val pad = if (compact) 2.dp else 4.dp
@@ -80,7 +85,7 @@ class RelayWidget : GlanceAppWidget() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                widgetLabel(running, pc, connected),
+                if (asOf != null && !compact) "$label \u00b7 $asOf" else label,
                 GlanceModifier.fillMaxWidth().padding(horizontal = 4.dp)
                     .clickable(actionStartActivity(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))),
                 style = TextStyle(
@@ -130,6 +135,23 @@ class RelayWidget : GlanceAppWidget() {
         private val COMPACT = DpSize(110.dp, 40.dp)
         private val ROOMY = DpSize(110.dp, 60.dp)
         private val pending = AtomicBoolean(false)
+
+        /** Broadcast to [RelayWidgetReceiver] by the staleness alarm. */
+        const val ACTION_STALE = "dev.phonebridge.app.WIDGET_STALE"
+        private const val STALE_MS = 3 * 60_000L
+
+        /**
+         * While the widget claims "Connected", an inexact alarm redraws it every few minutes: a live
+         * process repaints the same thing, a killed one comes back as "Relay is off". Cancelled otherwise.
+         */
+        private fun scheduleStale(ctx: Context, connected: Boolean) = runCatching {
+            val am = ctx.getSystemService(android.app.AlarmManager::class.java)
+            val pi = android.app.PendingIntent.getBroadcast(
+                ctx, 0, Intent(ctx, RelayWidgetReceiver::class.java).setAction(ACTION_STALE),
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            if (connected) am.set(android.app.AlarmManager.RTC, System.currentTimeMillis() + STALE_MS, pi) else am.cancel(pi)
+        }.onFailure { Log.e(TAG, "WIDGET stale alarm failed: $it") }
 
         /**
          * Redraws every placed widget after a connection state change. A burst (a start sets running,
