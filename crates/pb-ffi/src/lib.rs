@@ -200,6 +200,13 @@ pub enum PbEvent {
         total: u64,
         incoming: bool,
     },
+    /// The question `id` (`IncomingOffer`, `ControlRequest`, `ScreenRequest`
+    /// or `CameraRequest`) is over without an answer from the app: the PC
+    /// gave up or went away, or the time ran out. Close its notification and
+    /// window; an answer now would do nothing. (Audio has `AudioAskEnded`.)
+    AskEnded {
+        id: u64,
+    },
 }
 
 /// Cancel handles of the transfers running now, by direction (true = incoming): the phone shows
@@ -922,6 +929,50 @@ fn image_file_name(png: &[u8]) -> String {
     format!("clipboard-{hex}.png")
 }
 
+/// Folder inside incoming/ for received clipboard pictures. Its dot keeps it
+/// apart from received files, whose names never start with one.
+const IMAGE_DIR: &str = ".clipboard";
+
+/// Drop the pending question `id`; if the app never answered it (its entry
+/// is still there: answering removes it), tell the app it is over.
+fn end_ask<T>(pending: &Mutex<std::collections::HashMap<u64, T>>, id: u64, events: &Events) {
+    let unanswered = pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&id)
+        .is_some();
+    if unanswered {
+        push(events, PbEvent::AskEnded { id });
+    }
+}
+
+/// What a killed process left in incoming/. A whole received file was
+/// already reported "saved" to the sender, so it is returned to be offered
+/// to the app again. Leftovers go: unfinished `.name.partial-*` files and
+/// clipboard pictures (dot names), and empty files (a name reserved just
+/// before a rename that never happened; an empty file loses nothing).
+fn recover_incoming(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
+    let mut whole = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return whole;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Ok(meta) = e.metadata() else { continue };
+        let junk = e.file_name().to_string_lossy().starts_with('.');
+        if meta.is_dir() {
+            if junk {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if junk || meta.len() == 0 {
+            let _ = std::fs::remove_file(&path);
+        } else {
+            whole.push((path, meta.len()));
+        }
+    }
+    whole
+}
+
 fn clip_hash(text: &str) -> [u8; 32] {
     use sha2::Digest;
     sha2::Sha256::digest(text.as_bytes()).into()
@@ -949,14 +1000,31 @@ pub async fn start_node(
         discovery_port: Some(pb_transport::discovery::DISCOVERY_PORT),
         tuning: Default::default(),
     };
-    // Anything still in incoming/ was left by a process the system killed
-    // mid-transfer or mid-save; it would otherwise use storage forever.
-    if let Ok(entries) = std::fs::read_dir(dir.join("incoming")) {
-        for e in entries.flatten() {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
+    // A process the system killed mid-transfer or mid-save left things in
+    // incoming/: partial files go, whole files are offered again below.
+    let recovered = recover_incoming(&dir.join("incoming"));
     let (node, ev) = Node::bind(&identity, store, config).await.map_err(fail)?;
+    // The sender was told "saved": hand each whole file to the app again
+    // (it moves it to the save folder). The sender's name was not kept.
+    let sender = match node.paired_peers().as_slice() {
+        [only] => only.name.clone(),
+        _ => "A paired device".to_owned(),
+    };
+    for (path, size) in recovered {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        push(
+            &listener,
+            PbEvent::FileReceived {
+                peer_name: sender.clone(),
+                path: path.display().to_string(),
+                name,
+                size,
+            },
+        );
+    }
     let shared = Arc::new(Shared {
         events: listener.clone(),
         incoming_dir: dir.join("incoming"),
@@ -1134,10 +1202,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             }
                             () = s.closed() => false,
                         };
-                        sh.pending
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .remove(&ask);
+                        end_ask(&sh.pending, ask, &sh.events);
                         answer
                     }
                 };
@@ -1219,10 +1284,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         }
                         () = s.closed() => false,
                     };
-                    sh.pending
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&ask);
+                    end_ask(&sh.pending, ask, &sh.events);
                     answer
                 };
                 let file_name = offer.name.clone();
@@ -1284,8 +1346,11 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         },
                     ),
                     Ok(Received::Image(png)) => {
-                        let path = sh.incoming_dir.join(image_file_name(&png));
-                        let saved = std::fs::create_dir_all(&sh.incoming_dir)
+                        // Apart from received files, so a restart never
+                        // takes a picture for one (see `recover_incoming`).
+                        let images = sh.incoming_dir.join(IMAGE_DIR);
+                        let path = images.join(image_file_name(&png));
+                        let saved = std::fs::create_dir_all(&images)
                             .and_then(|()| std::fs::write(&path, &png));
                         push(
                             &sh.events,
@@ -1419,10 +1484,7 @@ async fn camera_session(
         }
         () = s.closed() => None,
     };
-    sh.camera_pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&ask);
+    end_ask(&sh.camera_pending, ask, &sh.events);
     let Some((acc, cam)) = answer else {
         let _ = pb_transport::camera::serve_camera(s, start, None).await;
         release_camera(&sh);
@@ -1574,10 +1636,7 @@ async fn screen_session(
         }
         () = s.closed() => None,
     };
-    sh.screen_pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&ask);
+    end_ask(&sh.screen_pending, ask, &sh.events);
     let Some((acc, screen)) = answer else {
         let _ = pb_transport::screen::serve_screen(s, start, None).await;
         release_screen(&sh);
@@ -2376,6 +2435,60 @@ mod android_init {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Seen(Mutex<Vec<u64>>);
+    impl EventListener for Seen {
+        fn on_event(&self, e: PbEvent) -> Result<(), PbError> {
+            if let PbEvent::AskEnded { id } = e {
+                self.0.lock().unwrap().push(id);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_question_dropped_without_an_answer_is_withdrawn() {
+        let seen = Arc::new(Seen::default());
+        let events: Events = seen.clone();
+        let pending: Mutex<std::collections::HashMap<u64, ()>> = Mutex::default();
+        pending.lock().unwrap().insert(7, ());
+        pending.lock().unwrap().insert(8, ());
+        // 8 was answered by the app: its entry is gone already.
+        pending.lock().unwrap().remove(&8);
+        end_ask(&pending, 7, &events);
+        end_ask(&pending, 8, &events);
+        assert_eq!(*seen.0.lock().unwrap(), vec![7]);
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn whole_received_files_survive_a_restart_and_only_leftovers_go() {
+        let dir = std::env::temp_dir().join(format!("pb-ffi-incoming-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(IMAGE_DIR)).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"12345").unwrap();
+        std::fs::write(dir.join("clipboard-0011223344556677.png"), b"peer file").unwrap();
+        std::fs::write(dir.join(".photo.jpg.partial-00000000000000ab"), b"12").unwrap();
+        std::fs::write(dir.join("placeholder.bin"), b"").unwrap();
+        std::fs::write(dir.join(IMAGE_DIR).join("clipboard-ab.png"), b"png").unwrap();
+        let mut got = recover_incoming(&dir);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (dir.join("clipboard-0011223344556677.png"), 9),
+                (dir.join("photo.jpg"), 5),
+            ]
+        );
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["clipboard-0011223344556677.png", "photo.jpg"]);
+        assert!(recover_incoming(&dir.join("missing")).is_empty());
+    }
 
     fn sample(text: &str) -> PbNotification {
         PbNotification {
