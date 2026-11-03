@@ -13,7 +13,8 @@ fun groupFor(section: String): Group = when (section) {
     else -> Group.Settings
 }
 
-fun groupTitle(g: Group): String = g.name
+/** The page title; the last group is shown as "General" (its enum name stays [Group.Settings]). */
+fun groupTitle(g: Group): String = if (g == Group.Settings) "General" else g.name
 
 /** One setting as search sees it: the page it lives on, its title and its one-line description. */
 data class SettingEntry(val group: Group, val title: String, val subtitle: String)
@@ -61,7 +62,7 @@ fun pageSummary(g: Group): String = when (g) {
     Group.Screen -> "Control and screen sharing with your PC"
     Group.Notifications -> "Show this phone's notifications on your PC"
     Group.Files -> "Accepting files and where they are saved"
-    Group.Settings -> "Theme, clipboard and running in the background"
+    Group.Settings -> "Theme, clipboard, background and logs"
 }
 
 /**
@@ -75,4 +76,40 @@ data class SettingsNav(val page: Group? = null, val query: String = "") {
         query.isNotEmpty() -> copy(query = "")
         else -> null
     }
+}
+
+/** What the live one-line status of each group is built from; plain values so it is testable. */
+data class StatusInput(
+    val pairedNames: List<String> = emptyList(),
+    val cameraAllowedCount: Int = 0,
+    val controlAllowed: Boolean = false,
+    val controlServiceOn: Boolean = false,
+    val notifyOn: Boolean = false,
+    val notifyAccess: Boolean = false,
+    val saveLabel: String = "",
+    val themeName: String = "System",
+    val keepLogs: Boolean = true,
+    val logSize: String = "0.0 MB",
+)
+
+/** The live one-line status shown under a group's entry; falls back to nothing blank. */
+fun statusLine(g: Group, s: StatusInput): String = when (g) {
+    Group.Connection -> when (s.pairedNames.size) {
+        0 -> "No PC paired yet"
+        1 -> "Paired with ${s.pairedNames[0]}"
+        else -> "Paired with ${s.pairedNames[0]} and ${s.pairedNames.size - 1} more"
+    }
+    Group.Camera -> if (s.cameraAllowedCount == 0) "Ask each time" else "${s.cameraAllowedCount} ${if (s.cameraAllowedCount == 1) "PC" else "PCs"} always allowed"
+    Group.Screen -> when {
+        !s.controlServiceOn -> "Control needs accessibility permission"
+        s.controlAllowed -> "PC control allowed"
+        else -> "PC control asks first"
+    }
+    Group.Notifications -> when {
+        !s.notifyOn -> "Off"
+        !s.notifyAccess -> "On, needs notification access"
+        else -> "On, showing on your PC"
+    }
+    Group.Files -> "Saving to ${s.saveLabel}"
+    Group.Settings -> "Theme ${s.themeName.lowercase()}, " + if (s.keepLogs) "logs ${s.logSize}" else "logs off"
 }

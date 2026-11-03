@@ -34,7 +34,7 @@ class SettingsGroupsTest {
     @Test
     fun groups_are_listed_in_display_order() {
         assertEquals(
-            listOf("Connection", "Camera", "Screen", "Notifications", "Files", "Settings"),
+            listOf("Connection", "Camera", "Screen", "Notifications", "Files", "General"),
             Group.entries.map(::groupTitle),
         )
     }
@@ -130,5 +130,44 @@ class ClipboardImagesSettingsTest {
         assertEquals(Group.Settings, copied.group)
         val shots = searchSettings("screenshots").single()
         assertEquals(Group.Settings, shots.group)
+    }
+}
+
+class SettingsStatusTest {
+    private val base = StatusInput(saveLabel = "Downloads/Relay", logSize = "4.2 MB")
+
+    @Test
+    fun connection_names_the_pc() {
+        assertEquals("No PC paired yet", statusLine(Group.Connection, base))
+        assertEquals("Paired with DeskTray", statusLine(Group.Connection, base.copy(pairedNames = listOf("DeskTray"))))
+        assertEquals("Paired with A and 2 more", statusLine(Group.Connection, base.copy(pairedNames = listOf("A", "B", "C"))))
+    }
+
+    @Test
+    fun camera_counts_allowed_pcs() {
+        assertEquals("Ask each time", statusLine(Group.Camera, base))
+        assertEquals("1 PC always allowed", statusLine(Group.Camera, base.copy(cameraAllowedCount = 1)))
+        assertEquals("2 PCs always allowed", statusLine(Group.Camera, base.copy(cameraAllowedCount = 2)))
+    }
+
+    @Test
+    fun screen_reflects_permission_then_choice() {
+        assertEquals("Control needs accessibility permission", statusLine(Group.Screen, base.copy(controlAllowed = true)))
+        assertEquals("PC control allowed", statusLine(Group.Screen, base.copy(controlServiceOn = true, controlAllowed = true)))
+        assertEquals("PC control asks first", statusLine(Group.Screen, base.copy(controlServiceOn = true)))
+    }
+
+    @Test
+    fun notifications_off_missing_access_and_on() {
+        assertEquals("Off", statusLine(Group.Notifications, base))
+        assertEquals("On, needs notification access", statusLine(Group.Notifications, base.copy(notifyOn = true)))
+        assertEquals("On, showing on your PC", statusLine(Group.Notifications, base.copy(notifyOn = true, notifyAccess = true)))
+    }
+
+    @Test
+    fun files_and_general() {
+        assertEquals("Saving to Downloads/Relay", statusLine(Group.Files, base))
+        assertEquals("Theme dark, logs 4.2 MB", statusLine(Group.Settings, base.copy(themeName = "Dark")))
+        assertEquals("Theme system, logs off", statusLine(Group.Settings, base.copy(keepLogs = false)))
     }
 }
