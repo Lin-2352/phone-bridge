@@ -500,6 +500,7 @@ pub enum UiEvent {
     ScreenShown,
     /// The phone-screen window's Pin changed (to remember it).
     ScreenPinned(bool),
+    ScreenDim(bool),
     /// Files dropped on the phone-screen window.
     ScreenFiles(Vec<PathBuf>),
     /// An action on a toast did not work on the phone.
@@ -1824,6 +1825,10 @@ fn show_screen(
                         on_pin: Box::new({
                             let ui = ui.clone();
                             move |p| ui(UiEvent::ScreenPinned(p))
+                        }),
+                        on_dim: Box::new({
+                            let ui = ui.clone();
+                            move |d| ui(UiEvent::ScreenDim(d))
                         }),
                         on_files: Box::new({
                             let ui = ui.clone();

@@ -1366,6 +1366,10 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             let _ = st.settings.lock().map(|mut s| s.screen_pinned = p);
             save_settings(st);
         }
+        UiEvent::ScreenDim(d) => {
+            let _ = st.settings.lock().map(|mut s| s.screen_dim = d);
+            save_settings(st);
+        }
         UiEvent::ScreenFiles(files) => {
             if !files.is_empty() {
                 let _ = st.cmds.send(Cmd::SendFiles(files));
