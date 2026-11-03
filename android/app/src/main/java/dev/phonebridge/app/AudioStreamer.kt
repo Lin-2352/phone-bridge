@@ -22,7 +22,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "PhoneBridgeAudio"
 
-/** Result of [AudioStreamer.start]: null [reason] means capture is running. */
+/** A running source of a share's sound. */
+interface AudioCapture {
+    fun start(): AudioStartResult
+    fun stop()
+
+    /** The longest wait between frames since the last call: above the frame time the reader was late. */
+    fun takeMaxFrameGapMs(): Long
+}
+
+/** Result of [AudioCapture.start]: null [reason] means capture is running. */
 class AudioStartResult(val reason: AudioReason?) {
     val ok: Boolean get() = reason == null
 }
@@ -56,18 +65,17 @@ class AudioStreamer(
     /** Each frame's verdict, before the silence check: true when it held no sound. */
     private val onLevel: (Boolean) -> Unit = {},
     private val onFrame: (ByteArray, Int) -> Unit,
-) {
+) : AudioCapture {
     private val isRunning = AtomicBoolean(false)
     private val stopped = AtomicBoolean(false)
     private var workerThread: Thread? = null
     private var audioRecord: AudioRecord? = null
     private val maxFrameGapMs = java.util.concurrent.atomic.AtomicLong(0)
 
-    /** The longest wait between frames since the last call: above [FRAME_MS] the reader was late. */
-    fun takeMaxFrameGapMs(): Long = maxFrameGapMs.getAndSet(0)
+    override fun takeMaxFrameGapMs(): Long = maxFrameGapMs.getAndSet(0)
 
     @SuppressLint("MissingPermission")
-    fun start(): AudioStartResult {
+    override fun start(): AudioStartResult {
         if (stopped.get()) return AudioStartResult(AudioReason.UNAVAILABLE) // single use
         if (isRunning.getAndSet(true)) return AudioStartResult(AudioReason.BUSY)
 
@@ -182,7 +190,7 @@ class AudioStreamer(
     }
 
     /** Stops capture, joins the worker (unless called from it) and releases AudioRecord and the projection. */
-    fun stop() {
+    override fun stop() {
         if (!stopped.compareAndSet(false, true)) return
         isRunning.set(false)
         try { audioRecord?.stop() } catch (e: Exception) { Log.w(TAG, "stop: ${e.message}") }

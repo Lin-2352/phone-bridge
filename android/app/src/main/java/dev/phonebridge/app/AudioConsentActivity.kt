@@ -17,7 +17,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.phonebridge.app.audio.AudioReason
 import dev.phonebridge.app.audio.AudioSource
+import dev.phonebridge.app.audio.CaptureKind
 import dev.phonebridge.app.audio.ConsentStep
+import dev.phonebridge.app.audio.chooseCapture
 import dev.phonebridge.app.audio.consentSteps
 import dev.phonebridge.app.ui.RelayTheme
 
@@ -37,6 +39,7 @@ class AudioConsentActivity : ComponentActivity() {
     private var ask: AudioAsk? = null
     private val steps = ArrayDeque<ConsentStep>()
     private var finished = false
+    private var useHelper = false
     private var asking by mutableStateOf(false)
     private val main = Handler(Looper.getMainLooper())
 
@@ -62,7 +65,11 @@ class AudioConsentActivity : ComponentActivity() {
             return
         }
         val has = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        steps.addAll(consentSteps(source, Prefs(this).audioSkipConfirmPhoneToPc, has))
+        val prefs = Prefs(this)
+        useHelper = chooseCapture(source, prefs.audioSilencePhone, HelperAudio.alive(this)) == CaptureKind.HELPER
+        // The helper needs neither Android's prompt nor the recording permission: only Relay's own question remains.
+        val all = consentSteps(source, prefs.audioSkipConfirmPhoneToPc, has || useHelper)
+        steps.addAll(if (useHelper) all.filter { it != ConsentStep.PROJECTION } else all)
         next()
         main.postDelayed({ if (!finished && asking) refuse(AudioReason.DECLINED) }, left)
     }
@@ -80,7 +87,11 @@ class AudioConsentActivity : ComponentActivity() {
                         refuse(AudioReason.UNAVAILABLE)
                     }
             }
-            null -> if (a.source == AudioSource.MICROPHONE) startCapture(null) else refuse(AudioReason.UNAVAILABLE)
+            null -> when {
+                useHelper -> startHelper(a)
+                a.source == AudioSource.MICROPHONE -> startCapture(null)
+                else -> refuse(AudioReason.UNAVAILABLE)
+            }
         }
     }
 
@@ -154,6 +165,18 @@ class AudioConsentActivity : ComponentActivity() {
         finished = true
         main.removeCallbacksAndMessages(null)
         AudioShare.launch(this, a, projection)
+        finish()
+    }
+
+    private fun startHelper(a: AudioAsk) {
+        val reason = AudioShare.prepareHelper()
+        if (reason != null) {
+            refuse(reason)
+            return
+        }
+        finished = true
+        main.removeCallbacksAndMessages(null)
+        AudioShare.launch(this, a, null, helper = true)
         finish()
     }
 

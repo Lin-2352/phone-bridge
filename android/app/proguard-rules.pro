@@ -14,3 +14,6 @@
 # ("Failed to create an instance of androidx.work.impl.WorkDatabase"). Keep it
 # for every Room database.
 -keep class * extends androidx.room.RoomDatabase { <init>(); }
+
+# The audio helper is started by name with app_process; nothing in the app calls its entry point.
+-keep class dev.phonebridge.helper.Main { public static void main(java.lang.String[]); }

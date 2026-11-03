@@ -111,6 +111,14 @@ class Prefs(context: Context) {
         get() = sp.getInt("audio_held_index", -1)
         set(v) = sp.edit().putInt("audio_held_index", v).commit().let {}
 
+    /** Shared with the helper Relay starts, and with nothing else. Made once, on first need. */
+    fun audioHelperSecret(): ByteArray {
+        dev.phonebridge.helper.HelperProtocol.secretFromHex(sp.getString("audio_helper_secret", null))?.let { return it }
+        val made = ByteArray(dev.phonebridge.helper.HelperProtocol.SECRET_BYTES).also { java.security.SecureRandom().nextBytes(it) }
+        sp.edit().putString("audio_helper_secret", dev.phonebridge.helper.HelperProtocol.secretToHex(made)).commit()
+        return made
+    }
+
     /** Sound was captured while muted on this phone, so muting never needs checking again. */
     var audioMuteKeepsCapture: Boolean
         get() = sp.getBoolean("audio_mute_keeps_capture", false)

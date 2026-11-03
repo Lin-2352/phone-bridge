@@ -62,7 +62,7 @@ object AudioShare {
 
     private val out = AtomicReference<PbAudioOut?>(null)
     @Volatile private var player: AudioPlayer? = null
-    private var streamer: AudioStreamer? = null
+    private var streamer: AudioCapture? = null
     private var tone: Thread? = null
     private var encoder: OpusEncoder? = null
 
@@ -106,30 +106,43 @@ object AudioShare {
         return null
     }
 
-    /** Start capturing (after [prepare] and, for playback, the projection) and tell the PC. */
+    /** Claims the direction for the helper, which needs no service type: nothing runs in this process but a socket. */
     @Synchronized
-    fun launch(ctx: Context, a: AudioAsk, projection: MediaProjection?) {
+    fun prepareHelper(): AudioReason? =
+        if (sessions.tryBegin(AudioDirection.PHONE_TO_PC)) null else AudioReason.BUSY
+
+    /**
+     * Start capturing (after [prepare] and, for playback, the projection; or after [prepareHelper]
+     * with [helper]) and tell the PC.
+     */
+    @Synchronized
+    fun launch(ctx: Context, a: AudioAsk, projection: MediaProjection?, helper: Boolean = false) {
         endOverride = null
         val app = ctx.applicationContext
         var frames = 0L
         val enc = OpusEncoder.create(a.sampleRate, a.channels)
         encoder = enc
-        val s = AudioStreamer(
-            app, a.source, projection, a.sampleRate, a.channels,
-            onEnded = { reason -> sourceEnded(reason) },
-            onLevel = { silent ->
-                if (PhoneSpeaker.onFrame(app, silent)) {
-                    notice(app, "This phone can't stay silent while sharing", "Muting it also silences what Relay captures, so the speaker stays on.")
-                }
-            },
-            onFrame = { buf, len ->
-                val o = out.get()
-                if (o != null) send(o, enc, buf, len, a.channels)
-                if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
-                    Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
-                }
-            },
-        )
+        val deliver = { buf: ByteArray, len: Int ->
+            val o = out.get()
+            if (o != null) send(o, enc, buf, len, a.channels)
+            if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
+                Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
+            }
+        }
+        val s: AudioCapture = if (helper) {
+            HelperCapture(app, a.sampleRate, a.channels, onEnded = { reason -> sourceEnded(reason) }, onFrame = deliver)
+        } else {
+            AudioStreamer(
+                app, a.source, projection, a.sampleRate, a.channels,
+                onEnded = { reason -> sourceEnded(reason) },
+                onLevel = { silent ->
+                    if (PhoneSpeaker.onFrame(app, silent)) {
+                        notice(app, "This phone can't stay silent while sharing", "Muting it also silences what Relay captures, so the speaker stays on.")
+                    }
+                },
+                onFrame = deliver,
+            )
+        }
         val r = s.start()
         if (!r.ok) {
             s.stop()
@@ -144,10 +157,11 @@ object AudioShare {
             return
         }
         out.set(o)
-        if (a.source == AudioSource.PLAYBACK) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
+        // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
+        if (a.source == AudioSource.PLAYBACK && !helper) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
-        Log.i(TAG, "AUDIO phone to PC started source=${a.source}")
+        Log.i(TAG, "AUDIO phone to PC started source=${a.source} helper=$helper")
     }
 
     /** Debug builds only ([debugTone]): the real path from accept onward, with a tone as the source. */
