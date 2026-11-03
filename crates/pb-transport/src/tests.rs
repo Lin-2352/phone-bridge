@@ -667,6 +667,24 @@ mod transfers {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_clipboard_image_never_touches_the_save_folder() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        // A save folder that cannot be created or written at all.
+        let blocker = tmp("clipimg-nofolder").join("not-a-folder");
+        std::fs::write(&blocker, b"x").unwrap();
+        let dir = blocker.join("Downloads");
+        let png = pattern(300_000);
+        let (a, b) = tokio::join!(
+            phone.send_clipboard_image(&pcid, png.clone()),
+            receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE)
+        );
+        a.unwrap();
+        assert_eq!(b.unwrap(), Received::Image(png));
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"x");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn an_oversized_clipboard_image_is_refused_on_both_ends() {
         use pb_protocol::control::MAX_CLIPBOARD_IMAGE;
         let (pc, mut pc_ev, phone, _pev) = paired().await;
