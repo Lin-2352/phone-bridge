@@ -8,6 +8,7 @@ pub mod devices;
 pub mod home;
 pub mod settings;
 pub mod timeline;
+pub mod timeline_view;
 
 use std::sync::Arc;
 
@@ -58,6 +59,10 @@ pub enum Action {
     Settings(settings_rows::Action),
     /// Show another Settings page (handled by the window, like `Go`).
     SettingsPage(settings_groups::Page),
+    /// Timeline: open or close one day (its local day number), or all of
+    /// them (`true` = open). Handled by the window, which owns the state.
+    TimelineDay(i64),
+    TimelineAll(bool),
 }
 
 /// The page's hits inside `r` (its content rect, already scrolled), at

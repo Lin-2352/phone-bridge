@@ -481,7 +481,7 @@ fn page_action(a: crate::pages::Action) {
         return;
     };
     match a {
-        Action::Go(_) => {}
+        Action::Go(_) | Action::TimelineDay(_) | Action::TimelineAll(_) => {}
         Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
         // The same path as the hotkey and IPC: private clips are refused.
         Action::SendClipboard => post_command(raw, ID_SEND_CLIPBOARD),

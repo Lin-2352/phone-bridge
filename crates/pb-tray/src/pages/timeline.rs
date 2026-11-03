@@ -4,11 +4,11 @@
 //! [`TimelineModel`] once per model change (labels, rows, offsets); layout
 //! and draw then touch only the items in view.
 
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use crate::{
     fluent::{self, rectf, round_rect, text, Align, Canvas, Font, RectF},
-    pages::{Action, Hit},
+    pages::{timeline_view::Expansion, Action, Hit},
     timeline::{self, Dir, Entry, Kind},
     tokens::{RADIUS, SPACE},
     widgets,
@@ -79,7 +79,16 @@ fn clock(at: u64, tz_offset_s: i64) -> String {
 /// Entries (newest first) as runs of one local day: ("Today", indices),
 /// ("Yesterday", ...), ("Mon 27 Oct", ...). `tz_offset_s` is local minus
 /// UTC.
+#[cfg(test)]
 pub fn group_by_day(entries: &[Entry], now: u64, tz_offset_s: i64) -> Vec<(String, Vec<usize>)> {
+    days_of(entries, now, tz_offset_s)
+        .into_iter()
+        .map(|(_, l, v)| (l, v))
+        .collect()
+}
+
+/// `group_by_day` with each run's local day number first.
+fn days_of(entries: &[Entry], now: u64, tz_offset_s: i64) -> Vec<(i64, String, Vec<usize>)> {
     let today = local_day(now, tz_offset_s);
     let mut out: Vec<(i64, String, Vec<usize>)> = Vec::new();
     for (k, e) in entries.iter().enumerate() {
@@ -89,7 +98,7 @@ pub fn group_by_day(entries: &[Entry], now: u64, tz_offset_s: i64) -> Vec<(Strin
             _ => out.push((day, day_label(day, today), vec![k])),
         }
     }
-    out.into_iter().map(|(_, l, v)| (l, v)).collect()
+    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,15 +113,37 @@ pub struct RowModel {
     pub key: u32,
 }
 
+/// One local day's entries, newest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    /// Days since 1970-01-01, local.
+    pub day: i64,
+    pub label: String,
+    pub rows: Vec<RowModel>,
+}
+
+/// A day header as drawn: chevron, label and item count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DayHead {
+    pub day: i64,
+    pub label: String,
+    pub count: usize,
+    pub open: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Item {
-    Day(String),
+    Day(DayHead),
     Row(RowModel),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TimelineModel {
     pub history_on: bool,
+    /// Every day with all its rows; `items` shows the open ones.
+    pub groups: Arc<Vec<Group>>,
+    /// Which days `items` has open.
+    pub exp: Expansion,
     /// Day headers and rows, top to bottom.
     pub items: Vec<Item>,
     /// Top of each item in logical px, from the top of the list.
@@ -131,6 +162,18 @@ const ROW_H: u32 = 56;
 const OPEN_W: f32 = 72.0;
 const SHOW_W: f32 = 120.0;
 const BUTTON_H: f32 = 32.0;
+/// Top of the list in the page, logical px.
+const LIST_TOP: f32 = PAD + TITLE_H;
+const ALL_W: f32 = 112.0;
+
+/// Hit ids: file buttons use 2 key + 1 and 2 key + 2 (below 2^31 + 3);
+/// day headers `DAY_BASE + day`; the collapse / expand all control `ALL_ID`.
+const DAY_BASE: u32 = 0xC000_0000;
+const ALL_ID: u32 = 0xFFFF_0000;
+
+fn day_id(day: i64) -> u32 {
+    DAY_BASE + day.clamp(0, 0x3FFE_0000) as u32
+}
 
 fn item_h(i: &Item) -> u32 {
     match i {
@@ -181,28 +224,134 @@ fn row(e: &Entry, tz_offset_s: i64) -> RowModel {
 /// Labels, rows and offsets; whether files are still there is asked when
 /// rows are laid out (`layout`), not here.
 pub fn build(entries: &[Entry], history_on: bool, now: u64, tz_offset_s: i64) -> TimelineModel {
-    let mut m = TimelineModel {
+    let m = TimelineModel {
         history_on,
         ..Default::default()
     };
     if !history_on {
         return m;
     }
-    let mut y = 0;
-    for (label, idx) in group_by_day(entries, now, tz_offset_s) {
-        m.tops.push(y);
-        y += HEAD_H;
-        m.items.push(Item::Day(label));
-        let top = y;
-        for k in idx {
-            m.tops.push(y);
-            y += ROW_H;
-            m.items.push(Item::Row(row(&entries[k], tz_offset_s)));
-        }
-        m.cards.push((top, y));
+    let groups = days_of(entries, now, tz_offset_s)
+        .into_iter()
+        .map(|(day, label, idx)| Group {
+            day,
+            label,
+            rows: idx
+                .into_iter()
+                .map(|k| row(&entries[k], tz_offset_s))
+                .collect(),
+        })
+        .collect();
+    TimelineModel {
+        groups: Arc::new(groups),
+        ..m
     }
-    m.height = y;
-    m
+    .with_expansion(&Expansion::default())
+}
+
+/// Where the user is looking, so a rebuilt list can put the same thing back
+/// at the same place (see [`TimelineModel::anchor`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchor {
+    row: Option<u32>,
+    day: i64,
+    /// Page offset minus the item's top, logical px.
+    delta: f32,
+}
+
+impl TimelineModel {
+    /// The days, newest first.
+    pub fn days(&self) -> Vec<i64> {
+        self.groups.iter().map(|g| g.day).collect()
+    }
+
+    /// True when every day is open: the control then says "Collapse all".
+    pub fn all_open(&self) -> bool {
+        self.exp.all_open(&self.days())
+    }
+
+    /// The same entries with the days opened or closed as `exp` says:
+    /// items, offsets, cards and height are recomputed.
+    pub fn with_expansion(&self, exp: &Expansion) -> TimelineModel {
+        let mut m = TimelineModel {
+            history_on: self.history_on,
+            groups: self.groups.clone(),
+            exp: exp.clone(),
+            ..Default::default()
+        };
+        let days = self.days();
+        let mut y = 0;
+        for (i, g) in self.groups.iter().enumerate() {
+            let open = exp.is_open(&days, i);
+            m.tops.push(y);
+            y += HEAD_H;
+            m.items.push(Item::Day(DayHead {
+                day: g.day,
+                label: g.label.clone(),
+                count: g.rows.len(),
+                open,
+            }));
+            if !open {
+                continue;
+            }
+            let top = y;
+            for r in &g.rows {
+                m.tops.push(y);
+                y += ROW_H;
+                m.items.push(Item::Row(r.clone()));
+            }
+            m.cards.push((top, y));
+        }
+        m.height = y;
+        m
+    }
+
+    /// The item at page offset `offset` (logical px), as something that
+    /// survives a rebuild. None at the very top (nothing to hold: new
+    /// entries should show) or when the list is empty.
+    pub fn anchor(&self, offset: f32) -> Option<Anchor> {
+        if offset <= 0.5 || self.items.is_empty() {
+            return None;
+        }
+        let k = self
+            .tops
+            .partition_point(|&t| LIST_TOP + t as f32 <= offset)
+            .saturating_sub(1);
+        let day = self.items[..=k].iter().rev().find_map(|i| match i {
+            Item::Day(d) => Some(d.day),
+            Item::Row(_) => None,
+        })?;
+        let row = match &self.items[k] {
+            Item::Row(x) => Some(x.key),
+            Item::Day(_) => None,
+        };
+        Some(Anchor {
+            row,
+            day,
+            delta: offset - (LIST_TOP + self.tops[k] as f32),
+        })
+    }
+
+    /// The page offset that puts the anchored item back at the same place;
+    /// its day header when the row is no longer listed; None when both are
+    /// gone.
+    pub fn restore(&self, a: &Anchor) -> Option<f32> {
+        let top = |k: usize| LIST_TOP + self.tops[k] as f32;
+        if let Some(key) = a.row {
+            if let Some(k) = self
+                .items
+                .iter()
+                .position(|i| matches!(i, Item::Row(x) if x.key == key))
+            {
+                return Some(top(k) + a.delta);
+            }
+        }
+        let k = self
+            .items
+            .iter()
+            .position(|i| matches!(i, Item::Day(d) if d.day == a.day))?;
+        Some(top(k) + if a.row.is_some() { 0.0 } else { a.delta })
+    }
 }
 
 /// The row's caption line as drawn: says so first when its file is gone,
@@ -239,6 +388,19 @@ pub fn visible(r: RectF, view: RectF, s: f32, m: &TimelineModel) -> Range<usize>
     let end = m.tops.partition_point(|&t| (t as f32) < y1);
     let start = first.saturating_sub(1).min(n);
     start..(end + 1).min(n).max(start)
+}
+
+/// The Collapse all / Expand all control, right of the title.
+fn all_rect(r: RectF, s: f32) -> RectF {
+    let right = r.right - PAD * s;
+    let left = (right - ALL_W * s).max(r.left + PAD * s);
+    let mid = r.top + (PAD + TITLE_H / 2.0) * s;
+    rectf(
+        left,
+        mid - BUTTON_H * s / 2.0,
+        right,
+        mid + BUTTON_H * s / 2.0,
+    )
 }
 
 /// Item `k`'s rect in pixels.
@@ -282,9 +444,20 @@ pub fn layout_with(
     state: &dyn Fn(&str) -> FileState,
 ) -> Vec<Hit> {
     let mut hits = Vec::new();
+    let all = all_rect(r, s);
+    if !m.items.is_empty() && all.bottom > view.top && all.top < view.bottom {
+        hits.push(Hit { id: ALL_ID, r: all });
+    }
     for k in visible(r, view, s, m) {
-        let Item::Row(x) = &m.items[k] else {
-            continue;
+        let x = match &m.items[k] {
+            Item::Row(x) => x,
+            Item::Day(d) => {
+                hits.push(Hit {
+                    id: day_id(d.day),
+                    r: item_rect(r, s, m, k),
+                });
+                continue;
+            }
         };
         if x.file
             .as_deref()
@@ -345,6 +518,25 @@ fn disabled_button(c: &Canvas, r: RectF, label: &str) {
     text(c, Font::Body, label, r, c.p.text2, Align::Center);
 }
 
+/// A day header row: chevron (down when open, right when closed), the day
+/// and how many entries it holds.
+fn day_header(c: &Canvas, r: RectF, d: &DayHead) {
+    let (s, pal) = (c.s, c.p);
+    let pad = SPACE[1] * s;
+    let chev = rectf(r.left + pad, r.top, r.left + pad + 20.0 * s, r.bottom);
+    let g = if d.open { '\u{E70D}' } else { '\u{E76C}' };
+    fluent::icon(c, g, chev, pal.text2);
+    let label = rectf(chev.right + pad, r.top, r.right - 96.0 * s, r.bottom);
+    text(c, Font::BodyStrong, &d.label, label, pal.text, Align::Left);
+    let n = if d.count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{} items", d.count)
+    };
+    let cnt = rectf(r.right - 96.0 * s - pad, r.top, r.right - pad, r.bottom);
+    text(c, Font::Caption, &n, cnt, pal.text2, Align::Right);
+}
+
 /// `hits` is this frame's `layout`: a file row without its hits is drawn
 /// as missing, so the picture always matches what takes clicks.
 pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hit]) {
@@ -360,6 +552,12 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hi
         r.top + (PAD + TITLE_H) * s,
     );
     text(c, Font::Title, "Timeline", title, pal.text, Align::Left);
+    let all = if m.all_open() {
+        "Collapse all"
+    } else {
+        "Expand all"
+    };
+    fluent::button(c, all_rect(r, s), all, false);
     let range = visible(r, view, s, m);
     if range.is_empty() {
         return;
@@ -380,10 +578,7 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hi
     for k in range {
         let ir = item_rect(r, s, m, k);
         match &m.items[k] {
-            Item::Day(label) => {
-                let t = rectf(ir.left, ir.top + SPACE[1] * s, ir.right, ir.bottom);
-                text(c, Font::BodyStrong, label, t, pal.text, Align::Left);
-            }
+            Item::Day(d) => day_header(c, ir, d),
             Item::Row(x) if x.file.is_none() => {
                 widgets::row(c, ir, glyph(x.kind), &x.title, &x.meta, "");
             }
@@ -408,6 +603,13 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hi
 /// The row is found by its key, so a click that spans an insert still
 /// acts on the row that was pressed (or nothing, if it scrolled away).
 pub fn click(hit: &Hit, m: &TimelineModel) -> Option<Action> {
+    if hit.id == ALL_ID {
+        return Some(Action::TimelineAll(!m.all_open()));
+    }
+    if hit.id >= DAY_BASE {
+        let g = m.groups.iter().find(|g| day_id(g.day) == hit.id)?;
+        return Some(Action::TimelineDay(g.day));
+    }
     let n = hit.id.checked_sub(1)?;
     let key = n / 2;
     let path = m.items.iter().find_map(|i| match i {
@@ -501,6 +703,10 @@ pub mod files {
 }
 
 #[cfg(test)]
+#[path = "timeline_days_tests.rs"]
+mod days_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::timeline::{self, Dir};
@@ -587,6 +793,7 @@ mod tests {
         let (r, view) = page();
         let hits = layout_with(r, view, 1.0, &m, &file_state);
         // Open and Show in folder on the file row; nothing on the text row.
+        let hits: Vec<Hit> = hits.into_iter().filter(|h| h.id < DAY_BASE).collect();
         assert_eq!(hits.len(), 2);
         assert_eq!(file_state(&p), FileState::Present);
         // Gone between the layout and the click: the page cannot know yet,
@@ -597,7 +804,9 @@ mod tests {
         assert_eq!(file_state(&p), FileState::Missing);
         // The next model disables the buttons and says why.
         let m = build(&entries, true, now, 0);
-        assert!(layout_with(r, view, 1.0, &m, &file_state).is_empty());
+        assert!(layout_with(r, view, 1.0, &m, &file_state)
+            .iter()
+            .all(|h| h.id >= DAY_BASE));
         let row = m
             .items
             .iter()
@@ -621,6 +830,9 @@ mod tests {
             .map(|k| file(now - k as u64 * 2600, &format!("C:\\x\\{k}.pdf")))
             .collect();
         let m = build(&entries, true, now, 0);
+        let mut exp = m.exp.clone();
+        exp.set_all(&m.days(), true);
+        let m = m.with_expansion(&exp);
         assert!(m.items.len() > 1000, "rows and day headers");
         assert_eq!(m.tops.len(), m.items.len());
         let (full, view) = page();
