@@ -6,6 +6,7 @@ pub const PHONE_NOTIFICATIONS: &str = "Show phone notifications";
 pub const PHONE_CONTROL: &str = "Let my phone control this PC";
 pub const KEEP_LOGS: &str = "Keep logs";
 pub const NO_PEER: &str = "Pair a phone first";
+pub const PAIR_DEVICE: &str = "Pair device";
 pub const PAUSED: &str = "Relay is paused";
 
 #[cfg(test)]

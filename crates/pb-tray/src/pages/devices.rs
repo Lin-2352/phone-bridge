@@ -165,7 +165,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &DevicesModel) {
         text(c, Font::Caption, &line, meta, rgb, Align::Left);
         fluent::button(c, *b, "Remove", false);
     }
-    fluent::button(c, p.pair, "Pair a device", true);
+    fluent::button(c, p.pair, crate::strings::PAIR_DEVICE, true);
 }
 
 pub fn click(hit: &Hit, m: &DevicesModel) -> Option<Action> {

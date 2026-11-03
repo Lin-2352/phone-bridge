@@ -300,8 +300,18 @@ impl Quick {
 
     /// Whether the tile takes clicks. Everything needs a phone, and while
     /// Relay is paused only the stop of a running session works.
+    ///
+    /// A running session's tile is not a second Stop: "Live now" has the
+    /// one Stop button (a request still waiting for the phone is not listed
+    /// there, so the Camera tile alone cancels it).
     pub fn enabled(self, m: &HomeModel) -> bool {
-        m.phone.is_some() && (!m.paused || self.on(m))
+        if m.phone.is_none() {
+            return false;
+        }
+        if self == Quick::Camera && m.camera_pending {
+            return true;
+        }
+        !m.paused && !self.on(m)
     }
 
     /// Why a disabled tile is disabled, for the tooltip and screen readers.
@@ -616,7 +626,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
                 "Pair your phone to send files, share the clipboard and more.",
             );
             if let Some(b) = p.pair {
-                fluent::button(c, b, "Pair", true);
+                fluent::button(c, b, crate::strings::PAIR_DEVICE, true);
             }
             if let Some(b) = p.resume {
                 fluent::button(c, b, "Resume", true);
@@ -1121,15 +1131,54 @@ mod tests {
     }
 
     #[test]
-    fn a_running_session_can_be_stopped_while_paused() {
+    fn a_running_session_has_one_stop_even_while_paused() {
         let mut m = paired_model(true);
         m.sessions.push(Session {
             kind: SessionKind::Screen,
             stop: Action::Stop(SessionKind::Screen),
             live: true,
         });
-        assert!(Quick::Screen.enabled(&m));
-        assert!(!Quick::SendFile.enabled(&m));
+        assert!(!Quick::Screen.enabled(&m), "the tile is not a second Stop");
+        let hits = layout(rectf(0.0, 0.0, 900.0, 1200.0), 1.0, &m);
+        assert!(hits.iter().any(|h| (STOP..STOP + 3).contains(&h.id)));
+    }
+
+    #[test]
+    fn no_two_controls_on_home_do_the_same_thing() {
+        let mut variants = Vec::new();
+        for paused in [false, true] {
+            let mut m = paired_model(paused);
+            variants.push(m.clone());
+            for kind in [
+                SessionKind::Screen,
+                SessionKind::Camera,
+                SessionKind::Control,
+            ] {
+                m.sessions.push(Session {
+                    kind,
+                    stop: Action::Stop(kind),
+                    live: true,
+                });
+            }
+            variants.push(m.clone());
+            m.sessions.clear();
+            m.camera_pending = true;
+            variants.push(m);
+            let s = Settings {
+                paused,
+                ..Settings::default()
+            };
+            let mut i = inputs(&s, &[]);
+            i.phone = None;
+            variants.push(build(i));
+        }
+        for m in variants {
+            let hits = layout(rectf(0.0, 0.0, 900.0, 1400.0), 1.0, &m);
+            let actions: Vec<Action> = hits.iter().filter_map(|h| click(h, &m)).collect();
+            for (i, a) in actions.iter().enumerate() {
+                assert!(!actions[i + 1..].contains(a), "duplicate control for {a:?}");
+            }
+        }
     }
 
     #[test]

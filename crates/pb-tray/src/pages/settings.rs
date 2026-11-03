@@ -600,7 +600,7 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             };
             let tr = rectf(il, card.top, left_of(il, b.left, s), card.bottom);
             text(c, Font::Body, label, tr, p.text, Align::Left);
-            fluent::button(c, b, "Pair device", true);
+            fluent::button(c, b, crate::strings::PAIR_DEVICE, true);
         }
         Row::About => {
             let version = format!("{} {}", APP_NAME, env!("CARGO_PKG_VERSION"));

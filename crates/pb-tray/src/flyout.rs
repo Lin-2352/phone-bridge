@@ -494,7 +494,7 @@ fn drop_label(m: &Model) -> String {
     }
     match &m.peer {
         Some(n) => format!("Drop files here to send to {n}"),
-        None => "Pair a device to send files".to_owned(),
+        None => "Pair a phone to send files".to_owned(),
     }
 }
 
@@ -1143,7 +1143,7 @@ mod tests {
         assert!(apply(&mut m, Model::default()));
         assert!(!clickable(&m, Hit::Drop));
         assert!(!clickable(&m, Hit::Tile(TileKind::SendFile)));
-        assert_eq!(drop_label(&m), "Pair a device to send files");
+        assert_eq!(drop_label(&m), "Pair a phone to send files");
         assert!(!status_line(&m, STATUS_CHARS).contains("RMX3561"));
         // The same model again changes nothing (no repaint).
         assert!(!apply(&mut m, Model::default()));
