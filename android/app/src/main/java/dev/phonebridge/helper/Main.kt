@@ -9,9 +9,11 @@ import android.content.ContextWrapper
 import android.content.pm.ApplicationInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.os.Build
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import androidx.annotation.RequiresApi
 import java.io.DataInputStream
 import java.io.File
 import java.net.InetAddress
@@ -43,8 +45,13 @@ private const val HANDSHAKE_MS = 2000
 object Main {
     private val capturing = AtomicBoolean(false)
 
+    /** Android 11 only lets this capture with a shell window in front, so Relay uses its normal capture there. */
     @JvmStatic
     fun main(args: Array<String>) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Log.i(TAG, "needs Android 12 or later")
+            exitProcess(0)
+        }
         val secret = HelperProtocol.secretFromHex(System.getenv(HelperProtocol.SECRET_ENV))
         val apk = args.getOrNull(0)
         if (secret == null || apk == null) {
@@ -79,6 +86,7 @@ object Main {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun serve(client: Socket, secret: ByteArray) {
         client.use { s ->
             try {
@@ -117,6 +125,7 @@ object Main {
         return true
     }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private fun capture(s: Socket, p: HelperProtocol.CaptureParams?) {
         val out = s.getOutputStream()
         if (p == null) {
@@ -166,6 +175,7 @@ object Main {
  * Android expects a Context from an installed app; this process is a bare program, so it presents
  * itself as the shell package, which is what it runs as.
  */
+@RequiresApi(Build.VERSION_CODES.S)
 @SuppressLint("PrivateApi", "DiscouragedPrivateApi", "BlockedPrivateApi", "SoonBlockedPrivateApi")
 private object Shell {
     private val threadClass = Class.forName("android.app.ActivityThread")
@@ -177,6 +187,7 @@ private object Shell {
 
     private fun field(name: String) = threadClass.getDeclaredField(name).apply { isAccessible = true }
 
+    @RequiresApi(Build.VERSION_CODES.S)
     private class ShellContext(base: Context) : ContextWrapper(base) {
         override fun getPackageName() = SHELL_PACKAGE
         override fun getOpPackageName() = SHELL_PACKAGE
