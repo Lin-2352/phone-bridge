@@ -331,11 +331,15 @@ pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Res
         let _ = std::fs::remove_file(&tmp);
     }
     written?;
-    // The rename itself must survive too. Windows cannot open a folder as a
-    // file, and flushes the directory entry with the rename.
+    // The rename itself should survive a power loss too. Best effort: once
+    // the rename succeeded the new content is what is on disk, and an error
+    // now would tell the caller "nothing changed" when it did (a pairing
+    // reported failed but kept, a removal reported failed but done).
+    // Windows cannot open a folder as a file and flushes the entry with the
+    // rename.
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
-        std::fs::File::open(dir)?.sync_all()?;
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
     }
     Ok(())
 }
