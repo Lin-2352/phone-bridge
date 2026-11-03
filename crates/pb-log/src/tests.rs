@@ -434,7 +434,54 @@ fn flat_json_rejects_nesting_long_values_and_garbage() {
 fn scrub_removes_quotes_and_paths_and_cuts() {
     assert_eq!(
         scrub("cannot open \"my file.txt\" in C:\\a\\b now"),
-        "cannot open <q> in <path> now"
+        "cannot open <q> in <path>"
     );
     assert_eq!(scrub(&"x".repeat(500)).len(), 120);
+}
+
+#[test]
+fn scrub_drops_the_tail_of_unquoted_paths_with_spaces() {
+    let a = scrub("java.io.FileNotFoundException: /storage/emulated/0/Download/My Report.pdf: open failed: ENOENT");
+    assert_eq!(
+        a,
+        "java.io.FileNotFoundException: <path> open failed: ENOENT"
+    );
+    assert!(!a.contains("Report"));
+    let b = scrub(r"Access denied: C:\Users\Harsh Raj");
+    assert_eq!(b, "Access denied: <path>");
+    assert!(!b.contains("Raj"));
+}
+
+#[test]
+fn crash_notes_stop_at_a_size_cap_and_flush_held_lines() {
+    let (lg, _n, root) = logger("crashcap", Caps::pc(), T0);
+    // A held line reaches the disk when a crash note is written (a hard
+    // kill right after would otherwise lose it).
+    lg.event(Stream::Events, "last_thing", &[]);
+    lg.crash("panic at a:1");
+    let raw = fs::read_to_string(root.join("2026-11-03").join("events.jsonl")).unwrap_or_default();
+    assert!(raw.contains("last_thing"), "held line not flushed: {raw:?}");
+    // A panic loop cannot grow crash.txt without limit.
+    for _ in 0..5000 {
+        lg.crash(&"x".repeat(2000));
+    }
+    let len = fs::metadata(root.join("2026-11-03").join("crash.txt"))
+        .unwrap()
+        .len();
+    assert!(len < 400 * 1024, "crash.txt grew to {len}");
+}
+
+#[test]
+fn gzip_never_overwrites_an_existing_archive() {
+    let (lg, _n, root) = logger("gzkeep", Caps::pc(), T0);
+    mkday(&root, "2026-10-31", 5000);
+    lg.prune_at(T0);
+    let d = root.join("2026-10-31");
+    let first = fs::read(d.join("events.jsonl.gz")).unwrap();
+    // The same day gets new lines again (clock moved back), then is pruned.
+    fs::write(d.join("events.jsonl"), "y".repeat(3000)).unwrap();
+    lg.prune_at(T0);
+    assert!(!d.join("events.jsonl").exists());
+    assert_eq!(fs::read(d.join("events.jsonl.gz")).unwrap(), first);
+    assert!(d.join("events.jsonl.1.gz").exists());
 }

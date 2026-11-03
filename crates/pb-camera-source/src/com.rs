@@ -84,12 +84,15 @@ impl SendInner {
 struct Shared {
     pump: Pump<Token>,
     mapped: Option<Mapped>,
+    /// When mapping the frames file last failed (retried about once a second).
+    map_tried: Option<std::time::Instant>,
     types: TypeState,
     started: bool,
     shutdown: bool,
 }
 
 struct Inner {
+    frames: PathBuf,
     shared: Mutex<Shared>,
     events: IMFMediaEventQueue,
     stream_events: IMFMediaEventQueue,
@@ -163,9 +166,11 @@ impl Inner {
             let mut types = TypeState::default();
             let _ = types.set_current(w, h);
             Ok(Arc::new(Self {
+                frames: frames.to_path_buf(),
                 shared: Mutex::new(Shared {
                     pump: Pump::new((w, h)),
                     mapped,
+                    map_tried: Some(std::time::Instant::now()),
                     types,
                     started: false,
                     shutdown: false,
@@ -192,6 +197,17 @@ impl Inner {
             let mut g = self.lock();
             if g.shutdown {
                 return;
+            }
+            // Missing or unreadable at creation (half-finished install): try
+            // again now and then, so a Repair shows without reopening the app.
+            if g.mapped.is_none()
+                && g.map_tried
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1))
+            {
+                g.map_tried = Some(std::time::Instant::now());
+                g.mapped = Mapped::open(&self.frames, true)
+                    .or_else(|_| Mapped::open(&self.frames, false))
+                    .ok();
             }
             let Shared { pump, mapped, .. } = &mut *g;
             match mapped.as_mut().and_then(|m| Ring::open(m.words())) {

@@ -26,7 +26,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
+    // Flush to disk before the rename: a power loss must not leave an empty
+    // identity.sealed behind.
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
     std::fs::rename(tmp, path)
 }
 
@@ -56,7 +63,16 @@ pub fn open_identity(dir: &Path, wrapper: &dyn SeedWrapper) -> io::Result<Identi
                     format!("this device's identity could not be unsealed ({e}); the keystore may have been reset or the file damaged"),
                 )
             })?;
-            return Ok(Identity::from_seed(seed_from(&plain, "sealed identity")?));
+            let seed = seed_from(&plain, "sealed identity")?;
+            // A plain copy left behind by a crash (or a locked file) during
+            // migration: drop it, but only when it is the same seed, so a
+            // different identity is never deleted.
+            if let Ok(old) = std::fs::read(&legacy) {
+                if old.as_slice() == seed.as_slice() {
+                    let _ = std::fs::remove_file(&legacy);
+                }
+            }
+            return Ok(Identity::from_seed(seed));
         }
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         Err(_) => {}
@@ -151,6 +167,27 @@ mod tests {
         );
         assert!(!d.join(LEGACY_PLAIN_FILE).exists());
         assert!(d.join(SEALED_FILE).exists());
+    }
+
+    #[test]
+    fn leftover_plain_copy_of_the_same_seed_is_removed_later() {
+        let d = dir("leftover");
+        let w = Xor::new(0x21);
+        let a = open_identity(&d, &w).unwrap();
+        std::fs::write(d.join(LEGACY_PLAIN_FILE), a.seed()).unwrap();
+        let b = open_identity(&d, &w).unwrap();
+        assert_eq!(a.peer_id(), b.peer_id());
+        assert!(!d.join(LEGACY_PLAIN_FILE).exists());
+    }
+
+    #[test]
+    fn a_different_plain_seed_is_never_deleted() {
+        let d = dir("different");
+        let w = Xor::new(0x21);
+        let a = open_identity(&d, &w).unwrap();
+        std::fs::write(d.join(LEGACY_PLAIN_FILE), [9u8; 32]).unwrap();
+        assert_eq!(open_identity(&d, &w).unwrap().peer_id(), a.peer_id());
+        assert_eq!(std::fs::read(d.join(LEGACY_PLAIN_FILE)).unwrap(), [9u8; 32]);
     }
 
     #[test]

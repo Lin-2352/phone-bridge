@@ -352,7 +352,12 @@ async fn capture_pc_audio(
                         break cause_of(sess.events.recv().await);
                     }
                 }
-                None => break End::DeviceFailed(st::device_text(Dir::PcToPhone, "capture ended")),
+                None => {
+                    // The capture thread reports the cause (default device
+                    // changed, device removed) just before it ends the frames.
+                    let why = erx.try_recv().unwrap_or_else(|_| "capture ended".into());
+                    break End::DeviceFailed(st::device_text(Dir::PcToPhone, &why));
+                }
             },
             e = erx.recv() => if let Some(e) = e {
                 break End::DeviceFailed(st::device_text(Dir::PcToPhone, &e));

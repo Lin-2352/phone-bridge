@@ -88,7 +88,11 @@ impl IMFAttributes_Impl for PbCameraActivate_Impl {
     fn GetString(&self, k: *const GUID, buf: PWSTR, size: u32, len: *mut u32) -> Result<()> {
         // SAFETY: the caller's buffer of `size` UTF-16 units.
         unsafe {
-            let slice = std::slice::from_raw_parts_mut(buf.0, size as usize);
+            let slice = if buf.0.is_null() {
+                &mut []
+            } else {
+                std::slice::from_raw_parts_mut(buf.0, size as usize)
+            };
             self.attrs
                 .GetString(k, slice, if len.is_null() { None } else { Some(len) })
         }
@@ -102,7 +106,11 @@ impl IMFAttributes_Impl for PbCameraActivate_Impl {
     fn GetBlob(&self, k: *const GUID, buf: *mut u8, size: u32, len: *mut u32) -> Result<()> {
         // SAFETY: the caller's buffer of `size` bytes.
         unsafe {
-            let slice = std::slice::from_raw_parts_mut(buf, size as usize);
+            let slice = if buf.is_null() {
+                &mut []
+            } else {
+                std::slice::from_raw_parts_mut(buf, size as usize)
+            };
             self.attrs
                 .GetBlob(k, slice, if len.is_null() { None } else { Some(len) })
         }
@@ -144,8 +152,14 @@ impl IMFAttributes_Impl for PbCameraActivate_Impl {
     fn SetBlob(&self, k: *const GUID, buf: *const u8, size: u32) -> Result<()> {
         // SAFETY: the caller's buffer of `size` bytes.
         unsafe {
-            self.attrs
-                .SetBlob(k, std::slice::from_raw_parts(buf, size as usize))
+            self.attrs.SetBlob(
+                k,
+                if buf.is_null() {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts(buf, size as usize)
+                },
+            )
         }
     }
     fn SetUnknown(&self, k: *const GUID, u: Ref<IUnknown>) -> Result<()> {
