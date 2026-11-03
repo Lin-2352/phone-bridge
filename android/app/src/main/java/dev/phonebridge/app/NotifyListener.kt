@@ -104,7 +104,12 @@ class NotifyListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
-        if (!baseSkip(sbn) && Prefs(this).notifyToPc) record(sbn, verdict(sbn))
+        if (!baseSkip(sbn) && Prefs(this).notifyToPc) {
+            val v = verdict(sbn)
+            remember(sbn)
+            // Blocked ones count only while Relay runs; mirrored ones count once the PC got them (below).
+            if (v != MirrorVerdict.Send && Bridge.node != null) count(v)
+        }
         if (skip(sbn)) {
             // An incoming call that was answered becomes an ongoing call:
             // the call toast goes, and a silenced ringer comes back.
@@ -126,6 +131,7 @@ class NotifyListener : NotificationListenerService() {
         bg.execute {
             try {
                 node.notifyPosted(toPb(sbn, quiet, withMedia = true))
+                if (!update) count(MirrorVerdict.Send)
                 Log.i(TAG, "NOTIFY posted pkg=${sbn.packageName} key=${keyHash(sbn.key)}")
             } catch (t: Throwable) {
                 Log.e(TAG, "NOTIFY post failed pkg=${sbn.packageName}: $t")
@@ -135,7 +141,8 @@ class NotifyListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification, rankingMap: RankingMap?) {
         live.remove(sbn.key)
-        if (sbn.notification.category == Notification.CATEGORY_CALL) restoreRinger(this)
+        // Not Relay's own "wants to control this phone" notice (it is a CATEGORY_CALL): that is not a call ending.
+        if (sbn.packageName != packageName && sbn.notification.category == Notification.CATEGORY_CALL) restoreRinger(this)
         if (skip(sbn)) return
         val node = Bridge.node ?: return
         bg.execute {
@@ -169,10 +176,15 @@ class NotifyListener : NotificationListenerService() {
 
     private fun skip(sbn: StatusBarNotification): Boolean = baseSkip(sbn) || verdict(sbn) != MirrorVerdict.Send
 
-    /** Counts what Settings shows (mirrored vs blocked) and remembers the app for the block list. */
-    private fun record(sbn: StatusBarNotification, v: MirrorVerdict) = synchronized(NotifyListener) {
+    /** Counts what Settings shows (mirrored vs blocked). */
+    private fun count(v: MirrorVerdict) = synchronized(NotifyListener) {
         val prefs = Prefs(this)
         prefs.mirrorCounts = prefs.mirrorCounts.after(v)
+    }
+
+    /** Remembers the app for the block list. */
+    private fun remember(sbn: StatusBarNotification) = synchronized(NotifyListener) {
+        val prefs = Prefs(this)
         val seen = prefs.notifySeen
         if (seen.firstOrNull() != sbn.packageName) prefs.notifySeen = (listOf(sbn.packageName) + seen.filter { it != sbn.packageName }).take(SEEN_MAX)
     }
@@ -354,14 +366,14 @@ object NotifyActions : NotifyHandler {
         try {
             when (kind) {
                 PbNotifyActionKind.DISMISS -> svc.cancelNotification(key)
-                PbNotifyActionKind.BUTTON -> action(sbn, index).actionIntent.send()
+                PbNotifyActionKind.BUTTON -> (action(sbn, index).actionIntent ?: fail(GONE)).send()
                 PbNotifyActionKind.REPLY -> {
                     val a = action(sbn, index)
                     val inputs = a.remoteInputs ?: fail(GONE)
                     val input = inputs.firstOrNull { it.allowFreeFormInput } ?: fail(GONE)
                     val intent = Intent()
                     RemoteInput.addResultsToIntent(inputs, intent, Bundle().apply { putCharSequence(input.resultKey, text) })
-                    a.actionIntent.send(svc, 0, intent)
+                    (a.actionIntent ?: fail(GONE)).send(svc, 0, intent)
                 }
                 PbNotifyActionKind.OPEN -> {
                     val pi = sbn?.notification?.contentIntent ?: fail(GONE)
