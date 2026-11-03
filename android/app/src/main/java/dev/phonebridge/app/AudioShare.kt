@@ -125,7 +125,7 @@ object AudioShare {
                 val o = out.get()
                 if (o != null) send(o, enc, buf, len)
                 if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
-                    Log.i(TAG, "AUDIO sharing captured_frames=$frames ${o?.statsLine()}")
+                    Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
                 }
             },
         )

@@ -61,6 +61,10 @@ class AudioStreamer(
     private val stopped = AtomicBoolean(false)
     private var workerThread: Thread? = null
     private var audioRecord: AudioRecord? = null
+    private val maxFrameGapMs = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** The longest wait between frames since the last call: above [FRAME_MS] the reader was late. */
+    fun takeMaxFrameGapMs(): Long = maxFrameGapMs.getAndSet(0)
 
     @SuppressLint("MissingPermission")
     fun start(): AudioStartResult {
@@ -78,8 +82,9 @@ class AudioStreamer(
         val channelConfig = if (channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
         val minBuf = AudioRecord.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
         val chunkBytes = sampleRate * 2 * channels * FRAME_MS / 1000
-        // What this holds is delay when the reader stalls: the least Android accepts.
-        val bufferSize = maxOf(minBuf, chunkBytes * 4)
+        // Room for the reader to stall: a full buffer loses sound and jumps. It only
+        // holds audio during a stall, so its size adds no delay otherwise.
+        val bufferSize = maxOf(minBuf * 2, sampleRate * 2 * channels * BUFFER_MS / 1000)
 
         try {
             val rec = when (source) {
@@ -128,6 +133,9 @@ class AudioStreamer(
             val buf = ByteArray(chunkBytes) // reused for every frame
             var filled = 0
             var endReason: AudioReason? = null
+            var lastFrameAt = 0L
+            var framesSinceCheck = 0
+            var soundExpected = false
             Log.i(TAG, "capture started: $source, $sampleRate Hz, $channels ch, $chunkBytes bytes/frame")
             try {
                 while (isRunning.get()) {
@@ -140,8 +148,16 @@ class AudioStreamer(
                     filled += n
                     if (filled < chunkBytes) continue
                     filled = 0
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (lastFrameAt != 0L) maxFrameGapMs.accumulateAndGet(now - lastFrameAt, ::maxOf)
+                    lastFrameAt = now
                     onLevel(isSilentPcm16(buf, chunkBytes))
-                    if (source == AudioSource.PLAYBACK && detector.onFrame(buf, chunkBytes, expectSound())) {
+                    // A system call: far too slow to make for every frame on this thread.
+                    if (++framesSinceCheck >= SOUND_CHECK_FRAMES) {
+                        framesSinceCheck = 0
+                        soundExpected = expectSound()
+                    }
+                    if (source == AudioSource.PLAYBACK && detector.onFrame(buf, chunkBytes, soundExpected)) {
                         endReason = AudioReason.APP_BLOCKS_CAPTURE
                         break
                     }
@@ -195,7 +211,10 @@ class AudioStreamer(
 
     companion object {
         const val FRAME_MS = 10
-        const val BLOCKED_AFTER_MS = 2000
+        /** Long enough that a quiet stretch of a video does not end the share. */
+        const val BLOCKED_AFTER_MS = 10_000
+        private const val BUFFER_MS = 200
+        private const val SOUND_CHECK_FRAMES = 50
         private const val JOIN_MS = 1000L
 
         @Volatile

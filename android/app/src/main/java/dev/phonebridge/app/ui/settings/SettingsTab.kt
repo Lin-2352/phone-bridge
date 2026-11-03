@@ -74,6 +74,7 @@ import dev.phonebridge.app.Group
 import dev.phonebridge.app.LogFields
 import dev.phonebridge.app.NotifyListener
 import dev.phonebridge.app.PbService
+import dev.phonebridge.app.PhoneSpeaker
 import dev.phonebridge.app.Prefs
 import dev.phonebridge.app.Radius
 import dev.phonebridge.app.RelayDialog
@@ -184,7 +185,7 @@ private fun AudioToPc() {
     val prefs = remember { Prefs(ctx) }
     var skip by remember { mutableStateOf(prefs.audioSkipConfirmPhoneToPc) }
     var silence by remember { mutableStateOf(prefs.audioSilencePhone) }
-    val silenceWorks = !prefs.audioSilenceUnsupported
+    var silenceWorks by remember { mutableStateOf(!prefs.audioSilenceUnsupported) }
     val listener = AudioShare.sharingWith.value
     if (listener != null) LiveBanner("$listener can hear this phone") { AudioShare.stop(AudioDirection.PHONE_TO_PC) }
     val from = AudioShare.playingFrom.value
@@ -201,15 +202,19 @@ private fun AudioToPc() {
     RelayRow(
         title = "Silence this phone while streaming",
         supporting = when {
-            !silenceWorks -> "Not available on this phone: muting it also silences what $APP_NAME captures"
-            silence -> "On. Audio plays only on the PC. Your volume comes back when streaming stops"
-            else -> "Off. Audio plays on this phone and on the PC. Applies from the next stream"
+            !silenceWorks -> "Off. Muting this phone also silenced what $APP_NAME captures. Turn on to try again"
+            silence -> "On. Audio plays only on the PC. Your sound comes back when streaming stops"
+            else -> "Off. Audio plays on this phone and on the PC"
         },
         checked = silence && silenceWorks,
-        switchEnabled = silenceWorks,
         onChecked = { v ->
             silence = v
             prefs.audioSilencePhone = v
+            if (v) {
+                prefs.audioSilenceUnsupported = false
+                silenceWorks = true
+            }
+            PhoneSpeaker.settingChanged(ctx)
         },
     )
 }

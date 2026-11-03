@@ -280,6 +280,9 @@ async fn play_phone_audio(
             }
         }
     };
+    if let Some(o) = out.as_ref() {
+        log.line(&format!("AUDIO output device {}", o.device()));
+    }
     let (dropped, underruns) = {
         let o = out.as_ref();
         (
@@ -315,10 +318,11 @@ async fn play_phone_audio(
                     if window.elapsed() >= Duration::from_secs(10) {
                         let n = sess.stats();
                         log.line(&format!(
-                            "AUDIO arrivals {} packets={} lost={} late={} queue_dropped={} decode_avg_us={} decode_max_us={} max_age_ms={} quic_lost={} paths={} rtt_ms={}",
+                            "AUDIO arrivals {} packets={} lost={} late={} queue_dropped={} decode_avg_us={} decode_max_us={} target_ms={} max_age_ms={} quic_lost={} paths={} rtt_ms={}",
                             arrivals.line(dropped(), underruns()),
                             n.packets, n.lost, n.late, n.queue_dropped,
                             decode_us_total / arrivals.frames.max(1), decode_us_max,
+                            out.as_ref().map_or(0, AudioOut::target_ms),
                             n.max_age_ms, n.quic_lost, n.paths, n.rtt_ms
                         ));
                         arrivals.reset_window();

@@ -18,10 +18,16 @@ class OpusEncoder private constructor(private val codec: MediaCodec, private val
     private val info = MediaCodec.BufferInfo()
     private var writtenBytes = 0L
 
+    /** PCM frames the encoder had no room for: each is an audible jump. */
+    var droppedFrames = 0L
+        private set
+
     /** Feeds PCM and hands every finished packet to [emit], copied. */
     fun encode(pcm: ByteArray, len: Int, emit: (ByteArray) -> Unit) {
         val i = codec.dequeueInputBuffer(INPUT_WAIT_US)
-        if (i >= 0) {
+        if (i < 0) {
+            droppedFrames++
+        } else {
             val b = codec.getInputBuffer(i) ?: return
             b.clear()
             b.put(pcm, 0, minOf(len, b.remaining()))
@@ -55,7 +61,7 @@ class OpusEncoder private constructor(private val codec: MediaCodec, private val
 
     companion object {
         private const val BIT_RATE = 160_000
-        private const val INPUT_WAIT_US = 5_000L
+        private const val INPUT_WAIT_US = 20_000L
 
         /** Null when this phone cannot encode Opus; the caller then sends PCM. */
         fun create(sampleRate: Int, channels: Int): OpusEncoder? {
