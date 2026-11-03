@@ -81,6 +81,12 @@ pub struct Model {
     /// The phone camera is streaming, and its frames per second.
     pub camera_on: bool,
     pub camera_fps: u32,
+    /// A camera request waits for the phone (not streaming yet).
+    pub camera_pending: bool,
+    /// A phone-screen request waits for the phone (no window yet).
+    pub screen_pending: bool,
+    /// What each audio direction is doing (`Dir::index`).
+    pub audio: [crate::audio_state::Phase; 2],
     pub last: String,
     /// Relay is paused: tiles and the drop zone are disabled, the header says so.
     pub paused: bool,

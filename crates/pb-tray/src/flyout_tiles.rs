@@ -29,7 +29,13 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
     // front instead of after the click (a live session may still be stopped).
     let phone = m.peer.is_some() && !m.paused && !m.stopped;
     let free = !m.paused && !m.stopped;
-    let camera = if !m.camera_on {
+    // A request the phone has not answered: the tile says Cancel, so a second
+    // click is a decision, and it works while paused (cancelling needs no network).
+    let camera_wait = m.camera_pending && !m.camera_on;
+    let screen_wait = m.screen_pending && !m.screen_on;
+    let camera = if camera_wait {
+        "Cancel start".to_owned()
+    } else if !m.camera_on {
         "Camera".to_owned()
     } else if m.camera_fps > 0 {
         format!("Camera, {} fps", m.camera_fps)
@@ -40,14 +46,19 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
         Tile {
             kind: TileKind::Camera,
             label: camera,
-            on: m.camera_on,
-            enabled: phone || m.camera_on,
+            on: m.camera_on || camera_wait,
+            enabled: phone || m.camera_on || camera_wait,
         },
         Tile {
             kind: TileKind::Screen,
-            label: "Phone screen".to_owned(),
-            on: m.screen_on,
-            enabled: phone || m.screen_on,
+            label: if screen_wait {
+                "Cancel start"
+            } else {
+                "Phone screen"
+            }
+            .to_owned(),
+            on: m.screen_on || screen_wait,
+            enabled: phone || m.screen_on || screen_wait,
         },
         Tile {
             kind: TileKind::Clipboard,
@@ -84,12 +95,31 @@ pub fn status_line(m: &Model, max_chars: usize) -> String {
     if m.paused {
         return "Paused. Resume in the tray menu.".to_owned();
     }
+    if let Some(a) = audio_line(m) {
+        return clip(a, max_chars);
+    }
     let line = match (&m.peer, m.last.is_empty()) {
         (Some(n), true) => format!("Paired with {n}"),
         (Some(n), false) => format!("{n} \u{b7} {}", m.last),
         (None, true) => "No phone paired".to_owned(),
         (None, false) => m.last.clone(),
     };
+    clip(line, max_chars)
+}
+
+/// Running audio is the most sensitive thing Relay does, so the flyout names it
+/// instead of the last activity (the Stop is on Home and in the tray menu).
+fn audio_line(m: &Model) -> Option<String> {
+    use crate::audio_state::{Dir, Phase};
+    let on: Vec<&str> = Dir::ALL
+        .iter()
+        .filter(|d| m.audio[d.index()] == Phase::Running)
+        .map(|d| d.title())
+        .collect();
+    (!on.is_empty()).then(|| format!("{} · Stop in the tray menu", on.join(" and ")))
+}
+
+fn clip(line: String, max_chars: usize) -> String {
     if line.chars().count() <= max_chars {
         return line;
     }
@@ -135,6 +165,35 @@ mod tests {
                 TileKind::Pair,
             ]
         );
+    }
+
+    #[test]
+    fn a_waiting_request_says_cancel_and_stays_clickable_when_paused() {
+        let m = Model {
+            paused: true,
+            camera_pending: true,
+            screen_pending: true,
+            ..paired()
+        };
+        let t = tiles(&m);
+        for i in [0, 1] {
+            assert_eq!(t[i].label, "Cancel start");
+            assert!(t[i].on && t[i].enabled);
+        }
+        let plain = tiles(&paired());
+        assert_eq!(plain[0].label, "Camera");
+        assert_eq!(plain[1].label, "Phone screen");
+    }
+
+    #[test]
+    fn running_audio_is_named_under_the_tiles() {
+        use crate::audio_state::Phase;
+        let mut m = paired();
+        m.audio[1] = Phase::Asking;
+        assert!(status_line(&m, 80).contains("Pixel 8"));
+        m.audio[1] = Phase::Running;
+        let line = status_line(&m, 80);
+        assert!(line.contains("PC audio on the phone"), "{line}");
     }
 
     #[test]

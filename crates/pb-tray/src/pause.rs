@@ -45,6 +45,7 @@ pub fn needs_network(c: &Cmd) -> bool {
         | Cmd::NotifyAction { .. } => true,
         Cmd::CancelPair
         | Cmd::StopCamera
+        | Cmd::CancelScreen
         | Cmd::StopAudio(_)
         | Cmd::SwitchCameraLens
         | Cmd::RepairCamera
@@ -148,6 +149,7 @@ mod tests {
         )));
         assert!(needs_network(&Cmd::Pair));
         assert!(!needs_network(&Cmd::StopCamera));
+        assert!(!needs_network(&Cmd::CancelScreen));
         assert!(!needs_network(&Cmd::CancelPair));
         assert!(!needs_network(&Cmd::Decide {
             id: 1,

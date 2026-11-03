@@ -463,6 +463,12 @@ fn flyout_model(st: &State) -> crate::flyout::Model {
         screen_on: crate::screen_window::is_open(),
         camera_on: crate::camera::is_running(),
         camera_fps: crate::camera::fps(),
+        camera_pending: crate::camera::pending(),
+        screen_pending: crate::core::screen_pending(),
+        audio: [
+            crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
+            crate::audio::phase(crate::audio_state::Dir::PcToPhone),
+        ],
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
         paused: st.settings.lock().map(|s| s.paused).unwrap_or(false),
         stopped: core_error().is_some(),
@@ -791,6 +797,7 @@ fn page_model(st: &State) -> crate::pages::Model {
         camera_live,
         control,
         camera_pending: crate::camera::pending(),
+        screen_pending: crate::core::screen_pending(),
         audio: [
             crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
             crate::audio::phase(crate::audio_state::Dir::PcToPhone),
@@ -2415,7 +2422,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
         }
         ID_SCREEN_SHOW => {
-            if !crate::screen_window::is_open() {
+            if !crate::screen_window::is_open() && !crate::core::screen_pending() {
                 let _ = st.cmds.send(Cmd::ShowScreen);
             }
         }
@@ -2473,6 +2480,8 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_SCREEN => {
             if crate::screen_window::is_open() {
                 crate::screen_window::close();
+            } else if crate::core::screen_pending() {
+                let _ = st.cmds.send(Cmd::CancelScreen);
             } else {
                 let _ = st.cmds.send(Cmd::ShowScreen);
             }

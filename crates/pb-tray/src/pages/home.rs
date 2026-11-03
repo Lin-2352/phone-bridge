@@ -79,6 +79,8 @@ pub struct HomeModel {
     pub paused: bool,
     /// A camera request is waiting for the phone (not a session yet).
     pub camera_pending: bool,
+    /// A phone-screen request is waiting for the phone (no window yet).
+    pub screen_pending: bool,
     /// An audio question is open (not a session yet): phone audio on this
     /// PC, PC audio on the phone.
     pub audio_pending: [bool; 2],
@@ -111,6 +113,8 @@ pub struct Inputs<'a> {
     pub control: bool,
     /// A camera request still waits for the phone.
     pub camera_pending: bool,
+    /// A screen request still waits for the phone.
+    pub screen_pending: bool,
     /// What each audio direction is doing.
     pub audio: [crate::audio_state::Phase; 2],
     /// Mirrored phone notifications, newest first.
@@ -219,6 +223,7 @@ pub fn build(i: Inputs) -> HomeModel {
         now: i.now,
         paused: i.settings.paused,
         camera_pending: i.camera_pending && !i.camera,
+        screen_pending: i.screen_pending && !i.screen,
         audio_pending: [
             i.audio[0] == crate::audio_state::Phase::Asking,
             i.audio[1] == crate::audio_state::Phase::Asking,
@@ -325,7 +330,7 @@ impl Quick {
     /// The tile's label; a camera request that waits for the phone offers
     /// an explicit Cancel so a second click is a decision, not an accident.
     fn label_for(self, m: &HomeModel) -> &'static str {
-        if (self == Quick::Camera && m.camera_pending) || self.audio_pending(m) {
+        if self.waiting(m) {
             return "Cancel start";
         }
         self.label()
@@ -341,13 +346,22 @@ impl Quick {
         if m.phone.is_none() || m.error.is_some() {
             return false;
         }
-        if (self == Quick::Camera && m.camera_pending) || self.audio_pending(m) {
+        if self.waiting(m) {
             return true;
         }
         !m.paused && !self.on(m)
     }
 
-    /// An audio question for this tile is open: the tile cancels it.
+    /// A request for this tile still waits for the phone: the tile cancels it.
+    fn waiting(self, m: &HomeModel) -> bool {
+        match self {
+            Quick::Camera => m.camera_pending,
+            Quick::Screen => m.screen_pending,
+            _ => self.audio_pending(m),
+        }
+    }
+
+    /// An audio question for this tile is open.
     fn audio_pending(self, m: &HomeModel) -> bool {
         match self {
             Quick::PhoneAudio => m.audio_pending[0],
@@ -372,7 +386,7 @@ impl Quick {
         match self {
             Quick::SendFile => fluent::glyph::SEND,
             Quick::Clipboard => fluent::glyph::CLIPBOARD,
-            Quick::Screen => '\u{E7F4}',
+            Quick::Screen => fluent::glyph::PHONE,
             Quick::Camera => '\u{E714}',
             Quick::Control => fluent::glyph::KEYBOARD,
             Quick::PhoneAudio => '\u{E767}',
@@ -384,8 +398,7 @@ impl Quick {
     fn on(self, m: &HomeModel) -> bool {
         let running = |k| m.sessions.iter().any(|x| x.kind == k);
         match self {
-            Quick::Camera if m.camera_pending => true,
-            _ if self.audio_pending(m) => true,
+            _ if self.waiting(m) => true,
             Quick::Screen => running(SessionKind::Screen),
             Quick::Camera => running(SessionKind::Camera),
             Quick::Control => running(SessionKind::Control),
@@ -399,7 +412,7 @@ impl Quick {
 impl Session {
     fn text(&self) -> (char, &'static str, &'static str) {
         let (glyph, title, meta) = match self.kind {
-            SessionKind::Screen => ('\u{E7F4}', "Phone screen", "Showing in a window"),
+            SessionKind::Screen => (fluent::glyph::PHONE, "Phone screen", "Showing in a window"),
             SessionKind::Camera => ('\u{E714}', "Phone camera", "In use as this PC's webcam"),
             SessionKind::Control => (
                 fluent::glyph::KEYBOARD,
@@ -951,6 +964,7 @@ mod tests {
             camera_live: false,
             control: false,
             camera_pending: false,
+            screen_pending: false,
             audio: Default::default(),
             notes,
             settings,
@@ -1293,6 +1307,26 @@ mod tests {
         assert!(Quick::ALL.iter().all(|q| q.enabled(&m)));
         let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
         assert!(!hits.iter().any(|h| h.id == RESUME));
+    }
+
+    #[test]
+    fn a_pending_screen_request_shows_cancel_and_stays_clickable_when_paused() {
+        let mut m = paired_model(false);
+        m.screen_pending = true;
+        assert!(Quick::Screen.on(&m));
+        assert_eq!(Quick::Screen.label_for(&m), "Cancel start");
+        m.paused = true;
+        assert!(Quick::Screen.enabled(&m));
+        m.screen_pending = false;
+        assert_eq!(Quick::Screen.label_for(&m), "Phone screen");
+    }
+
+    #[test]
+    fn every_quick_tile_has_its_own_glyph() {
+        let g: Vec<char> = Quick::ALL.iter().map(|q| q.glyph()).collect();
+        for (i, a) in g.iter().enumerate() {
+            assert!(!g[i + 1..].contains(a), "{a:?} is used twice");
+        }
     }
 
     #[test]
