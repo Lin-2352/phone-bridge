@@ -110,7 +110,7 @@ fun prune(list: List<TlEntry>, nowMs: Long): List<TlEntry> {
 /** Rust's `{:.1}`: ties round to even on the exact binary value. */
 private fun oneDecimal(v: Double) = BigDecimal(v).setScale(1, RoundingMode.HALF_EVEN).toPlainString()
 
-private fun humanSize(n: Long): String = when {
+internal fun humanSize(n: Long): String = when {
     n < 1000 -> "$n B"
     n < 1_000_000 -> "${oneDecimal(n / 1e3)} KB"
     n < 1_000_000_000 -> "${oneDecimal(n / 1e6)} MB"
@@ -294,6 +294,22 @@ class TimelineStore(
         scheduleWrite()
     }
 
+    /** Removes one entry (the first equal one); false if it is not there. */
+    fun remove(e: TlEntry): Boolean {
+        val removed = synchronized(lock) {
+            val cur = _entries.value
+            val i = cur.indexOf(e)
+            if (i < 0) return false
+            _entries.value = cur.toMutableList().also { it.removeAt(i) }
+            true
+        }
+        if (removed) scheduleWrite()
+        return removed
+    }
+
+    /** Puts a removed entry back (Undo), in time order; nothing while history is off. */
+    fun restore(e: TlEntry) = add(e)
+
     /** Deletes the history (memory and file). */
     fun clear() {
         synchronized(lock) {
@@ -399,6 +415,10 @@ object Timeline {
     }
 
     fun add(e: TlEntry) = store.add(e)
+
+    /** Removes one entry; [restore] undoes it. */
+    fun remove(e: TlEntry) = store.remove(e)
+    fun restore(e: TlEntry) = store.restore(e)
 
     /** Deletes the history (memory and file). */
     fun clear() = store.clear()
