@@ -120,6 +120,7 @@ fun consumeUserStop(ctx: Context) {
     prefs.lastExitSeen = userStopVerdict(prefs.lastExitSeen, exits, consume = true).newSeen
 }
 
+@androidx.annotation.RequiresApi(30)
 private fun exitRecords(ctx: Context): List<ExitRecord>? {
     val exits = runCatching {
         ctx.getSystemService(android.app.ActivityManager::class.java)
