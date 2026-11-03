@@ -434,6 +434,8 @@ pub enum UiEvent {
     /// check finished, or a session opened or closed): the UI repaints.
     PeersChecked,
     Info(String),
+    /// A pill only (no balloon), asked for from a thread that is not the UI thread.
+    Pill(String, u32),
     /// A phone notification arrived (or was re-sent quietly).
     Notify {
         peer: PeerId,

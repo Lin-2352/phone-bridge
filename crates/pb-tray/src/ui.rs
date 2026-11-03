@@ -992,6 +992,15 @@ pub fn post_command(hwnd_raw: isize, id: usize) {
 }
 
 /// Queue an event from the core and wake the UI thread.
+/// Shows a status pill from any thread: the pill window must be made on the UI thread, which is
+/// the only one with a message loop, so the request is queued to it.
+pub fn pill(text: &str, secs: u32) {
+    post_event(
+        TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed),
+        UiEvent::Pill(text.to_owned(), secs),
+    );
+}
+
 pub fn post_event(hwnd_raw: isize, e: UiEvent) {
     if let Ok(mut q) = EVENTS.lock() {
         q.push_back(e);
@@ -1244,20 +1253,18 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 move |yes| {
                     // The offer may have timed out while the dialog was open.
                     if !reply.answer(yes) && yes {
-                        crate::status::show(
-                            "That request expired. Send it again from the phone.",
-                            8,
-                        );
+                        crate::ui::pill("That request expired. Send it again from the phone.", 8);
                     }
                 },
             );
         }
         // Nothing to do here: the settings window is rebuilt after every event batch.
         UiEvent::PeersChecked => {}
+        UiEvent::Pill(text, secs) => crate::status::show(&text, secs),
         // The menu, Home and the flyout read the state when they draw.
         UiEvent::AudioChanged => refresh_flyout(st),
         UiEvent::AudioAsking(text) => crate::status::show(&text, 40),
-        UiEvent::AudioAskEnded => crate::status::close(),
+        UiEvent::AudioAskEnded => crate::status::close_if_asking(),
         UiEvent::AskAudioShare { from, reply } => {
             let alive = reply.clone();
             let (title, body, yes, no) = crate::audio_state::confirm_text(&from);
@@ -1310,7 +1317,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             };
             remove_toasts(gone);
         }
-        UiEvent::ScreenShown => crate::status::close(),
+        UiEvent::ScreenShown => crate::status::close_if_asking(),
         UiEvent::ScreenPinned(p) => {
             let _ = st.settings.lock().map(|mut s| s.screen_pinned = p);
             save_settings(st);
