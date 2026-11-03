@@ -529,6 +529,15 @@ fn metrics(
 
 /// Width in pixels `s` takes in `font` on one line.
 #[allow(dead_code)] // used by the widgets, and by the tests
+/// The keyboard focus ring: two accent outlines just outside `r`.
+pub fn focus_ring(c: &Canvas, r: RectF) {
+    let radius = crate::tokens::RADIUS[1] * c.s;
+    for grow in [2.0, 1.0] {
+        let o = rectf(r.left - grow, r.top - grow, r.right + grow, r.bottom + grow);
+        round_rect(c, &o, None, Some(c.p.accent), radius + grow, false);
+    }
+}
+
 pub fn text_width(c: &Canvas, font: Font, s: &str) -> f32 {
     if s.is_empty() {
         return 0.0;

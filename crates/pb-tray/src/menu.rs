@@ -13,13 +13,17 @@ use windows::{
         Graphics::Gdi::{InvalidateRect, ValidateRect},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_ESCAPE},
+            Input::KeyboardAndMouse::{
+                TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME,
+                VK_RETURN, VK_SPACE, VK_UP,
+            },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW,
                 PostMessageW, RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow,
-                HWND_TOPMOST, IDC_ARROW, SM_CXSCREEN, SWP_NOACTIVATE, SW_SHOW, WA_INACTIVE,
-                WM_ACTIVATE, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP,
-                WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                HWND_TOPMOST, IDC_ARROW, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW,
+                WA_INACTIVE, WM_ACTIVATE, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                WS_POPUP,
             },
         },
     },
@@ -98,6 +102,49 @@ impl Item {
             ITEM
         }
     }
+}
+
+/// Where a menu of `w` x `h` goes for an anchor point and the work area
+/// of the anchor's monitor: centred on the anchor, above it when that fits
+/// (a bottom taskbar), else below it (a top taskbar), and always inside the
+/// work area.
+pub fn place(anchor: POINT, w: i32, h: i32, work: RECT, gap: i32) -> (i32, i32) {
+    let x = (anchor.x - w / 2).clamp(work.left, (work.right - w).max(work.left));
+    let above = anchor.y - h - gap;
+    let y = if above >= work.top {
+        above
+    } else {
+        anchor.y + gap
+    };
+    (x, y.clamp(work.top, (work.bottom - h).max(work.top)))
+}
+
+/// What a key does in the menu: move the highlight to the next clickable
+/// row (wrapping), the first or last one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nav {
+    Next,
+    Prev,
+    First,
+    Last,
+}
+
+/// The row after `nav` from `current`, skipping separators, headings and
+/// disabled rows. None when no row can be chosen.
+pub fn navigate(items: &[Item], current: Option<usize>, nav: Nav) -> Option<usize> {
+    let ok: Vec<usize> = (0..items.len()).filter(|&i| items[i].clickable()).collect();
+    if ok.is_empty() {
+        return None;
+    }
+    let at = current.and_then(|c| ok.iter().position(|&i| i == c));
+    let n = ok.len();
+    let k = match (nav, at) {
+        (Nav::First, _) | (Nav::Next, None) => 0,
+        (Nav::Last, _) | (Nav::Prev, None) => n - 1,
+        (Nav::Next, Some(k)) => (k + 1) % n,
+        (Nav::Prev, Some(k)) => (k + n - 1) % n,
+    };
+    Some(ok[k])
 }
 
 struct State {
@@ -296,6 +343,48 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             close();
             LRESULT(0)
         }
+        // Up / Down / Home / End move the highlight; Enter and Space choose.
+        WM_KEYDOWN => {
+            let vk = wparam.0 as u16;
+            let nav = match vk {
+                k if k == VK_DOWN.0 => Some(Nav::Next),
+                k if k == VK_UP.0 => Some(Nav::Prev),
+                k if k == VK_HOME.0 => Some(Nav::First),
+                k if k == VK_END.0 => Some(Nav::Last),
+                _ => None,
+            };
+            if let Some(nav) = nav {
+                if let Ok(mut g) = CURRENT.lock() {
+                    if let Some(st) = g.as_mut() {
+                        st.hover = navigate(&st.items, st.hover, nav);
+                    }
+                }
+                // SAFETY: repaint our own window.
+                let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+                return LRESULT(0);
+            }
+            if vk == VK_RETURN.0 || vk == VK_SPACE.0 {
+                let target = CURRENT.lock().ok().and_then(|g| {
+                    g.as_ref()
+                        .and_then(|st| st.hover.map(|i| (st.owner, st.items[i].id)))
+                });
+                if let Some((owner, id)) = target {
+                    // SAFETY: posting to the tray's own message window.
+                    let _ = unsafe {
+                        PostMessageW(
+                            Some(HWND(owner as *mut _)),
+                            WM_COMMAND,
+                            WPARAM(id),
+                            LPARAM(0),
+                        )
+                    };
+                    close();
+                }
+                return LRESULT(0);
+            }
+            // SAFETY: default handling.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         // A menu closes as soon as you click anywhere else.
         WM_ACTIVATE if (wparam.0 & 0xffff) as u32 == WA_INACTIVE => {
             close();
@@ -363,6 +452,17 @@ pub fn show(owner: HWND, items: Vec<Item>) {
             return;
         };
         SURFACE.with(|cell| *cell.borrow_mut() = Some((hwnd.0 as isize, surface)));
+        // The monitor that owns the tray icon (the shell's rect, else the
+        // cursor): move there first so the window takes that monitor's DPI.
+        let mut pt = POINT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
+        if let Some(r) = crate::ui::tray_icon_rect(owner) {
+            pt = POINT {
+                x: (r.left + r.right) / 2,
+                y: (r.top + r.bottom) / 2,
+            };
+        }
+        let _ = SetWindowPos(hwnd, None, pt.x, pt.y, 1, 1, SWP_NOACTIVATE | SWP_NOZORDER);
         let s = fluent::scale(hwnd);
         let (w, h) = (px(s, W), height(s, &items));
         if let Ok(mut g) = CURRENT.lock() {
@@ -374,19 +474,14 @@ pub fn show(owner: HWND, items: Vec<Item>) {
                 tracking: false,
             });
         }
-        let mut pt = POINT::default();
-        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt);
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let x = (pt.x - w / 2).clamp(0, (screen_w - w).max(0));
-        let _ = SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            x,
-            (pt.y - h - px(s, 8)).max(0),
-            w,
-            h,
-            SWP_NOACTIVATE,
-        );
+        let work = crate::flyout::work_area(pt.x, pt.y).unwrap_or(RECT {
+            left: 0,
+            top: 0,
+            right: GetSystemMetrics(SM_CXSCREEN),
+            bottom: GetSystemMetrics(windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN),
+        });
+        let (x, y) = place(pt, w, h, work, px(s, 8));
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
         fluent::frame(hwnd, false);
         fluent::register_window(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOW);
@@ -431,6 +526,52 @@ mod tests {
             assert!(r[5].bottom - r[5].top > r[0].bottom - r[0].top);
             assert_eq!(height(s, &items()), r[7].bottom + px(s, PAD));
         }
+    }
+
+    fn work(l: i32, t: i32, r: i32, b: i32) -> RECT {
+        RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
+    }
+
+    #[test]
+    fn menu_opens_above_a_bottom_taskbar_icon_on_the_monitor_that_owns_it() {
+        // Second monitor to the right of the primary: x stays on it.
+        let w2 = work(1920, 0, 3840, 1040);
+        let (x, y) = place(POINT { x: 3700, y: 1060 }, 296, 300, w2, 8);
+        assert_eq!((x, y), (3840 - 296, 1040 - 300));
+        assert!(x >= w2.left);
+        // A monitor left of the primary (negative x).
+        let w0 = work(-1920, 0, 0, 1040);
+        let (x, _) = place(POINT { x: -50, y: 1060 }, 296, 300, w0, 8);
+        assert!(x >= w0.left && x + 296 <= w0.right);
+    }
+
+    #[test]
+    fn menu_opens_below_a_top_taskbar_icon_and_stays_in_the_work_area() {
+        let w = work(0, 48, 1920, 1080);
+        let (_, y) = place(POINT { x: 1900, y: 24 }, 296, 300, w, 8);
+        assert_eq!(y, 48, "below the anchor, kept under the bar");
+        let (_, y) = place(POINT { x: 10, y: 5000 }, 296, 300, w, 8);
+        assert!(y + 300 <= w.bottom);
+    }
+
+    #[test]
+    fn arrows_skip_headings_separators_and_disabled_rows_and_wrap() {
+        let it = items();
+        // Clickable: 0 (Open), 3 (Pause), 4 (Share), 7 (Quit).
+        assert_eq!(navigate(&it, None, Nav::Next), Some(0));
+        assert_eq!(navigate(&it, None, Nav::Prev), Some(7));
+        assert_eq!(navigate(&it, Some(0), Nav::Next), Some(3));
+        assert_eq!(navigate(&it, Some(4), Nav::Next), Some(7));
+        assert_eq!(navigate(&it, Some(7), Nav::Next), Some(0), "wraps");
+        assert_eq!(navigate(&it, Some(0), Nav::Prev), Some(7), "wraps back");
+        assert_eq!(navigate(&it, Some(3), Nav::First), Some(0));
+        assert_eq!(navigate(&it, Some(3), Nav::Last), Some(7));
+        assert_eq!(navigate(&[Item::separator()], None, Nav::Next), None);
     }
 
     #[test]

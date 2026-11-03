@@ -844,6 +844,20 @@ fn copy_into(dst: &mut [u16], s: &str) {
     dst[src.len()] = 0;
 }
 
+/// Where the tray icon is on screen, when the shell says (it may sit in
+/// the overflow, or on another monitor than the cursor).
+pub fn tray_icon_rect(hwnd: HWND) -> Option<windows::Win32::Foundation::RECT> {
+    use windows::Win32::UI::Shell::{Shell_NotifyIconGetRect, NOTIFYICONIDENTIFIER};
+    let id = NOTIFYICONIDENTIFIER {
+        cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        ..Default::default()
+    };
+    // SAFETY: a query into a valid struct.
+    unsafe { Shell_NotifyIconGetRect(&id).ok() }
+}
+
 fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
     NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,

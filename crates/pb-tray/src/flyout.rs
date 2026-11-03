@@ -108,6 +108,8 @@ struct State {
     hover: Option<Hit>,
     /// Where the left button went down, until it is released or leaves.
     pressed: Option<Hit>,
+    /// Keyboard focus (Tab, arrows), shown as a ring.
+    focus: Option<Hit>,
     tracking: bool,
     /// Eased hover and press amounts (0..=1), one per `Hit::slot`.
     hover_t: [f32; SLOTS],
@@ -268,6 +270,7 @@ fn layout(s: f32) -> Layout {
 /// What `paint` needs, copied out of the state.
 struct Snapshot {
     model: Model,
+    focus: Option<Hit>,
     hover_t: [f32; SLOTS],
     press_t: [f32; SLOTS],
 }
@@ -278,6 +281,7 @@ fn paint(hwnd: HWND) {
             .filter(|st| st.hwnd == hwnd.0 as isize)
             .map(|st| Snapshot {
                 model: st.model.clone(),
+                focus: st.focus,
                 hover_t: st.hover_t,
                 press_t: st.press_t,
             })
@@ -401,6 +405,10 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     );
     text(c, Font::Caption, &label, lr, p.text2, Align::Left);
 
+    if let Some(h) = snap.focus {
+        fluent::focus_ring(c, from_rect(rect_of(&l, h)));
+    }
+
     // Group captions and dividers.
     for (r, cap) in l
         .captions
@@ -509,6 +517,95 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 }
 
 /// What is under client point (`x`, `y`); `None` is drag area.
+/// Runs what a click or Enter on `target` asks for.
+fn activate(hwnd: HWND, target: Option<Hit>, paired: bool) {
+    match target {
+        Some(Hit::Tile(TileKind::Clipboard)) => {
+            act(Action::ToggleClipboard);
+            if let Ok(mut g) = CURRENT.lock() {
+                if let Some(st) = g.as_mut() {
+                    st.model.clipboard_on = !st.model.clipboard_on;
+                }
+            }
+            animate(hwnd);
+        }
+        Some(Hit::Tile(TileKind::SendFile) | Hit::Drop) => {
+            act(Action::SendFiles);
+            close();
+        }
+        Some(Hit::Tile(TileKind::Pair)) => {
+            act(if paired {
+                Action::ControlPhone
+            } else {
+                Action::Pair
+            });
+            close();
+        }
+        Some(Hit::Tile(TileKind::Screen)) => {
+            act(Action::ShowScreen);
+            close();
+        }
+        Some(Hit::Tile(TileKind::Camera)) => {
+            act(Action::ToggleCamera);
+            close();
+        }
+        Some(Hit::CameraInfo) => {
+            act(Action::CameraWindow);
+            close();
+        }
+        Some(Hit::Settings) => {
+            act(Action::Settings);
+            close();
+        }
+        Some(Hit::OpenRelay) => {
+            act(Action::OpenRelay);
+            close();
+        }
+        Some(Hit::Close) => close(),
+        None => {}
+    }
+}
+
+/// The keyboard order: the tiles, the camera chevron, the drop zone, Open
+/// Relay, then settings and close; only what takes clicks right now.
+fn tab_order(m: &Model) -> Vec<Hit> {
+    [
+        Hit::Tile(TileKind::Camera),
+        Hit::CameraInfo,
+        Hit::Tile(TileKind::Screen),
+        Hit::Tile(TileKind::Clipboard),
+        Hit::Tile(TileKind::SendFile),
+        Hit::Tile(TileKind::Pair),
+        Hit::Drop,
+        Hit::OpenRelay,
+        Hit::Settings,
+        Hit::Close,
+    ]
+    .into_iter()
+    .filter(|&h| clickable(m, h))
+    .collect()
+}
+
+/// Where Tab (Shift+Tab when `back`) goes from `cur`, wrapping.
+fn tab_from(order: &[Hit], cur: Option<Hit>, back: bool) -> Option<Hit> {
+    let ids: Vec<u32> = (0..order.len() as u32).collect();
+    let at = cur
+        .and_then(|c| order.iter().position(|&h| h == c))
+        .map(|i| i as u32);
+    crate::focus::next(&ids, at, back).map(|i| order[i as usize])
+}
+
+fn rect_of(l: &Layout, h: Hit) -> RECT {
+    match h {
+        Hit::Drop => l.drop,
+        Hit::Tile(k) => l.tiles[tile_index(k)],
+        Hit::CameraInfo => l.camera_info,
+        Hit::Settings => l.settings,
+        Hit::Close => l.close,
+        Hit::OpenRelay => l.open_relay,
+    }
+}
+
 fn hit_at(l: &Layout, x: i32, y: i32) -> Option<Hit> {
     let t = |k: TileKind| (l.tiles[tile_index(k)], Hit::Tile(k));
     [
@@ -749,50 +846,42 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
             }
             animate(hwnd);
-            match target {
-                Some(Hit::Tile(TileKind::Clipboard)) => {
-                    act(Action::ToggleClipboard);
-                    if let Ok(mut g) = CURRENT.lock() {
-                        if let Some(st) = g.as_mut() {
-                            st.model.clipboard_on = !st.model.clipboard_on;
+            activate(hwnd, target, paired);
+            LRESULT(0)
+        }
+        // Tab / Shift+Tab and the arrows move the ring, Enter and Space press.
+        WM_KEYDOWN
+            if matches!(
+                wparam.0 as u16,
+                0x09 | 0x25 | 0x26 | 0x27 | 0x28 | 0x0D | 0x20
+            ) =>
+        {
+            let vk = wparam.0 as u16;
+            let mut run = None;
+            if let Ok(mut g) = CURRENT.lock() {
+                if let Some(st) = g.as_mut() {
+                    let order = tab_order(&st.model);
+                    match vk {
+                        0x0D | 0x20 => {
+                            run = st
+                                .focus
+                                .filter(|&h| clickable(&st.model, h))
+                                .map(|h| (h, st.model.peer.is_some()))
+                        }
+                        _ => {
+                            // SAFETY: plain keyboard state query.
+                            let shift = unsafe {
+                                windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x10)
+                            } < 0;
+                            let back = (vk == 0x09 && shift) || vk == 0x25 || vk == 0x26;
+                            st.focus = tab_from(&order, st.focus, back);
                         }
                     }
-                    animate(hwnd);
                 }
-                Some(Hit::Tile(TileKind::SendFile) | Hit::Drop) => {
-                    act(Action::SendFiles);
-                    close();
-                }
-                Some(Hit::Tile(TileKind::Pair)) => {
-                    act(if paired {
-                        Action::ControlPhone
-                    } else {
-                        Action::Pair
-                    });
-                    close();
-                }
-                Some(Hit::Tile(TileKind::Screen)) => {
-                    act(Action::ShowScreen);
-                    close();
-                }
-                Some(Hit::Tile(TileKind::Camera)) => {
-                    act(Action::ToggleCamera);
-                    close();
-                }
-                Some(Hit::CameraInfo) => {
-                    act(Action::CameraWindow);
-                    close();
-                }
-                Some(Hit::Settings) => {
-                    act(Action::Settings);
-                    close();
-                }
-                Some(Hit::OpenRelay) => {
-                    act(Action::OpenRelay);
-                    close();
-                }
-                Some(Hit::Close) => close(),
-                None => {}
+            }
+            match run {
+                Some((h, paired)) => activate(hwnd, Some(h), paired),
+                None => animate(hwnd),
             }
             LRESULT(0)
         }
@@ -899,6 +988,7 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
             model,
             hover: None,
             pressed: None,
+            focus: None,
             tracking: false,
             hover_t: [0.0; SLOTS],
             press_t: [0.0; SLOTS],
@@ -943,7 +1033,7 @@ fn clamp_to(work: RECT, x: i32, y: i32, w: i32, h: i32) -> (i32, i32) {
 }
 
 /// The work area (taskbar excluded) of the monitor nearest (`x`, `y`).
-fn work_area(x: i32, y: i32) -> Option<RECT> {
+pub(crate) fn work_area(x: i32, y: i32) -> Option<RECT> {
     let mut mi = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -956,7 +1046,7 @@ fn work_area(x: i32, y: i32) -> Option<RECT> {
 }
 
 /// The DPI scale of the monitor nearest `pt`.
-fn monitor_scale(pt: POINT) -> Option<f32> {
+pub(crate) fn monitor_scale(pt: POINT) -> Option<f32> {
     let (mut dx, mut dy) = (0u32, 0u32);
     // SAFETY: plain monitor queries into locals.
     unsafe {
@@ -1107,6 +1197,7 @@ mod tests {
                     camera_fps: 30,
                     ..Default::default()
                 },
+                focus: Some(Hit::Tile(TileKind::Screen)),
                 hover_t: [0.5; SLOTS],
                 press_t: [0.25; SLOTS],
             };
@@ -1126,6 +1217,25 @@ mod tests {
         drop(surface);
         // SAFETY: our own test window, made above on this thread.
         let _ = unsafe { DestroyWindow(hwnd) };
+    }
+
+    #[test]
+    fn tab_visits_what_takes_clicks_and_wraps() {
+        let m = paired("Pixel 8");
+        let order = tab_order(&m);
+        assert_eq!(order.first(), Some(&Hit::Tile(TileKind::Camera)));
+        assert_eq!(order.last(), Some(&Hit::Close));
+        let after_last = tab_from(&order, order.last().copied(), false);
+        assert_eq!(after_last, order.first().copied(), "wraps");
+        assert_eq!(
+            tab_from(&order, order.first().copied(), true),
+            order.last().copied()
+        );
+        // Paused: no tile or drop zone takes clicks, so Tab skips them.
+        let paused = Model { paused: true, ..m };
+        let order = tab_order(&paused);
+        assert!(order.iter().all(|h| !matches!(h, Hit::Tile(_) | Hit::Drop)));
+        assert!(order.contains(&Hit::Close));
     }
 
     fn paired(name: &str) -> Model {

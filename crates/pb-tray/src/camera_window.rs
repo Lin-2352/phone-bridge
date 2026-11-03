@@ -66,7 +66,7 @@ pub enum Action {
     Repair,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Button {
     Toggle,
     Lens,
@@ -93,6 +93,8 @@ struct State {
     repair: bool,
     preview: Option<Preview>,
     hover: Option<Button>,
+    /// Keyboard focus (Tab, Shift+Tab), shown as a ring.
+    focus: Option<Button>,
     on_action: Box<dyn Fn(Action) + Send>,
     collector_stop: Arc<AtomicBool>,
 }
@@ -195,6 +197,7 @@ struct View {
     pending: bool,
     repair: bool,
     hover: Option<Button>,
+    focus: Option<Button>,
     snapshot: Option<Snapshot>,
 }
 
@@ -208,6 +211,7 @@ fn paint(hwnd: HWND) {
             pending: st.pending,
             repair: st.repair,
             hover: st.hover,
+            focus: st.focus,
             snapshot: st.preview.as_ref().map(Preview::snapshot),
         }
     };
@@ -364,6 +368,9 @@ fn draw(c: &mut Canvas, v: &View) {
         let accent = b == Button::Toggle;
         let r = from_rect(*r);
         let label = button_label(b, v.streaming, v.pending);
+        if v.focus == Some(b) {
+            fluent::focus_ring(c, r);
+        }
         if v.hover == Some(b) && !accent {
             // GDI took the corner's diameter (6 px); Direct2D the radius.
             fluent::round_rect(c, &r, Some((p.hover, 1.0)), Some(p.stroke), 3.0 * s, false);
@@ -387,6 +394,39 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Option<Button> {
         .zip(BUTTONS)
         .find(|(r, _)| fluent::inside(r, x, y))
         .map(|(_, b)| shown(b, repair))
+}
+
+/// The buttons in Tab order, as drawn (Repair replaces Switch lens).
+fn shown_buttons(repair: bool) -> Vec<Button> {
+    BUTTONS.iter().map(|&b| shown(b, repair)).collect()
+}
+
+/// Where Tab (Shift+Tab when `back`) goes from `cur`, wrapping.
+fn tab_to(order: &[Button], cur: Option<Button>, back: bool) -> Option<Button> {
+    let ids: Vec<u32> = (0..order.len() as u32).collect();
+    let at = cur
+        .and_then(|c| order.iter().position(|&b| b == c))
+        .map(|i| i as u32);
+    crate::focus::next(&ids, at, back).map(|i| order[i as usize])
+}
+
+/// Presses a button (a click or Enter on the focused one).
+fn perform(b: Button) {
+    match b {
+        Button::Privacy => open_privacy_settings(),
+        Button::Toggle | Button::Lens | Button::Remove | Button::Repair => {
+            if let Ok(g) = CURRENT.lock() {
+                if let Some(st) = g.as_ref() {
+                    (st.on_action)(match b {
+                        Button::Toggle => Action::Toggle,
+                        Button::Lens => Action::Lens,
+                        Button::Repair => Action::Repair,
+                        _ => Action::Remove,
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn open_privacy_settings() {
@@ -439,23 +479,39 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     ((lparam.0 >> 16) & 0xffff) as i16 as i32,
                 );
                 if let Some(b) = hit(hwnd, x, y) {
-                    match b {
-                        Button::Privacy => open_privacy_settings(),
-                        Button::Toggle | Button::Lens | Button::Remove | Button::Repair => {
-                            if let Ok(g) = CURRENT.lock() {
-                                if let Some(st) = g.as_ref() {
-                                    (st.on_action)(match b {
-                                        Button::Toggle => Action::Toggle,
-                                        Button::Lens => Action::Lens,
-                                        Button::Repair => Action::Repair,
-                                        _ => Action::Remove,
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    perform(b);
                 }
                 LRESULT(0)
+            }
+            // Tab / Shift+Tab move the focus ring over the buttons, Enter and
+            // Space press the focused one, Esc closes the window.
+            windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN => {
+                let vk = wparam.0 as u16;
+                if vk == 0x1B {
+                    let _ = DestroyWindow(hwnd);
+                    return LRESULT(0);
+                }
+                if vk == 0x09 {
+                    let back = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x10) < 0;
+                    if let Ok(mut g) = CURRENT.lock() {
+                        if let Some(st) = g.as_mut() {
+                            st.focus = tab_to(&shown_buttons(st.repair), st.focus, back);
+                        }
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                }
+                if vk == 0x0D || vk == 0x20 {
+                    let f = CURRENT
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.as_ref().and_then(|s| s.focus));
+                    if let Some(b) = f {
+                        perform(b);
+                    }
+                    return LRESULT(0);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_CLOSE => {
                 let _ = DestroyWindow(hwnd);
@@ -547,6 +603,7 @@ pub fn open(
                 repair: false,
                 preview: None,
                 hover: None,
+                focus: None,
                 on_action,
                 collector_stop: stop.clone(),
             });
@@ -669,6 +726,25 @@ mod tests {
     /// picture (alpha byte 0, as the camera gives it), hover and the hint.
     #[cfg(windows)]
     #[test]
+    fn tab_walks_the_buttons_in_order_and_wraps() {
+        let order = shown_buttons(false);
+        assert_eq!(order.len(), 4);
+        let first = tab_to(&order, None, false);
+        assert_eq!(first, Some(Button::Toggle));
+        let second = tab_to(&order, first, false);
+        assert_eq!(second, Some(Button::Lens));
+        assert_eq!(
+            tab_to(&order, first, true),
+            Some(Button::Remove),
+            "wraps back"
+        );
+        let last = order[3];
+        assert_eq!(tab_to(&order, Some(last), false), Some(Button::Toggle));
+        // While it needs repair, Repair stands where Switch lens was.
+        assert_eq!(shown_buttons(true)[1], Button::Repair);
+    }
+
+    #[test]
     fn the_window_draws_with_and_without_a_picture() {
         let hwnd = crate::d2d::test_window();
         let mut surface = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
@@ -703,6 +779,7 @@ mod tests {
                 pending: false,
                 repair: false,
                 hover,
+                focus: hover,
                 snapshot,
             };
             surface

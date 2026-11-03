@@ -81,6 +81,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
             LRESULT(0)
         }
+        // Esc (or Enter) closes it, like the X: the code is revoked.
+        windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN
+            if wparam.0 == 0x1B || wparam.0 == 0x0D =>
+        {
+            // SAFETY: a message to our own window.
+            let _ = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(hwnd),
+                    WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            };
+            LRESULT(0)
+        }
         WM_CLOSE => {
             if let Some(f) = ON_USER_CLOSE.get() {
                 f();
@@ -247,10 +262,13 @@ pub fn show(code: &str, refresh_in: Duration, closes_in: Duration) -> Result<(),
             closes_at: now + closes_in,
         });
     }
-    // SAFETY: repaint and raise our own window.
+    // SAFETY: repaint our own window, and raise it only the first time: a
+    // new code every 30 s must not pull focus from what is being typed.
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, true);
-        let _ = SetForegroundWindow(hwnd);
+        if existing.is_none() {
+            let _ = SetForegroundWindow(hwnd);
+        }
     }
     Ok(())
 }
