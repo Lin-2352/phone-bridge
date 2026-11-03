@@ -104,6 +104,18 @@ fn print_session(s: &Session) {
     println!("SESSION peer={} name=\"{}\"", s.peer, s.peer_name);
 }
 
+/// The `listen` line for a synced clipboard text; private text is not shown.
+fn clipsync_line(peer: &str, u: &pb_protocol::control::ClipboardUpdate) -> String {
+    if u.sensitive {
+        format!(
+            "CLIPSYNC from {peer} (sensitive, {} chars, not shown)",
+            u.text.chars().count()
+        )
+    } else {
+        format!("CLIPSYNC from {peer}: {}", u.text)
+    }
+}
+
 async fn pump(mut s: Session, inbox: PathBuf) {
     print_session(&s);
     loop {
@@ -119,10 +131,11 @@ async fn pump(mut s: Session, inbox: PathBuf) {
                 println!("CLIP from {}: {}", s.peer_name, c.text)
             }
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
-                println!("CLIPSYNC from {}: {}", s.peer_name, u.text)
+                println!("{}", clipsync_line(&s.peer_name, &u))
             }
             Ok(Some(ControlMsg::Offer(o))) => {
                 let started = std::time::Instant::now();
+                // Test harness: accepts every offer from any paired peer.
                 match pb_transport::files::receive_offer(
                     &mut s,
                     o,
@@ -359,5 +372,24 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sensitive_clipboard_sync_is_not_printed() {
+        let u = pb_protocol::control::ClipboardUpdate {
+            text: "hunter2".into(),
+            hash: vec![],
+            sensitive: true,
+        };
+        let l = clipsync_line("Phone", &u);
+        assert!(!l.contains("hunter2"), "{l}");
+        assert!(l.contains("7 chars"));
+        let u = pb_protocol::control::ClipboardUpdate { sensitive: false, ..u };
+        assert!(clipsync_line("Phone", &u).contains("hunter2"));
     }
 }
