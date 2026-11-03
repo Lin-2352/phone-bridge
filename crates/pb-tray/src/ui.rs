@@ -1019,6 +1019,44 @@ fn ask_yes_no(d: Dialog, done: impl FnOnce(bool) + Send + 'static) {
     crate::dialog_window::ask(d, done);
 }
 
+/// Pairing comparison prompts on screen, by pairing id: the flag is the
+/// dialog's "still alive" test.
+static SAS_OPEN: std::sync::Mutex<Vec<(u64, std::sync::Arc<std::sync::atomic::AtomicBool>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn sas_open(id: u64) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    if let Ok(mut v) = SAS_OPEN.lock() {
+        v.push((id, flag.clone()));
+    }
+    flag
+}
+
+/// The prompt was answered or closed by the user.
+fn sas_closed(id: u64) {
+    if let Ok(mut v) = SAS_OPEN.lock() {
+        v.retain(|(i, _)| *i != id);
+    }
+}
+
+/// Closes the prompt for `id`; false when it was already gone.
+fn sas_withdraw(id: u64) -> bool {
+    let Ok(mut v) = SAS_OPEN.lock() else {
+        return false;
+    };
+    let Some(at) = v.iter().position(|(i, _)| *i == id) else {
+        return false;
+    };
+    v.remove(at)
+        .1
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    true
+}
+
+fn show_info_pill(text: &str) {
+    crate::status::show(text, 8);
+}
+
 fn show_info(d: Dialog) {
     crate::dialog_window::info(d);
 }
@@ -1134,9 +1172,23 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 let _ = cmds.send(Cmd::Decide { id, accept: true });
                 return;
             }
-            ask_yes_no(Dialog::pairing(&peer_name, &sas), move |yes| {
-                let _ = cmds.send(Cmd::Decide { id, accept: yes });
-            });
+            let open = sas_open(id);
+            crate::dialog_window::ask_while(
+                Dialog::pairing(&peer_name, &sas),
+                {
+                    let open = open.clone();
+                    move || open.load(std::sync::atomic::Ordering::SeqCst)
+                },
+                move |yes| {
+                    sas_closed(id);
+                    let _ = cmds.send(Cmd::Decide { id, accept: yes });
+                },
+            );
+        }
+        UiEvent::SasWithdrawn { id } => {
+            if sas_withdraw(id) {
+                show_info_pill("The phone cancelled pairing");
+            }
         }
         UiEvent::Clipboard {
             from,
@@ -3052,6 +3104,20 @@ pub fn message_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_withdrawn_pairing_prompt_is_closed_once() {
+        let flag = sas_open(9_000_001);
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(sas_withdraw(9_000_001));
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!sas_withdraw(9_000_001), "second withdrawal finds nothing");
+        // An answered prompt is not withdrawn later.
+        let flag = sas_open(9_000_002);
+        sas_closed(9_000_002);
+        assert!(!sas_withdraw(9_000_002));
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+    }
 
     #[test]
     fn a_failed_settings_save_is_announced_once_per_streak() {

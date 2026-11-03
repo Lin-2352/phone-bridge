@@ -532,3 +532,26 @@ fn the_quit_warning_counts_the_transfers() {
     assert_eq!(quit_warning(3).0, "3 file transfers are running");
     assert!(quit_warning(1).1.contains("stop"));
 }
+
+#[test]
+fn a_version_mismatch_says_to_update_both_devices() {
+    for dir in [Dir::Send, Dir::Receive] {
+        let f = describe(dir, &Error::VersionMismatch, &ctx(None));
+        assert!(f.title.contains("Pixel"), "{f:?}");
+        assert!(f.hint.contains("Update Relay on both devices"), "{f:?}");
+    }
+    let s = session_failure(&Error::VersionMismatch, "Pixel").unwrap();
+    assert!(s.contains("Update Relay on both devices"), "{s}");
+}
+
+#[test]
+fn a_storage_failure_is_not_called_unreachable() {
+    let e = Error::Storage("disk full".into());
+    for dir in [Dir::Send, Dir::Receive] {
+        let f = describe(dir, &e, &ctx(None));
+        assert!(!f.title.contains("reach"), "{f:?}");
+        assert!(f.hint.contains("Try again"), "{f:?}");
+    }
+    assert!(session_failure(&e, "Pixel").unwrap().contains("Try again"));
+    assert!(session_failure(&Error::Timeout, "Pixel").is_none());
+}

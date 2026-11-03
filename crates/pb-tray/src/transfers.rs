@@ -225,6 +225,18 @@ pub struct Ctx<'a> {
     pub refusal: Option<pb_transport::files::Refusal>,
 }
 
+/// Wording for a session that failed to open when the cause is known and
+/// the generic "couldn't reach" would mislead. `None` keeps the caller's own text.
+pub fn session_failure(e: &Error, name: &str) -> Option<String> {
+    match e {
+        Error::VersionMismatch => Some(format!(
+            "{name} runs a different version of Relay. Update Relay on both devices"
+        )),
+        Error::Storage(_) => Some("Relay couldn't save its list of devices. Try again".into()),
+        _ => None,
+    }
+}
+
 /// One user-facing wording per error: what happened and what to do next.
 pub fn describe(dir: Dir, e: &Error, c: &Ctx) -> Failure {
     use pb_transport::files::Refusal;
@@ -234,6 +246,14 @@ pub fn describe(dir: Dir, e: &Error, c: &Ctx) -> Failure {
         hint: h.to_owned(),
     };
     match (dir, e) {
+        (_, Error::VersionMismatch) => f(
+            format!("{peer} runs a different version of Relay"),
+            "Update Relay on both devices, then try again.",
+        ),
+        (_, Error::Storage(_)) => f(
+            format!("Relay couldn't save its list of devices for {file}"),
+            "Nothing changed. Try again.",
+        ),
         (_, Error::Cancelled) => f(format!("Cancelled {file}"), ""),
         (_, Error::PeerCancelled) => f(format!("{peer} cancelled {file}"), ""),
         (Dir::Receive, Error::TooLarge) => match c.refusal {

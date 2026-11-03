@@ -411,6 +411,10 @@ pub enum UiEvent {
         peer_name: String,
         sas: String,
     },
+    /// The phone left before the comparison was answered: close that prompt.
+    SasWithdrawn {
+        id: u64,
+    },
     Clipboard {
         from: String,
         text: String,
@@ -690,6 +694,8 @@ pub async fn run(
 
     let mut pending: HashMap<u64, PendingPairing> = HashMap::new();
     let mut next_id = 0u64;
+    // Ids of pairing prompts whose phone has left.
+    let (gone_tx, mut gone_rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
     let mut rotation: Option<tokio::task::JoinHandle<()>> = None;
     if opts.pair_on_start {
         rotation = Some(start_rotation(&node, &log, &ui));
@@ -755,13 +761,22 @@ pub async fn run(
                 Some(Cmd::Unpair(id)) => {
                     // A local stop first: removing the device must not read as a lost link.
                     crate::audio::stop_all();
-                    node.unpair(&id);
-                    refresh_changed(&node);
-                    log.line(&format!("UNPAIRED {id}"));
-                    refresh(&node, &peers);
-                    // Its toasts go with it.
-                    ui(UiEvent::NotifySync { peer: id, keys: Vec::new() });
-                    ui(UiEvent::Info("Device removed".into()));
+                    match node.try_unpair(&id) {
+                        Ok(_) => {
+                            refresh_changed(&node);
+                            log.line(&format!("UNPAIRED {id}"));
+                            refresh(&node, &peers);
+                            // Its toasts go with it.
+                            ui(UiEvent::NotifySync { peer: id, keys: Vec::new() });
+                            ui(UiEvent::Info("Device removed".into()));
+                        }
+                        Err(e) => {
+                            // Not saved: the device is still paired.
+                            log.line(&format!("UNPAIR {id} failed: {e}"));
+                            refresh(&node, &peers);
+                            ui(UiEvent::Info(format!("Couldn't remove the device: {e}")));
+                        }
+                    }
                 }
                 Some(Cmd::NotifyAction { peer, key, kind, index, text }) => {
                     let name = peers
@@ -1027,7 +1042,8 @@ pub async fn run(
                                     pb_transport::Error::Timeout => {
                                         format!("{name} didn't answer your control request")
                                     }
-                                    _ => format!("Couldn't reach {name} to control it"),
+                                    e => crate::transfers::session_failure(&e, &name)
+                                        .unwrap_or_else(|| format!("Couldn't reach {name} to control it")),
                                 };
                                 ui(UiEvent::Info(why));
                             }
@@ -1114,7 +1130,19 @@ pub async fn run(
                 next_id += 1;
                 log.line(&format!("SAS={} peer=\"{}\"", p.sas, p.peer_name));
                 ui(UiEvent::Sas { id: next_id, peer_name: p.peer_name.clone(), sas: p.sas.clone() });
+                let (gone, id, tx) = (p.withdrawn(), next_id, gone_tx.clone());
+                tokio::spawn(async move {
+                    gone.await;
+                    let _ = tx.send(id);
+                });
                 pending.insert(next_id, p);
+            }
+            Some(id) = gone_rx.recv() => {
+                // Only while the user has not decided: a decided prompt is already out of `pending`.
+                if pending.remove(&id).is_some() {
+                    log.line(&format!("PAIRING prompt {id} withdrawn by the phone"));
+                    ui(UiEvent::SasWithdrawn { id });
+                }
             }
             Some(s) = ev.sessions.recv() => {
                 if settings.lock().map(|x| x.paused).unwrap_or(false) {
@@ -1541,7 +1569,7 @@ async fn pump_session(
                     let (tx, mut rx) = oneshot::channel();
                     ui(UiEvent::IncomingOffer {
                         from: s.peer_name.clone(),
-                        name: offer.name.clone(),
+                        name: file_label.clone(),
                         size: offer.size,
                         folder: dir.clone(),
                         reply: OfferReply::new(tx),
@@ -1856,7 +1884,8 @@ fn show_screen(
                         _ if again => format!("{name} stopped sharing its screen"),
                         pb_transport::Error::Declined => format!("{name} didn't share its screen"),
                         pb_transport::Error::Timeout => format!("{name} didn't answer"),
-                        _ => format!("Couldn't reach {name} to show its screen"),
+                        e => crate::transfers::session_failure(&e, &name)
+                            .unwrap_or_else(|| format!("Couldn't reach {name} to show its screen")),
                     }));
                     return;
                 }
@@ -2070,7 +2099,8 @@ fn show_camera(
                         _ if again => format!("{name} stopped sharing its camera"),
                         pb_transport::Error::Declined => format!("{name} didn't share its camera"),
                         pb_transport::Error::Timeout => format!("{name} didn't answer"),
-                        _ => format!("Couldn't reach {name} to use its camera"),
+                        e => crate::transfers::session_failure(&e, &name)
+                            .unwrap_or_else(|| format!("Couldn't reach {name} to use its camera")),
                     }));
                     return;
                 }
