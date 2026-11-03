@@ -136,6 +136,39 @@ fn file_event(
         ],
     )
 }
+pub fn file_started(dir: &'static str, name: &str, bytes: u64) -> Ev {
+    ev(
+        Stream::Transfers,
+        "file_started",
+        vec![
+            ("dir", dir.into()),
+            ("file", pb_log::redact_name(name).into()),
+            ("bytes", bytes.into()),
+        ],
+    )
+}
+/// A transfer stopped on purpose (`by`: user, pause, quit or peer).
+pub fn file_cancelled(
+    dir: &'static str,
+    name: &str,
+    bytes_done: u64,
+    by: &'static str,
+    secs: f64,
+    mbps: f64,
+) -> Ev {
+    ev(
+        Stream::Transfers,
+        "file_cancelled",
+        vec![
+            ("dir", dir.into()),
+            ("file", pb_log::redact_name(name).into()),
+            ("bytes", bytes_done.into()),
+            ("by", by.into()),
+            ("secs", secs.into()),
+            ("mbps", mbps.into()),
+        ],
+    )
+}
 pub fn file_failed(dir: &'static str, name: &str, why: &str) -> Ev {
     ev(
         Stream::Transfers,

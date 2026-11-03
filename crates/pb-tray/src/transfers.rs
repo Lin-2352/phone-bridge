@@ -636,9 +636,31 @@ pub fn finish(id: u64, saved: Option<PathBuf>) {
     changed();
 }
 
-pub fn fail(id: u64, f: Failure) {
-    with(|r| r.fail(id, f, Instant::now()));
+/// Marks a transfer failed; false if it had already ended (a cancel or a
+/// pause that raced the error keeps its own wording).
+pub fn fail(id: u64, f: Failure) -> bool {
+    let live = with(|r| {
+        let was = r.row(id, Instant::now()).is_some_and(|x| x.can_cancel);
+        r.fail(id, f, Instant::now());
+        was
+    });
     changed();
+    live
+}
+
+/// (done, total) bytes of a transfer.
+pub fn progress_of(id: u64) -> Option<(u64, u64)> {
+    with(|r| r.row(id, Instant::now()).map(|x| (x.done, x.total)))
+}
+
+/// Who cancelled a transfer, for the log.
+pub fn cancel_reason(id: u64) -> &'static str {
+    match with(|r| r.row(id, Instant::now()).map(|x| x.state)) {
+        Some(State::Cancelled(CancelBy::Pause)) => "pause",
+        Some(State::Cancelled(CancelBy::Quit)) => "quit",
+        Some(State::Cancelled(CancelBy::Peer)) => "peer",
+        _ => "user",
+    }
 }
 
 pub fn cancel(id: u64, by: CancelBy) -> bool {
@@ -694,6 +716,20 @@ pub fn retry(id: u64) {
         h(id, cancel, info);
     }
     changed();
+}
+
+/// The Quit confirmation when `n` transfers are running.
+pub fn quit_warning(n: usize) -> (String, String) {
+    let heading = if n == 1 {
+        "A file transfer is running".to_owned()
+    } else {
+        format!("{n} file transfers are running")
+    };
+    (
+        heading,
+        "If you quit Relay now they stop, and the other device keeps nothing of the unfinished file."
+            .to_owned(),
+    )
 }
 
 /// What a Timeline file row (or a toast) may offer for a saved file.

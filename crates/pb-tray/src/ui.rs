@@ -42,6 +42,8 @@ pub const WM_CORE_EVENT: u32 = WM_APP + 2;
 pub const ID_PAIR: usize = 1;
 pub const ID_SEND_CLIPBOARD: usize = 2;
 pub const ID_QUIT: usize = 3;
+/// The user said yes to "a transfer is running, quit anyway?".
+static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ID_UNPAIR_BASE: usize = 100;
 
 struct State {
@@ -1110,13 +1112,13 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             if let Ok(mut l) = LAST_LINK.lock() {
                 *l = None;
             }
-            let mb = size as f64 / 1_048_576.0;
             note_activity(&format!("Last: {name} received"));
             balloon(
                 hwnd,
                 &format!("{from} sent {name}"),
                 &format!(
-                    "{mb:.1} MB, saved to {}. Click to show.",
+                    "{}, saved to {}. Click to show.",
+                    crate::transfers::fmt_bytes(size),
                     path.parent()
                         .map(|d| d.display().to_string())
                         .unwrap_or_default()
@@ -1148,20 +1150,30 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             from,
             name,
             size,
+            folder,
             reply,
         } => {
-            let mb = size as f64 / 1_048_576.0;
-            ask_yes_no(
+            let alive = reply.clone();
+            crate::dialog_window::ask_while(
                 Dialog::question(
                     format!("{from} wants to send a file"),
                     format!(
-                        "{name} ({mb:.1} MB)\n\nSave it to your Downloads\\Phone Bridge folder?"
+                        "{name} ({})\n\nSave it to {}?",
+                        crate::transfers::fmt_bytes(size),
+                        folder.display()
                     ),
                     "Save",
                     "Decline",
                 ),
+                move || alive.alive(),
                 move |yes| {
-                    let _ = reply.send(yes);
+                    // The offer may have timed out while the dialog was open.
+                    if !reply.answer(yes) && yes {
+                        crate::status::show(
+                            "That request expired. Send it again from the phone.",
+                            8,
+                        );
+                    }
                 },
             );
         }
@@ -2354,6 +2366,27 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
         }
         ID_QUIT => {
+            // Transfers running: ask first; "yes" comes back here confirmed.
+            let running = crate::transfers::active_count();
+            if running > 0 && !QUIT_CONFIRMED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let raw = hwnd.0 as isize;
+                let (heading, body) = crate::transfers::quit_warning(running);
+                ask_yes_no(
+                    Dialog::question(heading, body, "Quit and stop", "Keep running"),
+                    move |yes| {
+                        if yes {
+                            QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+                            post_command(raw, ID_QUIT);
+                        }
+                    },
+                );
+                return;
+            }
+            // Running transfers end cleanly: the peers are told. Best effort,
+            // the process exits right after.
+            if crate::transfers::cancel_all(crate::transfers::CancelBy::Quit) > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
             crate::camera_window::close();
             // Nothing of the camera stays behind: Stop, Remove, Shutdown.
             crate::camera::stop();

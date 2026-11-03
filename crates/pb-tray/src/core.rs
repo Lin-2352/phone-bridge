@@ -13,11 +13,13 @@ use std::{
 use pb_identity::{FilePeerStore, PeerId};
 use pb_protocol::control::{ClipboardText, ClipboardUpdate, ControlMsg, MAX_CLIPBOARD_TEXT};
 use pb_transport::{
-    files::{receive_offer, Received, DEFAULT_MAX_FILE},
+    files::{receive_offer_with, Received, TransferOpts, DEFAULT_MAX_FILE},
     Node, NodeConfig, PendingPairing, Session, SharedStore,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
+
+use crate::transfers as tr;
 
 use crate::settings::Settings;
 
@@ -257,7 +259,37 @@ static PHONE_CONTROL: Mutex<Option<pb_transport::SessionCloser>> = Mutex::new(No
 /// Pause Relay now (the setting is already on): every open session ends and
 /// the requests still waiting for a phone are dropped. The caller stops what
 /// lives on the UI side (screen window, control hooks, camera).
+/// The answer channel of an incoming-offer dialog. The wait on the core
+/// side drops it when the offer is dead; the dialog polls [`alive`].
+///
+/// [`alive`]: OfferReply::alive
+#[derive(Clone)]
+pub struct OfferReply(Arc<Mutex<Option<oneshot::Sender<bool>>>>);
+
+impl OfferReply {
+    pub fn new(tx: oneshot::Sender<bool>) -> Self {
+        Self(Arc::new(Mutex::new(Some(tx))))
+    }
+
+    /// True while the core still waits for an answer.
+    pub fn alive(&self) -> bool {
+        self.0
+            .lock()
+            .map(|g| g.as_ref().is_some_and(|t| !t.is_closed()))
+            .unwrap_or(false)
+    }
+
+    /// Deliver the answer; false if the offer is dead or was answered.
+    pub fn answer(&self, yes: bool) -> bool {
+        let tx = self.0.lock().ok().and_then(|mut g| g.take());
+        tx.is_some_and(|t| t.send(yes).is_ok())
+    }
+}
+
 pub fn pause_now() {
+    // Transfers first: they end as "Relay is paused" (and tell the peer),
+    // not as a vanished connection.
+    crate::transfers::cancel_all(crate::transfers::CancelBy::Pause);
     crate::pause::close_all();
     stop_phone_control();
     for slot in [&CONTROL_REQUEST, &CAMERA_REQUEST] {
@@ -383,12 +415,16 @@ pub enum UiEvent {
         from: String,
         reply: oneshot::Sender<bool>,
     },
-    /// Ask the user whether to accept (only when auto-accept is off).
+    /// Ask the user whether to accept (only when auto-accept is off). The
+    /// dialog closes itself when `reply` is no longer alive (timed out,
+    /// paused, the phone went away).
     IncomingOffer {
         from: String,
         name: String,
         size: u64,
-        reply: oneshot::Sender<bool>,
+        /// Where it would be saved.
+        folder: PathBuf,
+        reply: OfferReply,
     },
     /// The paired devices' "reinstalled or reset" notes may differ now (a
     /// check finished, or a session opened or closed): the UI repaints.
@@ -529,6 +565,44 @@ pub async fn run(
     });
     log.line(&format!("READY id={} port={}", node.peer_id(), node.port()));
     refresh(&node, &peers);
+    // Retry in the transfer window restarts a failed or cancelled send.
+    {
+        let (node, log, ui, settings, peers, rt) = (
+            node.clone(),
+            log.clone(),
+            ui.clone(),
+            settings.clone(),
+            peers.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        crate::transfers::set_retry_handler(Box::new(move |row, cancel, info| {
+            use crate::transfers as tr;
+            if settings.lock().map(|s| s.paused).unwrap_or(false) {
+                tr::cancel(row, tr::CancelBy::Pause);
+                ui(UiEvent::Info("Relay is paused".into()));
+                return;
+            }
+            let target = peers.lock().ok().and_then(|g| {
+                g.iter()
+                    .find(|(_, n)| *n == info.peer)
+                    .or_else(|| g.first())
+                    .cloned()
+            });
+            let Some((id, name)) = target else {
+                tr::cancel(row, tr::CancelBy::User);
+                ui(UiEvent::Info("Pair a phone first".into()));
+                return;
+            };
+            let (node, log, ui, settings) =
+                (node.clone(), log.clone(), ui.clone(), settings.clone());
+            rt.spawn(async move {
+                send_one_file(
+                    &node, &id, &name, &info.path, row, cancel, &log, &*ui, &settings,
+                )
+                .await;
+            });
+        }));
+    }
     ui(UiEvent::Ready {
         fingerprint: node.peer_id().fingerprint(),
     });
@@ -685,12 +759,10 @@ pub async fn run(
                     let target = peers.lock().ok().and_then(|g| g.first().cloned());
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
-                            ui(UiEvent::Info("Pair a device first".into()));
+                            ui(UiEvent::Info("Pair a phone first".into()));
                             return;
                         };
-                        for path in paths {
-                            send_one_file(&node, &id, &name, &path, &log, &*ui, &settings).await;
-                        }
+                        send_batch(&node, &id, &name, paths, &log, &*ui, &settings).await;
                     });
                 }
                 Some(Cmd::ClipboardChanged { text, sensitive }) => {
@@ -1006,19 +1078,69 @@ fn start_rotation(
     })
 }
 
+/// Sends `paths` one after the other as one batch ("2 of 5"). A cancel or
+/// a pause stops the files that have not started.
+async fn send_batch(
+    node: &Node,
+    id: &PeerId,
+    name: &str,
+    paths: Vec<PathBuf>,
+    log: &Log,
+    ui: &(impl Fn(UiEvent) + ?Sized),
+    settings: &SharedSettings,
+) {
+    use crate::transfers as tr;
+    let batch = tr::new_batch_id();
+    let total = paths.len();
+    for (i, path) in paths.into_iter().enumerate() {
+        if tr::batch_stopped(batch) {
+            break;
+        }
+        let file_name = file_name_of(&path);
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let (row, cancel) = tr::start(tr::NewTransfer {
+            dir: tr::Dir::Send,
+            peer: name.to_owned(),
+            name: file_name,
+            size,
+            path: Some(path.clone()),
+            batch: Some(tr::Batch {
+                id: batch,
+                index: i + 1,
+                total,
+            }),
+        });
+        send_one_file(node, id, name, &path, row, cancel, log, ui, settings).await;
+    }
+}
+
+fn file_name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into())
+}
+
+/// One tracked send: progress and cancel go through the transfer registry;
+/// every outcome ends in the registry (the window) and a toast.
+#[allow(clippy::too_many_arguments)]
 async fn send_one_file(
     node: &Node,
     id: &PeerId,
     name: &str,
     path: &std::path::Path,
+    row: u64,
+    cancel: pb_transport::files::Cancel,
     log: &Log,
     ui: &(impl Fn(UiEvent) + ?Sized),
     settings: &SharedSettings,
 ) {
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".into());
+    use crate::transfers as tr;
+    let file_name = file_name_of(path);
+    let started = Instant::now();
+    let mut total = 0u64;
     let result = async {
         let f = tokio::fs::File::open(path)
             .await
@@ -1028,14 +1150,26 @@ async fn send_one_file(
             .await
             .map_err(|e| pb_transport::Error::Io(e.to_string()))?
             .len();
-        let started = Instant::now();
-        dial(node, id, node.send_file(id, &file_name, size, "", f, None)).await?;
-        Ok::<_, pb_transport::Error>((size, started.elapsed()))
+        total = size;
+        log.line(&format!(
+            "FILE send start \"{file_name}\" {size} bytes to \"{name}\""
+        ));
+        crate::applog::emit(crate::applog::file_started("sent", &file_name, size));
+        let opts = TransferOpts::new(Some(tr::progress_cb(row)), Some(cancel.clone()));
+        dial(
+            node,
+            id,
+            node.send_file_with(id, &file_name, size, "", f, opts),
+        )
+        .await?;
+        Ok::<_, pb_transport::Error>(size)
     }
     .await;
+    let took = started.elapsed();
     match result {
-        Ok((size, took)) => {
+        Ok(size) => {
             seen(node, id);
+            tr::finish(row, None);
             let mbps = size as f64 / 1e6 / took.as_secs_f64().max(1e-3);
             log.line(&format!(
                 "FILE sent \"{file_name}\" {size} bytes to \"{name}\" in {:.2}s ({mbps:.1} MB/s)",
@@ -1054,8 +1188,50 @@ async fn send_one_file(
             ui(UiEvent::Info(format!("Sent {file_name} to {name}")));
         }
         Err(e) => {
-            log.line(&format!("FILE send \"{file_name}\" failed: {e}"));
-            ui(UiEvent::Info(format!("Could not send {file_name}: {e}")));
+            let done = tr::progress_of(row).map_or(0, |(d, _)| d);
+            let mbps = done as f64 / 1e6 / took.as_secs_f64().max(1e-3);
+            match e {
+                pb_transport::Error::Cancelled | pb_transport::Error::PeerCancelled => {
+                    let by = if matches!(e, pb_transport::Error::PeerCancelled) {
+                        tr::cancel(row, tr::CancelBy::Peer);
+                        "peer"
+                    } else {
+                        tr::cancel_reason(row)
+                    };
+                    log.line(&format!(
+                        "FILE send \"{file_name}\" cancelled by {by} after {done} of {total} bytes ({mbps:.1} MB/s)"
+                    ));
+                    crate::applog::emit(crate::applog::file_cancelled(
+                        "sent",
+                        &file_name,
+                        done,
+                        by,
+                        took.as_secs_f64(),
+                        mbps,
+                    ));
+                    if by == "peer" {
+                        ui(UiEvent::Info(format!("{name} cancelled {file_name}")));
+                    }
+                }
+                e => {
+                    log.line(&format!("FILE send \"{file_name}\" failed: {e}"));
+                    let f = tr::describe(
+                        tr::Dir::Send,
+                        &e,
+                        &tr::Ctx {
+                            peer: name,
+                            file: &file_name,
+                            folder: "",
+                            refusal: None,
+                        },
+                    );
+                    // A pause or cancel that raced the failure keeps its own wording.
+                    let live = tr::fail(row, f.clone());
+                    if live {
+                        ui(UiEvent::Info(format!("{}. {}", f.title, f.hint)));
+                    }
+                }
+            }
         }
     }
 }
@@ -1257,6 +1433,12 @@ async fn pump_session(
                     .map(|x| (x.auto_accept, x.save_dir.clone()))
                     .unwrap_or((false, std::env::temp_dir()));
                 let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
+                let is_file = offer.kind == pb_protocol::control::OfferKind::File as i32;
+                let file_label = pb_transport::files::sanitize_file_name(&offer.name);
+                let refusal = is_file
+                    .then(|| pb_transport::files::refusal(&dir, offer.size, DEFAULT_MAX_FILE))
+                    .flatten();
+                let mut expired = false;
                 let accept = if is_image {
                     // A clipboard picture is governed by the sharing switches, not
                     // the file prompt, and is never written to the save folder.
@@ -1268,25 +1450,64 @@ async fn pump_session(
                         log.line("CLIPSYNC image ignored (image sharing is off)");
                     }
                     on
+                } else if refusal.is_some() {
+                    // Too big or no room: say so now, never ask "Save it?".
+                    false
                 } else if auto {
                     true
                 } else {
-                    let (tx, rx) = oneshot::channel();
+                    let (tx, mut rx) = oneshot::channel();
                     ui(UiEvent::IncomingOffer {
                         from: s.peer_name.clone(),
                         name: offer.name.clone(),
                         size: offer.size,
-                        reply: tx,
+                        folder: dir.clone(),
+                        reply: OfferReply::new(tx),
                     });
-                    tokio::time::timeout(pb_transport::files::OFFER_TIMEOUT, rx)
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .unwrap_or(false)
+                    // Leaving this block drops `rx`: the dialog sees the
+                    // offer is dead and closes itself.
+                    tokio::select! {
+                        r = &mut rx => r.unwrap_or(false),
+                        _ = tokio::time::sleep(pb_transport::files::OFFER_TIMEOUT) => {
+                            expired = true;
+                            false
+                        }
+                        // Paused, or the phone went away while we asked.
+                        _ = s.closed() => false,
+                    }
                 };
                 let from = s.peer_name.clone();
                 let started = Instant::now();
-                match receive_offer(&mut s, offer, accept, &dir, DEFAULT_MAX_FILE, None).await {
+                let tracked = (is_file && (accept || refusal.is_some())).then(|| {
+                    tr::start(tr::NewTransfer {
+                        dir: tr::Dir::Receive,
+                        peer: from.clone(),
+                        name: file_label.clone(),
+                        size: offer.size,
+                        path: None,
+                        batch: None,
+                    })
+                });
+                if let (Some((row, _)), true) = (&tracked, accept) {
+                    log.line(&format!(
+                        "FILE receive start \"{file_label}\" {} bytes from \"{from}\"",
+                        offer.size
+                    ));
+                    crate::applog::emit(crate::applog::file_started(
+                        "received",
+                        &file_label,
+                        offer.size,
+                    ));
+                    let _ = row;
+                }
+                let opts = TransferOpts::new(
+                    tracked.as_ref().map(|(row, _)| tr::progress_cb(*row)),
+                    tracked.as_ref().map(|(_, c)| c.clone()),
+                );
+                let offer_size = offer.size;
+                let outcome =
+                    receive_offer_with(&mut s, offer, accept, &dir, DEFAULT_MAX_FILE, opts).await;
+                match outcome {
                     Ok(Received::File { path, size }) => {
                         let mbps = size as f64 / 1e6 / started.elapsed().as_secs_f64().max(1e-3);
                         log.line(&format!(
@@ -1307,6 +1528,9 @@ async fn pump_session(
                                 Some(&path),
                             ),
                         );
+                        if let Some((row, _)) = &tracked {
+                            tr::finish(*row, Some(path.clone()));
+                        }
                         ui(UiEvent::FileReceived { from, path, size });
                     }
                     Ok(Received::Text(t)) => {
@@ -1348,7 +1572,57 @@ async fn pump_session(
                             .received(&png);
                         ui(UiEvent::RemoteImage { from, png });
                     }
-                    Err(e) => log.line(&format!("OFFER from \"{from}\" not received: {e}")),
+                    Err(e) => {
+                        log.line(&format!("OFFER from \"{from}\" not received: {e}"));
+                        let took = started.elapsed();
+                        if let Some((row, _)) = &tracked {
+                            let done = tr::progress_of(*row).map_or(0, |(d, _)| d);
+                            let mbps = done as f64 / 1e6 / took.as_secs_f64().max(1e-3);
+                            match e {
+                                pb_transport::Error::Cancelled
+                                | pb_transport::Error::PeerCancelled => {
+                                    let by = if matches!(e, pb_transport::Error::PeerCancelled) {
+                                        tr::cancel(*row, tr::CancelBy::Peer);
+                                        ui(UiEvent::Info(format!("{from} cancelled {file_label}")));
+                                        "peer"
+                                    } else {
+                                        tr::cancel_reason(*row)
+                                    };
+                                    log.line(&format!(
+                                        "FILE receive \"{file_label}\" cancelled by {by} after {done} of {offer_size} bytes ({mbps:.1} MB/s)"
+                                    ));
+                                    crate::applog::emit(crate::applog::file_cancelled(
+                                        "received",
+                                        &file_label,
+                                        done,
+                                        by,
+                                        took.as_secs_f64(),
+                                        mbps,
+                                    ));
+                                }
+                                e => {
+                                    let f = tr::describe(
+                                        tr::Dir::Receive,
+                                        &e,
+                                        &tr::Ctx {
+                                            peer: &from,
+                                            file: &file_label,
+                                            folder: &dir.display().to_string(),
+                                            refusal,
+                                        },
+                                    );
+                                    // A pause that raced the failure keeps its wording.
+                                    if tr::fail(*row, f.clone()) {
+                                        ui(UiEvent::Info(format!("{}. {}", f.title, f.hint)));
+                                    }
+                                }
+                            }
+                        } else if expired && matches!(e, pb_transport::Error::Declined) {
+                            ui(UiEvent::Info(format!(
+                                "{from}'s file {file_label} wasn't saved: nobody answered in time. Send it again from the phone."
+                            )));
+                        }
+                    }
                 }
                 break;
             }

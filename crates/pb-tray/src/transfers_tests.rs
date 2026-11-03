@@ -525,3 +525,10 @@ fn file_actions_need_an_existing_file() {
     std::fs::remove_file(&f).unwrap();
     assert!(!file_actions(Some(&f)).show_in_folder);
 }
+
+#[test]
+fn the_quit_warning_counts_the_transfers() {
+    assert_eq!(quit_warning(1).0, "A file transfer is running");
+    assert_eq!(quit_warning(3).0, "3 file transfers are running");
+    assert!(quit_warning(1).1.contains("stop"));
+}
