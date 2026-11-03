@@ -389,7 +389,10 @@ mod tests {
         let l = clipsync_line("Phone", &u);
         assert!(!l.contains("hunter2"), "{l}");
         assert!(l.contains("7 chars"));
-        let u = pb_protocol::control::ClipboardUpdate { sensitive: false, ..u };
+        let u = pb_protocol::control::ClipboardUpdate {
+            sensitive: false,
+            ..u
+        };
         assert!(clipsync_line("Phone", &u).contains("hunter2"));
     }
 }
