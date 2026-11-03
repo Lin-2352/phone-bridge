@@ -3,7 +3,7 @@
 //!
 //! Sender: [`Node::send_file`] / [`Node::send_text`] open a fresh session per
 //! transfer. Receiver: the app's session loop calls [`receive_offer`] when an
-//! [`Offer`] arrives. Files are written to `.<name>.partial-<id>` and only
+//! [`Offer`] arrives. Files are written to `.<name>.partial-<random>` and only
 //! renamed into place after the hash matches; any failure deletes the partial.
 
 use std::{
@@ -186,6 +186,8 @@ pub fn sanitize_file_name(raw: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
     let mut s: String = base
         .chars()
+        // Bidi overrides would show `fdp.exe` reversed as `exe.pdf`.
+        .filter(|c| !pb_identity::is_hidden_format(*c))
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
             c if c.is_control() => '_',
@@ -610,7 +612,18 @@ pub async fn receive_offer_with(
                 Received::Text(offer.text)
             });
         }
-        OfferKind::File | OfferKind::ClipboardImage => {}
+        OfferKind::ClipboardImage => {
+            // In memory only (bounded by MAX_CLIPBOARD_IMAGE above): the
+            // receive folder is the user's, often synced or indexed.
+            return match receive_bytes(session, id, offer.size, None, progress, &cancel).await {
+                Ok(png) => {
+                    session.conn.close(CLOSE_SAVED.into(), b"saved");
+                    Ok(Received::Image(png))
+                }
+                Err(e) => Err(fail_receive(session, e).await),
+            };
+        }
+        OfferKind::File => {}
     }
 
     let name = sanitize_file_name(&offer.name);
@@ -620,7 +633,7 @@ pub async fn receive_offer_with(
     // A local random suffix: the offer id is the peer's choice and may repeat.
     let partial = dir.join(format!(".{name}.partial-{:016x}", new_id()));
     let result = async {
-        receive_bytes(session, id, offer.size, &partial, progress, &cancel).await?;
+        receive_bytes(session, id, offer.size, Some(&partial), progress, &cancel).await?;
         let dir = dir.to_owned();
         let (src, n) = (partial.clone(), name.clone());
         tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
@@ -636,23 +649,6 @@ pub async fn receive_offer_with(
     }
     .await;
     match result {
-        Ok(dest) if kind == OfferKind::ClipboardImage => {
-            // An image stays in memory: read it back and remove the file.
-            let bytes = tokio::fs::read(&dest).await;
-            let _ = tokio::fs::remove_file(&dest).await;
-            match bytes {
-                Ok(png) => {
-                    session.conn.close(CLOSE_SAVED.into(), b"saved");
-                    Ok(Received::Image(png))
-                }
-                Err(e) => {
-                    session
-                        .conn
-                        .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
-                    Err(Error::Io(e.to_string()))
-                }
-            }
-        }
         Ok(dest) => {
             // We read the sender's TransferDone; closing now discards nothing.
             session.conn.close(CLOSE_SAVED.into(), b"saved");
@@ -663,34 +659,42 @@ pub async fn receive_offer_with(
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&partial).await;
-            if matches!(e, Error::Transport(_) | Error::Closed) {
-                settle(&session.conn).await;
-            }
-            // Read before closing ourselves: our own close would replace it.
-            let theirs = peer_cancelled(&session.conn);
-            if matches!(e, Error::Cancelled) {
-                session.conn.close(CLOSE_CANCELLED.into(), b"cancelled");
-                Err(Error::Cancelled)
-            } else if theirs {
-                Err(Error::PeerCancelled)
-            } else {
-                session
-                    .conn
-                    .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
-                Err(e)
-            }
+            Err(fail_receive(session, e).await)
         }
     }
 }
 
+/// End a failed receive: tell the sender why (cancelled or failed) and
+/// return the error to report.
+async fn fail_receive(session: &Session, e: Error) -> Error {
+    if matches!(e, Error::Transport(_) | Error::Closed) {
+        settle(&session.conn).await;
+    }
+    // Read before closing ourselves: our own close would replace it.
+    let theirs = peer_cancelled(&session.conn);
+    if matches!(e, Error::Cancelled) {
+        session.conn.close(CLOSE_CANCELLED.into(), b"cancelled");
+        Error::Cancelled
+    } else if theirs {
+        Error::PeerCancelled
+    } else {
+        session
+            .conn
+            .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
+        e
+    }
+}
+
+/// Receive the offered bytes into `partial`, or into memory (returned) when
+/// it is `None`; either way the size and the sender's SHA-256 are checked.
 async fn receive_bytes(
     session: &mut Session,
     id: u64,
     size: u64,
-    partial: &Path,
+    partial: Option<&Path>,
     progress: Option<Progress>,
     cancel: &Option<Cancel>,
-) -> Result<(), Error> {
+) -> Result<Vec<u8>, Error> {
     let stream = or_cancel(cancel, async {
         tokio::time::timeout(Duration::from_secs(30), session.conn.accept_uni())
             .await
@@ -714,17 +718,29 @@ async fn receive_bytes(
     // time, and one hash + write + thread hop per piece capped receives at
     // ~27 MB/s on the phone.
     let (chunks, mut queue) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
-    let path = partial.to_owned();
-    let writer = tokio::task::spawn_blocking(move || -> std::io::Result<[u8; 32]> {
+    let path = partial.map(Path::to_owned);
+    let writer = tokio::task::spawn_blocking(move || -> std::io::Result<([u8; 32], Vec<u8>)> {
         use std::io::Write;
-        let mut file = std::io::BufWriter::with_capacity(BATCH, std::fs::File::create(&path)?);
+        let mut file = match &path {
+            Some(p) => Some(std::io::BufWriter::with_capacity(
+                BATCH,
+                std::fs::File::create(p)?,
+            )),
+            None => None,
+        };
+        let mut mem = Vec::new();
         let mut hasher = Sha256::new();
         while let Some(chunk) = queue.blocking_recv() {
             hasher.update(&chunk);
-            file.write_all(&chunk)?;
+            match &mut file {
+                Some(f) => f.write_all(&chunk)?,
+                None => mem.extend_from_slice(&chunk),
+            }
         }
-        file.flush()?;
-        Ok(hasher.finalize().into())
+        if let Some(f) = &mut file {
+            f.flush()?;
+        }
+        Ok((hasher.finalize().into(), mem))
     });
     let mut done = 0u64;
     // Bytes that arrived in the same packet as the header.
@@ -775,7 +791,7 @@ async fn receive_bytes(
     // Always wait for the writer, so the file is closed before any cleanup.
     let written = writer.await.map_err(|e| Error::Io(e.to_string()))?;
     read?;
-    let ours = written.map_err(|e| Error::Io(e.to_string()))?;
+    let (ours, mem) = written.map_err(|e| Error::Io(e.to_string()))?;
     if done != size {
         return Err(Error::Protocol(format!("received {done} of {size} bytes")));
     }
@@ -796,12 +812,22 @@ async fn receive_bytes(
     if theirs.as_slice() != ours.as_slice() {
         return Err(Error::HashMismatch);
     }
-    Ok(())
+    Ok(mem)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_bidi_and_zero_width_characters_are_removed_from_names() {
+        assert_eq!(sanitize_file_name("report\u{202e}fdp.exe"), "reportfdp.exe");
+        assert_eq!(
+            sanitize_file_name("\u{feff}a\u{200b}b\u{2066}c\u{2069}.txt"),
+            "abc.txt"
+        );
+        assert_eq!(sanitize_file_name("\u{202e}"), "file");
+    }
 
     #[test]
     fn names_are_made_safe() {

@@ -25,16 +25,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    // Flush to disk before the rename: a power loss must not leave an empty
-    // identity.sealed behind.
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(tmp, path)
+    crate::write_atomic(path, bytes)
 }
 
 fn seed_from(bytes: &[u8], what: &str) -> io::Result<[u8; 32]> {

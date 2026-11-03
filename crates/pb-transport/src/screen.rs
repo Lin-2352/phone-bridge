@@ -31,6 +31,18 @@ use crate::{
 
 /// The phone may take this long: our ask, then Android's capture prompt.
 pub(crate) const ACCEPT_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// Largest video side a phone may announce.
+const MAX_VIDEO_SIDE: u32 = 8192;
+
+/// What a phone's `ScreenAccept`/`CameraAccept` may say: a codec this side
+/// knows, a size within reason, a right-angle rotation.
+pub(crate) fn usable_video(codec: u32, width: u32, height: u32, rotation: u32) -> bool {
+    pb_video::Codec::from_u32(codec).is_some()
+        && (1..=MAX_VIDEO_SIDE).contains(&width)
+        && (1..=MAX_VIDEO_SIDE).contains(&height)
+        && matches!(rotation, 0 | 90 | 180 | 270)
+}
 /// Opening the streams after accepting.
 pub(crate) const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// Records waiting for the PC's decoder.
@@ -166,6 +178,12 @@ impl Node {
         })
         .await
         .map_err(|_| Error::Timeout)??;
+        if !usable_video(accept.codec, accept.width, accept.height, accept.rotation) {
+            s.conn.close(0u32.into(), b"unusable video format");
+            return Err(Error::Protocol(
+                "the phone sent an unusable video format".into(),
+            ));
+        }
         let conn = s.conn.clone();
         // Input: a stream exists for the peer only once data is on it.
         let mut out = conn.open_uni().await.map_err(tx)?;
@@ -507,6 +525,17 @@ pub async fn serve_screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_usable_video_formats_from_the_phone_are_taken() {
+        assert!(usable_video(3, 1920, 1080, 0));
+        assert!(usable_video(1, 1080, 2400, 270));
+        assert!(!usable_video(257, 1920, 1080, 0), "unknown codec");
+        assert!(!usable_video(0, 1920, 1080, 0));
+        assert!(!usable_video(3, 0, 1080, 0));
+        assert!(!usable_video(3, 1920, 100_000, 0));
+        assert!(!usable_video(3, 1920, 1080, 45));
+    }
 
     #[test]
     fn config_records_pass_a_full_queue() {

@@ -182,6 +182,262 @@ async fn unpairing_ends_a_session_that_is_open() {
     );
 }
 
+/// A store whose saves fail while `fail` is set (a locked or full disk).
+#[derive(Default)]
+struct FlakyStore {
+    mem: MemoryPeerStore,
+    fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FlakyStore {
+    fn failing(&self) -> bool {
+        self.fail.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl PeerStore for FlakyStore {
+    fn get(&self, id: &PeerId) -> Option<PairedPeer> {
+        self.mem.get(id)
+    }
+    fn pin(&mut self, peer: PairedPeer) {
+        self.mem.pin(peer);
+    }
+    fn remove(&mut self, id: &PeerId) -> bool {
+        self.try_remove(id).unwrap_or(false)
+    }
+    fn list(&self) -> Vec<PairedPeer> {
+        self.mem.list()
+    }
+    fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
+        if self.failing() {
+            return Err(std::io::Error::other("disk full"));
+        }
+        self.mem.pin(peer);
+        Ok(())
+    }
+    fn try_remove(&mut self, id: &PeerId) -> std::io::Result<bool> {
+        if self.failing() {
+            return Err(std::io::Error::other("disk full"));
+        }
+        Ok(self.mem.remove(id))
+    }
+}
+
+async fn flaky_node(
+    seed: u8,
+    name: &str,
+) -> (
+    Node,
+    NodeEvents,
+    SharedStore,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
+    let flaky = FlakyStore::default();
+    let fail = flaky.fail.clone();
+    let store: SharedStore = Arc::new(Mutex::new(flaky));
+    let (n, ev) = Node::bind(
+        &Identity::from_seed([seed; 32]),
+        store.clone(),
+        NodeConfig {
+            device_name: name.into(),
+            port: None,
+            discovery_port: None,
+            tuning: Default::default(),
+        },
+    )
+    .await
+    .unwrap();
+    (n, ev, store, fail)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unpair_that_cannot_be_saved_is_reported_and_changes_nothing() {
+    let (pc, mut pc_ev, pc_store, fail) = flaky_node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let s = phone.connect(&pc.peer_id()).await.unwrap();
+    let mut held = pc_ev.sessions.recv().await.unwrap();
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        matches!(pc.try_unpair(&phone.peer_id()), Err(Error::Storage(_))),
+        "the user must hear that the removal failed"
+    );
+    assert!(!pc.unpair(&phone.peer_id()), "no success claimed");
+    assert!(lock(&pc_store).get(&phone.peer_id()).is_some());
+    // Still paired, so nothing it has open is cut either.
+    s.send(ControlMsg::ClipboardText(ClipboardText {
+        text: "still here".into(),
+        sensitive: false,
+    }))
+    .await
+    .unwrap();
+    assert!(matches!(
+        held.recv().await,
+        Ok(Some(ControlMsg::ClipboardText(_)))
+    ));
+    // Once saving works again the removal goes through.
+    fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(pc.try_unpair(&phone.peer_id()).unwrap());
+    assert!(lock(&pc_store).get(&phone.peer_id()).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_the_host_cannot_save_is_reported_on_both_sides() {
+    let (pc, mut pc_ev, pc_store, fail) = flaky_node(1, "PC").await;
+    let (phone, _pev, phone_store) = node(2, "Phone").await;
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(matches!(h, Err(Error::Storage(_))), "{h:?}");
+    assert!(j.is_err(), "the phone must not claim a pairing: {j:?}");
+    assert!(lock(&pc_store).list().is_empty());
+    assert!(lock(&phone_store).list().is_empty(), "no half pairing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_the_joiner_cannot_save_is_reported_on_both_sides() {
+    let (pc, mut pc_ev, pc_store) = node(1, "PC").await;
+    let (phone, _pev, phone_store, fail) = flaky_node(2, "Phone").await;
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(matches!(j, Err(Error::Storage(_))), "{j:?}");
+    assert!(h.is_err(), "the PC must not claim a pairing: {h:?}");
+    assert!(lock(&phone_store).list().is_empty());
+    assert!(lock(&pc_store).list().is_empty(), "no half pairing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_version_mismatch_is_reported_as_one_not_as_a_refused_pairing() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    // The phone runs a newer build.
+    let conn = phone
+        .dial(pc.peer_id(), &loopback(&pc), SESSION_ALPN)
+        .await
+        .unwrap();
+    let (mut send, recv) = conn.open_bi().await.unwrap();
+    let mut hello = Hello::new("Phone", vec![]);
+    hello.protocol_version += 1;
+    write_frame(&mut send, &Control::from(ControlMsg::Hello(hello)))
+        .await
+        .unwrap();
+    let mut recv = FrameReader::new(recv);
+    let got = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match recv.next::<Control>().await {
+                Ok(Some(_)) => continue,
+                Ok(None) => break Error::Closed,
+                Err(e) => break closed_by_peer(&conn, e),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(got, Error::VersionMismatch), "{got:?}");
+    assert!(got.to_string().contains("update"), "{got}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declining_on_the_phone_returns_at_once_while_the_pc_still_decides() {
+    let (pc, mut pc_ev, pc_store) = node(1, "PC").await;
+    let (phone, _pev, phone_store) = node(2, "Phone").await;
+    let code = pc.open_pairing(loopback(&pc)).unwrap();
+    let joining = phone.join(&code).await.unwrap();
+    let pending = pc_ev.pairings.recv().await.unwrap();
+    let declined = tokio::time::timeout(Duration::from_secs(3), joining.decide(false)).await;
+    assert!(
+        matches!(declined, Ok(Err(Error::Rejected))),
+        "the phone must not wait for the PC's user: {declined:?}"
+    );
+    // The PC can close its prompt: the joiner left.
+    tokio::time::timeout(Duration::from_secs(3), pending.withdrawn())
+        .await
+        .expect("the PC learns the phone left");
+    // The PC's user answers later: nothing is pinned anywhere.
+    let h = tokio::time::timeout(Duration::from_secs(5), pending.decide(true))
+        .await
+        .unwrap();
+    assert!(h.is_err(), "{h:?}");
+    assert!(lock(&pc_store).list().is_empty());
+    assert!(lock(&phone_store).list().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_pairing_connections_cannot_lock_out_paired_devices() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    // A LAN host opens many pairing connections while a code is shown and
+    // sends nothing on them.
+    let _code = pc.open_pairing(loopback(&pc)).unwrap();
+    let mut idle = Vec::new();
+    for seed in 0..(MAX_INCOMING as u8 + 4) {
+        let (n, _ev, _) = node(100 + seed, "noise").await;
+        if let Ok(c) = n.dial(pc.peer_id(), &loopback(&pc), PAIR_ALPN).await {
+            idle.push((n, c));
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s = tokio::time::timeout(Duration::from_secs(10), phone.connect(&pc.peer_id())).await;
+    assert!(
+        matches!(s, Ok(Ok(_))),
+        "a paired device must still get in: {:?}",
+        s.map(|r| r.map(|_| ()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_peer_times_out_even_when_recv_is_raced_in_a_select_loop() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let out = phone.connect(&pc.peer_id()).await.unwrap();
+    let mut held = pc_ev.sessions.recv().await.unwrap();
+    // The phone goes silent (no heartbeats) but its connection stays up.
+    out.heartbeat.abort();
+    // Like the screen loop: a control tick wins every 100 ms.
+    let started = Instant::now();
+    let end = loop {
+        tokio::select! {
+            r = held.recv() => break r,
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(25),
+            "never timed out"
+        );
+    };
+    assert!(matches!(end, Err(Error::Timeout)), "{end:?}");
+    assert!(started.elapsed() < HEARTBEAT * 4, "{:?}", started.elapsed());
+    drop(out);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn names_a_peer_sends_at_pairing_are_cleaned_and_capped() {
+    let evil = format!("Phone\n{}\tx\u{202e}{}", "a".repeat(64), "b".repeat(200));
+    let (pc, mut pc_ev, pc_store) = node(1, "PC\tbox").await;
+    let (phone, _pev, phone_store) = node(2, &evil).await;
+    let code = pc.open_pairing(loopback(&pc)).unwrap();
+    let joining = phone.join(&code).await.unwrap();
+    assert_eq!(joining.peer_name, "PC box");
+    let pending = pc_ev.pairings.recv().await.unwrap();
+    assert_eq!(pending.peer_name, pb_identity::clean_peer_name(&evil));
+    let (h, j) = tokio::join!(pending.decide(true), joining.decide(true));
+    let (h, j) = (h.unwrap(), j.unwrap());
+    assert_eq!(h.name.chars().count(), pb_identity::MAX_PEER_NAME);
+    assert!(!h.name.contains(['\n', '\t', '\u{202e}']));
+    assert_eq!(lock(&pc_store).get(&phone.peer_id()).unwrap().name, h.name);
+    assert_eq!(
+        lock(&phone_store).get(&pc.peer_id()).unwrap().name,
+        "PC box"
+    );
+    assert_eq!(j.name, "PC box");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn rotating_codes_invalidate_the_previous_one_and_closing_kills_the_current() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
@@ -518,6 +774,24 @@ mod transfers {
         a.unwrap();
         assert_eq!(b.unwrap(), Received::Image(png));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_clipboard_image_never_touches_the_save_folder() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        // A save folder that cannot be created or written at all.
+        let blocker = tmp("clipimg-nofolder").join("not-a-folder");
+        std::fs::write(&blocker, b"x").unwrap();
+        let dir = blocker.join("Downloads");
+        let png = pattern(300_000);
+        let (a, b) = tokio::join!(
+            phone.send_clipboard_image(&pcid, png.clone()),
+            receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE)
+        );
+        a.unwrap();
+        assert_eq!(b.unwrap(), Received::Image(png));
+        assert_eq!(std::fs::read(&blocker).unwrap(), b"x");
     }
 
     #[tokio::test(flavor = "multi_thread")]

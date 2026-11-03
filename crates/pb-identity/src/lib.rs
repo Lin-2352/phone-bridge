@@ -167,6 +167,67 @@ pub struct PairedPeer {
     pub addrs: Vec<String>,
 }
 
+/// Addresses kept per peer (also the most a peer may hand us at pairing).
+pub const MAX_PEER_ADDRS: usize = 6;
+/// Characters kept of a peer-chosen device name.
+pub const MAX_PEER_NAME: usize = 64;
+
+/// Invisible characters that reorder or hide text (bidi overrides and
+/// isolates, zero-width marks, the BOM). `char::is_control` misses them.
+pub fn is_hidden_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
+}
+
+/// A device name another device sent: controls become spaces, hidden format
+/// characters go, at most [`MAX_PEER_NAME`] characters. Never holds a tab
+/// or a line break.
+pub fn clean_peer_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_hidden_format(*c))
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_PEER_NAME)
+        .collect()
+}
+
+/// Addresses another device sent: only those that parse as `ip:port`
+/// (written back in canonical form), no repeats, at most [`MAX_PEER_ADDRS`].
+pub fn clean_peer_addrs<S: AsRef<str>>(addrs: &[S]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in addrs {
+        let Ok(sa) = a.as_ref().parse::<std::net::SocketAddr>() else {
+            continue;
+        };
+        let s = sa.to_string();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+        if out.len() == MAX_PEER_ADDRS {
+            break;
+        }
+    }
+    out
+}
+
+impl PairedPeer {
+    /// The same peer with its name and addresses made safe to keep and show.
+    pub fn cleaned(self) -> Self {
+        Self {
+            name: clean_peer_name(&self.name),
+            addrs: clean_peer_addrs(&self.addrs),
+            id: self.id,
+        }
+    }
+}
+
 /// Persistent set of pinned peers. Only peers in the store may connect.
 pub trait PeerStore {
     fn get(&self, id: &PeerId) -> Option<PairedPeer>;
@@ -176,10 +237,21 @@ pub trait PeerStore {
     /// for new connections immediately; callers must also close live ones.
     fn remove(&mut self, id: &PeerId) -> bool;
     fn list(&self) -> Vec<PairedPeer>;
+    /// [`Self::pin`] for a decision the user is told about: an error means the
+    /// peer is not pinned (nothing changed, in memory or on disk).
+    fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
+        self.pin(peer);
+        Ok(())
+    }
+    /// [`Self::remove`] for a decision the user is told about: an error means
+    /// the peer is still paired (nothing changed, in memory or on disk).
+    fn try_remove(&mut self, id: &PeerId) -> std::io::Result<bool> {
+        Ok(self.remove(id))
+    }
 }
 
 /// In-memory [`PeerStore`] used in tests and as the base for persistent stores.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MemoryPeerStore {
     peers: BTreeMap<PeerId, PairedPeer>,
 }
@@ -204,7 +276,8 @@ impl PeerStore for MemoryPeerStore {
 
 /// [`PeerStore`] persisted to a small text file (one peer per line:
 /// `hex id<TAB>name<TAB>addr,addr`). Every change is written atomically
-/// (temp file + rename). Names have tabs and newlines replaced.
+/// and durably (temp file, flushed to disk, then rename). What is kept is
+/// [`PairedPeer::cleaned`]: names without controls, only `ip:port` addresses.
 pub struct FilePeerStore {
     path: std::path::PathBuf,
     mem: MemoryPeerStore,
@@ -230,49 +303,80 @@ impl FilePeerStore {
         Ok(Self { path, mem })
     }
 
-    fn save(&self) -> std::io::Result<()> {
+    fn save(&self, peers: &MemoryPeerStore) -> std::io::Result<()> {
         let mut out = String::new();
-        for p in self.mem.list() {
-            let name: String = p
-                .name
-                .chars()
-                .map(|c| {
-                    if matches!(c, '\t' | '\n' | '\r') {
-                        ' '
-                    } else {
-                        c
-                    }
-                })
-                .collect();
-            out.push_str(&format!("{}\t{}\t{}\n", p.id, name, p.addrs.join(",")));
+        for p in peers.list() {
+            // Never a tab, line break or comma inside a field, whatever the
+            // caller pinned: one line is exactly one peer.
+            let p = p.cleaned();
+            out.push_str(&format!("{}\t{}\t{}\n", p.id, p.name, p.addrs.join(",")));
         }
-        let tmp = self.path.with_extension("tmp");
-        {
-            use std::io::Write;
-            let mut f = std::fs::File::create(&tmp)?;
-            f.write_all(out.as_bytes())?;
-            f.sync_all()?;
-        }
-        std::fs::rename(tmp, &self.path)
+        write_atomic(&self.path, out.as_bytes())
     }
 }
 
+/// Replace `path` so that a crash or power loss leaves the old content or the
+/// new one, never an empty file: the bytes reach the disk before the rename.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        rename_over(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written?;
+    // The rename itself should survive a power loss too. Best effort: once
+    // the rename succeeded the new content is what is on disk, and an error
+    // now would tell the caller "nothing changed" when it did (a pairing
+    // reported failed but kept, a removal reported failed but done).
+    // Windows cannot open a folder as a file and flushes the entry with the
+    // rename.
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
+}
+
+/// A virus scanner or backup agent holding the target for a moment makes a
+/// rename on Windows fail with "access denied"; a short retry rides that out.
+fn rename_over(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 4 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
+/// One store line: `id<TAB>name<TAB>addrs` (every version wrote three
+/// fields; two are accepted). More fields mean the line was tampered with.
 fn parse_peer_line(line: &str) -> Option<PairedPeer> {
-    let mut parts = line.split('\t');
-    let hex = parts.next()?;
-    let name = parts.next()?.to_owned();
-    let addrs = parts
-        .next()
-        .unwrap_or("")
-        .split(',')
-        .filter(|a| !a.is_empty())
-        .map(str::to_owned)
-        .collect();
-    Some(PairedPeer {
-        id: PeerId::from_hex(hex).ok()?,
-        name,
-        addrs,
-    })
+    let parts: Vec<&str> = line.split('\t').collect();
+    if !(2..=3).contains(&parts.len()) {
+        return None;
+    }
+    let addrs: Vec<String> = parts
+        .get(2)
+        .map_or(Vec::new(), |a| a.split(',').map(str::to_owned).collect());
+    Some(
+        PairedPeer {
+            id: PeerId::from_hex(parts[0]).ok()?,
+            name: parts[1].to_owned(),
+            addrs,
+        }
+        .cleaned(),
+    )
 }
 
 impl PeerStore for FilePeerStore {
@@ -280,23 +384,40 @@ impl PeerStore for FilePeerStore {
         self.mem.get(id)
     }
 
-    /// Persists immediately; on I/O failure the in-memory change is kept
-    /// and the error is only visible on the next successful save.
+    /// Best effort, for what nobody is told about (a new address for a peer
+    /// that is already paired): on I/O failure the in-memory change is kept
+    /// and reaches the file with the next successful save. Use
+    /// [`PeerStore::try_pin`] when the user is told the peer is paired.
     fn pin(&mut self, peer: PairedPeer) {
-        self.mem.pin(peer);
-        let _ = self.save();
+        self.mem.pin(peer.cleaned());
+        let _ = self.save(&self.mem);
     }
 
+    /// False also when the removal could not be saved: the peer is still paired.
     fn remove(&mut self, id: &PeerId) -> bool {
-        let removed = self.mem.remove(id);
-        if removed {
-            let _ = self.save();
-        }
-        removed
+        self.try_remove(id).unwrap_or(false)
     }
 
     fn list(&self) -> Vec<PairedPeer> {
         self.mem.list()
+    }
+
+    fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
+        let mut next = self.mem.clone();
+        next.pin(peer.cleaned());
+        self.save(&next)?;
+        self.mem = next;
+        Ok(())
+    }
+
+    fn try_remove(&mut self, id: &PeerId) -> std::io::Result<bool> {
+        let mut next = self.mem.clone();
+        if !next.remove(id) {
+            return Ok(false);
+        }
+        self.save(&next)?;
+        self.mem = next;
+        Ok(true)
     }
 }
 
@@ -319,9 +440,7 @@ pub fn load_or_create_identity(path: &std::path::Path) -> std::io::Result<Identi
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, id.seed())?;
-            std::fs::rename(tmp, path)?;
+            write_atomic(path, &id.seed())?;
             Ok(id)
         }
         Err(e) => Err(e),
@@ -477,6 +596,124 @@ mod tests {
         let s = FilePeerStore::open(&path).unwrap();
         assert_eq!(s.list().len(), 1);
         assert_eq!(s.get(&good).unwrap().addrs, Vec::<String>::new());
+    }
+
+    fn peer(seed: u8) -> PairedPeer {
+        PairedPeer {
+            id: id(seed).peer_id(),
+            name: format!("peer {seed}"),
+            addrs: vec!["10.0.0.2:47100".into()],
+        }
+    }
+
+    /// A folder where the temp file goes makes every save fail, on any OS.
+    fn break_saves(path: &std::path::Path) -> std::path::PathBuf {
+        let tmp = path.with_extension("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn a_remove_that_cannot_be_saved_reports_it_and_changes_nothing() {
+        let path = temp_dir("remove-fail").join("peers.txt");
+        let mut s = FilePeerStore::open(&path).unwrap();
+        let p = peer(1);
+        s.try_pin(p.clone()).unwrap();
+        let block = break_saves(&path);
+        assert!(s.try_remove(&p.id).is_err(), "the failure must be reported");
+        assert_eq!(s.get(&p.id), Some(p.clone()), "still paired, as on disk");
+        assert!(!s.remove(&p.id), "the plain call does not claim success");
+        assert_eq!(s.get(&p.id), Some(p.clone()));
+        assert!(FilePeerStore::open(&path).unwrap().get(&p.id).is_some());
+        // Trying again once the problem is gone works, and survives a restart.
+        std::fs::remove_dir(&block).unwrap();
+        assert!(s.try_remove(&p.id).unwrap());
+        assert!(FilePeerStore::open(&path).unwrap().get(&p.id).is_none());
+    }
+
+    #[test]
+    fn a_pin_that_cannot_be_saved_reports_it_and_changes_nothing() {
+        let path = temp_dir("pin-fail").join("peers.txt");
+        let mut s = FilePeerStore::open(&path).unwrap();
+        let old = peer(1);
+        s.try_pin(old.clone()).unwrap();
+        let block = break_saves(&path);
+        assert!(s.try_pin(peer(2)).is_err());
+        assert_eq!(s.get(&peer(2).id), None);
+        let renamed = PairedPeer {
+            name: "other".into(),
+            ..old.clone()
+        };
+        assert!(s.try_pin(renamed.clone()).is_err());
+        assert_eq!(s.get(&old.id), Some(old), "the old entry is kept");
+        std::fs::remove_dir(&block).unwrap();
+        s.try_pin(renamed.clone()).unwrap();
+        assert_eq!(FilePeerStore::open(&path).unwrap().list(), vec![renamed]);
+    }
+
+    #[test]
+    fn a_peer_supplied_address_cannot_plant_a_second_peer() {
+        let path = temp_dir("plant").join("peers.txt");
+        let planted = id(2).peer_id();
+        let evil = PairedPeer {
+            id: id(1).peer_id(),
+            name: format!("A\n{planted}\tB\t"),
+            addrs: vec![
+                format!("1.2.3.4:1\n{planted}\tMy Phone\t10.0.0.9:1"),
+                "10.0.0.2:47100".into(),
+                "1.2.3.4:5,6.7.8.9:10".into(),
+                "not an address".into(),
+            ],
+        };
+        let mut s = FilePeerStore::open(&path).unwrap();
+        s.try_pin(evil.clone()).unwrap();
+        s.pin(evil.clone());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        let back = FilePeerStore::open(&path).unwrap();
+        assert_eq!(back.list().len(), 1);
+        assert!(back.get(&planted).is_none());
+        let got = back.get(&evil.id).unwrap();
+        assert_eq!(got.addrs, vec!["10.0.0.2:47100".to_string()]);
+        assert!(!got.name.contains(['\t', '\n', '\r']));
+        assert_eq!(s.get(&evil.id), Some(got), "memory matches the file");
+    }
+
+    #[test]
+    fn names_and_address_lists_are_bounded() {
+        let addrs: Vec<String> = (1..=9).map(|i| format!("10.0.0.{i}:1")).collect();
+        assert_eq!(clean_peer_addrs(&addrs), addrs[..MAX_PEER_ADDRS].to_vec());
+        assert_eq!(
+            clean_peer_addrs(&["[::1]:5", "[::1]:5", "x:1", "10.0.0.1"]),
+            vec!["[::1]:5".to_string()]
+        );
+        let long = "é".repeat(500);
+        assert_eq!(clean_peer_name(&long).chars().count(), MAX_PEER_NAME);
+        assert_eq!(
+            clean_peer_name("Pixel\u{202e}gpj.exe\t\n"),
+            "Pixelgpj.exe  "
+        );
+    }
+
+    #[test]
+    fn open_refuses_lines_with_extra_fields_and_keeps_old_ones() {
+        let path = temp_dir("fields").join("peers.txt");
+        let (a, b, c) = (id(1).peer_id(), id(2).peer_id(), id(3).peer_id());
+        std::fs::write(
+            &path,
+            format!(
+                "{a}\tOld\t10.0.0.2:47100,[::1]:5\n{b}\tTwo fields\n{c}\tX\t10.0.0.3:1\textra\n"
+            ),
+        )
+        .unwrap();
+        let s = FilePeerStore::open(&path).unwrap();
+        let ids: Vec<PeerId> = s.list().iter().map(|p| p.id).collect();
+        assert!(ids.contains(&a) && ids.contains(&b), "old lines still load");
+        assert!(!ids.contains(&c), "a line with a fourth field is refused");
+        assert_eq!(
+            s.get(&a).unwrap().addrs,
+            vec!["10.0.0.2:47100".to_string(), "[::1]:5".to_string()]
+        );
     }
 
     #[test]

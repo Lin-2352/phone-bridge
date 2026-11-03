@@ -132,6 +132,13 @@ impl Node {
         })
         .await
         .map_err(|_| Error::Timeout)??;
+        if !crate::screen::usable_video(accept.codec, accept.width, accept.height, accept.rotation)
+        {
+            s.conn.close(0u32.into(), b"unusable video format");
+            return Err(Error::Protocol(
+                "the phone sent an unusable video format".into(),
+            ));
+        }
         let conn = s.conn.clone();
         let mut video = tokio::time::timeout(STREAM_TIMEOUT, conn.accept_uni())
             .await

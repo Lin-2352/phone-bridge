@@ -200,6 +200,13 @@ pub enum PbEvent {
         total: u64,
         incoming: bool,
     },
+    /// The question `id` (`IncomingOffer`, `ControlRequest`, `ScreenRequest`
+    /// or `CameraRequest`) is over without an answer from the app: the PC
+    /// gave up or went away, or the time ran out. Close its notification and
+    /// window; an answer now would do nothing. (Audio has `AudioAskEnded`.)
+    AskEnded {
+        id: u64,
+    },
 }
 
 /// Cancel handles of the transfers running now, by direction (true = incoming): the phone shows
@@ -922,6 +929,81 @@ fn image_file_name(png: &[u8]) -> String {
     format!("clipboard-{hex}.png")
 }
 
+/// Folder inside incoming/ for received clipboard pictures. Its dot keeps it
+/// apart from received files, whose names never start with one.
+const IMAGE_DIR: &str = ".clipboard";
+
+/// Drop the pending question `id`; if the app never answered it (its entry
+/// is still there: answering removes it), tell the app it is over.
+fn end_ask<T>(pending: &Mutex<std::collections::HashMap<u64, T>>, id: u64, events: &Events) {
+    let unanswered = pending
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&id)
+        .is_some();
+    if unanswered {
+        push(events, PbEvent::AskEnded { id });
+    }
+}
+
+/// What a killed process left in incoming/. A whole received file was
+/// already reported "saved" to the sender, so it is returned to be offered
+/// to the app again. Leftovers go: unfinished `.name.partial-*` files and
+/// clipboard pictures (dot names), and empty files (a name reserved just
+/// before a rename that never happened; an empty file loses nothing).
+fn recover_incoming(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
+    let mut whole = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return whole;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Ok(meta) = e.metadata() else { continue };
+        let junk = e.file_name().to_string_lossy().starts_with('.');
+        if meta.is_dir() {
+            if junk {
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        } else if junk || meta.len() == 0 {
+            let _ = std::fs::remove_file(&path);
+        } else {
+            whole.push((path, meta.len()));
+        }
+    }
+    whole
+}
+
+/// Text the clipboard sync sends: not empty, and within what the wire takes
+/// (a longer one would fail after a full connect, on every sync).
+fn syncable(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_CLIPBOARD_TEXT
+}
+
+/// A peer's codec list as Kotlin gets it: known codecs only (1 H.265
+/// Main10, 2 H.265, 3 H.264); a cast would turn 257 into 1.
+fn codec_list(codecs: &[u32]) -> Vec<u8> {
+    codecs
+        .iter()
+        .filter(|c| pb_video::Codec::from_u32(**c).is_some())
+        .filter_map(|c| u8::try_from(*c).ok())
+        .collect()
+}
+
+/// A camera size the app supports: the 16:9 sizes the protocol names;
+/// anything else asks for 1280x720.
+fn camera_size(width: u32, height: u32) -> (u32, u32) {
+    match (width, height) {
+        (1920, 1080) | (1280, 720) => (width, height),
+        _ => (1280, 720),
+    }
+}
+
+/// A sender-chosen file name as the prompt and progress show it: the name
+/// it will be saved under (no hidden or control characters, bounded).
+fn shown_name(raw: &str) -> String {
+    pb_transport::files::sanitize_file_name(raw)
+}
+
 fn clip_hash(text: &str) -> [u8; 32] {
     use sha2::Digest;
     sha2::Sha256::digest(text.as_bytes()).into()
@@ -949,14 +1031,31 @@ pub async fn start_node(
         discovery_port: Some(pb_transport::discovery::DISCOVERY_PORT),
         tuning: Default::default(),
     };
-    // Anything still in incoming/ was left by a process the system killed
-    // mid-transfer or mid-save; it would otherwise use storage forever.
-    if let Ok(entries) = std::fs::read_dir(dir.join("incoming")) {
-        for e in entries.flatten() {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
+    // A process the system killed mid-transfer or mid-save left things in
+    // incoming/: partial files go, whole files are offered again below.
+    let recovered = recover_incoming(&dir.join("incoming"));
     let (node, ev) = Node::bind(&identity, store, config).await.map_err(fail)?;
+    // The sender was told "saved": hand each whole file to the app again
+    // (it moves it to the save folder). The sender's name was not kept.
+    let sender = match node.paired_peers().as_slice() {
+        [only] => only.name.clone(),
+        _ => "A paired device".to_owned(),
+    };
+    for (path, size) in recovered {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        push(
+            &listener,
+            PbEvent::FileReceived {
+                peer_name: sender.clone(),
+                path: path.display().to_string(),
+                name,
+                size,
+            },
+        );
+    }
     let shared = Arc::new(Shared {
         events: listener.clone(),
         incoming_dir: dir.join("incoming"),
@@ -1134,10 +1233,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             }
                             () = s.closed() => false,
                         };
-                        sh.pending
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .remove(&ask);
+                        end_ask(&sh.pending, ask, &sh.events);
                         answer
                     }
                 };
@@ -1209,7 +1305,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         PbEvent::IncomingOffer {
                             id: ask,
                             peer_name: name.clone(),
-                            name: offer.name.clone(),
+                            name: shown_name(&offer.name),
                             size: offer.size,
                         },
                     );
@@ -1219,13 +1315,10 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         }
                         () = s.closed() => false,
                     };
-                    sh.pending
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&ask);
+                    end_ask(&sh.pending, ask, &sh.events);
                     answer
                 };
-                let file_name = offer.name.clone();
+                let file_name = shown_name(&offer.name);
                 let started = std::time::Instant::now();
                 let guard = CancelGuard::new(true);
                 let received = receive_offer_with(
@@ -1284,9 +1377,17 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         },
                     ),
                     Ok(Received::Image(png)) => {
-                        let path = sh.incoming_dir.join(image_file_name(&png));
-                        let saved = std::fs::create_dir_all(&sh.incoming_dir)
-                            .and_then(|()| std::fs::write(&path, &png));
+                        // Apart from received files, so a restart never
+                        // takes a picture for one (see `recover_incoming`).
+                        let images = sh.incoming_dir.join(IMAGE_DIR);
+                        let path = images.join(image_file_name(&png));
+                        // Up to 10 MiB: off the async threads (2 on the phone).
+                        let p = path.clone();
+                        let saved = tokio::task::spawn_blocking(move || {
+                            std::fs::create_dir_all(&images).and_then(|()| std::fs::write(&p, &png))
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         push(
                             &sh.events,
                             match saved {
@@ -1405,10 +1506,10 @@ async fn camera_session(
         PbEvent::CameraRequest {
             id: ask,
             peer_name: name,
-            lens: start.lens,
-            width: start.width,
-            height: start.height,
-            codecs: start.codecs.iter().map(|c| *c as u8).collect(),
+            lens: start.lens.min(1),
+            width: camera_size(start.width, start.height).0,
+            height: camera_size(start.width, start.height).1,
+            codecs: codec_list(&start.codecs),
             resume,
         },
     );
@@ -1419,10 +1520,7 @@ async fn camera_session(
         }
         () = s.closed() => None,
     };
-    sh.camera_pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&ask);
+    end_ask(&sh.camera_pending, ask, &sh.events);
     let Some((acc, cam)) = answer else {
         let _ = pb_transport::camera::serve_camera(s, start, None).await;
         release_camera(&sh);
@@ -1563,7 +1661,7 @@ async fn screen_session(
             max_long_side: start.max_long_side,
             sharp: start.sharp,
             dim: start.dim,
-            codecs: start.codecs.iter().map(|c| *c as u8).collect(),
+            codecs: codec_list(&start.codecs),
             resume,
         },
     );
@@ -1574,10 +1672,7 @@ async fn screen_session(
         }
         () = s.closed() => None,
     };
-    sh.screen_pending
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&ask);
+    end_ask(&sh.screen_pending, ask, &sh.events);
     let Some((acc, screen)) = answer else {
         let _ = pb_transport::screen::serve_screen(s, start, None).await;
         release_screen(&sh);
@@ -1791,6 +1886,21 @@ impl PbNode {
             .is_some_and(|p| self.node.unpair(&p.id))
     }
 
+    /// [`Self::unpair`] for the Remove button: `false` when it was not
+    /// paired; an error when the removal could not be saved, and then the
+    /// device is still paired and can still connect: tell the user.
+    pub fn try_unpair(&self, peer_id: String) -> Result<bool, PbError> {
+        match self
+            .node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id.to_string() == peer_id)
+        {
+            Some(p) => self.node.try_unpair(&p.id).map_err(fail),
+            None => Ok(false),
+        }
+    }
+
     /// Send clipboard text to a paired device (user action only).
     pub async fn send_clipboard(
         &self,
@@ -1907,7 +2017,7 @@ impl PbNode {
             .shared
             .clipboard_sync
             .load(std::sync::atomic::Ordering::Relaxed)
-            || text.is_empty()
+            || !syncable(&text)
         {
             return Ok(());
         }
@@ -2361,6 +2471,82 @@ mod android_init {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Seen(Mutex<Vec<u64>>);
+    impl EventListener for Seen {
+        fn on_event(&self, e: PbEvent) -> Result<(), PbError> {
+            if let PbEvent::AskEnded { id } = e {
+                self.0.lock().unwrap().push(id);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn clipboard_sync_skips_empty_and_oversized_text() {
+        assert!(!syncable(""));
+        assert!(syncable("hi"));
+        assert!(syncable(&"a".repeat(MAX_CLIPBOARD_TEXT)));
+        assert!(!syncable(&"a".repeat(MAX_CLIPBOARD_TEXT + 1)));
+    }
+
+    #[test]
+    fn peer_codec_lists_keep_only_known_codecs() {
+        assert_eq!(codec_list(&[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(codec_list(&[257, 0, 3, 4, u32::MAX, 1]), vec![3, 1]);
+    }
+
+    #[test]
+    fn offer_names_shown_to_the_user_are_safe_and_short() {
+        let shown = shown_name(&format!("report\u{202e}fdp.exe{}", "x".repeat(70_000)));
+        assert!(!shown.contains('\u{202e}'));
+        assert!(shown.starts_with("reportfdp.exe"));
+        assert!(shown.len() <= 200);
+    }
+
+    #[test]
+    fn a_question_dropped_without_an_answer_is_withdrawn() {
+        let seen = Arc::new(Seen::default());
+        let events: Events = seen.clone();
+        let pending: Mutex<std::collections::HashMap<u64, ()>> = Mutex::default();
+        pending.lock().unwrap().insert(7, ());
+        pending.lock().unwrap().insert(8, ());
+        // 8 was answered by the app: its entry is gone already.
+        pending.lock().unwrap().remove(&8);
+        end_ask(&pending, 7, &events);
+        end_ask(&pending, 8, &events);
+        assert_eq!(*seen.0.lock().unwrap(), vec![7]);
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn whole_received_files_survive_a_restart_and_only_leftovers_go() {
+        let dir = std::env::temp_dir().join(format!("pb-ffi-incoming-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(IMAGE_DIR)).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"12345").unwrap();
+        std::fs::write(dir.join("clipboard-0011223344556677.png"), b"peer file").unwrap();
+        std::fs::write(dir.join(".photo.jpg.partial-00000000000000ab"), b"12").unwrap();
+        std::fs::write(dir.join("placeholder.bin"), b"").unwrap();
+        std::fs::write(dir.join(IMAGE_DIR).join("clipboard-ab.png"), b"png").unwrap();
+        let mut got = recover_incoming(&dir);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (dir.join("clipboard-0011223344556677.png"), 9),
+                (dir.join("photo.jpg"), 5),
+            ]
+        );
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["clipboard-0011223344556677.png", "photo.jpg"]);
+        assert!(recover_incoming(&dir.join("missing")).is_empty());
+    }
 
     fn sample(text: &str) -> PbNotification {
         PbNotification {

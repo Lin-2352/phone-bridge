@@ -5,9 +5,10 @@ Status: draft. Matches the `pb-protocol` crate at protocol version 0. Versions m
 ## Layers
 1. **QUIC** (iroh 1.3.0 / noq) provides encryption, authentication of the peer's Ed25519 key, streams and unreliable datagrams.
 2. **ALPN** `pb/0` for sessions, `pb-pair/0` for pairing. (Spikes used `pb-spike/0`.) Session connections from peers not in the paired-peer store are closed with application code 403 before any stream is read.
+   Application close codes: 0 bye, 200 file saved, 300 transfer cancelled, 400 pairing refused or transfer failed, 403 not paired, 426 incompatible protocol version (`Hello`), 500 the joiner could not save the pairing.
 3. **Control stream**: the first bidirectional stream opened by the connecting side. Carries length-prefixed protobuf frames.
 4. **Feature streams**: one bidirectional stream per transfer (files, clipboard payloads, camera). Each begins with a frame naming the feature.
-5. **Datagrams**: unreliable, unordered, small. Used for input and low-latency media.
+5. **Datagrams**: unreliable, unordered, small. Used for audio PCM only (input travels on a reliable stream).
 
 ## Control frames
 ```
@@ -21,8 +22,8 @@ body   = protobuf message (prost), at most 65536 bytes
 ### `Hello` (both sides send it first)
 | Field | Tag | Type | Notes |
 |---|---|---|---|
-| `protocol_version` | 1 | uint32 | Must equal the receiver's version, else close |
-| `device_name` | 2 | string | User-visible; only sent after authentication, never in discovery |
+| `protocol_version` | 1 | uint32 | Must equal the receiver's version, else close with code 426 (reported as "update both devices") |
+| `device_name` | 2 | string | User-visible; only sent after authentication, never in discovery. Receivers show the name saved at pairing, not this field |
 | `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera`, `audio` (the audio messages, tags 25 to 27; a requester that does not see it fails at once instead of waiting for a reply an older peer never sends) |
 
 ### `Control` envelope (session stream)
@@ -35,15 +36,16 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 1. joiner -> host `PairStart { token, commitment = SHA-256("phone-bridge/commit/v0" || nonce_j), device_name, addrs }`
 2. host -> joiner `PairNonce { nonce_h, device_name }`
 3. joiner -> host `PairReveal { nonce_j }` (host verifies the commitment)
-4. both show `SAS = 6 digits of SHA-256("phone-bridge/sas/v0" || sorted(id, nonce) pairs)`; each side sends `PairConfirm { accepted }`. Pinned only if both accept.
-5. Close order: joiner finishes its stream, host finishes after reading the joiner's confirm, joiner closes after the host's end-of-stream (closing earlier can discard an unread confirm).
+4. both show `SAS = 6 digits of SHA-256("phone-bridge/sas/v0" || sorted(id, nonce) pairs)`; each side sends `PairConfirm { accepted }`. The joiner sends its confirm first; the host reads it before sending its own and answers `accepted: true` only when both users accepted and it has saved the pairing. A joiner that declines closes at once (400); the host then stops waiting for its own user.
+5. Close order: joiner finishes its stream, host finishes after its confirm, joiner closes after the host's end-of-stream (closing earlier can discard an unread confirm): code 0 once it saved the pairing, 500 when it could not, and the host then removes its own entry.
+6. Peer-supplied values are checked on receipt: only addresses that parse as `ip:port` are kept (canonical form, at most 6; the same for the addresses in a pasted code), and device names lose control and hidden bidi/zero-width characters and are cut to 64 characters.
 
 ### Sharing (AirDrop-style), one session per transfer
-1. sender -> `Offer { id: u64 random, kind: File|Text|Link, name, size, mime, text }` (text/links inline, max 60 KiB)
+1. sender -> `Offer { id: u64 random, kind: File|Text|Link|ClipboardImage, name, size, mime, text }` (text/links inline, max 60 KiB)
 2. receiver -> `OfferReply { id, accept, too_large }` (auto-accept from paired devices is a receiver setting; otherwise the user is asked; offers over the size cap (4 GiB default) or the receiver's free space are declined with `too_large = true` (tag 3; older peers leave it false), so the sender can say why)
 3. File only: sender opens a unidirectional QUIC stream: `FileHeader { id }` frame, then exactly `size` raw bytes; then `TransferDone { id, sha256 }` on the control stream.
-4. Receiver writes `.<name>.partial-<id>`, checks byte count and SHA-256, then renames to a unique sanitised name (`name (2).ext` on collision); any failure deletes the partial.
-5. Close order: whoever reads the last message closes (sender after a decline/text reply; receiver after `TransferDone`). The receiver closes with code 0 only once the file is saved under its final name, and with 400 if it did not arrive intact or could not be saved; the sender reports success only on 0.
+4. Receiver writes `.<name>.partial-<16 hex digits chosen locally>` (the offer id is the peer's choice and may repeat), checks byte count and SHA-256, then renames to a unique sanitised name (`name (2).ext` on collision); any failure deletes the partial. A `ClipboardImage` (at most 10 MiB) is received in memory with the same checks and never written to the receive folder.
+5. Close order: whoever reads the last message closes (sender after a decline/text reply; receiver after `TransferDone`). The receiver closes with code 200 only once the file is saved under its final name, with 400 if it did not arrive intact or could not be saved, and either side closes with 300 when its user cancels; the sender reports success only on 200 (0 is also what QUIC uses for a dropped connection).
 
 ### Universal Clipboard
 `ClipboardUpdate { text, hash = SHA-256(text) }`, sent automatically when the setting is on at both ends. Each side remembers the hash of the last text it received and sent and never re-sends it (no ping-pong). Content marked private (Windows `ExcludeClipboardContentFromMonitorProcessing`, Android `EXTRA_IS_SENSITIVE`) is never sent. Android can only read the clipboard while focused: phone->PC sync runs when the app gains focus (only if the clipboard changed since the last sync, persisted) and on the Send clipboard tile/notification.
@@ -54,7 +56,7 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 ### Shared mouse and keyboard
 1. controller -> `InputStart { id }` (control tag 9); receiver -> `OfferReply { id, accept }`. The PC accepts only if "Let my phone control this PC" is on. The phone needs its accessibility service ("Phone Bridge control") enabled, and then accepts at once if "Let my PC control this phone" is on; otherwise it asks the user (popup plus notification) and declines after 30 s without an answer.
 2. Controller opens one unidirectional stream and writes a no-op move (0, 0) at once, so the stream exists for the receiver even if the user is idle (receivers wait 10 s for it); then fixed 8-byte records: `kind u8 | flags u8 | seq u16 | a i16 | b i16` (little-endian). Kinds: 0 move (dx, dy), 1 button (button, flags&1 = pressed), 2 wheel (dx, dy in 1/120 notches), 3 key (PC set-1 scan code, 0xE0xx extended), 4 character (one UTF-16 unit).
-3. Reliable and ordered (not datagrams): a lost key-up or click would be worse than any latency on a local link. Moves queued faster than the link drains are summed into one record. The sender paces itself to stay inside the receiver's limits (receiver: 1000 moves/s dropped beyond, 400 other events/s and 2000 records/s end the session): token buckets of 800 moves/s and 250 other events/s with bursts of 100, so excess moves merge and a long paste is typed out over a few seconds.
+3. Reliable and ordered (not datagrams): a lost key-up or click would be worse than any latency on a local link. Moves queued faster than the link drains are summed into one record. The sender paces itself to stay inside the receiver's limits (receiver: 2000 moves/s dropped beyond, 1000 other events/s and 4000 records/s end the session): token buckets of 800 moves/s and 250 other events/s with bursts of 100, so excess moves merge and a long paste is typed out over a few seconds.
 4. The session ends when the stream ends; the receiver closes. Whatever is still pressed is released on the receiver.
 5. The receiver can end a session at any time (the user taps Stop or turns control off): it closes the connection, and the controller sees the session end and returns its mouse and keyboard to the PC.
 
@@ -148,13 +150,15 @@ Control messages, tags 25 to 27. The requester (whoever connected) sends `AudioS
 **Session:**
 1. Consent is given on the device whose audio is shared, before the request (PC audio) or before the accept (phone audio). There is no auto-accept and no resume after a drop.
 2. A requester checks the peer's `Hello` for `audio` first; without it the request fails as unsupported and nothing is sent.
-3. After an accepting `AudioAccept`, the sender opens a uni stream: `PBA0`, then repeated `u32 len LE | len bytes` of raw PCM (i16 LE, interleaved). The receiver closes the stream and the session if the magic is wrong, or a length is 0, above 65536, not a multiple of `2 x channels`, or the stream ends mid-frame.
+3. After an accepting `AudioAccept`, the PCM travels in QUIC datagrams, never on a stream. Each datagram: `seq u32 LE | sender clock in ms u32 LE | PCM` (raw i16 LE, interleaved, 1 to 65536 bytes in whole sample groups, as many as fit the path's datagram size). Both ends need datagram support: a responder without it refuses with `unavailable`, a requester closes ("no datagrams"). A malformed datagram (shorter than the 8-byte header, or PCM outside the limits) closes the session. The old uni-stream format with the `PBA0` magic is gone.
+   - Why datagrams: a reliable stream retransmits in order, so during a Wi-Fi stall QUIC buffered seconds of audio and the listener heard it late. Measured on a simulated 3 s blackout: audio was 3085 ms old one second after the link came back on the stream design, 2 ms on datagrams.
+   - Receiver: a packet older than the newest one already played (lower `seq`) is late and dropped. A gap of lost packets up to 40 ms is filled with silence so playback keeps its timing; a longer gap (a stall) is not filled, which would only add delay.
 4. Each field is validated by whoever receives it, on both sides: `AudioStart` by the responder (a violation is answered with `reason = bad_params` and the user is not asked), `AudioAccept` by the requester (a format outside the limits closes the connection). One session per direction at a time per device; a second request in a direction in use is refused with `busy`.
-5. Both ends queue about 300 ms of audio (a frame is dropped, oldest first, past that) so a slow consumer never stalls the sender. A failed write, a limit violation, `AudioStop`, a lost link, or dropping the session ends it, and each side is told once why.
+5. The sender's QUIC datagram buffer holds about 100 ms (`tuning.rs`, `DATAGRAM_SEND_BUFFER` 20 KiB) and the receiver queues 100 ms; both drop the oldest audio past that, so a slow consumer never stalls the sender and neither end can fall behind. A failed send, a limit violation, `AudioStop`, a lost link, or dropping the session ends it, and each side is told once why.
 6. **Roles in this version.** The PC is always the requester (it dials and sends `AudioStart`); the phone is always the responder. So `direction = 0` (phone audio on the PC) is asked for by the PC and consented on the phone, and `direction = 1` (PC audio on the phone) is consented on the PC before it dials. There is no message with which a phone asks the PC to start, so the phone's Home tiles for audio only point at the PC and stop a session that runs. Adding one ("please ask me") would be a new tag and is deliberately not part of this version.
 7. **The microphone** (`source = 1`) is part of the wire format and the phone side (Relay dialog on every request, no skip setting, microphone service type), but nothing on the PC sends it: the PC UI offers playback only. It stays unreachable from the apps until a phone-initiated start exists.
 
-## Input datagram (fixed 8 bytes, little-endian)
+## Input record (fixed 8 bytes, little-endian)
 ```
 offset 0  kind   u8    0 MouseMove, 1 MouseButton, 2 Wheel, 3 Key
 offset 1  flags  u8    bit 0 = pressed (Button, Key)
@@ -165,18 +169,16 @@ kind 5 Touch: flags = phase (0 hover, 1 down, 2 move, 3 up); a, b = x, y as u16 
 kind 6 Pinch: flags bit 0 = out (zoom in); a, b = centre x, y as u16
 ```
 - Wheel units are 1/120 of a notch.
-- Keys are hardware scan codes so layouts do not matter; text entry will use a separate reliable path.
-- Datagrams are lossy: a lost key-up must not leave a key stuck. The sender sends a periodic state heartbeat and the receiver releases all keys and buttons if the heartbeat stops (250 ms) or the connection drops. **Heartbeat message not yet defined.**
-- Maximum datagram payload is about 1162 to 1414 bytes depending on the path MTU, so these are far below the limit.
+- Keys are hardware scan codes so layouts do not matter; text arrives as kind 4 (one UTF-16 unit) on the same stream.
+- Records travel on the reliable, ordered input stream (see Shared mouse and keyboard), not in datagrams, so none is lost. When the stream or the connection ends, the receiver releases every key and button still pressed. There is no input heartbeat.
 
 ## Limits (enforced in code)
-- Control frame body: 64 KiB. Inline text/links and clipboard text: 60 KiB. Files: 4 GiB default cap.
-- Input datagram: exactly 8 bytes, anything else is dropped.
-- Audio: sample rate 44100 or 48000, channels 1 or 2, frame 1 to 65536 bytes and a multiple of `2 x channels`, one session per direction, about 300 ms queued per end.
+- Control frame body: 64 KiB. Inline text/links and clipboard text: 60 KiB, checked by the senders; a receiver takes whatever fits the 64 KiB control frame. Files: 4 GiB default cap. Clipboard images: 10 MiB.
+- Input record: 8 bytes; one that does not decode is skipped (it still counts against the flood limit).
+- Audio: sample rate 44100 or 48000, channels 1 or 2, PCM per datagram 1 to 65536 bytes and a multiple of `2 x channels` after an 8-byte header, one session per direction, about 100 ms buffered by the sender and 100 ms queued by the receiver.
 
 ## Open items
 - ALPN naming and per-feature stream headers.
 - QR rendering of the pairing code (text only so far).
-- Heartbeat and key-release message.
 - Flow control and priorities between control, input and bulk traffic.
 - Version negotiation after 1.0.

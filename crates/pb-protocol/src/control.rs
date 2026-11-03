@@ -737,6 +737,9 @@ pub struct PairingCode {
     pub addrs: Vec<String>,
 }
 
+/// Addresses kept from a pairing code.
+pub const MAX_CODE_ADDRS: usize = 6;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct BadPairingCode;
 
@@ -786,13 +789,16 @@ impl std::str::FromStr for PairingCode {
         let mut parts = rest.splitn(3, ':');
         let host_id = unhex::<32>(parts.next().ok_or(BadPairingCode)?)?;
         let token = unhex::<16>(parts.next().ok_or(BadPairingCode)?)?;
-        let addrs = parts
-            .next()
-            .unwrap_or("")
-            .split(',')
-            .filter(|a| !a.is_empty())
-            .map(str::to_owned)
-            .collect();
+        // Pasted text is not trusted: keep only real `ip:port` addresses
+        // (canonical form, so no separator can ride along), at most six.
+        let mut addrs: Vec<String> = Vec::new();
+        for a in parts.next().unwrap_or("").split(',') {
+            if let Ok(sa) = a.parse::<std::net::SocketAddr>() {
+                if !addrs.contains(&sa.to_string()) && addrs.len() < MAX_CODE_ADDRS {
+                    addrs.push(sa.to_string());
+                }
+            }
+        }
         Ok(Self {
             host_id,
             token,
@@ -1012,6 +1018,25 @@ mod tests {
         assert_eq!(
             text.parse::<PairingCode>().unwrap().addrs,
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn pairing_code_keeps_only_real_addresses_and_at_most_six() {
+        let (id, tok) = ("cd".repeat(32), "ef".repeat(16));
+        let planted = "ab".repeat(32);
+        let text = format!(
+            "pb1:{id}:{tok}:1.2.3.4:1\n{planted}\tMy Phone\t,junk,10.0.0.2:47100,[fe80::1]:5"
+        );
+        assert_eq!(
+            text.parse::<PairingCode>().unwrap().addrs,
+            vec!["10.0.0.2:47100".to_string(), "[fe80::1]:5".to_string()]
+        );
+        let many: Vec<String> = (1..=9).map(|i| format!("10.0.0.{i}:1")).collect();
+        let text = format!("pb1:{id}:{tok}:{}", many.join(","));
+        assert_eq!(
+            text.parse::<PairingCode>().unwrap().addrs,
+            many[..6].to_vec()
         );
     }
 
