@@ -36,6 +36,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -82,6 +86,7 @@ import dev.phonebridge.app.Quick
 import dev.phonebridge.app.QuickTile
 import dev.phonebridge.app.Radius
 import dev.phonebridge.app.ScanActivity
+import dev.phonebridge.app.tileDisabledReason
 import dev.phonebridge.app.ScreenShare
 import dev.phonebridge.app.ScreenshotWatcher
 import dev.phonebridge.app.SendClipboardActivity
@@ -117,7 +122,7 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
+fun HomeTab(onTimeline: () -> Unit) {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
@@ -201,14 +206,13 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     }
 
     val timeline by Timeline.entries.collectAsState()
+    val historyOn by Timeline.historyOn.collectAsState()
     val recent = remember(timeline) { timeline.take(3).map(::recentItem) }
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         topBar = {
-            RelayTopBar(
-                title = APP_NAME,
-                actions = { IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, "Settings") } },
-            )
+            // No Settings button here: the bottom bar's Settings tab is the one way in.
+            RelayTopBar(title = APP_NAME)
         },
     ) { pad ->
         LazyColumn(
@@ -233,7 +237,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                 }
             }
             item(key = "grid") {
-                QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null)) { q ->
+                QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null), running, pc != null, { scope.launch { snack.showSnackbar(it) } }) { q ->
                     when (q) {
                         Quick.SendFile -> pickFiles.launch(arrayOf("*/*"))
                         // The activity reads the clipboard once it has focus (Android's rule), then closes.
@@ -255,7 +259,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                 }
             }
             if (recent.isEmpty()) {
-                item(key = "recent-empty") { Text("Nothing yet. Share a photo or file to $APP_NAME from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) }
+                item(key = "recent-empty") { Text(if (historyOn) "Nothing yet. Share a photo or file to $APP_NAME from any app." else "History is off, so nothing is listed here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) }
             }
             items(recent) { r ->
                 ListItem(
@@ -329,7 +333,7 @@ private fun HeroText(title: String, body: String?, accent: Boolean = false) {
 private fun NeedsCard(needs: List<Need>, modifier: Modifier, onFix: (Need) -> Unit) {
     Card(
         shape = RoundedCornerShape(Radius.card),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+        colors = CardDefaults.cardColors(containerColor = needsContainer(needs), contentColor = needsContent(needs)),
         modifier = modifier.fillMaxWidth().animateContentSize(),
     ) {
         Column(Modifier.padding(vertical = Spacing.md)) {
@@ -384,7 +388,7 @@ private fun NeedRow(title: String, body: String, fix: String, onFix: () -> Unit)
 
 /** The quick actions, two per row; a tap gives a haptic tick. */
 @Composable
-private fun QuickGrid(tiles: List<QuickTile>, onTap: (Quick) -> Unit) {
+private fun QuickGrid(tiles: List<QuickTile>, running: Boolean, paired: Boolean, say: (String) -> Unit, onTap: (Quick) -> Unit) {
     val haptics = LocalHapticFeedback.current
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
         tiles.chunked(2).forEach { row ->
@@ -392,9 +396,11 @@ private fun QuickGrid(tiles: List<QuickTile>, onTap: (Quick) -> Unit) {
                 row.forEach { tile ->
                     QuickCard(tile, Modifier.weight(1f)) {
                         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onTap(tile.quick)
+                        // A dimmed tile still answers: it says what is missing instead of doing nothing.
+                        if (tile.enabled) onTap(tile.quick) else say(tileDisabledReason(running, paired))
                     }
                 }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -417,7 +423,13 @@ private fun QuickCard(tile: QuickTile, modifier: Modifier, onClick: () -> Unit) 
     } else {
         CardDefaults.cardColors(containerColor = cardColor(), contentColor = MaterialTheme.colorScheme.onSurface)
     }
-    Card(onClick = onClick, enabled = tile.enabled, shape = RoundedCornerShape(Radius.card), colors = colors, modifier = modifier.animateContentSize()) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(Radius.card),
+        colors = colors,
+        modifier = modifier.animateContentSize().alpha(if (tile.enabled) 1f else 0.5f)
+            .semantics { if (!tile.enabled) stateDescription = "Unavailable" },
+    ) {
         Column(Modifier.fillMaxWidth().padding(Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             if (tile.on) Icon(tile.quick.icon(), null, Modifier.size(24.dp))
             else IconBadge(tile.quick.icon(), tintColor(if (tile.quick == Quick.Pair) RelayTint.Muted else RelayTint.Primary))
@@ -470,12 +482,12 @@ private fun removeForgottenPcs(ctx: Context) {
 }
 
 /** A system settings page; some OEM builds lack one, which must not crash Home. */
-private fun openSettings(ctx: Context, intent: Intent) {
+internal fun openSettings(ctx: Context, intent: Intent) {
     runCatching { ctx.startActivity(intent) }
         .onFailure { Toast.makeText(ctx, "This phone has no such settings page. Open Settings and find $APP_NAME there", Toast.LENGTH_LONG).show() }
 }
 
-private fun openAppDetails(ctx: Context) {
+internal fun openAppDetails(ctx: Context) {
     openSettings(ctx, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:${ctx.packageName}")))
 }
 
@@ -484,3 +496,12 @@ private fun forgottenPcNames(): List<String> {
     val node = Bridge.node ?: return emptyList()
     return runCatching { node.peers().filter { node.peerChanged(it.id) }.map { it.name } }.getOrDefault(emptyList())
 }
+
+/** Red only when the PC no longer recognises this phone; optional permissions use the neutral warning surface. */
+@Composable
+private fun needsContainer(needs: List<Need>) =
+    if (Need.PcForgotPhone in needs) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+
+@Composable
+private fun needsContent(needs: List<Need>) =
+    if (Need.PcForgotPhone in needs) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer

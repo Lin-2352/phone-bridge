@@ -110,7 +110,7 @@ fun RelayNavHost(start: Tab, startKey: Int = 0) {
             enterTransition = { fadeIn(tween(150)) },
             exitTransition = { fadeOut(tween(150)) },
         ) {
-            composable(Tab.Home.route) { HomeTab(onSettings = { go(Tab.Settings) }, onTimeline = { go(Tab.Timeline) }) }
+            composable(Tab.Home.route) { HomeTab(onTimeline = { go(Tab.Timeline) }) }
             composable(Tab.Timeline.route) { TimelineTab() }
             composable(Tab.Remote.route) { RemoteTab() }
             composable(Tab.Settings.route) { SettingsTab(onDone = { go(Tab.Home) }) }

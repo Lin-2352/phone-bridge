@@ -19,9 +19,15 @@ fun quickTiles(running: Boolean, paired: Boolean, cameraOn: Boolean, screenOn: B
         QuickTile(Quick.Screen, "Screen", screenOn, linked || screenOn),
         QuickTile(Quick.Camera, "Camera", cameraOn, linked || cameraOn),
         QuickTile(Quick.Touchpad, "Touchpad", false, linked),
-        QuickTile(Quick.Pair, "Pair", false, running),
+    ) + (
+        // With no PC the hero card already has the Pair button: the same action is not offered twice on Home.
+        if (paired) listOf(QuickTile(Quick.Pair, "Pair another PC", false, running)) else emptyList()
     )
 }
+
+/** Why a dimmed tile does nothing, for the message when it is tapped. */
+fun tileDisabledReason(running: Boolean, paired: Boolean): String =
+    if (!running) "Turn on $APP_NAME first" else if (!paired) "Pair a PC first" else ""
 
 /** The PC name on Home's link line; [dim] when it is the remembered name (Relay off or starting), not a live one. */
 data class HeroPc(val name: String?, val dim: Boolean)

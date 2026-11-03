@@ -22,9 +22,18 @@ class HomeCardsTest {
     }
 
     @Test
-    fun only_pair_works_while_not_paired() {
+    fun no_pair_tile_while_not_paired_because_the_hero_card_already_has_the_button() {
         val tiles = quickTiles(running = true, paired = false, cameraOn = false, screenOn = false)
-        assertEquals(listOf(Quick.Pair), tiles.filter { it.enabled }.map { it.quick })
+        assertTrue(tiles.none { it.quick == Quick.Pair })
+        assertTrue(tiles.none { it.enabled })
+        assertEquals(5, tiles.size)
+    }
+
+    @Test
+    fun a_dimmed_tile_says_why() {
+        assertEquals("Turn on $APP_NAME first", tileDisabledReason(running = false, paired = true))
+        assertEquals("Turn on $APP_NAME first", tileDisabledReason(running = false, paired = false))
+        assertEquals("Pair a PC first", tileDisabledReason(running = true, paired = false))
     }
 
     @Test
