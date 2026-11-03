@@ -186,6 +186,8 @@ pub fn sanitize_file_name(raw: &str) -> String {
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
     let mut s: String = base
         .chars()
+        // Bidi overrides would show `fdp.exe` reversed as `exe.pdf`.
+        .filter(|c| !pb_identity::is_hidden_format(*c))
         .map(|c| match c {
             '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
             c if c.is_control() => '_',
@@ -816,6 +818,16 @@ async fn receive_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_bidi_and_zero_width_characters_are_removed_from_names() {
+        assert_eq!(sanitize_file_name("report\u{202e}fdp.exe"), "reportfdp.exe");
+        assert_eq!(
+            sanitize_file_name("\u{feff}a\u{200b}b\u{2066}c\u{2069}.txt"),
+            "abc.txt"
+        );
+        assert_eq!(sanitize_file_name("\u{202e}"), "file");
+    }
 
     #[test]
     fn names_are_made_safe() {

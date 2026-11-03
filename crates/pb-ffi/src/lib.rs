@@ -973,6 +973,37 @@ fn recover_incoming(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64)> {
     whole
 }
 
+/// Text the clipboard sync sends: not empty, and within what the wire takes
+/// (a longer one would fail after a full connect, on every sync).
+fn syncable(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_CLIPBOARD_TEXT
+}
+
+/// A peer's codec list as Kotlin gets it: known codecs only (1 H.265
+/// Main10, 2 H.265, 3 H.264); a cast would turn 257 into 1.
+fn codec_list(codecs: &[u32]) -> Vec<u8> {
+    codecs
+        .iter()
+        .filter(|c| pb_video::Codec::from_u32(**c).is_some())
+        .filter_map(|c| u8::try_from(*c).ok())
+        .collect()
+}
+
+/// A camera size the app supports: the 16:9 sizes the protocol names;
+/// anything else asks for 1280x720.
+fn camera_size(width: u32, height: u32) -> (u32, u32) {
+    match (width, height) {
+        (1920, 1080) | (1280, 720) => (width, height),
+        _ => (1280, 720),
+    }
+}
+
+/// A sender-chosen file name as the prompt and progress show it: the name
+/// it will be saved under (no hidden or control characters, bounded).
+fn shown_name(raw: &str) -> String {
+    pb_transport::files::sanitize_file_name(raw)
+}
+
 fn clip_hash(text: &str) -> [u8; 32] {
     use sha2::Digest;
     sha2::Sha256::digest(text.as_bytes()).into()
@@ -1274,7 +1305,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         PbEvent::IncomingOffer {
                             id: ask,
                             peer_name: name.clone(),
-                            name: offer.name.clone(),
+                            name: shown_name(&offer.name),
                             size: offer.size,
                         },
                     );
@@ -1287,7 +1318,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     end_ask(&sh.pending, ask, &sh.events);
                     answer
                 };
-                let file_name = offer.name.clone();
+                let file_name = shown_name(&offer.name);
                 let started = std::time::Instant::now();
                 let guard = CancelGuard::new(true);
                 let received = receive_offer_with(
@@ -1470,10 +1501,10 @@ async fn camera_session(
         PbEvent::CameraRequest {
             id: ask,
             peer_name: name,
-            lens: start.lens,
-            width: start.width,
-            height: start.height,
-            codecs: start.codecs.iter().map(|c| *c as u8).collect(),
+            lens: start.lens.min(1),
+            width: camera_size(start.width, start.height).0,
+            height: camera_size(start.width, start.height).1,
+            codecs: codec_list(&start.codecs),
             resume,
         },
     );
@@ -1625,7 +1656,7 @@ async fn screen_session(
             max_long_side: start.max_long_side,
             sharp: start.sharp,
             dim: start.dim,
-            codecs: start.codecs.iter().map(|c| *c as u8).collect(),
+            codecs: codec_list(&start.codecs),
             resume,
         },
     );
@@ -1981,7 +2012,7 @@ impl PbNode {
             .shared
             .clipboard_sync
             .load(std::sync::atomic::Ordering::Relaxed)
-            || text.is_empty()
+            || !syncable(&text)
         {
             return Ok(());
         }
@@ -2445,6 +2476,28 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn clipboard_sync_skips_empty_and_oversized_text() {
+        assert!(!syncable(""));
+        assert!(syncable("hi"));
+        assert!(syncable(&"a".repeat(MAX_CLIPBOARD_TEXT)));
+        assert!(!syncable(&"a".repeat(MAX_CLIPBOARD_TEXT + 1)));
+    }
+
+    #[test]
+    fn peer_codec_lists_keep_only_known_codecs() {
+        assert_eq!(codec_list(&[1, 2, 3]), vec![1, 2, 3]);
+        assert_eq!(codec_list(&[257, 0, 3, 4, u32::MAX, 1]), vec![3, 1]);
+    }
+
+    #[test]
+    fn offer_names_shown_to_the_user_are_safe_and_short() {
+        let shown = shown_name(&format!("report\u{202e}fdp.exe{}", "x".repeat(70_000)));
+        assert!(!shown.contains('\u{202e}'));
+        assert!(shown.starts_with("reportfdp.exe"));
+        assert!(shown.len() <= 200);
     }
 
     #[test]
