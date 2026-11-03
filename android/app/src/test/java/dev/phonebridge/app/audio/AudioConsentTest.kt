@@ -7,6 +7,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AudioConsentTest {
+    @Test
+    fun a_stop_from_the_pc_is_never_rewritten_by_the_capture_ending_with_it() {
+        // The PC pressed Stop and the capture then died with the link: still the PC's stop, and silent.
+        assertEquals(EndCause.PEER_STOPPED, resolveEnd(EndCause.PEER_STOPPED, EndCause.SOURCE_ENDED))
+        assertEquals(EndCause.PEER_STOPPED, resolveEnd(EndCause.PEER_STOPPED, null))
+        assertEquals(null, endNotice(resolveEnd(EndCause.PEER_STOPPED, EndCause.SOURCE_ENDED), AudioDirection.PHONE_TO_PC))
+        // Our own capture ended (app blocks capture): the stop we then sent is not the user's, the reason stays.
+        assertEquals(EndCause.APP_BLOCKS_CAPTURE, resolveEnd(EndCause.LOCAL_STOP, EndCause.APP_BLOCKS_CAPTURE))
+        assertEquals(EndCause.LOCAL_STOP, resolveEnd(EndCause.LOCAL_STOP, null))
+        assertEquals(EndCause.LINK_LOST, resolveEnd(EndCause.LINK_LOST, null))
+    }
+
     private val relay = ConsentStep.RELAY_DIALOG
     private val record = ConsentStep.RECORD_AUDIO
     private val projection = ConsentStep.PROJECTION

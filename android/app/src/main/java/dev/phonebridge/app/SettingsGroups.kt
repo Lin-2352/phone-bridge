@@ -32,7 +32,7 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Screen, "Accessibility permission", "$APP_NAME control lets your PC tap and type here"),
     SettingEntry(Group.Files, "Accept from my devices automatically", "Only paired devices can send"),
     SettingEntry(Group.Files, "Save files to", "Choose the folder for received files"),
-    SettingEntry(Group.Audio, "Share this phone's audio without asking", "Skip $APP_NAME's question; Android's capture prompt still appears"),
+    SettingEntry(Group.Audio, "Share this phone's audio without asking", "Skips only $APP_NAME's question; Android's capture prompt and the microphone question always appear"),
     SettingEntry(Group.Settings, "Theme", "System, Light or Dark"),
     SettingEntry(Group.Settings, "Share clipboard", "Share what you copy with your paired PC"),
     SettingEntry(Group.Settings, "Passwords and codes", "Whether text marked sensitive is sent"),

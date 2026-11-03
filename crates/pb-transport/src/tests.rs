@@ -2428,6 +2428,35 @@ mod identity_changed {
             }
         }
 
+        /// The PC's pattern: press Stop, then let go of the session at once.
+        /// The peer must hear "stopped by the peer", never a lost link.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn stop_then_drop_at_once_still_reads_as_a_peer_stop() {
+            for dir in [AUDIO_PHONE_TO_PC, AUDIO_PC_TO_PHONE] {
+                for stopper_is_sender in [true, false] {
+                    for _ in 0..5 {
+                        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+                        let (a, b) = establish(&pc, &phone, &mut phone_ev, dir).await;
+                        let (tx, rx) = by_role(a, b);
+                        let (stopper, mut other) = if stopper_is_sender {
+                            (tx, rx)
+                        } else {
+                            (rx, tx)
+                        };
+                        stopper.stop();
+                        drop(stopper);
+                        assert!(
+                            matches!(
+                                next_event(&mut other).await,
+                                AudioEvent::Stopped { by_peer: true }
+                            ),
+                            "dir {dir} stopper_is_sender {stopper_is_sender}"
+                        );
+                    }
+                }
+            }
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn dropping_the_receiver_closes_the_session_for_the_sender() {
             for dir in [AUDIO_PHONE_TO_PC, AUDIO_PC_TO_PHONE] {

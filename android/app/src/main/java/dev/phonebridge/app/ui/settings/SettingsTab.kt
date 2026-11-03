@@ -166,7 +166,7 @@ private fun AudioToPc() {
     if (from != null) LiveBanner("Playing audio from $from") { AudioShare.stop(AudioDirection.PC_TO_PHONE) }
     RelayRow(
         title = "Share this phone's audio without asking",
-        supporting = if (skip) "On. Your PC's request goes straight to Android's capture prompt" else "Off. This phone asks you first, then Android asks to capture",
+        supporting = if (skip) "On. $APP_NAME's own question is skipped. Android's capture prompt still appears every time, and the microphone is never skipped" else "Off. This phone asks you first, then Android asks to capture",
         checked = skip,
         onChecked = { v ->
             skip = v

@@ -16,6 +16,7 @@ import dev.phonebridge.app.audio.AudioSource
 import dev.phonebridge.app.audio.EndCause
 import dev.phonebridge.app.audio.endNotice
 import dev.phonebridge.app.audio.refusalNotice
+import dev.phonebridge.app.audio.resolveEnd
 import dev.phonebridge.app.audio.sessionNoticeText
 import java.util.concurrent.atomic.AtomicReference
 import uniffi.pb_ffi.AudioSink
@@ -150,7 +151,7 @@ object AudioShare {
         when (e) {
             is PbEvent.AudioEnded -> {
                 val d = AudioDirection.fromWire(e.direction.toInt()) ?: return
-                val cause = if (d == AudioDirection.PHONE_TO_PC) endOverride ?: causeOf(e.cause) else causeOf(e.cause)
+                val cause = if (d == AudioDirection.PHONE_TO_PC) resolveEnd(causeOf(e.cause), endOverride) else causeOf(e.cause)
                 ended(d, cause)
             }
             is PbEvent.AudioStarted -> if (e.direction.toInt() == AudioDirection.PC_TO_PHONE.wire) startPlayback(e)

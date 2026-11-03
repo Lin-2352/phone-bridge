@@ -56,6 +56,13 @@ class AudioSessions {
 /** Why a running session ended, as far as the user is concerned. */
 enum class EndCause { PEER_STOPPED, LOCAL_STOP, LINK_LOST, VIOLATION, WRITE_FAILED, APP_BLOCKS_CAPTURE, SOURCE_ENDED }
 
+/**
+ * The cause to act on: what the node [reported] unless our own capture ended first ([override]). A stop the
+ * PC made is never rewritten, so it stays silent even if the capture dies with the link at the same time.
+ */
+fun resolveEnd(reported: EndCause, override: EndCause?): EndCause =
+    if (reported == EndCause.PEER_STOPPED) reported else override ?: reported
+
 /** What to tell the user when a session ends; null when they caused it (or the PC did on purpose). */
 fun endNotice(cause: EndCause, direction: AudioDirection): String? {
     val what = if (direction == AudioDirection.PHONE_TO_PC) "Sharing audio to the PC" else "Playing PC audio"

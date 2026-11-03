@@ -183,6 +183,9 @@ impl FrameQueue {
 struct Shared {
     queue: FrameQueue,
     ended: AtomicBool,
+    /// `stop` was called: the control task is telling the peer, then waits
+    /// for it to close, so letting go of the session must not cut that off.
+    stopping: AtomicBool,
     events: mpsc::UnboundedSender<AudioEvent>,
     closer: SessionCloser,
     slot: AudioSlot,
@@ -273,11 +276,17 @@ impl AudioSession {
     /// Stop the session gracefully: tell the peer with `AudioStop`, then
     /// close. Either end may call it.
     pub fn stop(&self) {
+        self.shared.stopping.store(true, Ordering::SeqCst);
         let _ = self.cmd.send(Cmd::Stop);
     }
 
     /// Close the connection at once, without telling the peer why.
     pub fn close(&self) {
+        // After `stop`, dropping the session must not cut the stop short: the
+        // control task closes once the peer has answered (or after 2 s).
+        if self.shared.stopping.load(Ordering::SeqCst) {
+            return;
+        }
         self.shared.end_and_close(
             AudioEvent::Stopped { by_peer: false },
             b"audio closed locally",
@@ -509,6 +518,7 @@ fn start_session(
     let shared = Arc::new(Shared {
         queue: FrameQueue::new(queue_cap_bytes(accept.sample_rate, accept.channels)),
         ended: AtomicBool::new(false),
+        stopping: AtomicBool::new(false),
         events: ev_tx,
         closer: session.closer(),
         slot,
