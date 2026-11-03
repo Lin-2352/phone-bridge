@@ -310,6 +310,149 @@ mod transfers {
         assert!(no_partials(&dir));
     }
 
+    async fn within<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(20), f)
+            .await
+            .unwrap_or_else(|_| panic!("{what} hung"))
+    }
+
+    fn cancel_after(bytes: u64, c: &crate::files::Cancel) -> crate::files::Progress {
+        let c = c.clone();
+        Arc::new(move |done, _| {
+            if done >= bytes {
+                c.cancel();
+            }
+        })
+    }
+
+    fn dir_is_empty(dir: &Path) -> bool {
+        std::fs::read_dir(dir).unwrap().next().is_none()
+    }
+
+    #[tokio::test]
+    async fn a_cancel_handle_wakes_waiters_and_is_sticky() {
+        let c = crate::files::Cancel::new();
+        assert!(!c.is_cancelled());
+        let c2 = c.clone();
+        let waiter = tokio::spawn(async move { c2.cancelled().await });
+        tokio::task::yield_now().await;
+        c.cancel();
+        c.cancel();
+        within("waiter", waiter).await.unwrap();
+        // Already cancelled: resolves at once.
+        within("again", c.cancelled()).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_sender_can_cancel_mid_send_and_nothing_is_left_behind() {
+        use crate::files::TransferOpts;
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("cancel-send");
+        let data = pattern(64 << 20);
+        let cancel = crate::files::Cancel::new();
+        let opts = TransferOpts::new(Some(cancel_after(1 << 20, &cancel)), Some(cancel.clone()));
+        let send = phone.send_file_with(&pcid, "big.bin", data.len() as u64, "", &data[..], opts);
+        let (sent, got) = within("cancelled send", async {
+            tokio::join!(send, receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE))
+        })
+        .await;
+        assert!(matches!(sent, Err(Error::Cancelled)), "{sent:?}");
+        assert!(matches!(got, Err(Error::PeerCancelled)), "{got:?}");
+        assert!(
+            dir_is_empty(&dir),
+            "{:?}",
+            std::fs::read_dir(&dir).unwrap().count()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_receiver_can_cancel_mid_receive_and_nothing_is_left_behind() {
+        use crate::files::{receive_offer_with, TransferOpts};
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("cancel-recv");
+        let data = pattern(64 << 20);
+        let cancel = crate::files::Cancel::new();
+        let send = phone.send_file(&pcid, "big.bin", data.len() as u64, "", &data[..], None);
+        let recv = async {
+            let mut s = pc_ev.sessions.recv().await.unwrap();
+            loop {
+                match s.recv().await? {
+                    Some(ControlMsg::Offer(o)) => {
+                        let opts = TransferOpts::new(
+                            Some(cancel_after(1 << 20, &cancel)),
+                            Some(cancel.clone()),
+                        );
+                        return receive_offer_with(&mut s, o, true, &dir, DEFAULT_MAX_FILE, opts)
+                            .await;
+                    }
+                    Some(_) => continue,
+                    None => return Err(Error::Closed),
+                }
+            }
+        };
+        let (sent, got) = within("cancelled receive", async { tokio::join!(send, recv) }).await;
+        assert!(matches!(got, Err(Error::Cancelled)), "{got:?}");
+        assert!(matches!(sent, Err(Error::PeerCancelled)), "{sent:?}");
+        assert!(dir_is_empty(&dir));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_sender_can_cancel_while_waiting_for_the_accept() {
+        use crate::files::TransferOpts;
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("cancel-wait");
+        let data = pattern(1 << 20);
+        let cancel = crate::files::Cancel::new();
+        let opts = TransferOpts::new(None, Some(cancel.clone()));
+        let send = phone.send_file_with(&pcid, "w.bin", data.len() as u64, "", &data[..], opts);
+        let recv = async {
+            let mut s = pc_ev.sessions.recv().await.unwrap();
+            let offer = loop {
+                match s.recv().await? {
+                    Some(ControlMsg::Offer(o)) => break o,
+                    Some(_) => continue,
+                    None => return Err(Error::Closed),
+                }
+            };
+            // The user has not answered yet; the sender gives up.
+            cancel.cancel();
+            // A late "Save" on a dead offer ends cleanly, never hangs.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            receive_offer(&mut s, offer, true, &dir, DEFAULT_MAX_FILE, None).await
+        };
+        let (sent, got) = within("cancel while waiting", async { tokio::join!(send, recv) }).await;
+        assert!(matches!(sent, Err(Error::Cancelled)), "{sent:?}");
+        assert!(got.is_err(), "{got:?}");
+        assert!(dir_is_empty(&dir));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancel_before_the_send_starts_returns_at_once() {
+        use crate::files::TransferOpts;
+        let (pc, _pc_ev, phone, _pev) = paired().await;
+        let cancel = crate::files::Cancel::new();
+        cancel.cancel();
+        let opts = TransferOpts::new(None, Some(cancel));
+        let r = within(
+            "pre-cancelled send",
+            phone.send_file_with(&pc.peer_id(), "x.bin", 3, "", &b"abc"[..], opts),
+        )
+        .await;
+        assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
+    }
+
+    #[test]
+    fn refusal_names_the_reason() {
+        use crate::files::{refusal, Refusal};
+        let d = std::env::temp_dir();
+        assert_eq!(refusal(&d, 10, 5), Some(Refusal::OverCap));
+        assert_eq!(refusal(&d, 10, 100), None);
+        assert_eq!(refusal(&d, u64::MAX / 4, u64::MAX), Some(Refusal::NoSpace));
+    }
+
     /// Throughput of the whole file path (read, hash, QUIC, hash, disk) on
     /// loopback. Run by hand: `cargo test -p pb-transport --release
     /// file_throughput -- --ignored --nocapture`.

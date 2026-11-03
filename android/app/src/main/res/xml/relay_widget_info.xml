@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Relay widget: 2 x 1, wider on request; redrawn on connection changes only (no periodic update). -->
+<!-- Relay widget: 2 x 1, wider on request; redrawn on connection changes; the system also redraws every 30 min (the floor) so a stale "Connected" cannot outlive a killed process for long. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     android:description="@string/widget_description"
@@ -10,6 +10,6 @@
     android:resizeMode="horizontal"
     android:targetCellWidth="2"
     android:targetCellHeight="1"
-    android:updatePeriodMillis="0"
+    android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen"
     tools:ignore="UnusedAttribute" />

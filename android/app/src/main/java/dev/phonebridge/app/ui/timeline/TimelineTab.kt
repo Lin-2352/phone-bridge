@@ -7,6 +7,20 @@ import android.content.IntentFilter
 import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import dev.phonebridge.app.ui.components.animationsEnabled
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,7 +51,19 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import dev.phonebridge.app.Radius
+import dev.phonebridge.app.ui.components.EmptyState
+import dev.phonebridge.app.ui.components.IconBadge
+import dev.phonebridge.app.ui.components.RelayCard
+import dev.phonebridge.app.ui.components.RelayRow
+import dev.phonebridge.app.ui.components.RelayTint
+import dev.phonebridge.app.ui.components.RelayTopBar
+import dev.phonebridge.app.ui.components.SectionHeader
+import dev.phonebridge.app.ui.components.cardColor
+import dev.phonebridge.app.ui.components.tintColor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableIntStateOf
@@ -66,7 +92,7 @@ import java.time.ZoneId
 import kotlinx.coroutines.launch
 
 /** A day with its entries; each entry has a key that is unique and survives new entries at the top. */
-private class Day(val label: String, val key: String, val rows: List<Pair<String, TlEntry>>)
+private class Day(val label: String, val isToday: Boolean, val key: String, val dayKey: String, val rows: List<Pair<String, TlEntry>>)
 
 private fun days(entries: List<TlEntry>, now: Long, zone: ZoneId): List<Day> {
     val seen = HashMap<String, Int>()
@@ -74,8 +100,11 @@ private fun days(entries: List<TlEntry>, now: Long, zone: ZoneId): List<Day> {
     return groupByDay(entries, now, zone).map { (label, group) ->
         Day(
             label,
+            label == "Today",
             // Unique even if a day repeats (clock went backwards).
             "h:$label#${seenDays.merge(label, 1, Int::plus)}",
+            // What the user opened or closed is remembered per calendar day, so a new "Today" starts fresh.
+            dayKey(group.first().at, zone),
             group.map { e ->
                 val base = "${e.at}|${e.kind}|${e.dir}|${e.peer}|${e.name ?: e.app}"
                 "e:$base#${seen.merge(base, 1, Int::plus)}" to e
@@ -117,7 +146,18 @@ fun TimelineTab() {
         onDispose { lifecycle.removeObserver(o) }
     }
     val zone = ZoneId.systemDefault()
+    // What the user opened or closed, by day label; survives rotation. Days not in it follow the default rule.
+    var overrides by rememberSaveable(
+        stateSaver = listSaver<Map<String, Boolean>, String>(
+            save = { m -> m.flatMap { listOf(it.key, it.value.toString()) } },
+            restore = { l -> l.chunked(2).associate { it[0] to (it[1] == "true") } },
+        ),
+    ) { mutableStateOf(emptyMap<String, Boolean>()) }
+    val animate = remember { animationsEnabled(ctx) }
     val grouped = remember(entries, dayTick) { days(entries, System.currentTimeMillis(), ZoneId.systemDefault()) }
+    var details by remember { mutableStateOf<TlEntry?>(null) }
+
+    fun expandedOf(d: Day, count: Int) = isDayExpanded(d.dayKey, d.isToday, count, overrides)
 
     // The check touches storage, so it runs off the main thread, and only on a tap.
     fun open(e: TlEntry) {
@@ -134,10 +174,35 @@ fun TimelineTab() {
         }
     }
 
+    fun say(text: String, action: String? = null, onAction: () -> Unit = {}) {
+        scope.launch {
+            snack.currentSnackbarData?.dismiss()
+            if (snack.showSnackbar(text, action, duration = androidx.compose.material3.SnackbarDuration.Long) == androidx.compose.material3.SnackbarResult.ActionPerformed) onAction()
+        }
+    }
+
+    fun tap(e: TlEntry) {
+        if (isOpenable(e)) open(e) else say(tapHint(e) ?: "")
+    }
+
+    fun act(e: TlEntry, a: EntryAction) {
+        when (a) {
+            EntryAction.Open -> open(e)
+            EntryAction.ShareAgain -> shareAgain(ctx, e)?.let { say(it) }
+            EntryAction.CopyName -> {
+                val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("file name", e.name.orEmpty()))
+                say("File name copied")
+            }
+            EntryAction.Details -> details = e
+            EntryAction.Delete -> if (Timeline.remove(e)) say("Removed from history", "Undo") { Timeline.restore(e) }
+        }
+    }
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Timeline") },
+            RelayTopBar(
+                title = "Timeline",
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -145,6 +210,12 @@ fun TimelineTab() {
                             text = { Text("Clear history") },
                             enabled = entries.isNotEmpty(),
                             onClick = { menu = false; confirmClear = true },
+                        )
+                        val allOpen = allDaysExpanded(grouped.map { it.dayKey to it.isToday }, overrides)
+                        DropdownMenuItem(
+                            text = { Text(if (allOpen) "Collapse all" else "Expand all") },
+                            enabled = grouped.isNotEmpty(),
+                            onClick = { menu = false; overrides = setAllDays(grouped.map { it.dayKey }, !allOpen) },
                         )
                     }
                 },
@@ -154,14 +225,12 @@ fun TimelineTab() {
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
             item(key = "keep") {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Keep history", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                    Switch(
+                RelayCard {
+                    RelayRow(
+                        title = "Keep history",
+                        supporting = "Remember what you send and receive here",
                         checked = historyOn,
-                        onCheckedChange = { on ->
+                        onChecked = { on ->
                             if (on) {
                                 Timeline.setEnabled(true)
                             } else {
@@ -173,24 +242,38 @@ fun TimelineTab() {
             }
             if (grouped.isEmpty()) {
                 item(key = "empty") {
-                    Box(Modifier.fillMaxWidth().padding(Spacing.xl), contentAlignment = Alignment.Center) {
-                        Text(
-                            emptyText(historyOn),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    EmptyState(emptyText(historyOn))
                 }
             }
             for (day in grouped) {
-                stickyHeader(key = day.key, contentType = "header") { DayHeader(day.label) }
-                items(day.rows, key = { it.first }, contentType = { "row" }) { (_, e) ->
-                    EntryRow(e, zone) { open(e) }
+                val isOpen = expandedOf(day, grouped.size)
+                stickyHeader(key = day.key, contentType = "header") {
+                    DayHeader(day.label, day.rows.size, isOpen, animate) { overrides = toggleDay(overrides, day.dayKey, isOpen) }
+                }
+                if (isOpen) {
+                    items(day.rows, key = { it.first }, contentType = { "row" }) { (_, e) ->
+                        Box(if (animate) Modifier.animateItem() else Modifier) { EntryRow(e, zone, onTap = { tap(e) }, onAction = { act(e, it) }) }
+                    }
                 }
             }
         }
     }
 
+    details?.let { e ->
+        RelayDialog(
+            title = "Details",
+            onDismissRequest = { details = null },
+            confirmText = "Close",
+            onConfirm = { details = null },
+        ) {
+            detailLines(e, zone).forEach { (k, v) ->
+                Column {
+                    Text(k, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(v, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
     if (confirmOff) {
         RelayDialog(
             title = "Turn off history?",
@@ -220,15 +303,24 @@ fun TimelineTab() {
 }
 
 @Composable
-private fun DayHeader(label: String) {
-    // Opaque, so rows scroll under it while it sticks.
+private fun DayHeader(label: String, count: Int, expanded: Boolean, animate: Boolean, onToggle: () -> Unit) {
+    val turn by animateFloatAsState(if (expanded) 0f else -90f, tween(if (animate) 150 else 0), label = "day chevron")
+    // Opaque, so rows scroll under it while it sticks. The whole row is the 48 dp target.
     Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
-        Text(
-            label,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable(role = Role.Button, onClick = onToggle)
+                .semantics(mergeDescendants = true) { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+                .padding(start = 24.dp, end = 24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Filled.KeyboardArrowDown, null, Modifier.size(20.dp).rotate(turn), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+            Text(itemCountText(count), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -240,19 +332,47 @@ private fun kindIcon(k: TlKind) = when (k) {
     TlKind.Notification -> Icons.Filled.Notifications
 }
 
+private fun kindTint(k: TlKind) = when (k) {
+    TlKind.File, TlKind.Link -> RelayTint.Primary
+    TlKind.ClipText -> RelayTint.Accent
+    TlKind.ClipImage -> RelayTint.Success
+    TlKind.Notification -> RelayTint.Warning
+}
+
+private fun actionLabel(a: EntryAction) = when (a) {
+    EntryAction.Open -> "Open"
+    EntryAction.ShareAgain -> "Share again"
+    EntryAction.CopyName -> "Copy file name"
+    EntryAction.Details -> "Details"
+    EntryAction.Delete -> "Delete"
+}
+
+/**
+ * One entry. A tap opens it when it can be opened and otherwise says why; long-press and the "more" button
+ * open the same menu (the button is the one TalkBack and switch users can find).
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EntryRow(e: TlEntry, zone: ZoneId, onOpen: () -> Unit) {
-    // A sent file has no uri (the share permission was temporary): not openable, which is not "moved or deleted".
+private fun EntryRow(e: TlEntry, zone: ZoneId, onTap: () -> Unit, onAction: (EntryAction) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
     val openable = isOpenable(e)
     Row(
         Modifier.fillMaxWidth()
-            .then(if (openable) Modifier.clickable(onClick = onOpen) else Modifier)
-            .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+            .padding(horizontal = Spacing.lg, vertical = Spacing.xs)
+            .clip(RoundedCornerShape(Radius.card))
+            .background(cardColor())
+            .combinedClickable(
+                onClickLabel = if (openable) "Open" else "Why this cannot be opened",
+                onClick = onTap,
+                onLongClickLabel = "Show actions",
+                onLongClick = { menu = true },
+            )
+            .padding(start = Spacing.lg, top = Spacing.xs, bottom = Spacing.xs),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
-        Icon(kindIcon(e.kind), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        Column(Modifier.weight(1f)) {
+        IconBadge(kindIcon(e.kind), tintColor(kindTint(e.kind)))
+        Column(Modifier.weight(1f).padding(vertical = Spacing.xs)) {
             Text(summary(e), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -272,5 +392,32 @@ private fun EntryRow(e: TlEntry, zone: ZoneId, onOpen: () -> Unit) {
             }
         }
         Text(clockText(e.at, zone), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box {
+            IconButton(onClick = { menu = true }, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Filled.MoreVert, "Actions for ${summary(e)}")
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                entryActions(e).forEach { a ->
+                    DropdownMenuItem(
+                        text = { Text(actionLabel(a), color = if (a == EntryAction.Delete) MaterialTheme.colorScheme.error else Color.Unspecified) },
+                        onClick = { menu = false; onAction(a) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Offers a received file to Android's share sheet again. Returns a message when it cannot. */
+private fun shareAgain(ctx: Context, e: TlEntry): String? {
+    val uri = e.uri ?: return "This file cannot be shared again"
+    val u = Uri.parse(uri)
+    val type = runCatching { ctx.contentResolver.getType(u) }.getOrNull() ?: "*/*"
+    val send = Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, u).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    return try {
+        ctx.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        null
+    } catch (x: Exception) {
+        "No app can share this file"
     }
 }

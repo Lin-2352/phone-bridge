@@ -3,6 +3,8 @@ package dev.phonebridge.app.ui.remote
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -54,17 +56,33 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.layout.heightIn
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.Bridge
+import dev.phonebridge.app.Radius
+import dev.phonebridge.app.ui.components.cardColor
 import kotlinx.coroutines.launch
 import uniffi.pb_ffi.PbInput
 import kotlin.math.abs
 import kotlin.math.hypot
 
 private const val TAG = "PhoneBridge"
+
+/** PC pixels per accessibility move action. */
+private const val PAD_STEP = 60
 
 /** Pointer travel per dp of finger travel, before the speed gain. */
 internal const val POINTER_SCALE = 1.6f
@@ -96,19 +114,40 @@ private class TouchpadSession {
     @Volatile var input: PbInput? = null
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
     var status by mutableStateOf("Connecting…")
+    var phase by mutableStateOf(LinkPhase.Connecting)
+    private var peerName = "your PC"
+
+    private fun fail(text: String) {
+        status = text
+        phase = LinkPhase.Failed
+    }
+
+    /** Sends one input event. A refused send means the session is gone: say so and offer Retry, never keep claiming control. */
+    fun send(event: (PbInput) -> Boolean) {
+        val i = input ?: return
+        if (event(i)) return
+        if (linkAfterSend(phase, false) == LinkPhase.Lost) {
+            stop()
+            phase = LinkPhase.Lost
+            status = linkText(LinkPhase.Lost, peerName)
+            Log.i(TAG, "INPUT lost")
+        }
+    }
 
     fun start() {
         val gen = generation.incrementAndGet()
-        status = "Connecting…"
+        status = linkText(LinkPhase.Connecting, "")
+        phase = LinkPhase.Connecting
         if (!Bridge.shownOn()) {
             status = "$APP_NAME is off. Turn it on first"
+            phase = LinkPhase.Off
             return
         }
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
             val peer = node?.peers()?.firstOrNull()
             if (node == null || peer == null) {
-                status = if (node == null) "$APP_NAME did not start. Try again" else "Pair with your PC first"
+                fail(if (node == null) "$APP_NAME did not start. Try again" else "Pair with your PC first")
                 return@launch
             }
             try {
@@ -121,15 +160,12 @@ private class TouchpadSession {
                     }
                     input = session
                 }
-                status = "Controlling ${peer.name}"
+                peerName = peer.name
+                phase = LinkPhase.Connected
+                status = linkText(LinkPhase.Connected, peer.name)
                 Log.i(TAG, "INPUT started to ${peer.name}")
             } catch (t: Throwable) {
-                val declined = t.message?.contains("declined") == true
-                status = if (declined) {
-                    "${peer.name} did not allow control. Turn on “Let my phone control this PC” in $APP_NAME settings on the PC."
-                } else {
-                    "Could not reach ${peer.name}. Is $APP_NAME running there?"
-                }
+                fail(startFailureText(peer.name, (t as? uniffi.pb_ffi.PbException.Failed)?.reason ?: t.message))
                 Log.i(TAG, "INPUT refused: $t")
             }
         }
@@ -146,12 +182,10 @@ private class TouchpadSession {
         if (had) Log.i(TAG, "INPUT stopped")
     }
 
-    fun key(code: Int) {
-        input?.let {
-            it.key(code.toUShort(), true)
-            it.key(code.toUShort(), false)
-        }
-    }
+    fun key(code: Int) = send { i -> pressAndRelease { down -> i.key(code.toUShort(), down) } }
+
+    /** A click without a finger gesture (TalkBack's actions): press and release [button]. */
+    fun click(button: Int) = send { i -> pressAndRelease { down -> i.button(button.toUByte(), down) } }
 }
 
 /**
@@ -193,15 +227,17 @@ fun TouchpadPad(modifier: Modifier = Modifier) {
                 session.status,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                modifier = Modifier.weight(1f),
+                maxLines = 3,
+                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
             )
+            if (showRetry(session.phase)) TextButton(onClick = { session.start() }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
             TextButton(onClick = { keyboard = !keyboard }) { Text(if (keyboard) "Hide keyboard" else "Keyboard") }
         }
-        // Edge to edge inside the horizontal safe insets, so a swipe that starts at the screen edge lands on the pad.
+        // The gesture area is full width (inside the horizontal safe insets) so a swipe that starts at the screen
+        // edge, in the gutter beside the card, still lands on the pad; the card is drawn inset inside it.
         Pad(session, Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)))
         Column(Modifier.padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MouseButton(session, "Left", 0, Modifier.weight(1f))
                 MouseButton(session, "Right", 1, Modifier.weight(1f))
             }
@@ -211,25 +247,37 @@ fun TouchpadPad(modifier: Modifier = Modifier) {
     }
 }
 
+/** A Material tonal button (the app's button shape, ripple and pressed state) that holds the mouse button while it is pressed. */
 @Composable
 private fun MouseButton(session: TouchpadSession, label: String, button: Int, modifier: Modifier) {
-    Box(
-        modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.secondaryContainer)
-            .pointerInput(button) {
-                awaitEachGesture {
-                    awaitFirstDown()
-                    session.input?.button(button.toUByte(), true)
-                    do {
-                        val e = awaitPointerEvent()
-                    } while (e.changes.any { it.pressed })
-                    session.input?.button(button.toUByte(), false)
+    val source = remember { MutableInteractionSource() }
+    LaunchedEffect(source) {
+        var down = false
+        try {
+            source.interactions.collect { i ->
+                when (i) {
+                    is PressInteraction.Press -> if (!down) { down = true; session.send { it.button(button.toUByte(), true) } }
+                    is PressInteraction.Release, is PressInteraction.Cancel -> if (down) { down = false; session.send { it.button(button.toUByte(), false) } }
+                    else -> {}
                 }
-            },
-        contentAlignment = Alignment.Center,
-    ) { Text(label, color = MaterialTheme.colorScheme.onSecondaryContainer) }
+            }
+        } finally {
+            // Never leave the PC's button held if the screen goes away mid-press.
+            if (down) session.send { it.button(button.toUByte(), false) }
+        }
+    }
+    // A finger works through the press interactions above (hold and release). TalkBack's activate gesture never
+    // presses, so it gets its own click; touch still sends exactly one.
+    val a11y = "$label mouse button"
+    FilledTonalButton(
+        onClick = {},
+        interactionSource = source,
+        modifier = modifier.fillMaxSize().clearAndSetSemantics {
+            role = Role.Button
+            contentDescription = a11y
+            onClick(label = "Click") { session.click(button); true }
+        },
+    ) { Text(label) }
 }
 
 @Composable
@@ -239,15 +287,13 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
         modifier
             // Swipes that start at the screen edge move the PC cursor instead of triggering Android's Back gesture.
             // Android honours at most 200 dp of exclusion height per edge and drops the rest unpredictably, so ask
-            // for a deterministic band instead of the whole bounds: 200 dp centred vertically, along both edges
-            // (the pad is edge to edge inside the horizontal safe insets).
+            // for a deterministic band instead of the whole bounds: 200 dp centred vertically, along both edges.
+            // This box is full width, so the band reaches the screen edge even though the card is inset.
             .systemGestureExclusion { c ->
                 val h = minOf(c.size.height.toFloat(), 200 * density)
                 val top = (c.size.height - h) / 2f
                 Rect(0f, top, c.size.width.toFloat(), top + h)
             }
-            .clip(RoundedCornerShape(24.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainer)
             .pointerInput(Unit) {
                 var lastTapUp = 0L
                 var lastTapPos = Offset.Zero
@@ -260,7 +306,7 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
                     val t0 = SystemClock.uptimeMillis()
                     // Tap, then touch again quickly: drag with the button held.
                     val dragging = t0 - lastTapUp < 280 && (down.position - lastTapPos).getDistance() < 60 * density
-                    if (dragging) session.input?.button(0u, true)
+                    if (dragging) session.send { it.button(0u, true) }
                     var moved = 0f
                     var maxFingers = 1
                     do {
@@ -278,7 +324,7 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
                             val dx = remX.toInt()
                             val dy = remY.toInt()
                             if (dx != 0 || dy != 0) {
-                                session.input?.moveBy(dx.toShort(), dy.toShort())
+                                session.send { it.moveBy(dx.toShort(), dy.toShort()) }
                                 remX -= dx
                                 remY -= dy
                             }
@@ -289,7 +335,7 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
                             remScroll += dy / density * 4f
                             val w = remScroll.toInt()
                             if (w != 0) {
-                                session.input?.scroll(0, w.toShort())
+                                session.send { it.scroll(0, w.toShort()) }
                                 remScroll -= w
                             }
                         }
@@ -297,26 +343,46 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
                     } while (ev.changes.any { it.pressed })
                     val now = SystemClock.uptimeMillis()
                     if (dragging) {
-                        session.input?.button(0u, false)
+                        session.send { it.button(0u, false) }
                     } else if (moved < slop && now - t0 < 250) {
                         val b: UByte = if (maxFingers >= 2) 1u else 0u
-                        session.input?.button(b, true)
-                        session.input?.button(b, false)
+                        session.send { it.button(b, true) }
+                        session.send { it.button(b, false) }
                         if (maxFingers == 1) {
                             lastTapUp = now
                             lastTapPos = down.position
                         }
                     }
                 }
+            }
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            // TalkBack cannot swipe a pointer: the same moves and clicks as actions.
+            .semantics {
+                contentDescription = "Touchpad. Use the actions menu to move the pointer, click, right-click and scroll."
+                customActions = listOf(
+                    CustomAccessibilityAction("Click") { session.click(0); true },
+                    CustomAccessibilityAction("Right-click") { session.click(1); true },
+                    CustomAccessibilityAction("Move pointer left") { session.send { it.moveBy((-PAD_STEP).toShort(), 0) }; true },
+                    CustomAccessibilityAction("Move pointer right") { session.send { it.moveBy(PAD_STEP.toShort(), 0) }; true },
+                    CustomAccessibilityAction("Move pointer up") { session.send { it.moveBy(0, (-PAD_STEP).toShort()) }; true },
+                    CustomAccessibilityAction("Move pointer down") { session.send { it.moveBy(0, PAD_STEP.toShort()) }; true },
+                    CustomAccessibilityAction("Scroll up") { session.send { it.scroll(0, 240) }; true },
+                    CustomAccessibilityAction("Scroll down") { session.send { it.scroll(0, -240) }; true },
+                )
             },
-        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            "Move with one finger · tap to click\nTwo fingers to scroll · two-finger tap to right-click",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(24.dp),
-        )
+        // The card: same gutter, radius and tonal surface as the cards on the other tabs.
+        Box(
+            Modifier.fillMaxSize().clip(RoundedCornerShape(Radius.card)).background(cardColor()),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "Move with one finger · tap to click\nTwo fingers to scroll · two-finger tap to right-click",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(24.dp),
+            )
+        }
     }
 }
 
@@ -337,7 +403,7 @@ private fun KeyboardRow(session: TouchpadSession) {
             val t = v.text
             when {
                 t.length < sentinel.length -> session.key(Scan.BACKSPACE)
-                t.startsWith(sentinel) && t.length > sentinel.length -> session.input?.typeText(t.substring(sentinel.length))
+                t.startsWith(sentinel) && t.length > sentinel.length -> session.send { it.typeText(t.substring(sentinel.length)) }
             }
             value = TextFieldValue(sentinel, TextRange(1))
         },

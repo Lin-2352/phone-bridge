@@ -1,0 +1,15 @@
+[package]
+name = "pb-log"
+description = "Day-by-day structured logs for Relay (privacy-safe by construction, size-capped)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+flate2 = "1"

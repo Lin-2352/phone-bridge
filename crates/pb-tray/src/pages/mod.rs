@@ -8,6 +8,7 @@ pub mod devices;
 pub mod home;
 pub mod settings;
 pub mod timeline;
+pub mod timeline_view;
 
 use std::sync::Arc;
 
@@ -46,6 +47,10 @@ pub enum Action {
     Flyout(crate::flyout::Action),
     /// Send the clipboard's text once (the tray's "Send clipboard").
     SendClipboard,
+    /// Start Relay again after its core stopped (the tray restarts itself).
+    Restart,
+    /// Resume Relay after a pause (the tray menu's Resume).
+    Resume,
     /// End a running session the way the tray menu does.
     Stop(home::SessionKind),
     /// Remove the paired device at this index (the tray asks first).
@@ -58,6 +63,76 @@ pub enum Action {
     Settings(settings_rows::Action),
     /// Show another Settings page (handled by the window, like `Go`).
     SettingsPage(settings_groups::Page),
+    /// Timeline: open or close one day (its local day number), or all of
+    /// them (`true` = open). Handled by the window, which owns the state.
+    TimelineDay(i64),
+    TimelineAll(bool),
+    /// Timeline: the row with this key asked for its "..." menu (handled by
+    /// the window, which owns the menu).
+    TimelineMenu(u32),
+    /// Put this text on the clipboard (a row's path); not shared with the phone.
+    CopyText(String),
+    /// Timeline: remove the entries with these keys from the history (a
+    /// delete whose undo window passed).
+    TimelineDelete(Vec<u32>),
+}
+
+/// What kind of control a hit is, for screen readers (UI Automation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Button,
+    /// On / off (switch).
+    Toggle,
+    /// One of a group of choices; `selected` says which.
+    Radio,
+    /// A day header: expands and collapses.
+    Header,
+    /// A list entry (a Timeline row).
+    Item,
+    /// A nav rail item; `selected` marks the page shown.
+    Tab,
+}
+
+/// The accessible description of a hit: derived from the same model that
+/// draws and hit-tests it, so the screen reader's tree cannot drift.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Desc {
+    pub name: String,
+    pub role: Role,
+    pub toggled: Option<bool>,
+    pub expanded: Option<bool>,
+    pub selected: bool,
+}
+
+impl Desc {
+    pub fn new(name: impl Into<String>, role: Role) -> Desc {
+        Desc {
+            name: name.into(),
+            role,
+            toggled: None,
+            expanded: None,
+            selected: false,
+        }
+    }
+}
+
+/// The description of `hit` on `page`.
+pub fn describe(page: Page, hit: &Hit, m: &Model) -> Option<Desc> {
+    match page {
+        Page::Home => home::describe(hit, &m.home),
+        Page::Timeline => timeline::describe(hit, &m.timeline),
+        Page::Devices => devices::describe(hit, &m.devices),
+        Page::Settings => settings::describe(hit, &m.settings),
+    }
+}
+
+/// Where `hit` really is when its rect is empty (a Settings control out of
+/// view), so keyboard focus can scroll to it.
+pub fn full_rect(page: Page, id: u32, r: RectF, s: f32, m: &Model) -> Option<RectF> {
+    match page {
+        Page::Settings => settings::full_rect(id, r, s, &m.settings),
+        _ => None,
+    }
 }
 
 /// The page's hits inside `r` (its content rect, already scrolled), at

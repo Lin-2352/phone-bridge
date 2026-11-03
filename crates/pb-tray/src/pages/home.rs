@@ -71,6 +71,13 @@ pub struct HomeModel {
     /// Unix seconds when the model was built, for "5 min ago" (whole
     /// minutes, so the model only changes when a label can).
     pub now: u64,
+    /// Relay is paused from the tray menu (from the settings).
+    pub paused: bool,
+    /// A camera request is waiting for the phone (not a session yet).
+    pub camera_pending: bool,
+    /// Why the core stopped (it never came up or died): nothing works until
+    /// Relay restarts.
+    pub error: Option<String>,
 }
 
 /// The paired phone as the tray knows it.
@@ -95,6 +102,8 @@ pub struct Inputs<'a> {
     pub camera: bool,
     pub camera_live: bool,
     pub control: bool,
+    /// A camera request still waits for the phone.
+    pub camera_pending: bool,
     /// Mirrored phone notifications, newest first.
     pub notes: &'a [Notification],
     pub settings: &'a Settings,
@@ -189,6 +198,9 @@ pub fn build(i: Inputs) -> HomeModel {
         notes_hidden,
         recent: i.recent.iter().take(RECENT).cloned().collect(),
         now: i.now,
+        paused: i.settings.paused,
+        camera_pending: i.camera_pending && !i.camera,
+        error: None,
     }
 }
 
@@ -207,6 +219,16 @@ fn ago(at: u64, now: u64) -> String {
         3600..86_400 => format!("{} h ago", d / 3600),
         _ if d < 2 * 86_400 => "yesterday".into(),
         _ => format!("{} days ago", d / 86_400),
+    }
+}
+
+/// The line under the phone's name: while Relay is paused it says so,
+/// whatever the phone's last state was.
+pub fn status_text(c: &PhoneCard, now: u64, paused: bool) -> String {
+    if paused {
+        "Relay is paused".to_owned()
+    } else {
+        status_line(c, now)
     }
 }
 
@@ -271,6 +293,31 @@ impl Quick {
         }
     }
 
+    /// The tile's label; a camera request that waits for the phone offers
+    /// an explicit Cancel so a second click is a decision, not an accident.
+    fn label_for(self, m: &HomeModel) -> &'static str {
+        if self == Quick::Camera && m.camera_pending {
+            return "Cancel start";
+        }
+        self.label()
+    }
+
+    /// Whether the tile takes clicks. Everything needs a phone, and while
+    /// Relay is paused only the stop of a running session works.
+    ///
+    /// A running session's tile is not a second Stop: "Live now" has the
+    /// one Stop button (a request still waiting for the phone is not listed
+    /// there, so the Camera tile alone cancels it).
+    pub fn enabled(self, m: &HomeModel) -> bool {
+        if m.phone.is_none() || m.error.is_some() {
+            return false;
+        }
+        if self == Quick::Camera && m.camera_pending {
+            return true;
+        }
+        !m.paused && !self.on(m)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Quick::SendFile => "Send files",
@@ -295,6 +342,7 @@ impl Quick {
     fn on(self, m: &HomeModel) -> bool {
         let running = |k| m.sessions.iter().any(|x| x.kind == k);
         match self {
+            Quick::Camera if m.camera_pending => true,
             Quick::Screen => running(SessionKind::Screen),
             Quick::Camera => running(SessionKind::Camera),
             Quick::Control => running(SessionKind::Control),
@@ -326,8 +374,19 @@ impl Session {
     }
 }
 
+/// The button that replaces Pair when Relay cannot work: Restart when its
+/// core stopped, Resume while paused.
+fn resume_label(m: &HomeModel) -> &'static str {
+    if m.error.is_some() {
+        "Restart"
+    } else {
+        "Resume"
+    }
+}
+
 /// Hit ids.
 const PAIR: u32 = 1;
+const RESUME: u32 = 2;
 const QUICK: u32 = 10;
 const STOP: u32 = 20;
 const SEE_ALL: u32 = 30;
@@ -353,6 +412,8 @@ struct Parts {
     hero: RectF,
     warn: Option<RectF>,
     pair: Option<RectF>,
+    /// Resume, while Relay is paused (replaces Pair on an empty Home).
+    resume: Option<RectF>,
     quick_head: Option<RectF>,
     quick: Vec<RectF>,
     live_head: Option<RectF>,
@@ -394,7 +455,11 @@ fn parts(r: RectF, s: f32, m: &HomeModel) -> Parts {
                 cx + BUTTON_W * s / 2.0,
                 hero.bottom - SPACE[4] * s,
             );
-            (hero, None, Some(pair))
+            if m.paused || m.error.is_some() {
+                (hero, None, None)
+            } else {
+                (hero, None, Some(pair))
+            }
         }
         Some(p) => {
             let h = HERO_H + if p.changed { WARN_H + SPACE[3] } else { 0.0 };
@@ -410,6 +475,26 @@ fn parts(r: RectF, s: f32, m: &HomeModel) -> Parts {
             (hero, warn, None)
         }
     };
+    let resume = (m.paused || m.error.is_some()).then(|| match &m.phone {
+        None => {
+            let cx = (hero.left + hero.right) / 2.0;
+            rectf(
+                cx - BUTTON_W * s / 2.0,
+                hero.bottom - (SPACE[4] + BUTTON_H) * s,
+                cx + BUTTON_W * s / 2.0,
+                hero.bottom - SPACE[4] * s,
+            )
+        }
+        Some(_) => {
+            let cy = hero.top + HERO_H * s / 2.0;
+            rectf(
+                hero.right - (SPACE[3] + BUTTON_W) * s,
+                cy - BUTTON_H * s / 2.0,
+                hero.right - SPACE[3] * s,
+                cy + BUTTON_H * s / 2.0,
+            )
+        }
+    });
     let (mut quick_head, mut quick) = (None, Vec::new());
     if m.phone.is_some() {
         quick_head = Some(take(HEAD_H));
@@ -460,6 +545,7 @@ fn parts(r: RectF, s: f32, m: &HomeModel) -> Parts {
         hero,
         warn,
         pair,
+        resume,
         quick_head,
         quick,
         live_head,
@@ -480,7 +566,13 @@ pub fn layout(r: RectF, s: f32, m: &HomeModel) -> Vec<Hit> {
     if let Some(r) = p.pair {
         hits.push(Hit { id: PAIR, r });
     }
+    if let Some(r) = p.resume {
+        hits.push(Hit { id: RESUME, r });
+    }
     for (k, r) in p.quick.iter().enumerate() {
+        if !Quick::ALL[k].enabled(m) {
+            continue;
+        }
         hits.push(Hit {
             id: QUICK + k as u32,
             r: *r,
@@ -537,7 +629,10 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
                 "Pair your phone to send files, share the clipboard and more.",
             );
             if let Some(b) = p.pair {
-                fluent::button(c, b, "Pair", true);
+                fluent::button(c, b, crate::strings::PAIR_DEVICE, true);
+            }
+            if let Some(b) = p.resume {
+                fluent::button(c, b, resume_label(m), true);
             }
         }
         Some(card) => {
@@ -563,14 +658,26 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
             round_rect(c, &disc, Some((tint, 0.14)), None, 24.0 * s, false);
             fluent::icon_sized(c, Font::IconLarge, fluent::glyph::PHONE, disc, tint);
             let tx = disc.right + SPACE[3] * s;
-            let badge_w = if card.connected { 96.0 * s } else { 0.0 };
-            let tr = (body.right - badge_w - SPACE[2] * s).max(tx);
+            let badge_w = if card.connected && !m.paused {
+                96.0 * s
+            } else {
+                0.0
+            };
+            let resume_w = if m.paused || m.error.is_some() {
+                (BUTTON_W + SPACE[2]) * s
+            } else {
+                0.0
+            };
+            let tr = (body.right - badge_w - resume_w - SPACE[2] * s).max(tx);
             let name = rectf(tx, cy - 24.0 * s, tr, cy);
             text(c, Font::Subtitle, &card.name, name, pal.text, Align::Left);
             let line = rectf(tx, cy, tr, cy + 22.0 * s);
-            let status = status_line(card, m.now);
+            let status = match &m.error {
+                Some(e) => format!("Relay stopped: {e}"),
+                None => status_text(card, m.now, m.paused),
+            };
             text(c, Font::Body, &status, line, pal.text2, Align::Left);
-            if card.connected {
+            if card.connected && !m.paused {
                 let b = rectf(
                     body.right - badge_w,
                     cy - 12.0 * s,
@@ -578,6 +685,9 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
                     cy + 12.0 * s,
                 );
                 widgets::badge(c, b, "Connected", pal.success);
+            }
+            if let Some(b) = p.resume {
+                fluent::button(c, b, resume_label(m), true);
             }
             if let (Some(w), Some(msg)) = (p.warn, warning(card)) {
                 widgets::info_bar(c, w, InfoKind::Warning, &msg);
@@ -594,6 +704,8 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
         let radius = RADIUS[1] * s;
         let (fill, fg) = if on {
             ((pal.accent, 1.0), pal.on_accent)
+        } else if !q.enabled(m) {
+            ((pal.card, 1.0), pal.text2)
         } else {
             ((pal.card, 1.0), pal.text)
         };
@@ -606,7 +718,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
             t.right - SPACE[0] * s,
             t.bottom - SPACE[2] * s,
         );
-        text(c, Font::Caption, q.label(), l, fg, Align::Center);
+        text(c, Font::Caption, q.label_for(m), l, fg, Align::Center);
     }
 
     // Live sessions, each with Stop.
@@ -698,11 +810,33 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
     }
 }
 
+pub fn describe(hit: &Hit, m: &HomeModel) -> Option<super::Desc> {
+    use super::{Desc, Role};
+    let id = hit.id;
+    Some(match id {
+        PAIR => Desc::new(crate::strings::PAIR_DEVICE, Role::Button),
+        RESUME => Desc::new(resume_label(m).to_owned() + " Relay", Role::Button),
+        SEE_ALL => Desc::new("See all activity", Role::Button),
+        _ if (QUICK..QUICK + Quick::ALL.len() as u32).contains(&id) => {
+            Desc::new(Quick::ALL[(id - QUICK) as usize].label_for(m), Role::Button)
+        }
+        _ if (STOP..STOP + 3).contains(&id) => {
+            let s = m.sessions.get((id - STOP) as usize)?;
+            Desc::new(format!("Stop {}", s.text().1), Role::Button)
+        }
+        _ => return None,
+    })
+}
+
 pub fn click(hit: &Hit, m: &HomeModel) -> Option<Action> {
     match hit.id {
-        PAIR if m.phone.is_none() => Some(Action::Flyout(flyout::Action::Pair)),
+        RESUME if m.error.is_some() => Some(Action::Restart),
+        RESUME if m.paused => Some(Action::Resume),
+        PAIR if m.phone.is_none() && !m.paused => Some(Action::Flyout(flyout::Action::Pair)),
         SEE_ALL => Some(Action::Go(Page::Timeline)),
-        id if (QUICK..QUICK + Quick::ALL.len() as u32).contains(&id) && m.phone.is_some() => {
+        id if (QUICK..QUICK + Quick::ALL.len() as u32).contains(&id)
+            && Quick::ALL[(id - QUICK) as usize].enabled(m) =>
+        {
             Some(Quick::ALL[(id - QUICK) as usize].action())
         }
         id if (STOP..STOP + 3).contains(&id) => {
@@ -737,6 +871,7 @@ mod tests {
             camera: false,
             camera_live: false,
             control: false,
+            camera_pending: false,
             notes,
             settings,
             locked: false,
@@ -797,6 +932,20 @@ mod tests {
         assert!(card.connected);
         assert_eq!(warning(&card), None);
         assert_eq!(status_line(&card, NOW), "Connected \u{b7} Wi-Fi");
+    }
+
+    #[test]
+    fn paused_status_text_overrides_the_phone_state() {
+        let card = PhoneCard {
+            connected: true,
+            last_seen: None,
+            path: Path::Usb,
+            changed: false,
+            name: "P".into(),
+            fingerprint: String::new(),
+        };
+        assert_eq!(status_text(&card, 0, true), "Relay is paused");
+        assert_eq!(status_text(&card, 0, false), "Connected \u{b7} USB");
     }
 
     #[test]
@@ -982,6 +1131,145 @@ mod tests {
         assert_eq!(m.notes[0].title, "Mom");
         assert!(m.notes[0].line.is_empty());
         assert!(!format!("{:?}", m).contains("See you"));
+    }
+
+    fn paired_model(paused: bool) -> HomeModel {
+        let s = Settings {
+            paused,
+            ..Settings::default()
+        };
+        build(inputs(&s, &[]))
+    }
+
+    #[test]
+    fn paused_disables_tiles_and_offers_resume() {
+        let m = paired_model(true);
+        for q in Quick::ALL {
+            assert!(!q.enabled(&m), "{q:?}");
+        }
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        assert!(hits.iter().any(|h| h.id == RESUME));
+        assert!(!hits.iter().any(|h| (QUICK..QUICK + 5).contains(&h.id)));
+        let r = hits.iter().find(|h| h.id == RESUME).unwrap();
+        assert_eq!(click(r, &m), Some(Action::Resume));
+    }
+
+    #[test]
+    fn a_running_session_has_one_stop_even_while_paused() {
+        let mut m = paired_model(true);
+        m.sessions.push(Session {
+            kind: SessionKind::Screen,
+            stop: Action::Stop(SessionKind::Screen),
+            live: true,
+        });
+        assert!(!Quick::Screen.enabled(&m), "the tile is not a second Stop");
+        let hits = layout(rectf(0.0, 0.0, 900.0, 1200.0), 1.0, &m);
+        assert!(hits.iter().any(|h| (STOP..STOP + 3).contains(&h.id)));
+    }
+
+    #[test]
+    fn no_two_controls_on_home_do_the_same_thing() {
+        let mut variants = Vec::new();
+        for paused in [false, true] {
+            let mut m = paired_model(paused);
+            variants.push(m.clone());
+            for kind in [
+                SessionKind::Screen,
+                SessionKind::Camera,
+                SessionKind::Control,
+            ] {
+                m.sessions.push(Session {
+                    kind,
+                    stop: Action::Stop(kind),
+                    live: true,
+                });
+            }
+            variants.push(m.clone());
+            m.sessions.clear();
+            m.camera_pending = true;
+            variants.push(m);
+            let s = Settings {
+                paused,
+                ..Settings::default()
+            };
+            let mut i = inputs(&s, &[]);
+            i.phone = None;
+            variants.push(build(i));
+        }
+        for m in variants {
+            let hits = layout(rectf(0.0, 0.0, 900.0, 1400.0), 1.0, &m);
+            let actions: Vec<Action> = hits.iter().filter_map(|h| click(h, &m)).collect();
+            for (i, a) in actions.iter().enumerate() {
+                assert!(!actions[i + 1..].contains(a), "duplicate control for {a:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unpaused_has_no_resume_and_enabled_tiles() {
+        let m = paired_model(false);
+        assert!(Quick::ALL.iter().all(|q| q.enabled(&m)));
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        assert!(!hits.iter().any(|h| h.id == RESUME));
+    }
+
+    #[test]
+    fn a_pending_camera_shows_a_cancel_label_and_the_accent() {
+        let mut m = paired_model(false);
+        m.camera_pending = true;
+        assert!(Quick::Camera.on(&m));
+        assert_eq!(Quick::Camera.label_for(&m), "Cancel start");
+        m.camera_pending = false;
+        assert_eq!(Quick::Camera.label_for(&m), "Camera");
+    }
+
+    #[test]
+    fn every_home_hit_has_a_name() {
+        for paused in [false, true] {
+            let mut m = paired_model(paused);
+            m.sessions.push(Session {
+                kind: SessionKind::Camera,
+                stop: Action::Stop(SessionKind::Camera),
+                live: true,
+            });
+            for h in layout(rectf(0.0, 0.0, 900.0, 1400.0), 1.0, &m) {
+                assert!(
+                    !describe(&h, &m).expect("described").name.is_empty(),
+                    "{h:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stopped_core_disables_everything_and_offers_restart() {
+        let mut m = paired_model(false);
+        m.error = Some("address already in use".into());
+        assert!(Quick::ALL.iter().all(|q| !q.enabled(&m)));
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        let r = hits.iter().find(|h| h.id == RESUME).expect("restart");
+        assert_eq!(click(r, &m), Some(Action::Restart));
+        assert_eq!(describe(r, &m).unwrap().name, "Restart Relay");
+        assert!(!hits.iter().any(|h| (QUICK..QUICK + 5).contains(&h.id)));
+        // Paired or not, Pair is not offered while it cannot work.
+        m.phone = None;
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        assert!(!hits.iter().any(|h| h.id == PAIR));
+        assert!(hits.iter().any(|h| h.id == RESUME));
+    }
+
+    #[test]
+    fn paused_empty_home_swaps_pair_for_resume() {
+        let s = Settings {
+            paused: true,
+            ..Settings::default()
+        };
+        let mut i = inputs(&s, &[]);
+        i.phone = None;
+        let m = build(i);
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        assert!(hits.iter().any(|h| h.id == RESUME));
+        assert!(!hits.iter().any(|h| h.id == PAIR));
     }
 
     #[test]

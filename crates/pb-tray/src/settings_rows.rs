@@ -21,6 +21,8 @@ pub enum Key {
     NotifyQuietMirror,
     /// Record the Timeline; off deletes it.
     KeepHistory,
+    /// Write the day-by-day structured logs.
+    KeepLogs,
 }
 
 /// Three-way choices, painted as segmented buttons.
@@ -46,6 +48,10 @@ pub struct Model {
     pub startup: bool,
     pub control: bool,
     pub keep_history: bool,
+    pub keep_logs: bool,
+    /// Where the logs go, and how big they are now (bytes).
+    pub log_dir: String,
+    pub log_bytes: u64,
     /// (name, fingerprint, answers as a different device now)
     pub devices: Vec<(String, String, bool)>,
     pub my_fingerprint: String,
@@ -81,6 +87,7 @@ impl Model {
             Key::NotifyOtp => self.notify_otp,
             Key::NotifyQuietMirror => self.notify_quiet_mirror,
             Key::KeepHistory => self.keep_history,
+            Key::KeepLogs => self.keep_logs,
         }
     }
 
@@ -116,6 +123,10 @@ pub enum Action {
     Mute(usize),
     /// Delete the Timeline (the tray asks first).
     ClearHistory,
+    /// Show the log folder in Explorer.
+    OpenLogs,
+    /// Delete every log (the tray asks first).
+    ClearLogs,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,6 +147,10 @@ pub enum Row {
     CameraWindow,
     /// Deletes the Timeline.
     ClearHistory,
+    /// The log folder, with an Open button.
+    LogFolder,
+    /// Deletes every log, showing their size.
+    ClearLogs,
 }
 
 pub fn rows(m: &Model) -> Vec<Row> {
@@ -145,7 +160,7 @@ pub fn rows(m: &Model) -> Vec<Row> {
         Row::Header("Clipboard"),
         Row::Toggle(
             Key::Share,
-            "Share clipboard",
+            crate::strings::SHARE_CLIPBOARD,
             "Copy on one device, paste on the other",
         ),
         Row::Toggle(
@@ -241,6 +256,14 @@ pub fn rows(m: &Model) -> Vec<Row> {
             "Remember what moved in the Timeline; off deletes it",
         ),
         Row::ClearHistory,
+        Row::Header("Logs"),
+        Row::Toggle(
+            Key::KeepLogs,
+            "Keep logs",
+            "Day-by-day records of what Relay did; never your content",
+        ),
+        Row::LogFolder,
+        Row::ClearLogs,
         Row::Header("Devices"),
     ]);
     v.extend((0..m.devices.len()).map(Row::Device));
@@ -248,6 +271,11 @@ pub fn rows(m: &Model) -> Vec<Row> {
     v.push(Row::Header("About"));
     v.push(Row::About);
     v
+}
+
+/// "12.3 MB" for a byte count.
+pub fn log_size_text(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_048_576.0)
 }
 
 /// The small line under a paired device: its fingerprint, or why it is no
@@ -330,5 +358,35 @@ mod tests {
         let t: Vec<String> = rows(&Model::default()).iter().map(title).collect();
         let at = t.iter().position(|x| x == "Share clipboard").unwrap();
         assert_eq!(t[at + 1], "Share images");
+    }
+}
+
+#[cfg(test)]
+mod log_rows_tests {
+    use super::*;
+
+    #[test]
+    fn log_rows_sit_after_history_on_the_general_page() {
+        let r = rows(&Model::default());
+        let at = |f: &dyn Fn(&Row) -> bool| r.iter().position(f).unwrap();
+        let clear = at(&|x| *x == Row::ClearHistory);
+        let keep = at(&|x| matches!(x, Row::Toggle(Key::KeepLogs, ..)));
+        let folder = at(&|x| *x == Row::LogFolder);
+        let wipe = at(&|x| *x == Row::ClearLogs);
+        assert!(clear < keep && keep < folder && folder < wipe);
+        assert_eq!(r[keep - 1], Row::Header("Logs"));
+        let m = Model {
+            keep_logs: true,
+            ..Default::default()
+        };
+        assert!(m.get(Key::KeepLogs));
+        assert!(!Model::default().get(Key::KeepLogs));
+    }
+
+    #[test]
+    fn log_size_reads_in_megabytes() {
+        assert_eq!(log_size_text(0), "0.0 MB");
+        assert_eq!(log_size_text(1_572_864), "1.5 MB");
+        assert_eq!(log_size_text(200), "0.0 MB");
     }
 }

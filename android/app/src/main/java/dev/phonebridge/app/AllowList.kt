@@ -18,3 +18,7 @@ fun uniquePeerId(peers: List<Pair<String, String>>, name: String): String =
 /** The list without PCs that are no longer paired (a removed PC must not keep "Always allow"). */
 fun pruneAllowed(allowed: Set<String>, pairedIds: List<String>): Set<String> =
     allowed.filter { it in pairedIds }.toSet()
+
+/** Moves an old global "Always allow" to the PCs paired now, so the existing PC keeps its behaviour. */
+fun migrateGlobalAllow(oldOn: Boolean, current: Set<String>, pairedIds: List<String>): Set<String> =
+    if (oldOn) current + pairedIds.filter { it.isNotEmpty() } else current

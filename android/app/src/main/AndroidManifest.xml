@@ -226,5 +226,6 @@
         <receiver android:name=".ScreenReceiver" android:exported="false" />
         <receiver android:name=".CameraReceiver" android:exported="false" />
         <receiver android:name=".AudioReceiver" android:exported="false" />
+        <receiver android:name=".TransferReceiver" android:exported="false" />
     </application>
 </manifest>

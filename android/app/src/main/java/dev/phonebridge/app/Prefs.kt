@@ -4,8 +4,15 @@ import android.content.Context
 import android.net.Uri
 
 /** User settings. Share clipboard is off until the user turns it on. */
+private const val NL = "\n"
+
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+    /** Keep the day-by-day log (metadata only). On by default. */
+    var keepLogs: Boolean
+        get() = sp.getBoolean("keep_logs", true)
+        set(v) = sp.edit().putBoolean("keep_logs", v).apply()
 
     /** Phone Bridge on (service running, reachable) or off. The tile's state. */
     var enabled: Boolean
@@ -37,10 +44,41 @@ class Prefs(context: Context) {
         get() = sp.getInt("last_clip", 0)
         set(v) = sp.edit().putInt("last_clip", v).apply()
 
-    /** PC control starts without asking. Off: each request asks on the phone. */
+    /**
+     * PCs (by peer id) whose control requests start without asking. "Always allow" in the question adds
+     * only the PC that asked (as the camera list does). On = any PC in the list; setting it on from
+     * Settings allows the PCs paired now, off clears the list. A value saved by an older version
+     * ("allow_control": every PC) stays pending until [migrateAllowances] turns it into the paired PCs.
+     */
+    var allowedControlPcs: Set<String>
+        get() = sp.getStringSet("allow_control_pcs", emptySet()).orEmpty().toSet()
+        set(v) = sp.edit().putStringSet("allow_control_pcs", v).apply()
+
     var allowControl: Boolean
-        get() = sp.getBoolean("allow_control", false)
-        set(v) = sp.edit().putBoolean("allow_control", v).apply()
+        get() = allowedControlPcs.isNotEmpty() || sp.getBoolean("allow_control", false)
+        set(v) = setAllowAll("allow_control", "allow_control_pcs", v)
+
+    private fun setAllowAll(legacyKey: String, setKey: String, on: Boolean) {
+        val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
+        val cur = sp.getStringSet(setKey, emptySet()).orEmpty()
+        val e = sp.edit()
+        when {
+            !on -> { e.remove(legacyKey); e.putStringSet(setKey, emptySet()) }
+            ids.isEmpty() -> e.putBoolean(legacyKey, true) // node off: migrated to the paired PCs at the next start
+            else -> { e.remove(legacyKey); e.putStringSet(setKey, migrateGlobalAllow(true, cur, ids)) }
+        }
+        e.apply()
+    }
+
+    /** Node up, [pairedIds] known: old global "always allow" values become per-PC; removed PCs are dropped. */
+    fun migrateAllowances(pairedIds: List<String>) {
+        if (pairedIds.isEmpty()) return
+        for ((legacy, key) in listOf("allow_control" to "allow_control_pcs", "allow_screen" to "allow_screen_pcs")) {
+            val cur = sp.getStringSet(key, emptySet()).orEmpty()
+            val next = pruneAllowed(migrateGlobalAllow(sp.getBoolean(legacy, false), cur, pairedIds), pairedIds)
+            if (sp.contains(legacy) || next != cur) sp.edit().remove(legacy).putStringSet(key, next).apply()
+        }
+    }
 
     /** "Phone Bridge stopped" was shown and not yet resolved (shown once, not every 15 min). */
     var stoppedNotified: Boolean
@@ -71,6 +109,26 @@ class Prefs(context: Context) {
         get() = sp.getInt("theme", 0)
         set(v) = sp.edit().putInt("theme", v).apply()
 
+    /** Apps the user does not want mirrored to the PC (package names). */
+    var notifyBlocked: Set<String>
+        get() = sp.getStringSet("notify_blocked", emptySet()).orEmpty().toSet()
+        set(v) = sp.edit().putStringSet("notify_blocked", v).apply()
+
+    /** Apps the user allows although they are blocked by default (banking, authenticators, secret notifications). */
+    var notifyAllowed: Set<String>
+        get() = sp.getStringSet("notify_allowed", emptySet()).orEmpty().toSet()
+        set(v) = sp.edit().putStringSet("notify_allowed", v).apply()
+
+    /** Mirrored vs blocked notifications so far (Settings shows them). */
+    var mirrorCounts: MirrorCounts
+        get() = MirrorCounts(sp.getInt("mirror_sent", 0), sp.getInt("mirror_blocked", 0))
+        set(v) = sp.edit().putInt("mirror_sent", v.sent).putInt("mirror_blocked", v.blocked).apply()
+
+    /** Recently seen notifying apps, newest first, for the block list. */
+    var notifySeen: List<String>
+        get() = sp.getString("notify_seen", "").orEmpty().split(NL).filter { it.isNotEmpty() }
+        set(v) = sp.edit().putString("notify_seen", v.joinToString(NL)).apply()
+
     /** Phone notifications are shown on paired PCs (once access is granted). */
     var notifyToPc: Boolean
         get() = sp.getBoolean("notify_to_pc", true)
@@ -81,10 +139,14 @@ class Prefs(context: Context) {
         get() = sp.getInt("saved_ringer", -1)
         set(v) = sp.edit().putInt("saved_ringer", v).apply()
 
-    /** Screen sharing to the PC starts without asking (Android's prompt still shows). */
+    /** PCs (by peer id) whose screen requests start without asking (Android's prompt still shows); like [allowedControlPcs]. */
+    var allowedScreenPcs: Set<String>
+        get() = sp.getStringSet("allow_screen_pcs", emptySet()).orEmpty().toSet()
+        set(v) = sp.edit().putStringSet("allow_screen_pcs", v).apply()
+
     var allowScreen: Boolean
-        get() = sp.getBoolean("allow_screen", false)
-        set(v) = sp.edit().putBoolean("allow_screen", v).apply()
+        get() = allowedScreenPcs.isNotEmpty() || sp.getBoolean("allow_screen", false)
+        set(v) = setAllowAll("allow_screen", "allow_screen_pcs", v)
 
     /**
      * PCs (by peer id) that may use the camera without asking; Android's
@@ -112,6 +174,11 @@ class Prefs(context: Context) {
     var lastSeenMs: Long
         get() = sp.getLong("last_seen_ms", 0L)
         set(v) = sp.edit().putLong("last_seen_ms", v).apply()
+
+    /** Name of the last paired PC, so Home can show it (dimmed) while Relay is off. Cleared once the node says nothing is paired. */
+    var lastPcName: String?
+        get() = sp.getString("last_pc_name", null)
+        set(v) = sp.edit().putString("last_pc_name", v).apply()
 
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?

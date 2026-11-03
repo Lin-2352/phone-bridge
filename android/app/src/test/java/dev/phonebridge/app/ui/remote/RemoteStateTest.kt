@@ -26,3 +26,10 @@ class RemoteStateTest {
         assertEquals(RemoteState.Ready, remoteState(true, true, 1))
     }
 }
+
+class RemoteStateUnknownPeersTest {
+    @Test
+    fun peers_not_read_yet_is_starting_never_pair_your_pc() {
+        assertEquals(RemoteState.Starting, remoteState(true, true, null))
+    }
+}

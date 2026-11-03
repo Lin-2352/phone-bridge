@@ -36,6 +36,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +48,10 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -68,6 +76,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.Bridge
+import dev.phonebridge.app.heroPc
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
 import dev.phonebridge.app.ControlService
@@ -77,6 +86,7 @@ import dev.phonebridge.app.Quick
 import dev.phonebridge.app.QuickTile
 import dev.phonebridge.app.Radius
 import dev.phonebridge.app.ScanActivity
+import dev.phonebridge.app.tileDisabledReason
 import dev.phonebridge.app.ScreenShare
 import dev.phonebridge.app.ScreenshotWatcher
 import dev.phonebridge.app.SendClipboardActivity
@@ -89,7 +99,11 @@ import dev.phonebridge.app.pruneAllowed
 import dev.phonebridge.app.quickTiles
 import dev.phonebridge.app.setBridgeEnabled
 import dev.phonebridge.app.ui.LocalResumeCount
-import dev.phonebridge.app.ui.components.KindBadge
+import dev.phonebridge.app.ui.components.IconBadge
+import dev.phonebridge.app.ui.components.RelayTint
+import dev.phonebridge.app.ui.components.RelayTopBar
+import dev.phonebridge.app.ui.components.cardColor
+import dev.phonebridge.app.ui.components.tintColor
 import dev.phonebridge.app.ui.components.LinkIndicator
 import dev.phonebridge.app.ui.settings.openNotifyAccess
 import dev.phonebridge.app.RelayDialog
@@ -108,13 +122,20 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
+fun HomeTab(onTimeline: () -> Unit) {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
-    val pc = Bridge.linked.value
+    val linkedPc = Bridge.linked.value
     val running = Bridge.running.value
     val ready = Bridge.nodeReady.value
+    // Remember the PC while it is live; forget it only once the running node says nothing is paired.
+    LaunchedEffect(linkedPc, running, ready) {
+        if (linkedPc != null) { if (prefs.lastPcName != linkedPc) prefs.lastPcName = linkedPc }
+        else if (running && ready && prefs.lastPcName != null) prefs.lastPcName = null
+    }
+    val shown = heroPc(linkedPc, prefs.lastPcName, running, ready)
+    val pc = linkedPc
     val controller = Bridge.controlledBy.value
     val screenTo = ScreenShare.sharingWith.value
     val cameraTo = CameraShare.usedBy.value
@@ -185,21 +206,20 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     }
 
     val timeline by Timeline.entries.collectAsState()
+    val historyOn by Timeline.historyOn.collectAsState()
     val recent = remember(timeline) { timeline.take(3).map(::recentItem) }
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         topBar = {
-            TopAppBar(
-                title = { Text(APP_NAME) },
-                actions = { IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, "Settings") } },
-            )
+            // No Settings button here: the bottom bar's Settings tab is the one way in.
+            RelayTopBar(title = APP_NAME)
         },
     ) { pad ->
         LazyColumn(
             Modifier.padding(pad).padding(horizontal = Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
-            item(key = "hero") { HeroCard(pc, running, ready, live, pcStatus(live, lastSeen, now, paired = pc != null)) }
+            item(key = "hero") { HeroCard(shown.name, shown.dim, running, ready, live, pcStatus(live, lastSeen, now, paired = pc != null)) }
             if (list.isNotEmpty()) {
                 item(key = "needs") {
                     NeedsCard(list, Modifier.animateItem()) { need ->
@@ -217,7 +237,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                 }
             }
             item(key = "grid") {
-                QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null)) { q ->
+                QuickGrid(quickTiles(running, pc != null, cameraTo != null, screenTo != null), running, pc != null, { scope.launch { snack.showSnackbar(it) } }) { q ->
                     when (q) {
                         Quick.SendFile -> pickFiles.launch(arrayOf("*/*"))
                         // The activity reads the clipboard once it has focus (Android's rule), then closes.
@@ -234,19 +254,26 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
             cameraTo?.let { item(key = "session-camera") { SessionCard("$it is using the camera", "This phone is your PC's webcam", Modifier.animateItem()) { CameraShare.stop(userStopped = true) } } }
             item(key = "recent-head") {
                 Row(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Recent", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.sm))
+                    Text("Recent", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.lg))
                     if (recent.isNotEmpty()) TextButton(onClick = onTimeline) { Text("See all") }
                 }
             }
             if (recent.isEmpty()) {
-                item(key = "recent-empty") { Text("Nothing yet. Share a photo or file to $APP_NAME from any app.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) }
+                item(key = "recent-empty") { Text(if (historyOn) "Nothing yet. Share a photo or file to $APP_NAME from any app." else "History is off, so nothing is listed here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) }
             }
             items(recent) { r ->
                 ListItem(
                     headlineContent = { Text(r.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(r.subtitle) },
-                    leadingContent = { KindBadge(r.kind) },
-                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).clickable(enabled = isOpenable(r.kind == RecentItem.Kind.File, r.uri)) {
+                    leadingContent = {
+                        when (r.kind) {
+                            RecentItem.Kind.File -> IconBadge(Icons.AutoMirrored.Filled.InsertDriveFile, tintColor(RelayTint.Primary))
+                            RecentItem.Kind.Clipboard -> IconBadge(Icons.Filled.ContentPaste, tintColor(RelayTint.Accent))
+                            RecentItem.Kind.Link -> IconBadge(Icons.Filled.Link, tintColor(RelayTint.Primary))
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).background(cardColor()).clickable(enabled = isOpenable(r.kind == RecentItem.Kind.File, r.uri)) {
                         val uri = r.uri
                         if (uri != null && !opening) {
                             opening = true // one tap, one viewer or one message, as in Timeline
@@ -264,7 +291,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
 
 /** The PC hero card: both devices joined by the link line, the PC's name and Connected / Last seen. */
 @Composable
-private fun HeroCard(pc: String?, running: Boolean, ready: Boolean, live: Boolean, status: String) {
+private fun HeroCard(pc: String?, pcDim: Boolean, running: Boolean, ready: Boolean, live: Boolean, status: String) {
     val ctx = LocalContext.current
     Column(
         Modifier
@@ -275,7 +302,7 @@ private fun HeroCard(pc: String?, running: Boolean, ready: Boolean, live: Boolea
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        LinkIndicator(Build.MODEL ?: "Phone", pc, live && running)
+        LinkIndicator(Build.MODEL ?: "Phone", pc, live && running, pcDim)
         when {
             !running -> {
                 HeroText("$APP_NAME is off", "Your PC cannot reach this phone.")
@@ -306,7 +333,7 @@ private fun HeroText(title: String, body: String?, accent: Boolean = false) {
 private fun NeedsCard(needs: List<Need>, modifier: Modifier, onFix: (Need) -> Unit) {
     Card(
         shape = RoundedCornerShape(Radius.card),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+        colors = CardDefaults.cardColors(containerColor = needsContainer(needs), contentColor = needsContent(needs)),
         modifier = modifier.fillMaxWidth().animateContentSize(),
     ) {
         Column(Modifier.padding(vertical = Spacing.md)) {
@@ -361,7 +388,7 @@ private fun NeedRow(title: String, body: String, fix: String, onFix: () -> Unit)
 
 /** The quick actions, two per row; a tap gives a haptic tick. */
 @Composable
-private fun QuickGrid(tiles: List<QuickTile>, onTap: (Quick) -> Unit) {
+private fun QuickGrid(tiles: List<QuickTile>, running: Boolean, paired: Boolean, say: (String) -> Unit, onTap: (Quick) -> Unit) {
     val haptics = LocalHapticFeedback.current
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
         tiles.chunked(2).forEach { row ->
@@ -369,9 +396,11 @@ private fun QuickGrid(tiles: List<QuickTile>, onTap: (Quick) -> Unit) {
                 row.forEach { tile ->
                     QuickCard(tile, Modifier.weight(1f)) {
                         haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onTap(tile.quick)
+                        // A dimmed tile still answers: it says what is missing instead of doing nothing.
+                        if (tile.enabled) onTap(tile.quick) else say(tileDisabledReason(running, paired))
                     }
                 }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -392,11 +421,18 @@ private fun QuickCard(tile: QuickTile, modifier: Modifier, onClick: () -> Unit) 
     val colors = if (tile.on) {
         CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
     } else {
-        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer, contentColor = MaterialTheme.colorScheme.onSurface)
+        CardDefaults.cardColors(containerColor = cardColor(), contentColor = MaterialTheme.colorScheme.onSurface)
     }
-    Card(onClick = onClick, enabled = tile.enabled, shape = RoundedCornerShape(Radius.card), colors = colors, modifier = modifier.animateContentSize()) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(Radius.card),
+        colors = colors,
+        modifier = modifier.animateContentSize().alpha(if (tile.enabled) 1f else 0.5f)
+            .semantics { if (!tile.enabled) stateDescription = "Unavailable" },
+    ) {
         Column(Modifier.fillMaxWidth().padding(Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Icon(tile.quick.icon(), null, Modifier.size(24.dp))
+            if (tile.on) Icon(tile.quick.icon(), null, Modifier.size(24.dp))
+            else IconBadge(tile.quick.icon(), tintColor(if (tile.quick == Quick.Pair) RelayTint.Muted else RelayTint.Primary))
             Text(tile.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (tile.on) Text("On · tap to stop", style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.7f))
         }
@@ -446,12 +482,12 @@ private fun removeForgottenPcs(ctx: Context) {
 }
 
 /** A system settings page; some OEM builds lack one, which must not crash Home. */
-private fun openSettings(ctx: Context, intent: Intent) {
+internal fun openSettings(ctx: Context, intent: Intent) {
     runCatching { ctx.startActivity(intent) }
         .onFailure { Toast.makeText(ctx, "This phone has no such settings page. Open Settings and find $APP_NAME there", Toast.LENGTH_LONG).show() }
 }
 
-private fun openAppDetails(ctx: Context) {
+internal fun openAppDetails(ctx: Context) {
     openSettings(ctx, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:${ctx.packageName}")))
 }
 
@@ -460,3 +496,12 @@ private fun forgottenPcNames(): List<String> {
     val node = Bridge.node ?: return emptyList()
     return runCatching { node.peers().filter { node.peerChanged(it.id) }.map { it.name } }.getOrDefault(emptyList())
 }
+
+/** Red only when the PC no longer recognises this phone; optional permissions use the neutral warning surface. */
+@Composable
+private fun needsContainer(needs: List<Need>) =
+    if (Need.PcForgotPhone in needs) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer
+
+@Composable
+private fun needsContent(needs: List<Need>) =
+    if (Need.PcForgotPhone in needs) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSecondaryContainer

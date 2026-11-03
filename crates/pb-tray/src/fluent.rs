@@ -66,6 +66,7 @@ pub mod glyph {
     pub const UPLOAD: char = '\u{E898}';
     pub const KEYBOARD: char = '\u{E765}';
     pub const SEARCH: char = '\u{E721}';
+    pub const CHECK: char = '\u{E73E}';
 }
 
 /// 0 = follow Windows, 1 = light, 2 = dark (from settings).
@@ -528,6 +529,35 @@ fn metrics(
 
 /// Width in pixels `s` takes in `font` on one line.
 #[allow(dead_code)] // used by the widgets, and by the tests
+/// Windows' "Show animations" setting is off (Settings > Accessibility >
+/// Visual effects): animations should jump to their end. Asked each time
+/// (a cheap system call), so a change applies at once.
+pub fn reduced_motion() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+    let mut on = windows::core::BOOL(1);
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL through the pointer.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(std::ptr::addr_of_mut!(on).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    ok.is_ok() && !on.as_bool()
+}
+
+/// The keyboard focus ring: two accent outlines just outside `r`.
+pub fn focus_ring(c: &Canvas, r: RectF) {
+    let radius = crate::tokens::RADIUS[1] * c.s;
+    for grow in [2.0, 1.0] {
+        let o = rectf(r.left - grow, r.top - grow, r.right + grow, r.bottom + grow);
+        round_rect(c, &o, None, Some(c.p.accent), radius + grow, false);
+    }
+}
+
 pub fn text_width(c: &Canvas, font: Font, s: &str) -> f32 {
     if s.is_empty() {
         return 0.0;

@@ -2,4 +2,6 @@
 <paths>
     <!-- Pictures copied on the PC, kept briefly so they can sit on the clipboard. -->
     <cache-path name="clips" path="clips/" />
+    <!-- Zip of the daily logs, built for "Export logs" and shared once. -->
+    <cache-path name="logs" path="logs-export/" />
 </paths>

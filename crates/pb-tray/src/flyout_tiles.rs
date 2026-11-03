@@ -25,7 +25,10 @@ pub struct Tile {
 /// Camera, Screen and SendFile need a paired phone, except that a running
 /// camera or an open screen window stays clickable so it can be stopped.
 pub fn tiles(m: &Model) -> Vec<Tile> {
-    let phone = m.peer.is_some();
+    // Paused: the core refuses everything that needs the phone, so say so up
+    // front instead of after the click (a live session may still be stopped).
+    let phone = m.peer.is_some() && !m.paused && !m.stopped;
+    let free = !m.paused && !m.stopped;
     let camera = if !m.camera_on {
         "Camera".to_owned()
     } else if m.camera_fps > 0 {
@@ -50,7 +53,7 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
             kind: TileKind::Clipboard,
             label: "Clipboard".to_owned(),
             on: m.clipboard_on,
-            enabled: true,
+            enabled: free,
         },
         Tile {
             kind: TileKind::SendFile,
@@ -67,7 +70,7 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
             }
             .to_owned(),
             on: false,
-            enabled: true,
+            enabled: free,
         },
     ]
 }
@@ -75,6 +78,12 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
 /// One line under the grid: the paired phone and the last activity, clipped
 /// to at most `max_chars` characters with a trailing ellipsis.
 pub fn status_line(m: &Model, max_chars: usize) -> String {
+    if m.stopped {
+        return "Relay stopped. Restart it from Home.".to_owned();
+    }
+    if m.paused {
+        return "Paused. Resume in the tray menu.".to_owned();
+    }
     let line = match (&m.peer, m.last.is_empty()) {
         (Some(n), true) => format!("Paired with {n}"),
         (Some(n), false) => format!("{n} \u{b7} {}", m.last),
@@ -149,6 +158,40 @@ mod tests {
             );
             assert_eq!(t.enabled, !needs_phone, "{:?}", t.kind);
         }
+    }
+
+    #[test]
+    fn paused_disables_every_tile_that_needs_the_network() {
+        let m = Model {
+            paused: true,
+            ..paired()
+        };
+        for t in tiles(&m) {
+            assert!(!t.enabled, "{:?} must be disabled while paused", t.kind);
+        }
+        assert_eq!(status_line(&m, 80), "Paused. Resume in the tray menu.");
+    }
+
+    #[test]
+    fn a_stopped_core_disables_every_tile() {
+        let m = Model {
+            stopped: true,
+            ..paired()
+        };
+        assert!(tiles(&m).iter().all(|t| !t.enabled));
+        assert!(status_line(&m, 80).contains("stopped"));
+    }
+
+    #[test]
+    fn a_running_session_can_still_be_stopped_while_paused() {
+        let m = Model {
+            paused: true,
+            camera_on: true,
+            screen_on: true,
+            ..paired()
+        };
+        let t = tiles(&m);
+        assert!(t[0].enabled && t[1].enabled);
     }
 
     #[test]

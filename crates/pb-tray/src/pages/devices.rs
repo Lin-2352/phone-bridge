@@ -165,7 +165,19 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &DevicesModel) {
         text(c, Font::Caption, &line, meta, rgb, Align::Left);
         fluent::button(c, *b, "Remove", false);
     }
-    fluent::button(c, p.pair, "Pair a device", true);
+    fluent::button(c, p.pair, crate::strings::PAIR_DEVICE, true);
+}
+
+pub fn describe(hit: &Hit, m: &DevicesModel) -> Option<super::Desc> {
+    use super::{Desc, Role};
+    match hit.id {
+        PAIR => Some(Desc::new(crate::strings::PAIR_DEVICE, Role::Button)),
+        id if id >= REMOVE => {
+            let d = m.devices.get((id - REMOVE) as usize)?;
+            Some(Desc::new(format!("Remove {}", d.0), Role::Button))
+        }
+        _ => None,
+    }
 }
 
 pub fn click(hit: &Hit, m: &DevicesModel) -> Option<Action> {
@@ -182,6 +194,16 @@ pub fn click(hit: &Hit, m: &DevicesModel) -> Option<Action> {
 mod tests {
     use super::*;
     use crate::{fluent::rectf, flyout, settings_rows};
+
+    #[test]
+    fn every_hit_has_a_name() {
+        for m in [model(), DevicesModel::default()] {
+            for h in layout(page(), 1.0, &m) {
+                let d = describe(&h, &m).expect("described");
+                assert!(!d.name.is_empty());
+            }
+        }
+    }
 
     fn model() -> DevicesModel {
         DevicesModel {

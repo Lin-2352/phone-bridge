@@ -38,8 +38,131 @@ pub(crate) const CLOSE_TRANSFER_FAILED: u32 = 400;
 /// endpoint shuts down, which must not read as success.
 pub(crate) const CLOSE_SAVED: u32 = 200;
 
+/// Close code of whichever side cancelled the transfer on purpose.
+pub(crate) const CLOSE_CANCELLED: u32 = 300;
+
 /// Progress callback: `(bytes_done, bytes_total)`.
 pub type Progress = Arc<dyn Fn(u64, u64) + Send + Sync>;
+
+/// Cancels one in-flight send or receive. Cloneable; any clone can cancel.
+///
+/// Cancelling is cooperative and clean: the transfer stops at its next wait
+/// (connecting, waiting for the accept, each chunk), tells the other device
+/// (the connection closes with a dedicated code, so it reports
+/// [`Error::PeerCancelled`] instead of a transport error) and returns
+/// [`Error::Cancelled`]. A receive always deletes its partial file; there is
+/// no resume, so no `.partial-*` is ever kept.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<CancelInner>);
+
+#[derive(Default)]
+struct CancelInner {
+    flag: std::sync::atomic::AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask the transfer to stop. Safe from any thread, any number of times.
+    pub fn cancel(&self) {
+        self.0.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.0.wake.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Resolves once cancelled (immediately if it already was).
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.0.wake.notified();
+            tokio::pin!(notified);
+            // Registered before the flag check, so a cancel in between is not lost.
+            notified.as_mut().enable();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl std::fmt::Debug for Cancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cancel({})", self.is_cancelled())
+    }
+}
+
+/// Optional extras of a transfer: progress reports and a cancel handle.
+#[derive(Clone, Default)]
+pub struct TransferOpts {
+    pub progress: Option<Progress>,
+    pub cancel: Option<Cancel>,
+}
+
+impl TransferOpts {
+    pub fn new(progress: Option<Progress>, cancel: Option<Cancel>) -> Self {
+        Self { progress, cancel }
+    }
+}
+
+/// Run `f`, or give up with [`Error::Cancelled`] as soon as `cancel` fires.
+async fn or_cancel<T>(
+    cancel: &Option<Cancel>,
+    f: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    match cancel {
+        None => f.await,
+        Some(c) => tokio::select! {
+            biased;
+            _ = c.cancelled() => Err(Error::Cancelled),
+            r = f => r,
+        },
+    }
+}
+
+/// What made a receive refuse a file before taking it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Over the size cap.
+    OverCap,
+    /// Not enough free space in the destination folder.
+    NoSpace,
+}
+
+/// Whether a file of `size` bytes would be refused (cap, then disk space).
+/// The same check [`receive_offer`] makes, so an app can warn first.
+pub fn refusal(dir: &Path, size: u64, max_size: u64) -> Option<Refusal> {
+    if size > max_size {
+        Some(Refusal::OverCap)
+    } else if !room_for(dir, size) {
+        Some(Refusal::NoSpace)
+    } else {
+        None
+    }
+}
+
+/// A stream can stop (STOP_SENDING / reset) a moment before the close frame
+/// that says why arrives: wait briefly for it, so a cancel is told apart
+/// from a failure.
+async fn settle(conn: &iroh::endpoint::Connection) {
+    if conn.close_reason().is_none() {
+        let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
+    }
+}
+
+/// If the connection was closed by the other side's deliberate cancel.
+fn peer_cancelled(conn: &iroh::endpoint::Connection) -> bool {
+    matches!(
+        conn.close_reason(),
+        Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+            if c.error_code == CLOSE_CANCELLED.into()
+    )
+}
 
 /// What a completed receive produced.
 #[derive(Debug, PartialEq, Eq)]
@@ -187,7 +310,30 @@ impl Node {
         reader: R,
         progress: Option<Progress>,
     ) -> Result<[u8; 32], Error> {
-        self.send_stream(peer, OfferKind::File, name, size, mime, reader, progress)
+        self.send_file_with(
+            peer,
+            name,
+            size,
+            mime,
+            reader,
+            TransferOpts::new(progress, None),
+        )
+        .await
+    }
+
+    /// [`Node::send_file`] with progress and a [`Cancel`] handle. On cancel
+    /// the receiver is told, deletes its partial file and returns
+    /// [`Error::PeerCancelled`]; this returns [`Error::Cancelled`].
+    pub async fn send_file_with<R: AsyncRead + Unpin>(
+        &self,
+        peer: &PeerId,
+        name: &str,
+        size: u64,
+        mime: &str,
+        reader: R,
+        opts: TransferOpts,
+    ) -> Result<[u8; 32], Error> {
+        self.send_stream(peer, OfferKind::File, name, size, mime, reader, opts)
             .await
     }
 
@@ -205,7 +351,7 @@ impl Node {
             size,
             "image/png",
             std::io::Cursor::new(png),
-            None,
+            TransferOpts::default(),
         )
         .await
         .map(|_| ())
@@ -219,73 +365,25 @@ impl Node {
         name: &str,
         size: u64,
         mime: &str,
-        mut reader: R,
-        progress: Option<Progress>,
+        reader: R,
+        opts: TransferOpts,
     ) -> Result<[u8; 32], Error> {
-        let mut s = self.connect(peer).await?;
-        let id = new_id();
-        s.send(ControlMsg::Offer(Offer {
-            id,
-            kind: kind as i32,
-            name: name.to_owned(),
-            size,
-            mime: mime.to_owned(),
-            text: String::new(),
-        }))
-        .await?;
-        if let (false, too_large) = await_answer(&mut s, id).await? {
-            s.conn.close(0u32.into(), b"declined");
-            return Err(if too_large {
-                Error::TooLarge
-            } else {
-                Error::Declined
-            });
-        }
-        let mut out = s.conn.open_uni().await.map_err(tx)?;
-        write_frame(&mut out, &FileHeader { id }).await?;
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0u8; CHUNK];
-        let mut done = 0u64;
-        while done < size {
-            let want = ((size - done) as usize).min(CHUNK);
-            let n = reader
-                .read(&mut buf[..want])
-                .await
-                .map_err(|e| Error::Io(e.to_string()))?;
-            if n == 0 {
-                return Err(Error::Io(format!(
-                    "source ended after {done} of {size} bytes"
-                )));
+        let mut s = or_cancel(&opts.cancel, self.connect(peer)).await?;
+        match send_on(&mut s, kind, name, size, mime, reader, &opts).await {
+            Err(Error::Cancelled) => {
+                // Tell the receiver on purpose, so it cleans up and says why.
+                s.conn.close(CLOSE_CANCELLED.into(), b"cancelled");
+                Err(Error::Cancelled)
             }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n]).await.map_err(tx)?;
-            done += n as u64;
-            if let Some(p) = &progress {
-                p(done, size);
+            Err(e @ (Error::Transport(_) | Error::Closed)) => {
+                settle(&s.conn).await;
+                Err(if peer_cancelled(&s.conn) {
+                    Error::PeerCancelled
+                } else {
+                    e
+                })
             }
-        }
-        out.finish().map_err(tx)?;
-        let sha: [u8; 32] = hasher.finalize().into();
-        s.send(ControlMsg::TransferDone(TransferDone {
-            id,
-            sha256: sha.to_vec(),
-        }))
-        .await?;
-        await_peer_close(&mut s).await;
-        // The receiver closes with CLOSE_SAVED only once the file is saved.
-        match s.conn.close_reason() {
-            Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
-                if c.error_code == CLOSE_SAVED.into() =>
-            {
-                Ok(sha)
-            }
-            Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
-                if c.error_code == CLOSE_TRANSFER_FAILED.into() =>
-            {
-                Err(Error::Io("the other device could not save the file".into()))
-            }
-            None => Err(Error::Timeout),
-            Some(_) => Err(Error::Closed),
+            other => other,
         }
     }
 
@@ -321,6 +419,101 @@ impl Node {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn send_on<R: AsyncRead + Unpin>(
+    s: &mut Session,
+    kind: OfferKind,
+    name: &str,
+    size: u64,
+    mime: &str,
+    mut reader: R,
+    opts: &TransferOpts,
+) -> Result<[u8; 32], Error> {
+    let (cancel, progress) = (&opts.cancel, &opts.progress);
+    let id = new_id();
+    or_cancel(
+        cancel,
+        s.send(ControlMsg::Offer(Offer {
+            id,
+            kind: kind as i32,
+            name: name.to_owned(),
+            size,
+            mime: mime.to_owned(),
+            text: String::new(),
+        })),
+    )
+    .await?;
+    if let (false, too_large) = or_cancel(cancel, await_answer(s, id)).await? {
+        s.conn.close(0u32.into(), b"declined");
+        return Err(if too_large {
+            Error::TooLarge
+        } else {
+            Error::Declined
+        });
+    }
+    let mut out = s.conn.open_uni().await.map_err(tx)?;
+    or_cancel(cancel, write_frame(&mut out, &FileHeader { id })).await?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; CHUNK];
+    let mut done = 0u64;
+    while done < size {
+        let want = ((size - done) as usize).min(CHUNK);
+        let n = reader
+            .read(&mut buf[..want])
+            .await
+            .map_err(|e| Error::Io(e.to_string()))?;
+        if n == 0 {
+            return Err(Error::Io(format!(
+                "source ended after {done} of {size} bytes"
+            )));
+        }
+        hasher.update(&buf[..n]);
+        // Cancel also interrupts a write stalled by flow control.
+        or_cancel(cancel, async { out.write_all(&buf[..n]).await.map_err(tx) }).await?;
+        done += n as u64;
+        if let Some(p) = progress {
+            p(done, size);
+        }
+    }
+    out.finish().map_err(tx)?;
+    let sha: [u8; 32] = hasher.finalize().into();
+    or_cancel(
+        cancel,
+        s.send(ControlMsg::TransferDone(TransferDone {
+            id,
+            sha256: sha.to_vec(),
+        })),
+    )
+    .await?;
+    // Our last message is out: waiting for the receiver's close is
+    // cancellable too (a cancel here still closes with the cancel code).
+    or_cancel(cancel, async {
+        await_peer_close(s).await;
+        Ok(())
+    })
+    .await?;
+    // The receiver closes with CLOSE_SAVED only once the file is saved.
+    match s.conn.close_reason() {
+        Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+            if c.error_code == CLOSE_SAVED.into() =>
+        {
+            Ok(sha)
+        }
+        Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+            if c.error_code == CLOSE_TRANSFER_FAILED.into() =>
+        {
+            Err(Error::Io("the other device could not save the file".into()))
+        }
+        Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+            if c.error_code == CLOSE_CANCELLED.into() =>
+        {
+            Err(Error::PeerCancelled)
+        }
+        None => Err(Error::Timeout),
+        Some(_) => Err(Error::Closed),
+    }
+}
+
 /// Free space left after a transfer, at minimum.
 const KEEP_FREE: u64 = 256 * 1024 * 1024;
 
@@ -348,13 +541,39 @@ pub async fn receive_offer(
     max_size: u64,
     progress: Option<Progress>,
 ) -> Result<Received, Error> {
+    receive_offer_with(
+        session,
+        offer,
+        accept,
+        dir,
+        max_size,
+        TransferOpts::new(progress, None),
+    )
+    .await
+}
+
+/// [`receive_offer`] with progress and a [`Cancel`] handle. On cancel the
+/// partial file is deleted, the sender is told (it returns
+/// [`Error::PeerCancelled`]) and this returns [`Error::Cancelled`]. If the
+/// sender cancels, this returns [`Error::PeerCancelled`] and also leaves
+/// nothing behind.
+pub async fn receive_offer_with(
+    session: &mut Session,
+    offer: Offer,
+    accept: bool,
+    dir: &Path,
+    max_size: u64,
+    opts: TransferOpts,
+) -> Result<Received, Error> {
+    let progress = opts.progress.clone();
+    let cancel = opts.cancel.clone();
     let id = offer.id;
     let kind = OfferKind::try_from(offer.kind).unwrap_or(OfferKind::File);
     // Too big for the cap, or for the disk: the file is written once here and
     // may be copied once more by the app (Android moves it into MediaStore),
     // and the device must keep some room to stay usable.
     let too_big = match kind {
-        OfferKind::File => offer.size > max_size || !room_for(dir, offer.size),
+        OfferKind::File => refusal(dir, offer.size, max_size).is_some(),
         OfferKind::ClipboardImage => offer.size > MAX_CLIPBOARD_IMAGE as u64,
         OfferKind::Text | OfferKind::Link => false,
     };
@@ -401,7 +620,7 @@ pub async fn receive_offer(
     // A local random suffix: the offer id is the peer's choice and may repeat.
     let partial = dir.join(format!(".{name}.partial-{:016x}", new_id()));
     let result = async {
-        receive_bytes(session, id, offer.size, &partial, progress).await?;
+        receive_bytes(session, id, offer.size, &partial, progress, &cancel).await?;
         let dir = dir.to_owned();
         let (src, n) = (partial.clone(), name.clone());
         tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
@@ -444,10 +663,22 @@ pub async fn receive_offer(
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&partial).await;
-            session
-                .conn
-                .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
-            Err(e)
+            if matches!(e, Error::Transport(_) | Error::Closed) {
+                settle(&session.conn).await;
+            }
+            // Read before closing ourselves: our own close would replace it.
+            let theirs = peer_cancelled(&session.conn);
+            if matches!(e, Error::Cancelled) {
+                session.conn.close(CLOSE_CANCELLED.into(), b"cancelled");
+                Err(Error::Cancelled)
+            } else if theirs {
+                Err(Error::PeerCancelled)
+            } else {
+                session
+                    .conn
+                    .close(CLOSE_TRANSFER_FAILED.into(), b"transfer failed");
+                Err(e)
+            }
         }
     }
 }
@@ -458,16 +689,23 @@ async fn receive_bytes(
     size: u64,
     partial: &Path,
     progress: Option<Progress>,
+    cancel: &Option<Cancel>,
 ) -> Result<(), Error> {
-    let stream = tokio::time::timeout(Duration::from_secs(30), session.conn.accept_uni())
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(tx)?;
+    let stream = or_cancel(cancel, async {
+        tokio::time::timeout(Duration::from_secs(30), session.conn.accept_uni())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(tx)
+    })
+    .await?;
     let mut reader = FrameReader::new(stream);
-    let header: FileHeader = tokio::time::timeout(Duration::from_secs(30), reader.next())
-        .await
-        .map_err(|_| Error::Timeout)??
-        .ok_or(Error::Closed)?;
+    let header: FileHeader = or_cancel(cancel, async {
+        tokio::time::timeout(Duration::from_secs(30), reader.next())
+            .await
+            .map_err(|_| Error::Timeout)??
+            .ok_or(Error::Closed)
+    })
+    .await?;
     if header.id != id {
         return Err(Error::Protocol("file stream for a different offer".into()));
     }
@@ -511,10 +749,14 @@ async fn receive_bytes(
                 }
             }
             // A sender that stops sending must not hold the partial file forever.
-            let chunk = tokio::time::timeout(Duration::from_secs(30), reader.recv.read(&mut buf))
-                .await
-                .map_err(|_| Error::Timeout)?;
-            match chunk.map_err(tx)? {
+            let chunk = or_cancel(cancel, async {
+                tokio::time::timeout(Duration::from_secs(30), reader.recv.read(&mut buf))
+                    .await
+                    .map_err(|_| Error::Timeout)?
+                    .map_err(tx)
+            })
+            .await?;
+            match chunk {
                 Some(n) => batch.extend_from_slice(&buf[..n]),
                 None => break,
             }
@@ -537,17 +779,20 @@ async fn receive_bytes(
     if done != size {
         return Err(Error::Protocol(format!("received {done} of {size} bytes")));
     }
-    let theirs = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            match session.recv().await? {
-                Some(ControlMsg::TransferDone(d)) if d.id == id => return Ok(d.sha256),
-                Some(_) => continue,
-                None => return Err(Error::Closed),
+    let theirs = or_cancel(cancel, async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match session.recv().await? {
+                    Some(ControlMsg::TransferDone(d)) if d.id == id => return Ok(d.sha256),
+                    Some(_) => continue,
+                    None => return Err(Error::Closed),
+                }
             }
-        }
+        })
+        .await
+        .map_err(|_| Error::Timeout)?
     })
-    .await
-    .map_err(|_| Error::Timeout)??;
+    .await?;
     if theirs.as_slice() != ours.as_slice() {
         return Err(Error::HashMismatch);
     }

@@ -52,6 +52,7 @@ fun hasNotifyAccess(ctx: Context): Boolean =
 class NotifyListener : NotificationListenerService() {
     companion object {
         @Volatile var instance: NotifyListener? = null
+        private const val SEEN_MAX = 40
         val connected = mutableStateOf(false)
 
         /** key -> live notification, for actions a PC asks for. */
@@ -103,6 +104,7 @@ class NotifyListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
+        if (!baseSkip(sbn) && Prefs(this).notifyToPc) record(sbn, verdict(sbn))
         if (skip(sbn)) {
             // An incoming call that was answered becomes an ongoing call:
             // the call toast goes, and a silenced ringer comes back.
@@ -152,11 +154,27 @@ class NotifyListener : NotificationListenerService() {
                 (Build.VERSION.SDK_INT >= 31 && n.extras.getInt(Notification.EXTRA_CALL_TYPE) == Notification.CallStyle.CALL_TYPE_INCOMING)
             )
 
-    private fun skip(sbn: StatusBarNotification): Boolean {
+    private fun baseSkip(sbn: StatusBarNotification): Boolean {
         val n = sbn.notification
         return (sbn.isOngoing && !ringing(n)) ||
             n.flags and Notification.FLAG_GROUP_SUMMARY != 0 ||
             sbn.packageName == packageName
+    }
+
+    /** Whether the phone-side block list (user choices, banking and authenticator defaults, secret) lets it through (F7). */
+    private fun verdict(sbn: StatusBarNotification): MirrorVerdict {
+        val prefs = Prefs(this)
+        return mirrorVerdict(sbn.packageName, sbn.notification.visibility == Notification.VISIBILITY_SECRET, prefs.notifyBlocked, prefs.notifyAllowed)
+    }
+
+    private fun skip(sbn: StatusBarNotification): Boolean = baseSkip(sbn) || verdict(sbn) != MirrorVerdict.Send
+
+    /** Counts what Settings shows (mirrored vs blocked) and remembers the app for the block list. */
+    private fun record(sbn: StatusBarNotification, v: MirrorVerdict) = synchronized(NotifyListener) {
+        val prefs = Prefs(this)
+        prefs.mirrorCounts = prefs.mirrorCounts.after(v)
+        val seen = prefs.notifySeen
+        if (seen.firstOrNull() != sbn.packageName) prefs.notifySeen = (listOf(sbn.packageName) + seen.filter { it != sbn.packageName }).take(SEEN_MAX)
     }
 
     /**

@@ -14,9 +14,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        OnceLock,
+        Arc, OnceLock,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use windows::{
@@ -35,23 +35,25 @@ use windows::{
         UI::{
             HiDpi::{GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
-                GetFocus, GetKeyState, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
-                TRACKMOUSEEVENT, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+                GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent,
+                TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_DOWN, VK_END, VK_HOME, VK_NEXT,
+                VK_PRIOR, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, GetClientRect, GetCursorPos, GetWindowRect,
                 IsIconic, IsZoomed, KillTimer, LoadCursorW, LoadIconW, PostMessageW,
-                RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, EN_CHANGE,
-                EN_KILLFOCUS, EN_SETFOCUS, HTCLOSE, HTMAXBUTTON, HTMINBUTTON, IDC_ARROW,
-                MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE,
-                SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, SW_SHOW, WM_COMMAND,
-                WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE,
-                WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                RegisterClassW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+                EN_CHANGE, EN_KILLFOCUS, EN_SETFOCUS, HTCLIENT, HTCLOSE, HTMAXBUTTON, HTMINBUTTON,
+                IDC_ARROW, IDC_HAND, MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE, SC_MAXIMIZE,
+                SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
+                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
+                SW_SHOW, WM_CAPTURECHANGED, WM_COMMAND, WM_CONTEXTMENU, WM_CTLCOLOREDIT,
+                WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
+                WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
                 WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
-                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
-                WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
-                WS_OVERLAPPEDWINDOW,
+                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NOTIFY,
+                WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW,
+                WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -64,11 +66,15 @@ use crate::{
     ease::Anim,
     fluent::{self, rectf, round_rect, text, Align, Canvas, Font, Palette, RectF},
     focus,
-    pages::{self, settings, Hit, Model},
+    pages::{self, settings, timeline, Hit, Model},
     search_box::{self, SearchBox},
     titlebar::{self, Caption},
     tokens::{motion, RADIUS, SPACE},
-    widgets::{self, Scroll},
+    widgets::{
+        self,
+        scrollbar::{self, Bar, Look, Part},
+        Scroll,
+    },
 };
 
 const CLASS: PCWSTR = w!("PhoneBridgeMain");
@@ -315,6 +321,20 @@ struct State {
     /// Keyboard focus (a focus id); shown as a ring, cleared by the mouse.
     focus: Option<u32>,
     scroll: [Scroll; 4],
+    /// The pointer is over the scrollbar's hit area; its fade (0 = thin).
+    bar_hover: bool,
+    bar_fade: Anim,
+    drag: Option<Drag>,
+    /// The clickable thing under the pointer (hover fill, hand cursor).
+    hover: Option<Target>,
+    /// What the Timeline model was built from (the host's, every day on its
+    /// first-view rule); the window applies the user's open / closed days.
+    tl_base: Arc<timeline::TimelineModel>,
+    /// The Timeline search text, rows deleted but still undoable, and that
+    /// undo window.
+    tquery: String,
+    hidden: std::collections::HashSet<u32>,
+    undo: Option<Undo>,
     timer: bool,
     /// The last restored (not maximized or minimized) window rect.
     normal: Option<SavedRect>,
@@ -328,9 +348,46 @@ struct State {
     entered: Option<Page>,
 }
 
+/// Rows removed from the list that can still come back: the host deletes
+/// them for good at `due`, or when the window closes.
+struct Undo {
+    keys: Vec<u32>,
+    due: Instant,
+}
+
+/// How long a Timeline delete can be undone.
+const UNDO_FOR: Duration = Duration::from_secs(8);
+
+/// A press on the scrollbar, until the button comes up.
+#[derive(Clone, Copy, Debug)]
+enum Drag {
+    /// The thumb, grabbed at pointer `grab_y` when the offset was `start`.
+    Thumb { grab_y: f32, start: f32 },
+    /// The track held down: pages toward `y` at `next`, then repeatedly.
+    Track { y: f32, next: Instant },
+}
+
 impl State {
     fn animating(&self, now: Instant) -> bool {
-        self.nav_fade.iter().any(|a| a.running(now)) || self.scroll.iter().any(|s| s.animating(now))
+        self.nav_fade.iter().any(|a| a.running(now))
+            || self.bar_fade.running(now)
+            || matches!(self.drag, Some(Drag::Track { .. }))
+            || self.undo.is_some()
+            || self.scroll.iter().any(|s| s.animating(now))
+    }
+
+    /// The current page's scrollbar for a frame `f`; its offset is where
+    /// the scroll is heading, so a held track click pages from there.
+    fn bar(&self, f: &Frame) -> Bar {
+        let sc = &self.scroll[self.page.index()];
+        Bar {
+            content: sc.content,
+            view: sc.view,
+            offset: sc.target(),
+            top: f.content.top,
+            len: f.content.bottom - f.content.top,
+            s: self.scale,
+        }
     }
 }
 
@@ -343,6 +400,8 @@ thread_local! {
     /// notifications back into `wndproc`: only `borrow()` it around a call.
     static SEARCH: RefCell<Option<SearchBox>> = const { RefCell::new(None) };
     /// The palette of the last paint, to repaint the search box on a theme change.
+    /// The tooltip over the client area.
+    static TIP: RefCell<Option<crate::tooltip::Tip>> = const { RefCell::new(None) };
     static PAINTED: std::cell::Cell<Option<Palette>> = const { std::cell::Cell::new(None) };
 }
 
@@ -419,16 +478,32 @@ pub fn wants_camera() -> bool {
 fn sync_search(hwnd: HWND) {
     let (w, h) = client_size(hwnd);
     let Some(place) = with(hwnd, |st| {
-        (st.page == Page::Settings).then(|| {
-            let f = frame(w, h, st.scale);
-            (settings::search_rect(f.content, f.pane, st.scale), st.scale)
-        })
+        let f = frame(w, h, st.scale);
+        match st.page {
+            Page::Settings => Some((
+                settings::search_rect(f.content, f.pane, st.scale),
+                st.scale,
+                st.query.clone(),
+                "Search settings",
+            )),
+            Page::Timeline if !st.tl_base.groups.is_empty() || !st.tquery.is_empty() => Some((
+                timeline::search_rect(f.content, st.scale),
+                st.scale,
+                st.tquery.clone(),
+                "Search history",
+            )),
+            _ => None,
+        }
     }) else {
         return;
     };
-    with_search(|sb| match place {
-        Some((r, s)) => {
-            sb.place(r, s);
+    with_search(|sb| match &place {
+        Some((r, s, text, cue)) => {
+            sb.place(*r, *s);
+            if sb.text() != *text {
+                sb.set_text(text);
+            }
+            sb.set_cue(cue);
             sb.show(true);
         }
         None => sb.show(false),
@@ -448,6 +523,17 @@ fn on_search(hwnd: HWND, code: u32) {
         EN_CHANGE => {
             let q = with_search(|sb| settings::clamp_query(&sb.text())).unwrap_or_default();
             let changed = with(hwnd, |st| {
+                if st.page == Page::Timeline {
+                    if st.tquery == q {
+                        return false;
+                    }
+                    st.tquery = q;
+                    let exp = st.model.timeline.exp.clone();
+                    rebuild_timeline(st, &exp);
+                    let sc = &mut st.scroll[Page::Timeline.index()];
+                    *sc = Scroll::new(sc.content, sc.view);
+                    return true;
+                }
                 if st.query == q {
                     return false;
                 }
@@ -557,6 +643,365 @@ fn set_nav_hover(st: &mut State, h: Option<Page>, now: Instant) -> bool {
     true
 }
 
+/// Starts the scrollbar's widen / thin fade when its hover (or drag) changes.
+fn set_bar_hover(st: &mut State, over: bool, now: Instant) {
+    st.bar_hover = over;
+    let target = if over || st.drag.is_some() { 1.0 } else { 0.0 };
+    if st.bar_fade.to != target {
+        let from = st.bar_fade.value(now);
+        st.bar_fade = Anim::new(from, target, now, motion::FAST_MS);
+    }
+}
+
+/// Recomputes what is under the pointer at client (x, y) (scrollbar first,
+/// then nav and page hits). True when something visible changed.
+fn point_at(hwnd: HWND, st: &mut State, x: f32, y: f32, now: Instant) -> bool {
+    let (f, hits) = layout_now(hwnd, st);
+    let on_bar = st.drag.is_some() || st.bar(&f).part_at(f.pane.right, x, y).is_some();
+    if st.bar_hover != on_bar {
+        set_bar_hover(st, on_bar, now);
+    }
+    let t = if on_bar {
+        None
+    } else {
+        target_at(&f, &hits, x, y)
+    };
+    let nav = match t {
+        Some(Target::Nav(p)) => Some(p),
+        _ => None,
+    };
+    let hover_changed = std::mem::replace(&mut st.hover, t) != t;
+    set_nav_hover(st, nav, now) | hover_changed
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The scripted run (`ux`) stands in for the real pointer.
+    static FAKE_CURSOR: std::cell::Cell<Option<Option<(f32, f32)>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The pointer's client position, if it is over our window.
+fn cursor_client(hwnd: HWND) -> Option<(f32, f32)> {
+    #[cfg(test)]
+    if let Some(p) = FAKE_CURSOR.with(|c| c.get()) {
+        return p;
+    }
+    let mut pt = POINT::default();
+    // SAFETY: plain queries on our own window.
+    unsafe {
+        GetCursorPos(&mut pt).ok()?;
+        ScreenToClient(hwnd, &mut pt).as_bool().then_some(())?;
+    }
+    let (w, h) = client_size(hwnd);
+    let (x, y) = (pt.x as f32, pt.y as f32);
+    (x >= 0.0 && y >= 0.0 && x < w && y < h).then_some((x, y))
+}
+
+/// Re-tests hover after the content moved under a still pointer.
+fn rehover(hwnd: HWND, st: &mut State, now: Instant) {
+    if st.drag.is_none() {
+        if let Some((x, y)) = cursor_client(hwnd) {
+            point_at(hwnd, st, x, y, now);
+        }
+    }
+}
+
+/// Brings the focused page hit into the pane (Tab to something off screen).
+fn reveal_focus(hwnd: HWND, st: &mut State, now: Instant) {
+    let Some(id) = st.focus.filter(|&id| id >= HIT_BASE) else {
+        return;
+    };
+    let (f, hits) = layout_now(hwnd, st);
+    let Some(h) = hits.iter().find(|h| focus_id(Target::Hit(h.id)) == id) else {
+        return;
+    };
+    let mut h = *h;
+    if h.r.bottom <= h.r.top {
+        // Out of view: its hit is empty; ask the page where it really is.
+        let sc = &st.scroll[st.page.index()];
+        let r = scrolled(f.content, st.scale, sc);
+        if let Some(full) = pages::full_rect(st.page, h.id, r, st.scale, &st.model) {
+            h.r = full;
+        }
+    }
+    let margin = SPACE[1] * st.scale;
+    let sc = &mut st.scroll[st.page.index()];
+    let shift = if h.r.top < f.content.top + margin {
+        h.r.top - f.content.top - margin
+    } else if h.r.bottom > f.content.bottom - margin {
+        h.r.bottom - f.content.bottom + margin
+    } else {
+        return;
+    };
+    let to = sc.offset + shift / st.scale;
+    sc.ease_to(to, now);
+}
+
+/// Publishes the screen reader's tree: the nav rail and the page's hits as
+/// laid out now. Skipped while no client listens, unless `force` (the first
+/// `WM_GETOBJECT`).
+fn publish_tree(hwnd: HWND, force: bool) {
+    if !force && !crate::uia::listening() {
+        return;
+    }
+    let snap = with(hwnd, |st| {
+        let (f, hits) = layout_now(hwnd, st);
+        let nav: Vec<crate::a11y::NavItem> = f
+            .nav
+            .iter()
+            .map(|(r, p)| crate::a11y::NavItem {
+                id: focus_id(Target::Nav(*p)),
+                label: p.label(),
+                rect: *r,
+                current: *p == st.page,
+            })
+            .collect();
+        let nodes = crate::a11y::tree(&nav, st.page, &hits, HIT_BASE, &st.model);
+        crate::uia::Snapshot {
+            nodes,
+            focus: st.focus,
+        }
+    });
+    if let Some(snap) = snap {
+        crate::uia::publish(snap);
+    }
+}
+
+/// A pattern call from a screen reader for node `id` (a focus id).
+fn uia_act(hwnd: HWND, id: u32, act: isize) {
+    let Some(t) = target_of(id) else { return };
+    if act == crate::uia::Act::Focus as isize {
+        with(hwnd, |st| st.focus = Some(id));
+        reveal(hwnd);
+        crate::uia::raise_focus(hwnd, id);
+        repaint(hwnd);
+    } else {
+        activate(hwnd, t);
+    }
+}
+
+/// Scrolls the focused hit into view now.
+fn reveal(hwnd: HWND) {
+    let now = Instant::now();
+    with(hwnd, |st| reveal_focus(hwnd, st, now));
+}
+
+/// The undo bar along the bottom of the pane, and its Undo button.
+fn undo_rects(f: &Frame, s: f32) -> (RectF, RectF) {
+    let h = 48.0 * s;
+    let m = SPACE[4] * s;
+    let bar = rectf(
+        f.pane.left + m,
+        (f.pane.bottom - m - h).max(f.pane.top),
+        (f.pane.right - m).max(f.pane.left + m),
+        (f.pane.bottom - m).max(f.pane.top),
+    );
+    let bw = 88.0 * s;
+    let button = rectf(
+        (bar.right - SPACE[2] * s - bw).max(bar.left),
+        bar.top + 8.0 * s,
+        bar.right - SPACE[2] * s,
+        bar.bottom - 8.0 * s,
+    );
+    (bar, button)
+}
+
+/// Brings the rows removed from the list back.
+fn undo_delete(hwnd: HWND) {
+    with(hwnd, |st| {
+        if st.undo.take().is_some() {
+            st.hidden.clear();
+            let exp = st.model.timeline.exp.clone();
+            rebuild_timeline(st, &exp);
+        }
+    });
+    fit_scroll(hwnd);
+    sync_timer(hwnd);
+    repaint(hwnd);
+}
+
+/// Deletes for good the rows whose undo window passed (or the window is
+/// closing). Outside the state borrow: the host posts to the tray.
+fn commit_delete(hwnd: HWND) {
+    let keys = with(hwnd, |st| st.undo.take().map(|u| u.keys)).flatten();
+    if let (Some(keys), Some(host)) = (keys, HOST.get()) {
+        (host.act)(pages::Action::TimelineDelete(keys));
+    }
+}
+
+/// The Timeline row's "..." / context menu at screen point `at`.
+fn row_menu(hwnd: HWND, key: u32, at: POINT) {
+    use pages::timeline::RowAct;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, CreatePopupMenu, DestroyMenu, MessageBoxW, TrackPopupMenuEx,
+        MB_ICONINFORMATION, MB_OK, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    };
+    let row = with(hwnd, |st| {
+        st.model.timeline.items.iter().find_map(|i| match i {
+            timeline::Item::Row(x) if x.key == key => Some(x.clone()),
+            _ => None,
+        })
+    })
+    .flatten();
+    let Some(row) = row else { return };
+    let acts = timeline::row_actions(&row);
+    // SAFETY: a popup menu made, shown and destroyed here; the commands are
+    // 1-based indexes into `acts`.
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        for (i, a) in acts.iter().enumerate() {
+            let label: Vec<u16> = a.label().encode_utf16().chain(Some(0)).collect();
+            let _ = AppendMenuW(menu, MF_STRING, i + 1, PCWSTR(label.as_ptr()));
+        }
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            (TPM_RETURNCMD | TPM_RIGHTBUTTON).0,
+            at.x,
+            at.y,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        usize::try_from(cmd.0)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|n| acts.get(n).copied())
+    };
+    match chosen {
+        Some(RowAct::CopyPath) => {
+            if let (Some(p), Some(host)) = (row.file.clone(), HOST.get()) {
+                (host.act)(pages::Action::CopyText(p));
+            }
+        }
+        Some(RowAct::Details) => {
+            let body: Vec<u16> = timeline::details(&row)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            // SAFETY: a modal box on our own window; both strings are NUL-terminated.
+            unsafe {
+                MessageBoxW(
+                    Some(hwnd),
+                    PCWSTR(body.as_ptr()),
+                    w!("Details"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        }
+        Some(RowAct::Delete) => {
+            with(hwnd, |st| {
+                st.hidden.insert(key);
+                let mut keys = st.undo.take().map(|u| u.keys).unwrap_or_default();
+                keys.push(key);
+                st.undo = Some(Undo {
+                    keys,
+                    due: Instant::now() + UNDO_FOR,
+                });
+                let exp = st.model.timeline.exp.clone();
+                rebuild_timeline(st, &exp);
+            });
+            fit_scroll(hwnd);
+            sync_timer(hwnd);
+            repaint(hwnd);
+        }
+        None => {}
+    }
+}
+
+/// The row key of a Timeline hit id (a row, its buttons or its "...").
+fn row_key_of(hwnd: HWND, id: u32) -> Option<u32> {
+    with(hwnd, |st| {
+        st.model.timeline.items.iter().find_map(|i| match i {
+            timeline::Item::Row(x) if timeline::hit_ids(x.key).contains(&id) => Some(x.key),
+            _ => None,
+        })
+    })
+    .flatten()
+}
+
+/// Keys that act on the focus ring; false when nothing is focused (the key
+/// then scrolls as before). Runs the Timeline fold outside the borrow.
+fn arrow_key(hwnd: HWND, vk: u16) -> bool {
+    use focus::Move;
+    let now = Instant::now();
+    let mv = match vk {
+        k if k == VK_UP.0 => Some(Move::Prev),
+        k if k == VK_DOWN.0 => Some(Move::Next),
+        k if k == VK_HOME.0 => Some(Move::First),
+        k if k == VK_END.0 => Some(Move::Last),
+        _ => None,
+    };
+    const VK_ESC: u16 = 0x1B;
+    const VK_LEFT: u16 = 0x25;
+    const VK_RIGHT: u16 = 0x27;
+    let fold = (vk == VK_LEFT || vk == VK_RIGHT).then_some(vk == VK_RIGHT);
+    if mv.is_none() && fold.is_none() && vk != VK_ESC {
+        return false;
+    }
+    enum Out {
+        None,
+        Moved(u32),
+        Fold(Target),
+        Cleared,
+    }
+    let out = with(hwnd, |st| {
+        let Some(cur) = st.focus else {
+            return Out::None;
+        };
+        if vk == VK_ESC {
+            st.focus = None;
+            return Out::Cleared;
+        }
+        if let Some(right) = fold {
+            let Some(Target::Hit(id)) = target_of(cur) else {
+                return Out::None;
+            };
+            let (_, hits) = layout_now(hwnd, st);
+            let open = hits
+                .iter()
+                .find(|h| h.id == id)
+                .and_then(|h| pages::describe(st.page, h, &st.model).and_then(|d| d.expanded));
+            return match open.and_then(|o| focus::header_key(o, right)) {
+                Some(_) => Out::Fold(Target::Hit(id)),
+                None => Out::None,
+            };
+        }
+        let mv = mv.unwrap_or(Move::Next);
+        let (_, hits) = layout_now(hwnd, st);
+        let in_nav = cur < HIT_BASE;
+        let order: Vec<u32> = if in_nav {
+            Page::ALL
+                .iter()
+                .map(|&p| focus_id(Target::Nav(p)))
+                .collect()
+        } else {
+            hits.iter().map(|h| focus_id(Target::Hit(h.id))).collect()
+        };
+        match focus::step(&order, Some(cur), mv) {
+            Some(n) => {
+                st.focus = Some(n);
+                reveal_focus(hwnd, st, now);
+                Out::Moved(n)
+            }
+            None => Out::None,
+        }
+    });
+    match out {
+        Some(Out::Moved(id)) => crate::uia::raise_focus(hwnd, id),
+        Some(Out::Fold(t)) => {
+            activate(hwnd, t);
+            return true;
+        }
+        Some(Out::Cleared) => {}
+        _ => return false,
+    }
+    sync_timer(hwnd);
+    repaint(hwnd);
+    true
+}
+
 fn switch(st: &mut State, page: Page) {
     if st.page == page {
         return;
@@ -567,6 +1012,56 @@ fn switch(st: &mut State, page: Page) {
     if st.focus.is_some_and(|id| id >= HIT_BASE) {
         st.focus = None;
     }
+}
+
+/// The Timeline list for the host's entries, the user's open days, the
+/// search and the rows waiting to be deleted.
+fn rebuild_timeline(st: &mut State, exp: &pages::timeline_view::Expansion) {
+    let base = st.tl_base.with_expansion(exp);
+    st.model.timeline = Arc::new(base.filtered(&st.tquery, &st.hidden));
+}
+
+/// Remembers the open and closed days across restarts (only days still in
+/// the history are kept).
+fn save_days(hwnd: HWND) {
+    let Some(host) = HOST.get() else { return };
+    let Some(text) = with(hwnd, |st| st.model.timeline.exp.encode(&st.tl_base.days())) else {
+        return;
+    };
+    if let Ok(mut s) = host.settings.lock() {
+        if s.timeline_days != text {
+            s.timeline_days = text;
+            let _ = s.save(&host.settings_path);
+        }
+    }
+}
+
+/// Opens or closes Timeline days through `change`, keeping what the user
+/// was looking at where it was (a day closing above must not make the page
+/// jump); the scroll range is re-measured and clamped.
+fn retimeline(
+    hwnd: HWND,
+    change: impl FnOnce(&mut pages::timeline_view::Expansion, &timeline::TimelineModel),
+) {
+    let anchor = with(hwnd, |st| {
+        let ix = Page::Timeline.index();
+        let anchor = st.model.timeline.anchor(st.scroll[ix].offset);
+        let mut exp = st.model.timeline.exp.clone();
+        change(&mut exp, &st.model.timeline);
+        rebuild_timeline(st, &exp);
+        anchor
+    })
+    .flatten();
+    save_days(hwnd);
+    fit_scroll(hwnd);
+    with(hwnd, |st| {
+        let held = anchor.and_then(|a| st.model.timeline.restore(&a));
+        let sc = &mut st.scroll[Page::Timeline.index()];
+        match held {
+            Some(o) => sc.jump(o),
+            None => sc.clamp(),
+        }
+    });
 }
 
 /// A click, Enter or Space on `t`.
@@ -595,6 +1090,32 @@ fn activate(hwnd: HWND, t: Target) {
     // Outside the state borrow: the host posts to the tray window, and the
     // search box sends notifications back here.
     match action {
+        Some(pages::Action::TimelineDay(day)) => retimeline(hwnd, |exp, m| {
+            exp.toggle(&m.days(), day);
+        }),
+        Some(pages::Action::TimelineAll(open)) => retimeline(hwnd, |exp, m| {
+            exp.set_all(&m.days(), open);
+        }),
+        Some(pages::Action::TimelineMenu(key)) => {
+            // Below the "..." button that asked.
+            let at = with(hwnd, |st| {
+                let (_, hits) = layout_now(hwnd, st);
+                hits.iter()
+                    .find(|h| h.id == timeline::more_id(key))
+                    .map(|h| (h.r.left, h.r.bottom))
+            })
+            .flatten();
+            let (x, y) = at.unwrap_or((0.0, 0.0));
+            let mut p = POINT {
+                x: x as i32,
+                y: y as i32,
+            };
+            // SAFETY: client to screen for our window.
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p);
+            }
+            row_menu(hwnd, key, p);
+        }
         Some(pages::Action::SettingsPage(p)) => {
             with(hwnd, |st| {
                 st.sub = p;
@@ -634,6 +1155,15 @@ struct Snapshot {
     nav_t: [f32; 4],
     focus: Option<u32>,
     scroll: Scroll,
+    /// Scrollbar fade (0 = thin) and whether the thumb is being dragged.
+    bar_t: f32,
+    bar_look: Look,
+    hover: Option<Target>,
+    pressed: Option<Target>,
+    /// Rows waiting for their delete (the undo bar shows), and whether the
+    /// Timeline search box is up.
+    undo: usize,
+    tsearch: bool,
     search_focused: bool,
 }
 
@@ -651,6 +1181,19 @@ fn paint(hwnd: HWND) {
         nav_t: st.nav_fade.map(|a| a.value(now)),
         focus: st.focus,
         scroll: st.scroll[st.page.index()].clone(),
+        bar_t: st.bar_fade.value(now),
+        bar_look: if st.drag.is_some() {
+            Look::Pressed
+        } else if st.bar_hover {
+            Look::Hover
+        } else {
+            Look::Idle
+        },
+        hover: st.hover,
+        pressed: st.pressed,
+        undo: st.undo.as_ref().map_or(0, |u| u.keys.len()),
+        tsearch: st.page == Page::Timeline
+            && (!st.tl_base.groups.is_empty() || !st.tquery.is_empty()),
         search_focused: st.search_focused,
     });
     // The search box takes its colours at its own paint: repaint it when
@@ -761,28 +1304,95 @@ fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
         c.dc.PushAxisAlignedClip(&f.pane, D2D1_ANTIALIAS_MODE_ALIASED)
     };
     pages::draw(snap.page, c, pr, f.pane, &snap.model, &hits);
+    // Hover and pressed fill for any clickable row or button: a tint of the
+    // text colour, so it reads on cards, buttons and the page alike.
+    if let Some(Target::Hit(id)) = snap.hover {
+        if let Some(h) = hits.iter().find(|h| h.id == id) {
+            let a = if snap.pressed == snap.hover {
+                0.12
+            } else {
+                0.06
+            };
+            round_rect(c, &h.r, Some((p.text, a)), None, RADIUS[0] * s, false);
+        }
+    }
     if snap.page == Page::Settings {
         // The frame around the native edit, which draws itself on top.
         let sb = settings::search_rect(f.content, f.pane, s);
         search_box::draw_frame(c, sb, snap.search_focused);
+    }
+    if snap.tsearch {
+        let sb = timeline::search_rect(f.content, s);
+        search_box::draw_frame(c, sb, snap.search_focused);
+    }
+    if snap.undo > 0 {
+        let (bar, button) = undo_rects(&f, s);
+        round_rect(
+            c,
+            &bar,
+            Some((p.card, 1.0)),
+            Some(p.stroke),
+            RADIUS[1] * s,
+            false,
+        );
+        let msg = if snap.undo == 1 {
+            "Removed from history".to_owned()
+        } else {
+            format!("{} items removed from history", snap.undo)
+        };
+        let t = rectf(bar.left + SPACE[3] * s, bar.top, button.left, bar.bottom);
+        text(c, Font::Body, &msg, t, p.text, Align::Left);
+        fluent::button(c, button, "Undo", true);
     }
     if let Some(id) = snap.focus.filter(|&id| id >= HIT_BASE) {
         if let Some(h) = hits.iter().find(|h| focus_id(Target::Hit(h.id)) == id) {
             focus_ring(c, h.r);
         }
     }
-    if let Some((top, h)) = snap.scroll.thumb() {
-        let x = f.pane.right - 6.0 * s;
-        let bar = rectf(
-            x,
-            f.content.top + top * s,
-            x + 3.0 * s,
-            f.content.top + (top + h) * s,
-        );
-        round_rect(c, &bar, Some((p.text2, 0.6)), None, 1.5 * s, false);
-    }
+    draw_scrollbar(c, &f, snap);
     // SAFETY: pops the clip pushed above.
     unsafe { c.dc.PopAxisAlignedClip() };
+}
+
+/// The scrollbar: a thin track and thumb that widen on hover or drag. It is
+/// always drawn when the page scrolls (lighter at rest).
+fn draw_scrollbar(c: &Canvas, f: &Frame, snap: &Snapshot) {
+    let (s, p) = (c.s, c.p);
+    let bar = Bar {
+        content: snap.scroll.content,
+        view: snap.scroll.view,
+        offset: snap.scroll.offset,
+        top: f.content.top,
+        len: f.content.bottom - f.content.top,
+        s,
+    };
+    let Some((top, len)) = bar.thumb() else {
+        return;
+    };
+    let (l, r) = bar.painted_x(f.pane.right, snap.bar_t);
+    let round = (r - l) / 2.0;
+    let track = rectf(l, bar.top, r, bar.top + bar.len);
+    round_rect(
+        c,
+        &track,
+        Some((p.stroke, 0.5 + 0.5 * snap.bar_t)),
+        None,
+        round,
+        false,
+    );
+    let (alpha, rgb) = scrollbar::thumb_color(snap.bar_look, p.text, p.text2);
+    let thumb = rectf(l, bar.top + top, r, bar.top + top + len);
+    round_rect(c, &thumb, Some((rgb, alpha)), None, round, false);
+}
+
+/// One arrow-key step, in logical px.
+const LINE: f32 = 48.0;
+
+/// Keys that scroll the page when the window (not the search box) has focus.
+fn scroll_key(vk: u16) -> bool {
+    [VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_UP, VK_DOWN]
+        .iter()
+        .any(|k| k.0 == vk)
 }
 
 fn caption_button(ht: u32) -> bool {
@@ -842,6 +1452,12 @@ fn save_rect(hwnd: HWND) {
     }
 }
 
+/// The `code` of the `NMHDR` a `WM_NOTIFY` points at.
+fn notify_code(lparam: LPARAM) -> u32 {
+    // SAFETY: WM_NOTIFY's lparam points at an NMHDR for the message's duration.
+    unsafe { (*(lparam.0 as *const windows::Win32::UI::Controls::NMHDR)).code }
+}
+
 fn lo(v: isize) -> i32 {
     (v & 0xffff) as i16 as i32
 }
@@ -855,9 +1471,67 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     match msg {
         WM_PAINT => {
             paint(hwnd);
+            publish_tree(hwnd, false);
+            LRESULT(0)
+        }
+        // A screen reader asks for the window's UI Automation tree.
+        WM_GETOBJECT if lparam.0 as i32 == crate::uia::ROOT_OBJECT_ID => {
+            publish_tree(hwnd, true);
+            crate::uia::root_for(hwnd, wparam, lparam)
+        }
+        // A pattern call from UI Automation, run like a click or a Tab.
+        crate::uia::WM_UIA_ACT => {
+            uia_act(hwnd, wparam.0 as u32, lparam.0);
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        // Right-click on a Timeline row, or the Menu key / Shift+F10 (the
+        // point is -1 then: the focused row's "..." button).
+        WM_CONTEXTMENU => {
+            let (sx, sy) = (lo(lparam.0), hi(lparam.0));
+            let from_key = lparam.0 == -1;
+            let found = with(hwnd, |st| {
+                if st.page != Page::Timeline {
+                    return None;
+                }
+                let (f, hits) = layout_now(hwnd, st);
+                if from_key {
+                    let id = st.focus.and_then(target_of).and_then(|t| match t {
+                        Target::Hit(id) => Some(id),
+                        _ => None,
+                    })?;
+                    let h = hits.iter().find(|h| h.id == id)?;
+                    Some((id, h.r.left, h.r.bottom))
+                } else {
+                    let mut p = POINT { x: sx, y: sy };
+                    // SAFETY: screen to client for our window.
+                    unsafe {
+                        let _ = ScreenToClient(hwnd, &mut p);
+                    }
+                    match target_at(&f, &hits, p.x as f32, p.y as f32) {
+                        Some(Target::Hit(id)) => Some((id, p.x as f32, p.y as f32)),
+                        _ => None,
+                    }
+                }
+            })
+            .flatten();
+            let Some((id, x, y)) = found else {
+                // SAFETY: default handling.
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            };
+            if let Some(key) = row_key_of(hwnd, id) {
+                let mut p = POINT {
+                    x: x as i32,
+                    y: y as i32,
+                };
+                // SAFETY: client to screen for our window.
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p);
+                }
+                row_menu(hwnd, key, p);
+            }
+            LRESULT(0)
+        }
         // The client area covers the whole window (the title bar is ours).
         // Maximized, Windows hangs the frame off-screen: keep it out.
         WM_NCCALCSIZE => {
@@ -996,9 +1670,40 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         // Resize and present in the same message, so dragging an edge never
         // shows stale or black borders.
+        // The tooltip asks what to say about the point under the pointer.
+        WM_NOTIFY if lparam.0 != 0 && notify_code(lparam) == crate::tooltip::TTN_GETDISPINFOW => {
+            let text = with(hwnd, |st| {
+                let (x, y) = cursor_client(hwnd)?;
+                let (f, hits) = layout_now(hwnd, st);
+                let name = match target_at(&f, &hits, x, y)? {
+                    Target::Nav(p) => p.label().to_owned(),
+                    Target::Hit(id) => {
+                        let h = hits.iter().find(|h| h.id == id)?;
+                        pages::describe(st.page, h, &st.model)?.name
+                    }
+                };
+                crate::tooltip::text_for(&name)
+            })
+            .flatten()
+            .unwrap_or_default();
+            crate::tooltip::answer(lparam, &text);
+            LRESULT(0)
+        }
         WM_SIZE => {
             if wparam.0 == SIZE_RESTORED as usize {
                 note_normal(hwnd);
+            }
+            {
+                let mut r = RECT::default();
+                // SAFETY: reads our own window's client rect.
+                let _ = unsafe { GetClientRect(hwnd, &mut r) };
+                TIP.with(|t| {
+                    if let Ok(g) = t.try_borrow() {
+                        if let Some(tip) = g.as_ref() {
+                            tip.fit(r);
+                        }
+                    }
+                });
             }
             fit_scroll(hwnd);
             sync_search(hwnd);
@@ -1019,7 +1724,25 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 for sc in &mut st.scroll {
                     sc.tick(now);
                 }
+                // A track held down keeps paging until the thumb is under
+                // the pointer.
+                if let Some(Drag::Track { y, next }) = st.drag {
+                    if now >= next {
+                        let (w, h) = client_size(hwnd);
+                        let f = frame(w, h, st.scale);
+                        let hit = st.bar(&f).page_at(y);
+                        if let Some(t) = hit {
+                            st.scroll[st.page.index()].ease_to(t, now);
+                        }
+                        let next = now + Duration::from_millis(scrollbar::REPEAT_MS);
+                        st.drag = Some(Drag::Track { y, next });
+                    }
+                }
+                rehover(hwnd, st, now);
             });
+            if with(hwnd, |st| st.undo.as_ref().is_some_and(|u| now >= u.due)).unwrap_or(false) {
+                commit_delete(hwnd);
+            }
             sync_timer(hwnd);
             repaint(hwnd);
             LRESULT(0)
@@ -1027,15 +1750,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_MOUSEMOVE => {
             let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
             let r = with(hwnd, |st| {
-                let (f, hits) = layout_now(hwnd, st);
-                let t = target_at(&f, &hits, x, y);
-                let nav = match t {
-                    Some(Target::Nav(p)) => Some(p),
-                    _ => None,
-                };
+                // Dragging the thumb: the pointer may be anywhere (captured).
+                if let Some(Drag::Thumb { grab_y, start }) = st.drag {
+                    let (w, h) = client_size(hwnd);
+                    let f = frame(w, h, st.scale);
+                    let to = st.bar(&f).drag_to(start, grab_y, y);
+                    st.scroll[st.page.index()].jump(to);
+                    return (true, false);
+                }
+                if let Some(Drag::Track { next, .. }) = st.drag {
+                    st.drag = Some(Drag::Track { y, next });
+                    return (false, false);
+                }
                 // Back from the caption: its leave message may still be queued.
                 let cap = st.cap_hover.take().is_some() | st.cap_pressed.take().is_some();
-                let changed = set_nav_hover(st, nav, now) | cap;
+                let changed = point_at(hwnd, st, x, y, now) | cap;
                 let arm = !std::mem::replace(&mut st.tracking, true);
                 (changed, arm)
             });
@@ -1053,6 +1782,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_MOUSELEAVE => {
             with(hwnd, |st| {
                 set_nav_hover(st, None, now);
+                if st.drag.is_none() {
+                    set_bar_hover(st, false, now);
+                }
+                st.hover = None;
                 st.tracking = false;
                 st.pressed = None;
             });
@@ -1062,6 +1795,49 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_LBUTTONDOWN => {
             let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
+            // The scrollbar first: its hit area is wider than what is drawn.
+            let grabbed = with(hwnd, |st| {
+                let (w, h) = client_size(hwnd);
+                let f = frame(w, h, st.scale);
+                let bar = st.bar(&f);
+                let sc = &mut st.scroll[st.page.index()];
+                let part = bar.part_at(f.pane.right, x, y)?;
+                st.drag = Some(match part {
+                    Part::Thumb => Drag::Thumb {
+                        grab_y: y,
+                        start: sc.offset,
+                    },
+                    Part::Above | Part::Below => {
+                        if let Some(t) = bar.page_at(y) {
+                            sc.ease_to(t, now);
+                        }
+                        let first = Duration::from_millis(scrollbar::REPEAT_DELAY_MS);
+                        Drag::Track {
+                            y,
+                            next: now + first,
+                        }
+                    }
+                });
+                st.pressed = None;
+                st.focus = None;
+                set_bar_hover(st, true, now);
+                Some(())
+            })
+            .flatten()
+            .is_some();
+            if grabbed {
+                // SAFETY: capture on our own window: the drag goes on
+                // outside it, and WM_CAPTURECHANGED ends it.
+                unsafe {
+                    SetCapture(hwnd);
+                    if GetFocus() != hwnd {
+                        let _ = SetFocus(Some(hwnd));
+                    }
+                }
+                sync_timer(hwnd);
+                repaint(hwnd);
+                return LRESULT(0);
+            }
             let in_search = with(hwnd, |st| {
                 let (f, hits) = layout_now(hwnd, st);
                 st.pressed = target_at(&f, &hits, x, y);
@@ -1086,6 +1862,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_LBUTTONUP => {
             let (x, y) = (lo(lparam.0) as f32, hi(lparam.0) as f32);
+            if with(hwnd, |st| st.drag.is_some()).unwrap_or(false) {
+                // After the borrow: this sends WM_CAPTURECHANGED.
+                // SAFETY: releases our own capture.
+                let _ = unsafe { ReleaseCapture() };
+                with(hwnd, |st| {
+                    st.drag = None;
+                    point_at(hwnd, st, x, y, now);
+                });
+                sync_timer(hwnd);
+                repaint(hwnd);
+                return LRESULT(0);
+            }
+            let on_undo = with(hwnd, |st| {
+                let (w, h) = client_size(hwnd);
+                let f = frame(w, h, st.scale);
+                st.undo.is_some() && within(&undo_rects(&f, st.scale).1, x, y)
+            })
+            .unwrap_or(false);
+            if on_undo {
+                undo_delete(hwnd);
+                return LRESULT(0);
+            }
             let t = with(hwnd, |st| {
                 let (f, hits) = layout_now(hwnd, st);
                 let up = target_at(&f, &hits, x, y);
@@ -1097,6 +1895,54 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 Some(t) => activate(hwnd, t),
                 None => repaint(hwnd),
             }
+            LRESULT(0)
+        }
+        // Capture taken away (alt-tab, a dialog): the drag is over.
+        WM_CAPTURECHANGED => {
+            with(hwnd, |st| {
+                st.drag = None;
+                set_bar_hover(st, false, now);
+            });
+            sync_timer(hwnd);
+            repaint(hwnd);
+            LRESULT(0)
+        }
+        // The pointer is a hand over anything clickable, an arrow elsewhere
+        // (including the scrollbar).
+        WM_SETCURSOR if lo(lparam.0) as u32 == HTCLIENT => {
+            let hand = with(hwnd, |st| st.hover.is_some()).unwrap_or(false);
+            // SAFETY: loads a system cursor and sets it for this message.
+            unsafe {
+                if let Ok(c) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }) {
+                    SetCursor(Some(c));
+                }
+            }
+            LRESULT(1)
+        }
+        // With the focus ring on something: arrows, Home and End move it
+        // inside its group (the nav rail, or the page); Left / Right fold a
+        // Timeline day; Esc drops the ring.
+        WM_KEYDOWN if arrow_key(hwnd, wparam.0 as u16) => LRESULT(0),
+        WM_KEYDOWN if scroll_key(wparam.0 as u16) => {
+            let key = wparam.0 as u16;
+            with(hwnd, |st| {
+                let sc = &mut st.scroll[st.page.index()];
+                let to = match key {
+                    k if k == VK_PRIOR.0 => {
+                        scrollbar::page_by(sc.content, sc.view, sc.target(), -1.0)
+                    }
+                    k if k == VK_NEXT.0 => {
+                        scrollbar::page_by(sc.content, sc.view, sc.target(), 1.0)
+                    }
+                    k if k == VK_HOME.0 => 0.0,
+                    k if k == VK_END.0 => sc.content,
+                    k if k == VK_UP.0 => sc.target() - LINE,
+                    _ => sc.target() + LINE,
+                };
+                sc.ease_to(to, now);
+            });
+            sync_timer(hwnd);
+            repaint(hwnd);
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
@@ -1113,25 +1959,43 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let has_search = with_search(|_| ()).is_some();
             let moved = with(hwnd, |st| {
                 let (_, hits) = layout_now(hwnd, st);
-                let search = has_search && st.page == Page::Settings;
+                let search = has_search
+                    && (st.page == Page::Settings
+                        || (st.page == Page::Timeline
+                            && (!st.tl_base.groups.is_empty() || !st.tquery.is_empty())));
                 let order = focus_order(&hits, search);
                 let next = tab(&order, st.focus, st.search_focused, back);
                 let into = next == Some(SEARCH_FOCUS);
                 st.focus = if into { None } else { next };
-                (into, st.search_focused)
+                reveal_focus(hwnd, st, now);
+                (into, st.search_focused, st.focus)
             });
+            sync_timer(hwnd);
             // After the borrow: focus changes notify us.
+            if let Some((_, _, Some(id))) = moved {
+                crate::uia::raise_focus(hwnd, id);
+            }
             match moved {
-                Some((true, _)) => {
+                Some((true, _, _)) => {
                     with_search(|sb| sb.focus());
                 }
-                Some((false, true)) => {
+                Some((false, true, _)) => {
                     // SAFETY: focus change to our own window.
                     let _ = unsafe { SetFocus(Some(hwnd)) };
                 }
                 _ => {}
             }
             repaint(hwnd);
+            LRESULT(0)
+        }
+        // Ctrl+Z takes back the last Timeline delete.
+        WM_KEYDOWN
+            if wparam.0 == 0x5A
+                // SAFETY: plain keyboard state query.
+                && unsafe { GetKeyState(0x11) } < 0
+                && with(hwnd, |st| st.undo.is_some()).unwrap_or(false) =>
+        {
+            undo_delete(hwnd);
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == VK_RETURN.0 as usize || wparam.0 == VK_SPACE.0 as usize => {
@@ -1157,6 +2021,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
         }
         WM_DESTROY => {
+            // A delete still waiting for its undo is final now.
+            commit_delete(hwnd);
+            TIP.with(|t| t.borrow_mut().take());
             // The edit goes first, outside every borrow (it may notify us).
             let search = SEARCH.with(|cell| cell.borrow_mut().take());
             drop(search);
@@ -1344,7 +2211,18 @@ fn create(page: Page, opened: Instant) {
     // The tray idles under EcoQoS (efficient cores, low clock); while this
     // window is open the UI thread runs at full speed (undone on WM_DESTROY).
     let _ = pb_platform_win::power::set_thread_eco_exempt(true);
-    let model = (host.model)();
+    let mut model = (host.model)();
+    let tl_base = model.timeline.clone();
+    // The days the user opened or closed last time.
+    let days = host
+        .settings
+        .lock()
+        .map(|s| s.timeline_days.clone())
+        .unwrap_or_default();
+    if !days.is_empty() {
+        let exp = pages::timeline_view::Expansion::decode(&days);
+        model.timeline = Arc::new(tl_base.with_expansion(&exp));
+    }
     let saved = host.settings.lock().ok().and_then(|s| s.main_window_rect);
     let rect = restore_rect(saved, &monitors()).unwrap_or_else(default_rect);
     let (hwnd, surface, timing) = match make_window(rect, fluent::transparency_on()) {
@@ -1374,6 +2252,14 @@ fn create(page: Page, opened: Instant) {
             pressed: None,
             focus: None,
             scroll: std::array::from_fn(|_| Scroll::new(0.0, 0.0)),
+            bar_hover: false,
+            bar_fade: Anim::new(0.0, 0.0, now, 0),
+            drag: None,
+            hover: None,
+            tl_base,
+            tquery: String::new(),
+            hidden: Default::default(),
+            undo: None,
             timer: false,
             normal: Some(rect),
             opened,
@@ -1391,6 +2277,12 @@ fn create(page: Page, opened: Instant) {
             SEARCH.with(|cell| *cell.borrow_mut() = Some(sb));
         }
         Err(e) => host.log.line(&format!("UI search box failed: {e}")),
+    }
+    {
+        let mut r = RECT::default();
+        // SAFETY: reads our own window's client rect.
+        let _ = unsafe { GetClientRect(hwnd, &mut r) };
+        TIP.with(|t| *t.borrow_mut() = crate::tooltip::Tip::new(hwnd, r));
     }
     sync_search(hwnd);
     // Before the first paint: Settings needs its rows built.
@@ -1443,15 +2335,48 @@ pub fn refresh() {
         // The Settings sub-page and query are the window's own.
         model.settings.sub = st.sub;
         model.settings.query = st.query.clone();
+        // The Timeline's open days are the window's own too: the host's
+        // model is rebuilt only when its entries changed, and then the
+        // user's choices are applied to it and the view is held.
+        let ix = Page::Timeline.index();
+        let mut anchor = None;
+        let base = model.timeline.clone();
+        if st.tl_base.groups != base.groups || st.tl_base.history_on != base.history_on {
+            anchor = st.model.timeline.anchor(st.scroll[ix].offset);
+            st.tl_base = base;
+            // Rows the host really dropped no longer wait to be hidden.
+            let keys: std::collections::HashSet<u32> = st
+                .tl_base
+                .groups
+                .iter()
+                .flat_map(|g| g.rows.iter().map(|r| r.key))
+                .collect();
+            st.hidden.retain(|k| keys.contains(k));
+            let exp = st.model.timeline.exp.clone();
+            rebuild_timeline(st, &exp);
+            model.timeline = st.model.timeline.clone();
+        } else {
+            model.timeline = st.model.timeline.clone();
+        }
         let changed = st.model != model;
         st.model = model;
-        changed
+        (changed, anchor)
     });
-    if changed == Some(true) {
+    if let Some((true, anchor)) = changed {
         fit_scroll(hwnd);
+        // A new entry above the view must not push what is being read away.
+        with(hwnd, |st| {
+            if let Some(o) = anchor.and_then(|a| st.model.timeline.restore(&a)) {
+                st.scroll[Page::Timeline.index()].jump(o);
+            }
+        });
         repaint(hwnd);
     }
 }
+
+#[cfg(test)]
+#[path = "main_window_ux.rs"]
+mod ux;
 
 #[cfg(test)]
 mod tests {
@@ -1652,6 +2577,12 @@ mod tests {
                 nav_t: [0.0; 4],
                 focus: None,
                 scroll: Scroll::new(0.0, 0.0),
+                bar_t: 0.0,
+                bar_look: Look::Idle,
+                hover: None,
+                pressed: None,
+                undo: 0,
+                tsearch: false,
                 search_focused: false,
             };
             surface.resize(w as u32, h as u32);
@@ -1674,5 +2605,54 @@ mod tests {
             // SAFETY: our own hidden test window.
             let _ = unsafe { DestroyWindow(hwnd) };
         }
+    }
+    #[test]
+    fn scrollbar_pages_and_hover_draw_in_a_hidden_window() {
+        let (hwnd, mut surface, _) = make_window((100, 100, 1000, 700), false).expect("window");
+        let (w, h) = client_size(hwnd);
+        surface.resize(w as u32, h as u32);
+        let mut sc = Scroll::new(3000.0, 500.0);
+        sc.offset = 700.0;
+        for (t, look) in [(0.0, Look::Idle), (1.0, Look::Hover), (1.0, Look::Pressed)] {
+            let snap = Snapshot {
+                page: Page::Timeline,
+                model: Model::default(),
+                active: true,
+                maximized: false,
+                cap_hover: None,
+                cap_pressed: None,
+                nav_t: [0.0; 4],
+                focus: None,
+                scroll: sc.clone(),
+                bar_t: t,
+                bar_look: look,
+                hover: Some(Target::Hit(1)),
+                pressed: None,
+                undo: 0,
+                tsearch: false,
+                search_focused: false,
+            };
+            surface
+                .draw(|dc| {
+                    let mut c = Canvas {
+                        dc,
+                        s: 1.0,
+                        p: fluent::palette(),
+                    };
+                    draw(&mut c, rectf(0.0, 0.0, w, h), &snap, false);
+                })
+                .expect("draw");
+        }
+        drop(surface);
+        // SAFETY: our own hidden test window.
+        let _ = unsafe { DestroyWindow(hwnd) };
+    }
+
+    #[test]
+    fn scroll_keys_are_recognised() {
+        for k in [VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_UP, VK_DOWN] {
+            assert!(scroll_key(k.0));
+        }
+        assert!(!scroll_key(VK_TAB.0) && !scroll_key(VK_RETURN.0));
     }
 }

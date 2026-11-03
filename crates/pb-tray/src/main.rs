@@ -9,7 +9,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod a11y;
 mod app_name;
+#[cfg(windows)]
+mod applog;
+#[cfg(windows)]
+mod applog_sys;
 #[cfg(windows)]
 mod camera;
 #[cfg(windows)]
@@ -50,12 +55,18 @@ mod ipc;
 mod main_window;
 #[cfg(windows)]
 mod menu;
+#[cfg(windows)]
+mod menu_model;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod netpath;
+#[cfg(windows)]
+mod netsample;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod notify;
 #[cfg(windows)]
 mod pages;
+#[cfg(windows)]
+mod pause;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
@@ -81,6 +92,7 @@ mod settings_rows;
 mod share;
 #[cfg(windows)]
 mod status;
+mod strings;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod timeline;
 #[cfg(windows)]
@@ -92,6 +104,11 @@ mod toast;
 mod toast_images;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod toast_xml;
+mod tooltip;
+#[cfg(windows)]
+mod transfer_window;
+mod transfers;
+mod uia;
 // Generated; some tokens (spacing, other durations) are used by the widgets (pages use them from Task 8 on).
 #[cfg(windows)]
 // Used from Task 11 (the settings page search).
@@ -286,6 +303,22 @@ fn main() {
         Arc::new(Mutex::new(settings::Settings::load(&settings_path)));
     fluent::set_theme(settings.lock().map(|s| s.theme).unwrap_or(0));
     {
+        let (want, keep) = settings
+            .lock()
+            .map(|s| (s.log_dir.clone(), s.keep_logs))
+            .unwrap_or_default();
+        match applog::init(&want, keep) {
+            Some(dir) => {
+                applog::install_panic_hook();
+                if let Some(lg) = applog::handle() {
+                    netsample::start(lg.clone());
+                }
+                log.line(&format!("LOGS folder {}", dir.display()));
+            }
+            None => log.line("LOGS could not be opened; structured logs are off"),
+        }
+    }
+    {
         let keep = settings.lock().map(|s| s.keep_history).unwrap_or(true);
         let tl_log = log.clone();
         timeline::init(
@@ -349,10 +382,11 @@ fn main() {
         ));
         if let Err(e) = result {
             core_log.line(&format!("FATAL {e}"));
-            ui::post_event(hwnd, core::UiEvent::Info(format!("Relay stopped: {e}")));
+            ui::core_failed(hwnd, e.to_string());
         }
     });
     log.line("tray started");
     ui::message_loop();
     log.line("tray exiting");
+    applog::flush();
 }

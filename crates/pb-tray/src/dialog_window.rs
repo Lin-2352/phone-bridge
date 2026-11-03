@@ -289,6 +289,9 @@ struct State {
     focus: Option<Button>,
     last_tick: Instant,
     outcome: Outcome<Box<dyn FnOnce(bool)>>,
+    /// Asked on every tick and before a button acts: false means the
+    /// question is dead (timed out) and the dialog closes without acting.
+    alive: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
 thread_local! {
@@ -462,7 +465,21 @@ fn answer(hwnd: HWND, yes: bool) {
 }
 
 fn press(hwnd: HWND, b: Button) {
+    // A button never acts on a dead question.
+    if !is_alive() {
+        answer(hwnd, false);
+        return;
+    }
     answer(hwnd, b == Button::Primary);
+}
+
+fn is_alive() -> bool {
+    STATE.with(|st| {
+        st.borrow()
+            .as_ref()
+            .and_then(|s| s.alive.as_ref().map(|f| f()))
+            .unwrap_or(true)
+    })
 }
 
 fn cursor_client(hwnd: HWND) -> Option<POINT> {
@@ -475,6 +492,12 @@ fn cursor_client(hwnd: HWND) -> Option<POINT> {
 }
 
 fn tick(hwnd: HWND) {
+    if !is_alive() {
+        // The request timed out or was withdrawn: close, answer "no" (a
+        // no-op for the asker, which has stopped listening).
+        answer(hwnd, false);
+        return;
+    }
     let pt = cursor_client(hwnd);
     let changed = STATE.with(|st| {
         let mut st = st.borrow_mut();
@@ -648,19 +671,51 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 /// way out (No, Esc, the close button) calls `done(false)`. Runs on its own
 /// thread; `done` runs there, exactly once.
 pub fn ask(d: Dialog, done: impl FnOnce(bool) + Send + 'static) {
-    spawn(d, Box::new(done));
+    spawn(d, Box::new(done), None);
+}
+
+/// Like [`ask`], for a question that can die while it is open (an offer
+/// that times out): `alive` is polled, and once it is false the dialog
+/// closes itself and its buttons do nothing.
+pub fn ask_while(
+    d: Dialog,
+    alive: impl Fn() -> bool + Send + 'static,
+    done: impl FnOnce(bool) + Send + 'static,
+) {
+    spawn(d, Box::new(done), Some(Box::new(alive)));
 }
 
 /// Show a notice with one button.
 pub fn info(d: Dialog) {
-    spawn(d, Box::new(|_| {}));
+    spawn(d, Box::new(|_| {}), None);
 }
 
-fn spawn(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
-    std::thread::spawn(move || run(d, done));
+type Alive = Box<dyn Fn() -> bool + Send>;
+
+fn spawn(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
+    std::thread::spawn(move || run(d, done, alive));
 }
 
-fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
+/// Dialogs open now: each new one is placed a little lower and to the
+/// right, so several at once never hide each other.
+static OPEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct OpenGuard(usize);
+
+impl OpenGuard {
+    fn new() -> Self {
+        Self(OPEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+impl Drop for OpenGuard {
+    fn drop(&mut self) {
+        OPEN.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
+    let open = OpenGuard::new();
     // SAFETY: window creation and a message loop on this dedicated thread.
     unsafe {
         let Ok(hinstance) = GetModuleHandleW(None) else {
@@ -723,6 +778,7 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
                 focus: start_focus(&d),
                 last_tick: Instant::now(),
                 outcome: Outcome::new(done),
+                alive,
             });
         });
         let (w, h) = frame_size(s, lay.height);
@@ -730,8 +786,8 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>) {
         let _ = SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
-            (sw - w) / 2,
-            ((sh - h) / 2).max(0),
+            ((sw - w) / 2 + (open.0 % 6) as i32 * 32).min((sw - w).max(0)),
+            (((sh - h) / 2) + (open.0 % 6) as i32 * 32).clamp(0, (sh - h).max(0)),
             w,
             h,
             SWP_NOACTIVATE,

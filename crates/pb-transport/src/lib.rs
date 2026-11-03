@@ -74,6 +74,10 @@ pub enum Error {
     PeerChanged,
     /// The received bytes do not match the sender's SHA-256.
     HashMismatch,
+    /// This device cancelled the transfer.
+    Cancelled,
+    /// The other device cancelled the transfer.
+    PeerCancelled,
     Io(String),
     /// The peer's `Hello` does not list audio: it predates the feature.
     Unsupported,
@@ -97,6 +101,8 @@ impl fmt::Display for Error {
             Self::TooLarge => f.write_str("too large to send"),
             Self::PeerChanged => f.write_str("another device answers for this peer: if it was reinstalled or reset, remove it and pair again"),
             Self::HashMismatch => f.write_str("file was corrupted in transit (hash mismatch); nothing was saved"),
+            Self::Cancelled => f.write_str("transfer cancelled"),
+            Self::PeerCancelled => f.write_str("the other device cancelled the transfer"),
             Self::Io(e) => write!(f, "file error: {e}"),
             Self::Unsupported => f.write_str("the other device does not support this yet: update it"),
             Self::AudioRefused(r) => write!(f, "audio refused: {r:?}"),

@@ -41,6 +41,9 @@ pub const OPTIONS: &[&str] = &[
     "Let my phone control this PC",
     "Keep history",
     "Clear history",
+    "Keep logs",
+    "Log folder",
+    "Clear all logs",
     "Paired device",
     "Pair device",
     "About",
@@ -59,6 +62,8 @@ pub fn label_of(row: &Row) -> Option<&'static str> {
         Row::CameraStatus => "Camera status",
         Row::CameraWindow => "Camera window",
         Row::ClearHistory => "Clear history",
+        Row::LogFolder => "Log folder",
+        Row::ClearLogs => "Clear all logs",
         Row::Header(_) => return None,
     })
 }
@@ -143,6 +148,11 @@ fn texts(row: &Row, m: &Model) -> Vec<String> {
         Row::ClearHistory => vec![
             "Clear history".into(),
             "Delete everything in the Timeline".into(),
+        ],
+        Row::LogFolder => vec!["Log folder".into(), m.log_dir.clone()],
+        Row::ClearLogs => vec![
+            "Clear all logs".into(),
+            "Delete every log file on this PC".into(),
         ],
     }
 }
@@ -313,12 +323,15 @@ mod tests {
         assert_eq!(page_of("Start with Windows"), Page::General);
         assert_eq!(page_of("Keep history"), Page::General);
         assert_eq!(page_of("Clear history"), Page::General);
+        assert_eq!(page_of("Keep logs"), Page::General);
+        assert_eq!(page_of("Log folder"), Page::General);
+        assert_eq!(page_of("Clear all logs"), Page::General);
     }
 
     #[test]
     fn no_page_but_apps_is_long() {
         // Every page except Apps must fit a window without scrolling far:
-        // at most 6 rows (Apps holds the per-app list on its own page).
+        // at most 9 rows (Apps holds the per-app list on its own page).
         let m = Model {
             apps: vec![("A".into(), true)],
             devices: vec![("D".into(), "f".into(), false)],
@@ -332,7 +345,7 @@ mod tests {
                 .iter()
                 .filter(|r| label_of(r).map(page_of) == Some(page))
                 .count();
-            assert!(n <= 8, "{title} has {n} rows");
+            assert!(n <= 9, "{title} has {n} rows");
         }
     }
 

@@ -108,6 +108,9 @@ class BridgeTileService : TileService() {
                     running = Bridge.running.value,
                     starting = on && !Bridge.running.value,
                     linked = Bridge.linked.value,
+                    live = Bridge.isConnected(),
+                    lastSeenMs = Bridge.lastSeenAny(this@BridgeTileService),
+                    nowMs = System.currentTimeMillis(),
                 )
             }
             updateTile()
@@ -195,7 +198,7 @@ class QuickPanelActivity : ComponentActivity() {
     @Composable
     private fun Panel() {
         // What is running (or starting), not the saved wish; follows the service.
-        var on by remember(Bridge.running.value) { mutableStateOf(Bridge.shownOn()) }
+        var on by remember(Bridge.running.value, Bridge.startingSince) { mutableStateOf(Bridge.shownOn()) }
         var clip by remember { mutableStateOf(prefs.clipboardSync) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
         var auto by remember { mutableStateOf(prefs.autoAccept) }
@@ -217,8 +220,7 @@ class QuickPanelActivity : ComponentActivity() {
             Text(
                 when {
                     !on -> "Off. Your PC cannot reach this phone"
-                    Bridge.linked.value != null -> "Linked with ${Bridge.linked.value}"
-                    else -> "On, not paired yet"
+                    else -> Bridge.status(this@QuickPanelActivity, serviceUp = on).line
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

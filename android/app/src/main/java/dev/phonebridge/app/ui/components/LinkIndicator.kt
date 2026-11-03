@@ -25,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -41,7 +42,7 @@ import androidx.compose.ui.unit.dp
  * flow from phone to PC in the accent colour; paired but idle they rest, dimmed; unpaired they fade further.
  */
 @Composable
-fun LinkIndicator(phone: String, pc: String?, live: Boolean) {
+fun LinkIndicator(phone: String, pc: String?, live: Boolean, pcDim: Boolean = false) {
     val badge = MaterialTheme.colorScheme.primaryContainer
     val onBadge = MaterialTheme.colorScheme.onPrimaryContainer
     val outline = MaterialTheme.colorScheme.outline
@@ -76,13 +77,13 @@ fun LinkIndicator(phone: String, pc: String?, live: Boolean) {
                 )
             }
         }
-        DeviceBadge(pc ?: "Not paired", badge, onBadge, isPhone = false)
+        DeviceBadge(pc ?: "Not paired", badge, onBadge, isPhone = false, dim = pcDim)
     }
 }
 
 @Composable
-private fun DeviceBadge(name: String, bg: Color, fg: Color, isPhone: Boolean) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun DeviceBadge(name: String, bg: Color, fg: Color, isPhone: Boolean, dim: Boolean = false) {
+    Column(Modifier.alpha(if (dim) 0.5f else 1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(bg), contentAlignment = Alignment.Center) {
             Canvas(Modifier.size(if (isPhone) 14.dp else 20.dp, if (isPhone) 22.dp else 14.dp)) {
                 drawRoundRect(fg, cornerRadius = CornerRadius(6f, 6f), style = Stroke(width = 4f))

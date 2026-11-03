@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import dev.phonebridge.app.widget.RelayWidget
+import dev.phonebridge.app.widget.widgetConnected
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
@@ -91,8 +92,26 @@ object Bridge {
     fun pcContact(ctx: Context, opened: Boolean) {
         liveSessions.intValue = if (opened) liveSessions.intValue + 1 else (liveSessions.intValue - 1).coerceAtLeast(0)
         stampSeen(ctx)
-        RelayWidget.update(ctx)
+        // Notification, tile and widget say "Connected" or "last seen" from this; redraw all three.
+        val svc = PbService.instance
+        if (svc != null) svc.updateStatus() else { refreshTile(ctx); RelayWidget.update(ctx) }
     }
+
+    /** The newest contact stamp: this process's, or the saved one (a fresh process starts at 0). */
+    fun lastSeenAny(ctx: Context): Long = maxOf(lastSeen.longValue, Prefs(ctx).lastSeenMs)
+
+    /**
+     * The one status answer for notification, tile, panel and widget (see [relayStatus]).
+     * [serviceUp]: true from inside the service, which is running although [running] is set a moment later.
+     */
+    fun status(ctx: Context, serviceUp: Boolean = false): RelayStatus {
+        val up = running.value || serviceUp
+        return relayStatus(up, nodeReady.value, linked.value, isConnected(), lastSeenAny(ctx), System.currentTimeMillis(), controlledBy.value)
+    }
+
+    /** A PC session is live right now (Home's "Connected"). */
+    fun isConnected(): Boolean =
+        widgetConnected(running.value, linked.value, liveSessions.intValue, controlledBy.value, ScreenShare.sharingWith.value, CameraShare.usedBy.value)
 
     /** The PC was in contact just now. */
     fun stampSeen(ctx: Context) {
@@ -103,9 +122,11 @@ object Bridge {
 
     /** Allow PC control without asking, or ask each time; off also ends a running session. */
     fun setAllowControl(ctx: Context, on: Boolean) {
-        Prefs(ctx).allowControl = on
-        allowControl.value = on
-        node?.setAllowControl(on)
+        val prefs = Prefs(ctx)
+        prefs.allowControl = on
+        allowControl.value = prefs.allowControl
+        // Which PC may skip the question is decided here, per PC (askControl); the node always asks us.
+        node?.setAllowControl(false)
         if (!on) node?.stopControl()
     }
 
@@ -129,9 +150,11 @@ object Bridge {
         try {
             val s = n.joinPairing(code.trim())
             Log.i(TAG, "SAS=$s")
+            AppLog.event("events", "pair_step", "step" to "code_shown")
             sas.value = s
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing failed: ${e.message}")
+            AppLog.event("events", "pair_step", "step" to "join_failed", "type" to e.javaClass.simpleName)
             pairMessage.value = "Pairing failed: ${e.message}"
         }
     }
@@ -139,16 +162,19 @@ object Bridge {
     /** Pairing, step 2: the user compared the codes. */
     suspend fun confirm(ctx: Context, accept: Boolean) {
         sas.value = null
+        AppLog.event("events", "pair_step", "step" to if (accept) "confirmed" else "rejected")
         val n = node ?: run { pairMessage.value = "$APP_NAME stopped. Turn it on and pair again"; return }
         try {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
+            AppLog.event("events", "pair_step", "step" to "paired")
             linked.value = name
             // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".
             stampSeen(ctx)
             PbService.refresh(ctx)
         } catch (e: Throwable) {
             Log.i(TAG, "Pairing not completed: ${e.message}")
+            AppLog.event("events", "pair_step", "step" to "not_completed", "type" to e.javaClass.simpleName)
             pairMessage.value = "Pairing not completed"
         }
     }
@@ -159,6 +185,9 @@ object NativeInit {
     init {
         System.loadLibrary("pb_ffi")
     }
+
+    /** Touching this object loads the native library (the log needs it before the node starts). */
+    fun ensureLoaded() = Unit
 
     @JvmStatic
     external fun initContext(context: Context)
@@ -195,6 +224,8 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        AppLog.init(this)
+        AppLog.event("events", "service_start")
         Timeline.init(this)
         // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
@@ -212,6 +243,7 @@ class PbService : Service() {
             // A background restart (after a low-memory kill) may be refused on
             // Android 12+. Stop cleanly instead of crash-looping; RecoveryJob retries.
             Log.e(TAG, "SERVICE could not go foreground: $t")
+            AppLog.event("events", "service_refused", "type" to t.javaClass.simpleName)
             Bridge.startingSince = 0L
             destroyed = true
             stopSelf()
@@ -225,9 +257,18 @@ class PbService : Service() {
         RelayWidget.update(this)
         scheduleRecovery(this)
         scope.launch { start() }
+        scope.launch { AppLog.sampleLoop(this@PbService) }
+        AppLog.permissionsChanged(this)
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) = rediscoverSoon()
-            override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) = rediscoverSoon()
+            override fun onAvailable(network: android.net.Network) {
+                AppLog.sampleNetwork(this@PbService)
+                rediscoverSoon()
+            }
+            override fun onLinkPropertiesChanged(network: android.net.Network, lp: android.net.LinkProperties) {
+                AppLog.sampleNetwork(this@PbService)
+                rediscoverSoon()
+            }
+            override fun onLost(network: android.net.Network) = AppLog.sampleNetwork(this@PbService)
         }
         runCatching { getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(cb) }
             .onSuccess { netCallback = cb }
@@ -258,6 +299,8 @@ class PbService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        AppLog.event("events", "service_stop")
+        AppLog.flush()
         ScreenshotWatcher.stop(this)
         ScreenShare.stop(userStopped = true)
         AudioShare.stopAll()
@@ -330,7 +373,8 @@ class PbService : Service() {
             n.setClipboardSync(prefs.clipboardSync)
             n.setClipboardImages(prefs.clipboardImages)
             n.setAutoAccept(prefs.autoAccept)
-            n.setAllowControl(prefs.allowControl)
+            prefs.migrateAllowances(n.peers().map { it.id })
+            n.setAllowControl(false) // per-PC "Always allow" is applied in askControl
             n.setNotifyEnabled(prefs.notifyToPc)
             n.setNotifyHandler(NotifyActions)
             n.setAudioSink(AudioShare.sink)
@@ -362,6 +406,7 @@ class PbService : Service() {
             }
             Bridge.linked.value = n.peers().firstOrNull()?.name
             Bridge.nodeReady.value = true
+            AppLog.event("events", "node_ready", "paired" to n.peers().size)
             ScreenshotWatcher.sync(this)
             updateStatus()
             Log.i(TAG, "SERVICE node started id=${n.peerId()}")
@@ -373,6 +418,7 @@ class PbService : Service() {
             // Keystore not ready, port busy...: do not sit in the foreground
             // pretending to work. RecoveryJob retries later.
             Log.e(TAG, "SERVICE failed to start: $e")
+            AppLog.event("events", "node_failed", "type" to e.javaClass.simpleName)
             android.os.Handler(mainLooper).post { stopSelf() }
         }
     }
@@ -411,14 +457,19 @@ class PbService : Service() {
                 saveReceived(e)
             }
             is PbEvent.SharedText -> {
-                if (e.isLink) notifyLink(e.peerName, e.text) else writeClipboard(e.text, false)
+                if (e.isLink) notifyLink(e.peerName, e.text) else {
+                    writeClipboard(e.text, false)
+                    // The clipboard was just replaced: say so (F14).
+                    notifyInfo(this, "Text from ${e.peerName} copied", "It is on this phone's clipboard. Paste it anywhere")
+                }
                 Timeline.add(if (e.isLink) linkEntry(e.peerName, e.text, TlDir.ToPhone) else clipTextEntry(e.peerName, e.text, TlDir.ToPhone))
             }
             is PbEvent.IncomingOffer -> notifyOffer(e)
             is PbEvent.ControlRequest -> askControl(e)
             is PbEvent.TransferFailed -> {
                 cancelProgress(true)
-                notifySimple("Transfer from ${e.peerName} failed", e.reason)
+                if (isCancelled(e.reason)) notifySimple("Transfer cancelled", e.reason.replaceFirstChar { it.uppercase() })
+                else notifySimple("Transfer from ${e.peerName} failed", e.reason)
             }
             is PbEvent.TransferProgress -> notifyProgress(e)
             is PbEvent.Connected -> {
@@ -589,7 +640,8 @@ class PbService : Service() {
     /** A PC asks to see this screen: resume within the grace, else ask. */
     private fun askScreen(e: PbEvent.ScreenRequest) {
         if (e.resume && ScreenShare.resume(e.id)) return
-        if (ScreenShare.armed != null && Prefs(this).allowScreen) {
+        val peerId = uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName)
+        if (ScreenShare.armed != null && allowedFor(peerId, Prefs(this).allowedScreenPcs)) {
             val a = ScreenAsk(
                 e.id, e.peerName, e.maxLongSide.toInt(), e.sharp, e.dim,
                 List(e.codecs.size) { e.codecs[it].toInt() and 0xff },
@@ -601,6 +653,7 @@ class PbService : Service() {
         val ask = Intent(this, ScreenConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
+            .putExtra("peerId", peerId)
             .putExtra("at", android.os.SystemClock.elapsedRealtime())
             .putExtra("maxLong", e.maxLongSide.toInt())
             .putExtra("sharp", e.sharp)
@@ -751,6 +804,12 @@ class PbService : Service() {
     }
 
     private fun askControl(e: PbEvent.ControlRequest) {
+        val peerId = uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName)
+        if (allowedFor(peerId, Prefs(this).allowedControlPcs)) {
+            Bridge.node?.answerOffer(e.id, true)
+            Log.i(TAG, "CONTROL request from ${e.peerName}: always allowed")
+            return
+        }
         fun answer(accept: Boolean) = PendingIntent.getBroadcast(
             this, if (accept) 41 else 40,
             Intent(this, OfferReceiver::class.java).putExtra("offer", e.id.toLong()).putExtra("accept", accept).putExtra("nid", CONTROL_ASK_ID),
@@ -759,6 +818,7 @@ class PbService : Service() {
         val ask = Intent(this, ControlRequestActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
+            .putExtra("peerId", peerId)
             .putExtra("at", android.os.SystemClock.elapsedRealtime())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val n = Notification.Builder(this, CH_CONTROL)
@@ -785,10 +845,19 @@ class PbService : Service() {
             return
         }
         val pct = if (e.total == 0uL) 0 else (e.done.toDouble() * 100 / e.total.toDouble()).toInt()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val started = progressStart.compute(e.incoming) { _, old -> if (old != null && old.first == e.name && e.done >= old.third) old else Triple(e.name, now, e.done) }!!
+        val line = transferLine(e.done.toLong() - started.third.toLong(), e.total.toLong() - started.third.toLong(), now - started.second)
+        val stop = PendingIntent.getBroadcast(
+            this, if (e.incoming) 61 else 60,
+            Intent(this, TransferReceiver::class.java).putExtra("do", "cancel").putExtra("incoming", e.incoming),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val n = Notification.Builder(this, CH_PROGRESS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle(if (e.incoming) "Receiving ${e.name}" else "Sending ${e.name}")
-            .setContentText("${if (e.incoming) "From" else "To"} ${e.peerName} \u00b7 $pct%")
+            .setContentText("${if (e.incoming) "From" else "To"} ${e.peerName} \u00b7 $pct% \u00b7 $line")
+            .addAction(Notification.Action.Builder(null, "Cancel", stop).build())
             .setProgress(100, pct, false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -797,7 +866,11 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(id, n)
     }
 
+    /** Per direction: file name, when its first progress arrived and how much was done then (for speed and ETA). */
+    private val progressStart = java.util.concurrent.ConcurrentHashMap<Boolean, Triple<String, Long, ULong>>()
+
     private fun cancelProgress(incoming: Boolean) {
+        progressStart.remove(incoming)
         getSystemService(NotificationManager::class.java).cancel(if (incoming) PROGRESS_IN_ID else PROGRESS_OUT_ID)
     }
 
@@ -814,27 +887,21 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(nextNotificationId(), n)
     }
 
-    /** One quiet line: who we are linked with. No buttons; tap opens the app. */
+    /** One quiet line: how Relay stands with the PC (see [Bridge.status]). No buttons; tap opens the app. */
     private fun statusNotification(): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        val peer = Bridge.linked.value
-        val controller = Bridge.controlledBy.value
+        val st = Bridge.status(this, serviceUp = true)
         return Notification.Builder(this, CH_STATUS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
-            .setContentTitle(
-                when {
-                    controller != null -> "$controller is controlling this phone"
-                    peer != null -> "Paired with $peer"
-                    else -> "Not paired yet"
-                },
-            )
+            .setContentTitle(st.title)
+            .setContentText(st.detail)
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(open)
             .build()
     }
 
-    private fun updateStatus() {
+    fun updateStatus() {
         // After stopForeground a notify would leave a stale status line behind.
         if (destroyed) return
         getSystemService(NotificationManager::class.java).notify(ONGOING_ID, statusNotification())
@@ -941,12 +1008,31 @@ fun notifySharing(ctx: Context, peer: String?) {
     val n = Notification.Builder(ctx, "control")
         .setSmallIcon(R.drawable.ic_stat_bridge)
         .setContentTitle("Sharing screen with $peer")
-        .setContentText("Your PC can see and use this screen")
+        .setContentText(screenShareText(ControlService.instance != null, ScreenShare.inputWasIgnored()))
         .setOngoing(true)
         .addAction(Notification.Action.Builder(null, "Stop", action("stop", 50)).build())
         .addAction(Notification.Action.Builder(null, "Restore brightness", action("bright", 51)).build())
         .build()
     nm.notify(SCREEN_SHARE_ID, n)
+}
+
+/** "Cancel" on a progress notification and "Retry" on a failed send. */
+class TransferReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.getStringExtra("do")) {
+            "cancel" -> {
+                val incoming = intent.getBooleanExtra("incoming", false)
+                if (!incoming) OutgoingShare.cancelRequested = true
+                Bridge.node?.cancelTransfers(incoming)
+                Log.i(TAG, "TRANSFER cancel requested incoming=$incoming")
+            }
+            "retry" -> {
+                val id = intent.getLongExtra("retry", -1)
+                context.getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra("nid", 0))
+                OutgoingShare.retry(context.applicationContext, id)
+            }
+        }
+    }
 }
 
 class OfferReceiver : BroadcastReceiver() {

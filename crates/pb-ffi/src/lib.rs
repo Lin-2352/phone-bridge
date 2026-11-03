@@ -9,6 +9,8 @@ use pb_protocol::control::{
 };
 use pb_transport::{Joining, Node, NodeConfig, Session, SharedStore};
 
+mod applog;
+
 uniffi::setup_scaffolding!();
 
 mod audio;
@@ -198,6 +200,38 @@ pub enum PbEvent {
         total: u64,
         incoming: bool,
     },
+}
+
+/// Cancel handles of the transfers running now, by direction (true = incoming): the phone shows
+/// one progress slot per direction, so its Cancel stops everything running that way.
+static CANCELS: Mutex<Vec<(u64, bool, pb_transport::files::Cancel)>> = Mutex::new(Vec::new());
+static CANCEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A cancel handle for one transfer, registered until dropped.
+struct CancelGuard {
+    id: u64,
+    cancel: pb_transport::files::Cancel,
+}
+
+impl CancelGuard {
+    fn new(incoming: bool) -> Self {
+        let cancel = pb_transport::files::Cancel::new();
+        let id = CANCEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CANCELS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((id, incoming, cancel.clone()));
+        Self { id, cancel }
+    }
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        CANCELS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(id, _, _)| *id != self.id);
+    }
 }
 
 /// Progress callback for a transfer, rate-limited so the UI is not flooded.
@@ -647,6 +681,62 @@ pub fn fit_size(width: u32, height: u32, max_long: u32, align_w: u32, align_h: u
     vec![w, h]
 }
 
+/// Open the structured log at `root` (phone caps: 5 MiB a day, 30 days,
+/// `total_cap_bytes` in all; 0 keeps 30 MiB). False if the folder cannot be
+/// created. Calling it again replaces the logger.
+#[uniffi::export]
+pub fn log_init(root: String, total_cap_bytes: u64) -> bool {
+    applog::init(&root, total_cap_bytes)
+}
+
+/// Append one metadata line. `stream` is events, transfers, network, perf or
+/// crash; `fields_json` a flat JSON object (nesting and values over 256
+/// characters are rejected and the line is dropped). Never put clipboard
+/// text, notification text or file names in it.
+#[uniffi::export]
+pub fn log_event(stream: String, kind: String, fields_json: String) {
+    applog::event(&stream, &kind, &fields_json);
+}
+
+/// Delete every day folder (the root stays). False when not initialised or
+/// something could not be deleted.
+#[uniffi::export]
+pub fn log_clear_all() -> bool {
+    applog::clear_all()
+}
+
+/// Bytes the logs take on disk (0 when not initialised).
+#[uniffi::export]
+pub fn log_size_bytes() -> u64 {
+    applog::size_bytes()
+}
+
+/// Off stops writing (what is held is flushed first); on resumes.
+#[uniffi::export]
+pub fn log_set_enabled(on: bool) {
+    applog::set_enabled(on);
+}
+
+/// Day folder names (`YYYY-MM-DD`), oldest first.
+#[uniffi::export]
+pub fn log_days() -> Vec<String> {
+    applog::days()
+}
+
+/// Write everything held to disk (call when the app goes to the background).
+#[uniffi::export]
+pub fn log_flush() {
+    applog::flush();
+}
+
+/// The phone's current UTC offset in seconds (`TimeZone.getOffset / 1000`):
+/// the day folder follows local time. Call after `log_init` and when the
+/// time zone changes.
+#[uniffi::export]
+pub fn log_set_tz_offset_secs(secs: i32) {
+    applog::set_tz_offset_secs(secs);
+}
+
 /// The first of the PC's codecs (best first) the phone can encode.
 #[uniffi::export]
 pub fn choose_codec(pc: Vec<u8>, phone: Vec<u8>) -> Option<u8> {
@@ -930,8 +1020,9 @@ fn fd_to_file(_fd: i32) -> Result<std::fs::File, PbError> {
 }
 
 async fn pump(mut s: Session, sh: Arc<Shared>) {
-    use pb_transport::files::{receive_offer, Received, DEFAULT_MAX_FILE};
+    use pb_transport::files::{receive_offer_with, Received, DEFAULT_MAX_FILE};
     let name = s.peer_name.clone();
+    applog::session_open();
     push(
         &sh.events,
         PbEvent::Connected {
@@ -1135,33 +1226,48 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     answer
                 };
                 let file_name = offer.name.clone();
-                match receive_offer(
+                let started = std::time::Instant::now();
+                let guard = CancelGuard::new(true);
+                let received = receive_offer_with(
                     &mut s,
                     offer,
                     accept,
                     &sh.incoming_dir,
                     DEFAULT_MAX_FILE,
-                    Some(progress_events(
-                        sh.events.clone(),
-                        name.clone(),
-                        file_name.clone(),
-                        true,
-                    )),
-                )
-                .await
-                {
-                    Ok(Received::File { path, size }) => push(
-                        &sh.events,
-                        PbEvent::FileReceived {
-                            peer_name: name.clone(),
-                            path: path.display().to_string(),
-                            name: path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or(file_name),
-                            size,
-                        },
+                    pb_transport::files::TransferOpts::new(
+                        Some(progress_events(
+                            sh.events.clone(),
+                            name.clone(),
+                            file_name.clone(),
+                            true,
+                        )),
+                        Some(guard.cancel.clone()),
                     ),
+                )
+                .await;
+                drop(guard);
+                match received
+                {
+                    Ok(Received::File { path, size }) => {
+                        applog::file_done(
+                            "received",
+                            &file_name,
+                            size,
+                            started.elapsed().as_secs_f64(),
+                        );
+                        push(
+                            &sh.events,
+                            PbEvent::FileReceived {
+                                peer_name: name.clone(),
+                                path: path.display().to_string(),
+                                name: path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or(file_name),
+                                size,
+                            },
+                        );
+                    }
                     Ok(Received::Text(t)) => push(
                         &sh.events,
                         PbEvent::SharedText {
@@ -1197,13 +1303,16 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         );
                     }
                     Err(pb_transport::Error::Declined) => {}
-                    Err(e) => push(
-                        &sh.events,
-                        PbEvent::TransferFailed {
-                            peer_name: name.clone(),
-                            reason: e.to_string(),
-                        },
-                    ),
+                    Err(e) => {
+                        applog::file_failed("received", &file_name, &e.to_string());
+                        push(
+                            &sh.events,
+                            PbEvent::TransferFailed {
+                                peer_name: name.clone(),
+                                reason: e.to_string(),
+                            },
+                        );
+                    }
                 }
                 break "transfer done".to_owned();
             }
@@ -1212,6 +1321,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             Err(e) => break e.to_string(),
         }
     };
+    applog::session_close(&reason);
     push(
         &sh.events,
         PbEvent::Disconnected {
@@ -1721,28 +1831,38 @@ impl PbNode {
         let file = fd_to_file(fd)?;
         let peer = self.find(&peer_id)?;
         let reader = tokio::fs::File::from_std(file);
-        self.node
-            .send_file(
+        let started = std::time::Instant::now();
+        let guard = CancelGuard::new(false);
+        let sent = self
+            .node
+            .send_file_with(
                 &peer,
                 &name,
                 size,
                 &mime,
                 reader,
-                Some(progress_events(
-                    self.shared.events.clone(),
-                    self.node
-                        .paired_peers()
-                        .into_iter()
-                        .find(|p| p.id == peer)
-                        .map(|p| p.name)
-                        .unwrap_or_default(),
-                    name.clone(),
-                    false,
-                )),
+                pb_transport::files::TransferOpts::new(
+                    Some(progress_events(
+                        self.shared.events.clone(),
+                        self.node
+                            .paired_peers()
+                            .into_iter()
+                            .find(|p| p.id == peer)
+                            .map(|p| p.name)
+                            .unwrap_or_default(),
+                        name.clone(),
+                        false,
+                    )),
+                    Some(guard.cancel.clone()),
+                ),
             )
-            .await
-            .map(|_| ())
-            .map_err(fail)
+            .await;
+        drop(guard);
+        match &sent {
+            Ok(_) => applog::file_done("sent", &name, size, started.elapsed().as_secs_f64()),
+            Err(e) => applog::file_failed("sent", &name, &e.to_string()),
+        }
+        sent.map(|_| ()).map_err(fail)
     }
 
     /// Send a picture (PNG, read from the detached `fd`) for the PC to put on
@@ -2061,6 +2181,16 @@ impl PbNode {
         self.shared
             .clipboard_images
             .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Stop the file transfers running in one direction (`incoming` true: files from the PC,
+    /// false: files this phone sends). Partial files are deleted; the PC is told.
+    pub fn cancel_transfers(&self, incoming: bool) {
+        for (_, inc, c) in CANCELS.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+            if *inc == incoming {
+                c.cancel();
+            }
+        }
     }
 
     /// Reply to an `IncomingOffer` event.
@@ -2493,5 +2623,46 @@ mod attention_tests {
     fn unix_ms_is_wall_clock_milliseconds() {
         // 2020-01-01 in ms: a real clock is past it; seconds would not be.
         assert!(unix_ms() > 1_577_836_800_000);
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn the_log_surface_round_trips() {
+        let (root, _g) = crate::applog::tests::fresh("surface");
+        assert!(log_init(root.display().to_string(), 10 * 1024 * 1024));
+        log_set_tz_offset_secs(19_800);
+        log_event("events".into(), "hello".into(), r#"{"a":1}"#.into());
+        log_flush();
+        assert!(log_size_bytes() > 10);
+        let days = log_days();
+        assert_eq!(days.len(), 1, "{days:?}");
+        assert_eq!(days[0].len(), 10);
+        log_set_enabled(false);
+        let before = log_size_bytes();
+        log_event("events".into(), "ignored".into(), "{}".into());
+        log_flush();
+        assert_eq!(log_size_bytes(), before);
+        log_set_enabled(true);
+        assert!(log_clear_all());
+        assert_eq!(log_size_bytes(), 0);
+        assert!(log_days().is_empty());
+    }
+
+    #[test]
+    fn uninitialised_calls_are_harmless() {
+        let _g = crate::applog::tests::SERIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::applog::reset();
+        assert_eq!(log_size_bytes(), 0);
+        assert!(log_days().is_empty());
+        assert!(!log_clear_all());
+        log_event("events".into(), "x".into(), "{}".into());
+        log_flush();
+        log_set_enabled(true);
     }
 }

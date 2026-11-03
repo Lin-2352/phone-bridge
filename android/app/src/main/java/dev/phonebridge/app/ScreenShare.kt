@@ -311,6 +311,8 @@ class ScreenCapture(
             }
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
                 Log.e(TAG, "SCREEN encoder error: ${e.diagnosticInfo}")
+                // A retry may fix a transient error; anything else ends the share, visibly (F4).
+                if (!e.isTransient) ScreenShare.encoderFailed()
             }
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) = Unit
         }, handler)
@@ -467,6 +469,8 @@ object ScreenShare : ScreenListener {
         ask = a
         lastActive = true
         lastDim = null
+        inputIgnored = false
+        ControlService.instance?.noteSession()
         c.attach(s)
         sharingWith.value = a.peer
         notifySharing(ctx, a.peer)
@@ -506,6 +510,8 @@ object ScreenShare : ScreenListener {
         ask = a
         lastActive = true
         lastDim = null
+        inputIgnored = false
+        ControlService.instance?.noteSession()
         c.attach(s)
         sharingWith.value = a.peer
         PbService.instance?.let { notifySharing(it, a.peer) }
@@ -519,6 +525,37 @@ object ScreenShare : ScreenListener {
         armed = null
         ready.value = false
         if (capture == null) PbService.instance?.leaveProjection()
+    }
+
+    /** The encoder died: the share would show a frozen frame. End it and say so on the phone. */
+    fun encoderFailed() = main.post {
+        if (capture == null) return@post
+        Log.e(TAG, "SCREEN share ended: encoder failed")
+        AppLog.event("events", "screen_encoder_failed")
+        runCatching { screen?.notice("The phone's video encoder failed. Sharing stopped") }
+        stop(userStopped = true)
+        PbService.instance?.let { notifyInfo(it, "Screen sharing stopped", "The video encoder failed. Start it again from your PC") }
+    }
+
+    /** Touch, keys or Dim from the PC reach nothing while Relay control is off: say so once per session (F3). */
+    @Volatile private var inputIgnored = false
+    fun inputWasIgnored() = inputIgnored
+
+    /** The notification's wording depends on Relay control: redraw it when that changes. */
+    fun refreshNotification() {
+        val peer = sharingWith.value ?: return
+        main.post { PbService.instance?.let { notifySharing(it, peer) } }
+    }
+
+    private fun controlMissing(): Boolean {
+        if (ControlService.instance != null) return false
+        if (!inputIgnored) {
+            inputIgnored = true
+            Log.i(TAG, "SCREEN input from the PC ignored: Relay control is off")
+            runCatching { screen?.notice(controlOffNotice()) }
+            main.post { PbService.instance?.let { notifySharing(it, sharingWith.value) } }
+        }
+        return true
     }
 
     /**
@@ -565,6 +602,7 @@ object ScreenShare : ScreenListener {
         }
         if (dim != lastDim) {
             lastDim = dim
+            if (dim && controlMissing()) { lastDim = null; return }
             main.post { ControlService.instance?.setDim(dim) }
         }
     }
@@ -581,26 +619,32 @@ object ScreenShare : ScreenListener {
     }
 
     override fun onTouch(phase: UByte, x: UShort, y: UShort) {
+        if (controlMissing()) return
         main.post { ControlService.instance?.touchAt(phase.toInt(), x.toInt(), y.toInt()) }
     }
 
     override fun onPinch(out: Boolean, x: UShort, y: UShort) {
+        if (controlMissing()) return
         main.post { ControlService.instance?.pinchAt(out, x.toInt(), y.toInt()) }
     }
 
     override fun onKey(scancode: UShort, pressed: Boolean) {
+        if (controlMissing()) return
         ControlService.instance?.onInput(3u, scancode.toInt(), 0, pressed)
     }
 
     override fun onChar(unit: UShort) {
+        if (controlMissing()) return
         ControlService.instance?.onInput(4u, unit.toInt(), 0, false)
     }
 
     override fun onButton(button: UByte) {
+        if (controlMissing()) return
         ControlService.instance?.onInput(1u, button.toInt(), 0, true)
     }
 
     override fun onWheel(dx: Short, dy: Short) {
+        if (controlMissing()) return
         ControlService.instance?.onInput(2u, dx.toInt(), dy.toInt(), false)
     }
 

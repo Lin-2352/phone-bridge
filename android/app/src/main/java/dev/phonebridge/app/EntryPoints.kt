@@ -20,6 +20,7 @@ private const val TAG = "PhoneBridge"
 class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.init(this)
         honourUserStop(this)
         if (!Prefs(this).enabled) {
             Toast.makeText(this, "$APP_NAME is off. Turn it on from its Quick Settings tile", Toast.LENGTH_LONG).show()
@@ -46,11 +47,11 @@ class ShareActivity : Activity() {
                 intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(uris::addAll)
             }
         }
-        val text = intent?.getStringExtra(Intent.EXTRA_TEXT)
+        // Styled text (Gmail, Docs, browsers) is a Spanned CharSequence: getStringExtra would return null for it.
+        val text = sharedText(intent?.getCharSequenceExtra(Intent.EXTRA_TEXT))
         val resolver = contentResolver
         // Open every file now, while this activity still holds the sender's
         // URI grant (it ends with finish() below); only the sending is async.
-        data class Opened(val name: String, val size: Long, val mime: String, val fd: Int)
         val opened = uris.mapNotNull { uri ->
             // Only content shared by another app: never our own files, raw
             // paths, or the save folder we hold access to.
@@ -75,7 +76,9 @@ class ShareActivity : Activity() {
                     return@mapNotNull null
                 }
                 if (size < 0) size = pfd.statSize
-                Opened(name, size, resolver.getType(uri) ?: "", pfd.detachFd())
+                // A duplicate stays with us for a Retry after a failed or cancelled send (the share grant ends with this activity).
+                val keep = runCatching { pfd.dup() }.getOrNull()
+                OutgoingShare.Out(name, size, resolver.getType(uri) ?: "", pfd.detachFd(), keep)
             } catch (t: Throwable) {
                 Log.e(TAG, "SHARE could not open $uri: $t")
                 null
@@ -86,44 +89,128 @@ class ShareActivity : Activity() {
             finish()
             return
         }
+        val sendsText = uris.isEmpty() && text != null
+        if (opened.isEmpty() && !sendsText) {
+            Toast.makeText(this, shareToast(known?.name, 0, false, 0), Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
         val app = applicationContext
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
             val peer = node?.peers()?.firstOrNull()
             if (node == null || peer == null) {
-                opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() } }
+                opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() }; runCatching { it.keep?.close() } }
+                AppLog.event("events", "share_dropped", "why" to if (node == null) "no_node" else "not_paired")
                 Log.e(TAG, "SHARE dropped: ${if (node == null) "$APP_NAME did not start" else "not paired"}")
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     Toast.makeText(app, if (node == null) "$APP_NAME could not start. Try again" else "Pair $APP_NAME with your PC first", Toast.LENGTH_LONG).show()
                 }
                 return@launch
             }
+            OutgoingShare.cancelRequested = false
             for (f in opened) {
-                try {
-                    node.sendFileFd(peer.id, f.fd, f.name, f.size.toULong(), f.mime)
-                    Log.i(TAG, "SHARE sent ${f.name} (${f.size} bytes) to ${peer.name}")
-                    // No uri: the share grant ends with this send, so it could not be opened later.
-                    Timeline.add(fileEntry(peer.name, TlDir.ToPc, f.name, f.size, null))
-                } catch (t: Throwable) {
-                    Log.e(TAG, "SHARE failed: $t")
-                    PbService.cancelOutgoingProgress(app)
-                    notifyInfo(app, "Could not send ${f.name}", "${peer.name} did not receive it. Is $APP_NAME running there?")
+                if (OutgoingShare.cancelRequested) {
+                    // Cancel stopped one file; the rest of the batch goes with it (kept for Retry).
+                    runCatching { android.os.ParcelFileDescriptor.adoptFd(f.fd).close() }
+                    OutgoingShare.offerRetry(app, peer.id, peer.name, f, cancelled = true)
+                    continue
                 }
+                OutgoingShare.send(app, node, peer.id, peer.name, f)
             }
-            if (uris.isEmpty() && !text.isNullOrBlank()) {
+            if (uris.isEmpty() && text != null) {
                 val isLink = text.startsWith("http://") || text.startsWith("https://")
                 try {
                     node.sendText(peer.id, text, isLink)
                     Log.i(TAG, "SHARE sent ${if (isLink) "link" else "text"} to ${peer.name}")
+                    AppLog.event("events", "share_sent", "kind" to if (isLink) "link" else "text", "chars" to text.length)
                     Timeline.add(if (isLink) linkEntry(peer.name, text) else clipTextEntry(peer.name, text))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
+                    AppLog.event("events", "share_failed", "kind" to if (text.startsWith("http")) "link" else "text", "type" to t.javaClass.simpleName)
                     notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
                 }
             }
         }
-        Toast.makeText(this, if (known != null) "Sending to ${known.name}" else "Sending to your PC", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, shareToast(known?.name, opened.size, sendsText, uris.size - opened.size), Toast.LENGTH_SHORT).show()
         finish()
+    }
+}
+
+/** Sending files: shared by the share sheet and Retry. */
+object OutgoingShare {
+    /** Cancel was tapped on the progress notification: the rest of the batch is not sent. */
+    @Volatile var cancelRequested = false
+
+    class Out(val name: String, val size: Long, val mime: String, val fd: Int, val keep: android.os.ParcelFileDescriptor?)
+    private class Pending(val peerId: String, val peerName: String, val name: String, val size: Long, val mime: String, val keep: android.os.ParcelFileDescriptor)
+
+    private val store = RetryStore<Pending>(4)
+    private val seq = java.util.concurrent.atomic.AtomicLong(1)
+
+    /** Sends one file; on failure or cancel posts a notification with Retry while a copy of the descriptor is kept. */
+    suspend fun send(app: android.content.Context, node: uniffi.pb_ffi.PbNode, peerId: String, peerName: String, f: Out) {
+        try {
+            node.sendFileFd(peerId, f.fd, f.name, f.size.toULong(), f.mime)
+            Log.i(TAG, "SHARE sent ${f.name} (${f.size} bytes) to $peerName")
+            AppLog.event("events", "share_sent", "kind" to "file", "ext" to LogFields.extOnly(f.name), "bytes" to f.size)
+            // No uri: the share grant ends with this send, so it could not be opened later.
+            Timeline.add(fileEntry(peerName, TlDir.ToPc, f.name, f.size, null))
+            runCatching { f.keep?.close() }
+        } catch (t: Throwable) {
+            val cancelled = isCancelled(t.message.orEmpty())
+            Log.e(TAG, "SHARE failed: $t")
+            AppLog.event("events", "share_failed", "kind" to "file", "ext" to LogFields.extOnly(f.name), "type" to t.javaClass.simpleName, "cancelled" to cancelled)
+            PbService.cancelOutgoingProgress(app)
+            offerRetry(app, peerId, peerName, f, cancelled)
+        }
+    }
+
+    fun offerRetry(app: android.content.Context, peerId: String, peerName: String, f: Out, cancelled: Boolean) {
+        val title = failureTitle(f.name, cancelled, outgoing = true)
+        val text = if (cancelled) "${f.name} was not sent to $peerName" else "$peerName did not receive ${f.name}. Is $APP_NAME running there?"
+        val keep = f.keep
+        if (keep == null) { notifyInfo(app, title, text); return }
+        val id = seq.getAndIncrement()
+        store.put(id, Pending(peerId, peerName, f.name, f.size, f.mime, keep)).forEach { runCatching { it.keep.close() } }
+        val nid = 300 + (id % 20).toInt()
+        val retry = android.app.PendingIntent.getBroadcast(
+            app, nid,
+            Intent(app, TransferReceiver::class.java).putExtra("do", "retry").putExtra("retry", id).putExtra("nid", nid),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val nm = app.getSystemService(android.app.NotificationManager::class.java)
+        nm.createNotificationChannel(android.app.NotificationChannel("events", "Files and clipboard", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+        nm.notify(
+            nid,
+            android.app.Notification.Builder(app, "events").setSmallIcon(R.drawable.ic_stat_bridge)
+                .setContentTitle(title).setContentText(text).setAutoCancel(true)
+                .addAction(android.app.Notification.Action.Builder(null, "Retry", retry).build()).build(),
+        )
+    }
+
+    /** Retry tap: rewind the kept descriptor and send again. */
+    fun retry(app: android.content.Context, id: Long) {
+        val p = store.take(id)
+        if (p == null) {
+            Toast.makeText(app, "That file is no longer available. Share it again", Toast.LENGTH_LONG).show()
+            return
+        }
+        cancelRequested = false
+        Bridge.scope.launch {
+            val node = Bridge.awaitNode()
+            val ok = node != null && runCatching {
+                android.system.Os.lseek(p.keep.fileDescriptor, 0, android.system.OsConstants.SEEK_SET)
+                p.keep.dup()
+            }.getOrNull()?.let { d ->
+                send(app, node, p.peerId, p.peerName, Out(p.name, p.size, p.mime, d.detachFd(), p.keep))
+                true
+            } == true
+            if (!ok) {
+                runCatching { p.keep.close() }
+                notifyInfo(app, "Could not send ${p.name}", "$APP_NAME could not start. Share the file again")
+            }
+        }
     }
 }
 

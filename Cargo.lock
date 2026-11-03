@@ -2635,6 +2635,7 @@ dependencies = [
  "iroh",
  "jni 0.21.1",
  "pb-identity",
+ "pb-log",
  "pb-protocol",
  "pb-transport",
  "pb-video",
@@ -2650,6 +2651,13 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "pb-log"
+version = "0.1.0"
+dependencies = [
+ "flate2",
 ]
 
 [[package]]
@@ -2697,6 +2705,7 @@ dependencies = [
  "pb-camera-frames",
  "pb-camera-source",
  "pb-identity",
+ "pb-log",
  "pb-platform-win",
  "pb-protocol",
  "pb-transport",

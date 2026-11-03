@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.ui.home.pcStatus
+
 /** What a tap on the Phone Bridge tile does. */
 enum class TileClick { StartViaActivity, StartDirect, Stop }
 
@@ -17,8 +19,16 @@ fun tileClick(shownOn: Boolean, locked: Boolean): TileClick = when {
 }
 
 /** The tile's second line, from what is really running. */
-fun tileSubtitle(wished: Boolean, running: Boolean, starting: Boolean, linked: String?): String = when {
-    running -> linked ?: "On"
+fun tileSubtitle(
+    wished: Boolean, running: Boolean, starting: Boolean, linked: String?,
+    live: Boolean = false, lastSeenMs: Long = 0L, nowMs: Long = 0L,
+): String = when {
+    // The PC name only while it is really in contact; else how long ago, as on Home.
+    running -> when {
+        linked == null -> "On"
+        live -> linked
+        else -> pcStatus(false, lastSeenMs, nowMs, paired = true)
+    }
     starting -> "Starting\u2026"
     // Wanted on, but Android killed it: say so; a tap starts it again.
     wished -> "Stopped. Tap to start"

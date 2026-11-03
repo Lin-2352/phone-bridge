@@ -27,6 +27,7 @@ private const val ASK_MS = 30_000L
  */
 class ScreenConsentActivity : ComponentActivity() {
     private var ask: ScreenAsk? = null
+    private var peerId = ""
     private var answered = false
     private var asking by mutableStateOf(false)
     private var askedAt = 0L
@@ -45,6 +46,7 @@ class ScreenConsentActivity : ComponentActivity() {
             codecs = i.getIntArrayExtra("codecs")?.toList().orEmpty(),
         )
         ask = a
+        peerId = i.getStringExtra("peerId").orEmpty()
         askedAt = i.getLongExtra("at", SystemClock.elapsedRealtime())
         Log.i(TAG, "SCREEN ask window open after ${SystemClock.elapsedRealtime() - askedAt} ms")
         getSystemService(NotificationManager::class.java).cancel(SCREEN_ASK_ID)
@@ -54,7 +56,7 @@ class ScreenConsentActivity : ComponentActivity() {
             decline()
             return
         }
-        if (Prefs(this).allowScreen) {
+        if (allowedFor(peerId, Prefs(this).allowedScreenPcs)) {
             capturePrompt()
             return
         }
@@ -65,10 +67,10 @@ class ScreenConsentActivity : ComponentActivity() {
                 if (asking) {
                     ConsentDialog(
                         title = "Let ${a.peer} see this screen?",
-                        body = "Your screen appears in a window on the PC, which can also tap and type here. Stop any time from $APP_NAME or the notification.",
+                        body = screenConsentBody(ControlService.instance != null),
                         onAllow = { allow(always = false) },
                         onDeny = { if (!answered) decline() },
-                        onAlways = { allow(always = true) },
+                        onAlways = if (peerId.isNotEmpty()) ({ allow(always = true) }) else null,
                     )
                 }
             }
@@ -81,7 +83,7 @@ class ScreenConsentActivity : ComponentActivity() {
         answered = true
         asking = false
         main.removeCallbacksAndMessages(null)
-        if (always) Prefs(this).allowScreen = true
+        if (always) Prefs(this).let { it.allowedScreenPcs = withAllowed(it.allowedScreenPcs, peerId, true) }
         capturePrompt()
     }
 

@@ -42,6 +42,42 @@ pub const WM_CORE_EVENT: u32 = WM_APP + 2;
 pub const ID_PAIR: usize = 1;
 pub const ID_SEND_CLIPBOARD: usize = 2;
 pub const ID_QUIT: usize = 3;
+/// Why the core stopped (it never came up, or died): Home, the flyout and
+/// the tooltip say so, and Restart starts the tray again.
+static CORE_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn core_error() -> Option<String> {
+    CORE_ERROR.lock().ok().and_then(|g| g.clone())
+}
+
+/// Called by the core thread when `core::run` ends with an error.
+pub fn core_failed(hwnd_raw: isize, msg: String) {
+    if let Ok(mut g) = CORE_ERROR.lock() {
+        *g = Some(msg.clone());
+    }
+    post_event(hwnd_raw, UiEvent::Info(format!("Relay stopped: {msg}")));
+}
+
+/// Starts a new tray (same data folder) a moment after this one is gone
+/// (the single-instance mutex is released then), and quits this one.
+fn restart_app(raw: isize) {
+    if let Ok(exe) = std::env::current_exe() {
+        let args = crate::relaunch::quoted(crate::relaunch::args());
+        let line = format!(
+            "ping -n 3 127.0.0.1 >nul & start \"\" \"{}\" {args}",
+            exe.display()
+        );
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", &line])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn();
+    }
+    post_command(raw, ID_QUIT);
+}
+
+/// The user said yes to "a transfer is running, quit anyway?".
+static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ID_UNPAIR_BASE: usize = 100;
 
 struct State {
@@ -54,7 +90,7 @@ struct State {
 }
 
 pub const ID_SEND_FILES: usize = 4;
-const ID_TOGGLE_CLIP: usize = 5;
+pub const ID_TOGGLE_CLIP: usize = 5;
 const ID_TOGGLE_AUTO: usize = 6;
 const ID_OPEN_FOLDER: usize = 7;
 const ID_SENDTO: usize = 8;
@@ -63,10 +99,10 @@ pub const ID_OPEN_FLYOUT: usize = 10;
 pub const ID_SETTINGS: usize = 11;
 pub const ID_MENU: usize = 12;
 const ID_CONTROL: usize = 13;
-const ID_SCREEN: usize = 14;
+pub const ID_SCREEN: usize = 14;
 pub const ID_SCREEN_SHOW: usize = 15;
 pub const ID_SCREEN_HIDE: usize = 16;
-const ID_CAMERA: usize = 17;
+pub const ID_CAMERA: usize = 17;
 pub const ID_CAMERA_START: usize = 18;
 pub const ID_CAMERA_STOP: usize = 19;
 const ID_CAMERA_LENS: usize = 20;
@@ -428,6 +464,8 @@ fn flyout_model(st: &State) -> crate::flyout::Model {
         camera_on: crate::camera::is_running(),
         camera_fps: crate::camera::fps(),
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
+        paused: st.settings.lock().map(|s| s.paused).unwrap_or(false),
+        stopped: core_error().is_some(),
     }
 }
 
@@ -481,10 +519,25 @@ fn page_action(a: crate::pages::Action) {
         return;
     };
     match a {
-        Action::Go(_) => {}
+        Action::Go(_)
+        | Action::TimelineDay(_)
+        | Action::TimelineAll(_)
+        | Action::TimelineMenu(_) => {}
+        Action::CopyText(t) => {
+            let _ = set_clipboard_own(HWND(raw as *mut _), &t, false);
+        }
+        // A Timeline delete whose undo window passed: gone for good.
+        Action::TimelineDelete(keys) => {
+            crate::timeline::with(|t| {
+                t.remove_where(|e| keys.contains(&crate::pages::timeline::entry_key(e)));
+            });
+        }
         Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
         // The same path as the hotkey and IPC: private clips are refused.
         Action::SendClipboard => post_command(raw, ID_SEND_CLIPBOARD),
+        Action::Restart => restart_app(raw),
+        // The page only offers Resume while paused, so the menu's toggle resumes.
+        Action::Resume => post_command(raw, crate::menu_model::ID_PAUSE),
         Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
         Action::Stop(SessionKind::Camera) => post_command(raw, ID_CAMERA_STOP),
         Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
@@ -587,7 +640,7 @@ fn failed_text(path: &str, open: bool) -> String {
 
 /// `ShellExecuteW` "open" on `file` (with `params`); false when the shell
 /// reports an error (a result of 32 or less).
-fn shell_open(file: &str, params: Option<&str>) -> bool {
+pub(crate) fn shell_open(file: &str, params: Option<&str>) -> bool {
     use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let file = wide(file);
     let params = params.map(wide);
@@ -610,7 +663,7 @@ fn shell_open(file: &str, params: Option<&str>) -> bool {
 
 /// Explorer with the file selected. The one way Relay shows a file in its
 /// folder (Timeline, toasts, balloons).
-fn show_in_folder(path: &str) -> bool {
+pub(crate) fn show_in_folder(path: &str) -> bool {
     select_arg(path).is_some_and(|p| shell_open("explorer.exe", Some(&p)))
 }
 
@@ -723,22 +776,25 @@ fn page_model(st: &State) -> crate::pages::Model {
     let now = crate::timeline::now_unix();
     let (timeline, recent) = timeline_model(settings.keep_history, now);
     let phone = phone.map(phone_in);
+    let mut home_model = home::build(home::Inputs {
+        phone,
+        screen,
+        screen_live,
+        camera,
+        camera_live,
+        control,
+        camera_pending: crate::camera::pending(),
+        notes: &notes,
+        settings: &settings,
+        locked,
+        recent: &recent,
+        // Whole minutes: the labels change no faster, and an unchanged
+        // model is not repainted.
+        now: now / 60 * 60,
+    });
+    home_model.error = core_error();
     crate::pages::Model {
-        home: home::build(home::Inputs {
-            phone,
-            screen,
-            screen_live,
-            camera,
-            camera_live,
-            control,
-            notes: &notes,
-            settings: &settings,
-            locked,
-            recent: &recent,
-            // Whole minutes: the labels change no faster, and an unchanged
-            // model is not repainted.
-            now: now / 60 * 60,
-        }),
+        home: home_model,
         timeline,
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
@@ -824,6 +880,20 @@ fn copy_into(dst: &mut [u16], s: &str) {
     let src: Vec<u16> = s.encode_utf16().take(dst.len() - 1).collect();
     dst[..src.len()].copy_from_slice(&src);
     dst[src.len()] = 0;
+}
+
+/// Where the tray icon is on screen, when the shell says (it may sit in
+/// the overflow, or on another monitor than the cursor).
+pub fn tray_icon_rect(hwnd: HWND) -> Option<windows::Win32::Foundation::RECT> {
+    use windows::Win32::UI::Shell::{Shell_NotifyIconGetRect, NOTIFYICONIDENTIFIER};
+    let id = NOTIFYICONIDENTIFIER {
+        cbSize: std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        ..Default::default()
+    };
+    // SAFETY: a query into a valid struct.
+    unsafe { Shell_NotifyIconGetRect(&id).ok() }
 }
 
 fn icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -946,10 +1016,11 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
     }
     match e {
         UiEvent::Ready { fingerprint } => {
-            set_tip(hwnd, &format!("Relay ({})", &fingerprint[..9]));
             if let Ok(mut f) = MY_FINGERPRINT.lock() {
                 *f = fingerprint[..9].to_owned();
             }
+            let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+            set_tip(hwnd, &crate::pause::tooltip(paused, &fingerprint[..9]));
             // Toasts restored from the notification centre whose phone is no
             // longer paired go now.
             let paired: Vec<pb_identity::PeerId> = st
@@ -1105,13 +1176,13 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             if let Ok(mut l) = LAST_LINK.lock() {
                 *l = None;
             }
-            let mb = size as f64 / 1_048_576.0;
             note_activity(&format!("Last: {name} received"));
             balloon(
                 hwnd,
                 &format!("{from} sent {name}"),
                 &format!(
-                    "{mb:.1} MB, saved to {}. Click to show.",
+                    "{}, saved to {}. Click to show.",
+                    crate::transfers::fmt_bytes(size),
                     path.parent()
                         .map(|d| d.display().to_string())
                         .unwrap_or_default()
@@ -1143,20 +1214,30 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             from,
             name,
             size,
+            folder,
             reply,
         } => {
-            let mb = size as f64 / 1_048_576.0;
-            ask_yes_no(
+            let alive = reply.clone();
+            crate::dialog_window::ask_while(
                 Dialog::question(
                     format!("{from} wants to send a file"),
                     format!(
-                        "{name} ({mb:.1} MB)\n\nSave it to your Downloads\\Phone Bridge folder?"
+                        "{name} ({})\n\nSave it to {}?",
+                        crate::transfers::fmt_bytes(size),
+                        folder.display()
                     ),
                     "Save",
                     "Decline",
                 ),
+                move || alive.alive(),
                 move |yes| {
-                    let _ = reply.send(yes);
+                    // The offer may have timed out while the dialog was open.
+                    if !reply.answer(yes) && yes {
+                        crate::status::show(
+                            "That request expired. Send it again from the phone.",
+                            8,
+                        );
+                    }
                 },
             );
         }
@@ -1737,41 +1818,73 @@ fn end_control(hwnd: HWND, why: &str) {
 }
 
 fn show_menu(hwnd: HWND) {
-    use crate::fluent::glyph;
-    use crate::menu::Item;
-    let running = crate::camera::is_running();
-    let camera_items = vec![Item::new(
-        glyph::PHONE,
-        if crate::camera::pending() {
-            "Cancel phone camera request"
-        } else if running {
-            "Stop phone camera"
-        } else {
-            "Use phone as camera"
+    use crate::menu_model::{build, Camera, Ids, Inputs};
+    let Some(st) = STATE.get() else { return };
+    // Read fresh every time: the rows show the real settings and sessions.
+    let settings = st.settings.lock().map(|s| s.clone()).unwrap_or_default();
+    let has_peer = st.peers.lock().map(|g| !g.is_empty()).unwrap_or(false);
+    let camera = if crate::camera::pending() {
+        Camera::Pending
+    } else if crate::camera::is_running() {
+        Camera::Running
+    } else {
+        Camera::Idle
+    };
+    let items = build(
+        &Inputs {
+            settings: &settings,
+            has_peer,
+            screen_open: crate::screen_window::is_open(),
+            camera,
+            logs_available: crate::applog::handle().is_some(),
         },
-        ID_CAMERA,
-    )];
-    let mut items = vec![
-        Item::new(glyph::PHONE, "Open Relay", ID_OPEN_MAIN),
-        Item::new(
-            glyph::PHONE,
-            if crate::screen_window::is_open() {
-                "Hide phone screen"
-            } else {
-                "Show phone screen"
-            },
-            ID_SCREEN,
-        ),
-        Item::new(glyph::SEND, "Send files\u{2026}", ID_SEND_FILES),
-        Item::new(glyph::SETTINGS, "Settings", ID_SETTINGS),
-        Item::separator(),
-        Item::new(glyph::POWER, "Quit Relay", ID_QUIT),
-    ];
-    // The camera entries sit right after the phone-screen entry.
-    for (i, it) in camera_items.into_iter().enumerate() {
-        items.insert(2 + i, it);
-    }
+        &Ids {
+            open: ID_OPEN_MAIN,
+            send_files: ID_SEND_FILES,
+            send_clipboard: ID_SEND_CLIPBOARD,
+            screen: ID_SCREEN,
+            camera: ID_CAMERA,
+            clipboard_sync: ID_TOGGLE_CLIP,
+            settings: ID_SETTINGS,
+            quit: ID_QUIT,
+        },
+    );
     crate::menu::show(hwnd, items);
+}
+
+/// Pause or resume Relay: saved, logged, and what is open is closed.
+fn set_paused(hwnd: HWND, st: &State, on: bool) {
+    let was = st
+        .settings
+        .lock()
+        .map(|mut s| std::mem::replace(&mut s.paused, on))
+        .unwrap_or(false);
+    save_settings(st);
+    let Some(t) = crate::pause::transition(was, on) else {
+        return;
+    };
+    crate::applog::emit(crate::applog::pause(on));
+    if t == crate::pause::Transition::Paused {
+        st.log.line("PAUSE Relay paused: sessions closed");
+        // The setting is already on, so nothing new slips in while closing.
+        crate::core::pause_now();
+        if crate::control::is_active() {
+            end_control(hwnd, "Relay is paused");
+        }
+        crate::screen_window::close();
+        crate::camera_window::close();
+        crate::camera::stop();
+        // A pairing code on screen would be refused by the core: take it down.
+        let _ = st.cmds.send(crate::core::Cmd::CancelPair);
+        crate::qr_window::close();
+    } else {
+        st.log.line("PAUSE Relay resumed");
+    }
+    let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
+    set_tip(hwnd, &crate::pause::tooltip(on, &fp));
+    // The main window and an open flyout show it now.
+    refresh_flyout(st);
+    post_settings_action(hwnd.0 as isize);
 }
 
 /// Snapshot of everything the Settings page shows.
@@ -1805,6 +1918,9 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         startup: startup_enabled(),
         control,
         keep_history: n.keep_history,
+        keep_logs: n.keep_logs,
+        log_dir: crate::applog::dir().display().to_string(),
+        log_bytes: crate::applog::size_bytes(),
         devices: paired_devices(st),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
         notify: n.notify_enabled,
@@ -1978,6 +2094,44 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                     if yes {
                         crate::timeline::with(|t| t.clear());
                         // The Timeline page shows it now.
+                        post_settings_action(raw);
+                    }
+                },
+            );
+        }
+        Action::Toggle(Key::KeepLogs) => {
+            let on = st
+                .settings
+                .lock()
+                .map(|mut s| {
+                    s.keep_logs = !s.keep_logs;
+                    s.keep_logs
+                })
+                .unwrap_or(true);
+            crate::applog::set_enabled(on);
+            save_settings(st);
+        }
+        Action::OpenLogs => {
+            let dir = crate::applog::dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+        }
+        Action::ClearLogs => {
+            let raw = hwnd.0 as isize;
+            ask_yes_no(
+                Dialog::question(
+                    "Clear all logs?".into(),
+                    format!(
+                        "This deletes all {} of logs on this PC.",
+                        crate::settings_rows::log_size_text(crate::applog::size_bytes())
+                    ),
+                    "Clear",
+                    "Cancel",
+                ),
+                move |yes| {
+                    if yes {
+                        crate::applog::clear_all();
+                        // The row shows the new size.
                         post_settings_action(raw);
                     }
                 },
@@ -2186,6 +2340,26 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             crate::main_window::open(crate::main_window::Page::Settings);
         }
         ID_MENU => show_menu(hwnd),
+        crate::menu_model::ID_PAUSE => {
+            let now = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+            set_paused(hwnd, st, !now);
+        }
+        // The menu's quick settings run the Settings page's own setters.
+        crate::menu_model::ID_TOGGLE_NOTIFY => apply_settings_action(
+            hwnd,
+            st,
+            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::Notify),
+        ),
+        crate::menu_model::ID_TOGGLE_ALLOW_CONTROL => apply_settings_action(
+            hwnd,
+            st,
+            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::Control),
+        ),
+        crate::menu_model::ID_TOGGLE_LOGS => apply_settings_action(
+            hwnd,
+            st,
+            crate::settings_rows::Action::Toggle(crate::settings_rows::Key::KeepLogs),
+        ),
         ID_CONTROL => toggle_control(hwnd, st),
         ID_CONTROL_STOP => {
             if crate::control::is_active() {
@@ -2256,6 +2430,27 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             }
         }
         ID_QUIT => {
+            // Transfers running: ask first; "yes" comes back here confirmed.
+            let running = crate::transfers::active_count();
+            if running > 0 && !QUIT_CONFIRMED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let raw = hwnd.0 as isize;
+                let (heading, body) = crate::transfers::quit_warning(running);
+                ask_yes_no(
+                    Dialog::question(heading, body, "Quit and stop", "Keep running"),
+                    move |yes| {
+                        if yes {
+                            QUIT_CONFIRMED.store(true, std::sync::atomic::Ordering::SeqCst);
+                            post_command(raw, ID_QUIT);
+                        }
+                    },
+                );
+                return;
+            }
+            // Running transfers end cleanly: the peers are told. Best effort,
+            // the process exits right after.
+            if crate::transfers::cancel_all(crate::transfers::CancelBy::Quit) > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
             crate::camera_window::close();
             // Nothing of the camera stays behind: Stop, Remove, Shutdown.
             crate::camera::stop();
@@ -2298,12 +2493,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     if taskbar != 0 && msg == taskbar {
         // Explorer restarted: our icon is gone, add it again (same tooltip).
         let fp = MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default();
-        let tip = if fp.is_empty() {
-            "Relay".to_owned()
-        } else {
-            format!("Relay ({fp})")
-        };
-        add_icon(hwnd, &tip);
+        let paused = st.settings.lock().map(|s| s.paused).unwrap_or(false);
+        add_icon(hwnd, &crate::pause::tooltip(paused, &fp));
         return LRESULT(0);
     }
     match msg {
@@ -2331,6 +2522,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_default();
             for e in drained {
                 handle_event(hwnd, st, e);
+            }
+            if let Some(why) = core_error() {
+                set_tip(hwnd, &crate::pause::failed_tooltip(&why));
             }
             if crate::main_window::is_open() {
                 crate::main_window::refresh();
@@ -2632,7 +2826,18 @@ pub fn create(
             std::sync::atomic::Ordering::Relaxed,
         );
         TRAY_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        add_icon(hwnd, "Relay (starting)");
+        let paused = STATE
+            .get()
+            .and_then(|st| st.settings.lock().ok().map(|s| s.paused))
+            .unwrap_or(false);
+        add_icon(
+            hwnd,
+            &if paused {
+                crate::pause::tooltip(true, "")
+            } else {
+                "Relay (starting)".to_owned()
+            },
+        );
         // Real toasts with Phone Bridge's identity; balloons if that fails.
         let raw = hwnd.0 as isize;
         let push = move |ev: ToastEvent| {
