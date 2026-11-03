@@ -307,6 +307,89 @@ async fn a_pairing_the_joiner_cannot_save_is_reported_on_both_sides() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_version_mismatch_is_reported_as_one_not_as_a_refused_pairing() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    // The phone runs a newer build.
+    let conn = phone
+        .dial(pc.peer_id(), &loopback(&pc), SESSION_ALPN)
+        .await
+        .unwrap();
+    let (mut send, recv) = conn.open_bi().await.unwrap();
+    let mut hello = Hello::new("Phone", vec![]);
+    hello.protocol_version += 1;
+    write_frame(&mut send, &Control::from(ControlMsg::Hello(hello)))
+        .await
+        .unwrap();
+    let mut recv = FrameReader::new(recv);
+    let got = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match recv.next::<Control>().await {
+                Ok(Some(_)) => continue,
+                Ok(None) => break Error::Closed,
+                Err(e) => break closed_by_peer(&conn, e),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(got, Error::VersionMismatch), "{got:?}");
+    assert!(got.to_string().contains("update"), "{got}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declining_on_the_phone_returns_at_once_while_the_pc_still_decides() {
+    let (pc, mut pc_ev, pc_store) = node(1, "PC").await;
+    let (phone, _pev, phone_store) = node(2, "Phone").await;
+    let code = pc.open_pairing(loopback(&pc)).unwrap();
+    let joining = phone.join(&code).await.unwrap();
+    let pending = pc_ev.pairings.recv().await.unwrap();
+    let declined = tokio::time::timeout(Duration::from_secs(3), joining.decide(false)).await;
+    assert!(
+        matches!(declined, Ok(Err(Error::Rejected))),
+        "the phone must not wait for the PC's user: {declined:?}"
+    );
+    // The PC can close its prompt: the joiner left.
+    tokio::time::timeout(Duration::from_secs(3), pending.withdrawn())
+        .await
+        .expect("the PC learns the phone left");
+    // The PC's user answers later: nothing is pinned anywhere.
+    let h = tokio::time::timeout(Duration::from_secs(5), pending.decide(true))
+        .await
+        .unwrap();
+    assert!(h.is_err(), "{h:?}");
+    assert!(lock(&pc_store).list().is_empty());
+    assert!(lock(&phone_store).list().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_pairing_connections_cannot_lock_out_paired_devices() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    // A LAN host opens many pairing connections while a code is shown and
+    // sends nothing on them.
+    let _code = pc.open_pairing(loopback(&pc)).unwrap();
+    let mut idle = Vec::new();
+    for seed in 0..(MAX_INCOMING as u8 + 4) {
+        let (n, _ev, _) = node(100 + seed, "noise").await;
+        if let Ok(c) = n.dial(pc.peer_id(), &loopback(&pc), PAIR_ALPN).await {
+            idle.push((n, c));
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s = tokio::time::timeout(Duration::from_secs(10), phone.connect(&pc.peer_id())).await;
+    assert!(
+        matches!(s, Ok(Ok(_))),
+        "a paired device must still get in: {:?}",
+        s.map(|r| r.map(|_| ()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn names_a_peer_sends_at_pairing_are_cleaned_and_capped() {
     let evil = format!("Phone\n{}\tx\u{202e}{}", "a".repeat(64), "b".repeat(200));
     let (pc, mut pc_ev, pc_store) = node(1, "PC\tbox").await;

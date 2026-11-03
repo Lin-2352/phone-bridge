@@ -48,6 +48,10 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 const INCOMING_HANDSHAKE: Duration = Duration::from_secs(5);
 /// Incoming connections handled at once.
 const MAX_INCOMING: usize = 16;
+/// Pairing connections handled at once, from their own pool: idle ones
+/// (anyone on the LAN can open them while a code is shown) must not take
+/// the slots paired devices connect through.
+const MAX_PAIRING: usize = 2;
 /// How long either side waits for the user to confirm the SAS.
 pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -55,6 +59,8 @@ const CLOSE_NOT_PAIRED: u32 = 403;
 const CLOSE_PAIR_FAILED: u32 = 400;
 /// The joiner could not save the pairing: the host takes its own back.
 const CLOSE_PAIR_NOT_SAVED: u32 = 500;
+/// The peer's `Hello` names a protocol version this build does not speak.
+const CLOSE_INCOMPATIBLE: u32 = 426;
 
 #[derive(Debug)]
 pub enum Error {
@@ -89,6 +95,9 @@ pub enum Error {
     /// The list of paired devices could not be saved, so the change the user
     /// asked for (pair, remove) did not happen.
     Storage(String),
+    /// The two devices speak different protocol versions (pre-1.0 they must
+    /// match exactly): one of them needs updating.
+    VersionMismatch,
 }
 
 impl fmt::Display for Error {
@@ -111,6 +120,7 @@ impl fmt::Display for Error {
             Self::Io(e) => write!(f, "file error: {e}"),
             Self::Unsupported => f.write_str("the other device does not support this yet: update it"),
             Self::AudioRefused(r) => write!(f, "audio refused: {r:?}"),
+            Self::VersionMismatch => f.write_str("the other device runs a different version of Relay: update both to the latest version"),
             Self::Storage(e) => write!(f, "could not save the list of paired devices ({e}): nothing changed, try again"),
         }
     }
@@ -165,9 +175,20 @@ pub struct PendingPairing {
     pub sas: String,
     decide: oneshot::Sender<bool>,
     done: oneshot::Receiver<Result<PairedPeer, Error>>,
+    conn: Connection,
 }
 
 impl PendingPairing {
+    /// Resolves when the other device gave up (declined, cancelled, went
+    /// away) before this user decided: close the prompt. Owns what it needs,
+    /// so it can run in its own task while the prompt holds `self`.
+    pub fn withdrawn(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let conn = self.conn.clone();
+        async move {
+            let _ = conn.closed().await;
+        }
+    }
+
     /// Report the user's decision and wait for the outcome (both sides must accept).
     pub async fn decide(self, accept: bool) -> Result<PairedPeer, Error> {
         let _ = self.decide.send(accept);
@@ -193,6 +214,13 @@ impl Joining {
             &Pair::from(PairMsg::Confirm(PairConfirm { accepted: accept })),
         )
         .await?;
+        if !accept {
+            // Nothing to wait for: the outcome is "not paired" whatever the
+            // other user answers. Closing tells the host at once.
+            let _ = self.send.finish();
+            self.conn.close(CLOSE_PAIR_FAILED.into(), b"declined");
+            return Err(Error::Rejected);
+        }
         let theirs = tokio::time::timeout(CONFIRM_TIMEOUT, self.recv.next::<Pair>())
             .await
             .map_err(|_| Error::Timeout)??;
@@ -733,12 +761,14 @@ impl Node {
         // Bound the work any LAN host can make us do: a few connections in
         // flight at once; the rest are refused until one finishes.
         let slots = Arc::new(tokio::sync::Semaphore::new(MAX_INCOMING));
+        let pair_slots = Arc::new(tokio::sync::Semaphore::new(MAX_PAIRING));
         while let Some(incoming) = self.inner.endpoint.accept().await {
             let Ok(permit) = slots.clone().try_acquire_owned() else {
                 drop(incoming);
                 continue;
             };
             let node = self.clone();
+            let pair_slots = pair_slots.clone();
             tokio::spawn(async move {
                 let Ok(Ok(conn)) = tokio::time::timeout(INCOMING_HANDSHAKE, incoming).await else {
                     return;
@@ -752,8 +782,12 @@ impl Node {
                         conn.close(CLOSE_PAIR_FAILED.into(), b"not pairing");
                         return;
                     }
-                    let _ = node.host_pairing(conn, peer).await;
                     drop(permit);
+                    let Ok(_pairing) = pair_slots.try_acquire_owned() else {
+                        conn.close(CLOSE_PAIR_FAILED.into(), b"busy");
+                        return;
+                    };
+                    let _ = node.host_pairing(conn, peer).await;
                 } else {
                     // A paired peer is authenticated: free the slot for the
                     // next handshake while its session runs.
@@ -836,15 +870,18 @@ impl Node {
             sas,
             decide: decide_tx,
             done: done_rx,
+            conn: conn.clone(),
         };
         if self.inner.pairings.send(pending).await.is_err() {
             fail(&conn);
             return Err(Error::Closed);
         }
-        let accept = tokio::time::timeout(CONFIRM_TIMEOUT, decide_rx)
-            .await
-            .unwrap_or(Ok(false))
-            .unwrap_or(false);
+        // A joiner that leaves first ends this at once (its prompt is shut
+        // through `PendingPairing::withdrawn`).
+        let accept = tokio::select! {
+            r = tokio::time::timeout(CONFIRM_TIMEOUT, decide_rx) => r.unwrap_or(Ok(false)).unwrap_or(false),
+            _ = conn.closed() => false,
+        };
         // The joiner sends its Confirm before reading ours, so read it first:
         // the pairing is then saved (or not) before we answer, and the joiner
         // never believes in a pairing this side failed to save.
@@ -927,6 +964,11 @@ fn closed_by_peer(conn: &Connection, fallback: Error) -> Error {
         Some(ConnectionError::ApplicationClosed(c)) if c.error_code == CLOSE_PAIR_FAILED.into() => {
             Error::Rejected
         }
+        Some(ConnectionError::ApplicationClosed(c))
+            if c.error_code == CLOSE_INCOMPATIBLE.into() =>
+        {
+            Error::VersionMismatch
+        }
         _ => fallback,
     }
 }
@@ -1005,12 +1047,9 @@ impl Session {
             _ => return Err(Error::Protocol("expected Hello".into())),
         };
         if !remote_hello.is_compatible() {
-            conn.close(400u32.into(), b"incompatible protocol version");
-            return Err(Error::Protocol(format!(
-                "peer speaks protocol {}, we speak {}",
-                remote_hello.protocol_version,
-                pb_protocol::PROTOCOL_VERSION
-            )));
+            // Its own code: 400 reads as "pairing refused" on the other side.
+            conn.close(CLOSE_INCOMPATIBLE.into(), b"incompatible protocol version");
+            return Err(Error::VersionMismatch);
         }
         let send = Arc::new(tokio::sync::Mutex::new(send));
         let hb_send = send.clone();
