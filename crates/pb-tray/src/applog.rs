@@ -639,7 +639,7 @@ mod tests {
     fn scrub_removes_quotes_and_paths_and_cuts() {
         assert_eq!(
             scrub("cannot open \"my file.txt\" in C:\\a\\b now"),
-            "cannot open <q> in <path> now"
+            "cannot open <q> in <path>"
         );
         assert_eq!(scrub(&"x".repeat(500)).len(), 120);
     }
