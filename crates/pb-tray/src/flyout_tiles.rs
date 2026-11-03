@@ -79,7 +79,7 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
 /// to at most `max_chars` characters with a trailing ellipsis.
 pub fn status_line(m: &Model, max_chars: usize) -> String {
     if m.paused {
-        return "Relay is paused. Resume it from the tray menu.".to_owned();
+        return "Paused. Resume in the tray menu.".to_owned();
     }
     let line = match (&m.peer, m.last.is_empty()) {
         (Some(n), true) => format!("Paired with {n}"),
@@ -166,10 +166,7 @@ mod tests {
         for t in tiles(&m) {
             assert!(!t.enabled, "{:?} must be disabled while paused", t.kind);
         }
-        assert_eq!(
-            status_line(&m, 80),
-            "Relay is paused. Resume it from the tray menu."
-        );
+        assert_eq!(status_line(&m, 80), "Paused. Resume in the tray menu.");
     }
 
     #[test]

@@ -405,10 +405,6 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     );
     text(c, Font::Caption, &label, lr, p.text2, Align::Left);
 
-    if let Some(h) = snap.focus {
-        fluent::focus_ring(c, from_rect(rect_of(&l, h)));
-    }
-
     // Group captions and dividers.
     for (r, cap) in l
         .captions
@@ -493,6 +489,10 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         (p.hover, p.stroke),
     );
     text(c, Font::Body, "Open Relay", o, p.text, Align::Center);
+    // Last, so no tile or button covers it.
+    if let Some(h) = snap.focus {
+        fluent::focus_ring(c, from_rect(rect_of(&l, h)));
+    }
 }
 
 /// The drop zone's hint.
@@ -1054,6 +1054,25 @@ pub(crate) fn monitor_scale(pt: POINT) -> Option<f32> {
         GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy).ok()?;
     }
     Some(dx.max(96) as f32 / 96.0)
+}
+
+/// Where keyboard focus is (debug text), for the scripted window run.
+#[cfg(test)]
+pub fn focus_for_test() -> String {
+    CURRENT
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| format!("{:?}", s.focus)))
+        .unwrap_or_default()
+}
+
+/// The open flyout's window, for the scripted window run.
+#[cfg(test)]
+pub fn hwnd_for_test() -> Option<HWND> {
+    CURRENT
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| HWND(s.hwnd as *mut _)))
 }
 
 pub fn is_open() -> bool {

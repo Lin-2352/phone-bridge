@@ -555,3 +555,42 @@ fn timeline_run() {
     // SAFETY: our own window, destroyed on its thread.
     let _ = unsafe { DestroyWindow(hwnd) };
 }
+
+/// The flyout while Relay is paused: disabled tiles, the header saying so,
+/// then Tab shows the focus ring on the first thing that still works.
+#[test]
+#[ignore]
+fn flyout_run() {
+    use crate::{flyout, pages::home};
+    let dir = std::env::var_os("PB_UX_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("pbm_ux_out"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let card = home::PhoneCard {
+        name: "Pixel 8".into(),
+        fingerprint: "18CF-F6D8".into(),
+        connected: true,
+        last_seen: None,
+        path: crate::netpath::Path::Wifi,
+        changed: false,
+    };
+    let model = |paused: bool| flyout::Model {
+        peer: Some("Pixel 8".into()),
+        phone: Some(card.clone()),
+        now: store::now_unix(),
+        paused,
+        ..Default::default()
+    };
+    flyout::toggle(model(false), Box::new(|_| {}));
+    pump(500);
+    let hwnd = flyout::hwnd_for_test().expect("flyout window");
+    capture(hwnd, &dir, "30-flyout-running.bmp");
+    flyout::update(model(true));
+    pump(300);
+    capture(hwnd, &dir, "31-flyout-paused.bmp");
+    key(hwnd, VK_TAB.0);
+    pump(200);
+    assert_eq!(flyout::focus_for_test(), "Some(CameraInfo)");
+    capture(hwnd, &dir, "32-flyout-focus-ring.bmp");
+    flyout::close();
+}
