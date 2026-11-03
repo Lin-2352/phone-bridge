@@ -6,15 +6,13 @@
 //! packet from the phone's encoder: it could not keep up.
 #![allow(unsafe_code)]
 
-use unsafe_libopus as libopus;
-
 /// 120 ms, the longest an Opus packet can be, per channel at 48 kHz.
 const MAX_SAMPLES_PER_CHANNEL: usize = 5760;
 /// What is concealed before the first packet says otherwise: 20 ms at 48 kHz.
 const DEFAULT_SAMPLES_PER_CHANNEL: i32 = 960;
 
 pub struct OpusDec {
-    dec: *mut libopus::OpusDecoder,
+    dec: *mut unsafe_libopus::OpusDecoder,
     pcm: Vec<i16>,
     channels: usize,
     /// Samples per channel of the last good packet: the length to conceal.
@@ -28,8 +26,9 @@ impl OpusDec {
         let mut err = 0;
         // SAFETY: `err` outlives the call; the arguments are plain values the
         // function checks, returning an error for a bad rate or channel count.
-        let dec =
-            unsafe { libopus::opus_decoder_create(sample_rate as i32, channels as i32, &mut err) };
+        let dec = unsafe {
+            unsafe_libopus::opus_decoder_create(sample_rate as i32, channels as i32, &mut err)
+        };
         if dec.is_null() || err != 0 {
             return Err(format!(
                 "Opus decoder refused {sample_rate} Hz, {channels} channels"
@@ -57,7 +56,7 @@ impl OpusDec {
         // packet. `pcm` holds MAX_SAMPLES_PER_CHANNEL samples per channel for the
         // channel count the decoder was created with, and `room` never exceeds
         // that, so the decoder cannot write past it.
-        unsafe { libopus::opus_decode(self.dec, data, len, self.pcm.as_mut_ptr(), room, 0) }
+        unsafe { unsafe_libopus::opus_decode(self.dec, data, len, self.pcm.as_mut_ptr(), room, 0) }
     }
 
     /// 16-bit LE PCM for one packet; an empty packet was lost and is concealed.
@@ -92,7 +91,7 @@ impl OpusDec {
 impl Drop for OpusDec {
     fn drop(&mut self) {
         // SAFETY: `dec` came from `opus_decoder_create` and is destroyed once, here.
-        unsafe { libopus::opus_decoder_destroy(self.dec) };
+        unsafe { unsafe_libopus::opus_decoder_destroy(self.dec) };
     }
 }
 
@@ -101,13 +100,18 @@ mod tests {
     use super::*;
 
     /// A real encoder, so the tests hear what the phone's would send.
-    struct Enc(*mut libopus::OpusEncoder);
+    struct Enc(*mut unsafe_libopus::OpusEncoder);
 
     impl Enc {
         fn new() -> Self {
             let mut err = 0;
             let st = unsafe {
-                libopus::opus_encoder_create(48_000, 2, libopus::OPUS_APPLICATION_AUDIO, &mut err)
+                unsafe_libopus::opus_encoder_create(
+                    48_000,
+                    2,
+                    unsafe_libopus::OPUS_APPLICATION_AUDIO,
+                    &mut err,
+                )
             };
             assert_eq!(err, 0);
             Self(st)
@@ -116,7 +120,7 @@ mod tests {
         fn encode(&mut self, pcm: &[i16]) -> Vec<u8> {
             let mut out = vec![0u8; 1275];
             let n = unsafe {
-                libopus::opus_encode(
+                unsafe_libopus::opus_encode(
                     self.0,
                     pcm.as_ptr(),
                     (pcm.len() / 2) as i32,
@@ -132,7 +136,7 @@ mod tests {
 
     impl Drop for Enc {
         fn drop(&mut self) {
-            unsafe { libopus::opus_encoder_destroy(self.0) };
+            unsafe { unsafe_libopus::opus_encoder_destroy(self.0) };
         }
     }
 
@@ -214,7 +218,11 @@ mod tests {
     fn decoding_at_the_real_bitrate_is_far_faster_than_real_time() {
         let mut e = Enc::new();
         unsafe {
-            libopus::opus_encoder_ctl!(e.0, libopus::OPUS_SET_BITRATE_REQUEST, 160_000i32);
+            unsafe_libopus::opus_encoder_ctl!(
+                e.0,
+                unsafe_libopus::OPUS_SET_BITRATE_REQUEST,
+                160_000i32
+            );
         }
         let mut seed = 1;
         let packets: Vec<Vec<u8>> = (0..500)
