@@ -94,22 +94,10 @@ fun notifyStopped(ctx: Context) {
 fun honourUserStop(ctx: Context): Boolean {
     if (android.os.Build.VERSION.SDK_INT < 30) return false
     val prefs = Prefs(ctx)
-    val exits = runCatching {
-        ctx.getSystemService(android.app.ActivityManager::class.java)
-            .getHistoricalProcessExitReasons(ctx.packageName, 0, 5)
-    }.getOrNull().orEmpty()
-    val newest = exits.maxOfOrNull { it.timestamp } ?: return false
-    val seen = prefs.lastExitSeen
-    prefs.lastExitSeen = maxOf(seen, newest)
-    // First run with this check: only remember where history starts.
-    if (seen == 0L) return false
-    val stopped = exits.any {
-        it.timestamp > seen &&
-            it.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED &&
-            // What realme's "Active apps" Stop reports (verified on the
-            // RMX3561); installs and other system stops say something else.
-            it.description?.contains("by user request", ignoreCase = true) == true
-    }
+    val exits = exitRecords(ctx) ?: return false
+    val v = userStopVerdict(prefs.lastExitSeen, exits)
+    prefs.lastExitSeen = v.newSeen
+    val stopped = v.stopped
     if (stopped && prefs.enabled) {
         prefs.enabled = false
         cancelRecovery(ctx)
@@ -119,6 +107,49 @@ fun honourUserStop(ctx: Context): Boolean {
         Log.i(TAG, "RECOVERY user stopped $APP_NAME from the system: now off")
     }
     return stopped
+}
+
+/**
+ * The user turned Relay on themselves (tile, panel, buttons, notification): any earlier system "Stop"
+ * is history now. Without this the next [honourUserStop] reads that old exit as new and switches Relay off again.
+ */
+fun consumeUserStop(ctx: Context) {
+    if (android.os.Build.VERSION.SDK_INT < 30) return
+    val exits = exitRecords(ctx) ?: return
+    val prefs = Prefs(ctx)
+    prefs.lastExitSeen = userStopVerdict(prefs.lastExitSeen, exits, consume = true).newSeen
+}
+
+private fun exitRecords(ctx: Context): List<ExitRecord>? {
+    val exits = runCatching {
+        ctx.getSystemService(android.app.ActivityManager::class.java)
+            .getHistoricalProcessExitReasons(ctx.packageName, 0, 5)
+    }.getOrNull().orEmpty()
+    if (exits.isEmpty()) return null
+    return exits.map {
+        ExitRecord(
+            it.timestamp,
+            it.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED &&
+                // What realme's "Active apps" Stop reports (verified on the
+                // RMX3561); installs and other system stops say something else.
+                it.description?.contains("by user request", ignoreCase = true) == true,
+        )
+    }
+}
+
+class ExitRecord(val timestamp: Long, val byUserRequest: Boolean)
+class UserStopVerdict(val newSeen: Long, val stopped: Boolean)
+
+/**
+ * [seen]: newest exit already looked at (0 = never checked). Returns the new mark and whether a
+ * by-user-request exit is newer than [seen]. [consume]: only advance the mark, never report a stop.
+ */
+fun userStopVerdict(seen: Long, exits: List<ExitRecord>, consume: Boolean = false): UserStopVerdict {
+    val newest = exits.maxOfOrNull { it.timestamp } ?: return UserStopVerdict(seen, false)
+    val newSeen = maxOf(seen, newest)
+    // First run with this check: only remember where history starts.
+    if (seen == 0L || consume) return UserStopVerdict(newSeen, false)
+    return UserStopVerdict(newSeen, exits.any { it.timestamp > seen && it.byUserRequest })
 }
 
 fun scheduleRecovery(ctx: Context) {

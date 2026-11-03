@@ -56,6 +56,7 @@ fun setBridgeEnabled(ctx: Context, on: Boolean) {
     Prefs(ctx).enabled = on
     Bridge.startingSince = if (on && !Bridge.running.value) android.os.SystemClock.uptimeMillis() else 0L
     if (on) {
+        consumeUserStop(ctx)
         ctx.startForegroundService(Intent(ctx, PbService::class.java))
     } else {
         ctx.stopService(Intent(ctx, PbService::class.java))

@@ -252,6 +252,8 @@ class PbService : Service() {
         }
         Bridge.running.value = true
         Bridge.startingSince = 0L
+        // Running now: an earlier system "Stop" must not read as new and switch it off again.
+        consumeUserStop(this)
         Prefs(this).stoppedNotified = false
         getSystemService(NotificationManager::class.java).cancel(STOPPED_ID)
         refreshTile(this)
