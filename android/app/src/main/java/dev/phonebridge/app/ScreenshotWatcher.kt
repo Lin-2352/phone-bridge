@@ -73,7 +73,7 @@ object ScreenshotWatcher {
             val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, row.id.toString())
             Bridge.scope.launch {
                 val problem = ClipImages.send(app, uri)
-                Log.i(TAG, "SCREENSHOTS ${row.displayName}: ${problem ?: "sent"}")
+                Log.i(TAG, "SCREENSHOTS ${problem ?: "sent"}")
             }
         }
     }

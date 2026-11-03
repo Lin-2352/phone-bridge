@@ -149,7 +149,7 @@ object Bridge {
         val n = awaitNode() ?: run { pairMessage.value = "$APP_NAME is off"; return }
         try {
             val s = n.joinPairing(code.trim())
-            Log.i(TAG, "SAS=$s")
+            Log.i(TAG, "SAS shown (${s.length} digits)")
             AppLog.event("events", "pair_step", "step" to "code_shown")
             sas.value = s
         } catch (e: Throwable) {
@@ -304,6 +304,8 @@ class PbService : Service() {
         AppLog.flush()
         ScreenshotWatcher.stop(this)
         ScreenShare.stop(userStopped = true)
+        // The webcam goes with the service: its camera, encoder and "in use" notice must not outlive "Relay is off".
+        if (CameraShare.capture != null || CameraShare.usedBy.value != null) CameraShare.stop(userStopped = true)
         AudioShare.stopAll()
         val n = synchronized(Bridge) {
             destroyed = true
@@ -507,7 +509,7 @@ class PbService : Service() {
                 contentResolver.openOutputStream(uri)!!.use { out -> src.inputStream().use { it.copyTo(out, 256 * 1024) } }
                 src.delete()
                 val label = treeLabel(tree)
-                Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName} to $label")
+                Log.i(TAG, "FILE saved ext=${LogFields.extOnly(e.name)} (${e.size} bytes)")
                 Timeline.add(fileEntry(e.peerName, TlDir.ToPhone, e.name, e.size.toLong(), uri.toString()))
                 notifyFile(e.peerName, e.name, e.size, uri, mime, label)
                 return
@@ -543,7 +545,7 @@ class PbService : Service() {
             contentResolver.openOutputStream(uri)!!.use { out -> src.inputStream().use { it.copyTo(out, 256 * 1024) } }
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             src.delete()
-            Log.i(TAG, "FILE saved ${e.name} (${e.size} bytes) from ${e.peerName}")
+            Log.i(TAG, "FILE saved ext=${LogFields.extOnly(e.name)} (${e.size} bytes)")
             Timeline.add(fileEntry(e.peerName, TlDir.ToPhone, e.name, e.size.toLong(), uri.toString()))
             notifyFile(e.peerName, e.name, e.size, uri, mime, "Downloads/$APP_NAME")
         } catch (t: Throwable) {
@@ -960,7 +962,11 @@ class CopyReceiver : BroadcastReceiver() {
 class ScreenReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.getStringExtra("do")) {
-            "stop" -> ScreenShare.stop(userStopped = true)
+            "stop" -> {
+                ScreenShare.stop(userStopped = true)
+                // A fresh process (the old one died) has nothing to stop; the stale bar must still go.
+                context.getSystemService(NotificationManager::class.java).cancel(SCREEN_SHARE_ID)
+            }
             "bright" -> {
                 ControlService.instance?.setDim(false)
                 ScreenShare.dimEnded()
@@ -972,7 +978,10 @@ class ScreenReceiver : BroadcastReceiver() {
 class CameraReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.getStringExtra("do")) {
-            "stop" -> CameraShare.stop(userStopped = true)
+            "stop" -> {
+                CameraShare.stop(userStopped = true)
+                context.getSystemService(NotificationManager::class.java).cancel(CAMERA_SHARE_ID)
+            }
             "lens" -> CameraShare.switchLens()
         }
     }

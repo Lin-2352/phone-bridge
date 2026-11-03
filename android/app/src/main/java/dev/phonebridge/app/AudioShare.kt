@@ -357,5 +357,8 @@ class AudioReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val d = AudioDirection.fromWire(intent.getIntExtra("dir", -1)) ?: return
         AudioShare.stop(d)
+        // A fresh process (the old one died) has nothing to stop; the stale bar must still go.
+        context.getSystemService(NotificationManager::class.java)
+            .cancel(if (d == AudioDirection.PHONE_TO_PC) AUDIO_SHARE_ID else AUDIO_PLAY_ID)
     }
 }
