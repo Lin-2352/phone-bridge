@@ -37,8 +37,18 @@ pub fn day_folders(root: &Path) -> Vec<(String, i64)> {
 fn gzip_file(path: &Path) -> io::Result<()> {
     let mut gz = PathBuf::from(path);
     let mut name = gz.file_name().unwrap_or_default().to_os_string();
+    let base = name.clone();
     name.push(".gz");
     gz.set_file_name(name);
+    // Never replace an archive that is already there (the clock moved back
+    // and a compressed day got new lines): take the next free number.
+    let mut n = 1;
+    while gz.exists() {
+        let mut nn = base.clone();
+        nn.push(format!(".{n}.gz"));
+        gz.set_file_name(nn);
+        n += 1;
+    }
     let tmp = gz.with_extension("gz.tmp");
     let data = fs::read(path)?;
     let mut enc =

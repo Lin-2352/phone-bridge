@@ -309,6 +309,9 @@ fn open_append(sh: &Shared, day: &str, stream: Stream) -> std::io::Result<BufWri
     Ok(BufWriter::with_capacity(8 * 1024, f))
 }
 
+/// Most a day's `crash.txt` may hold through [`Logger::crash`].
+const CRASH_FILE_CAP: u64 = 256 * 1024;
+
 impl Logger {
     /// Open (creating `root` if needed) with the system clock; a background
     /// thread flushes once a second and prunes at start and hourly.
@@ -460,6 +463,20 @@ impl Logger {
         );
         let day = day_for((now / 1000) as i64, sh.offset.load(Ordering::Relaxed));
         let dir = sh.root.join(day);
+        // Write what is still held first: a kill right after a crash note
+        // would lose it. try_lock: the panicking thread may hold the lock.
+        let held = match sh.inner.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut g) = held {
+            g.flush_all(sh, now, true);
+        }
+        // A panic loop must not grow the note file without limit.
+        if fs::metadata(dir.join("crash.txt")).is_ok_and(|m| m.len() >= CRASH_FILE_CAP) {
+            return;
+        }
         let append = || -> std::io::Result<()> {
             fs::create_dir_all(&dir)?;
             let mut f = OpenOptions::new()
