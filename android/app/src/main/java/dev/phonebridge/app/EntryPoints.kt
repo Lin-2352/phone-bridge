@@ -47,7 +47,8 @@ class ShareActivity : Activity() {
                 intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(uris::addAll)
             }
         }
-        val text = intent?.getStringExtra(Intent.EXTRA_TEXT)
+        // Styled text (Gmail, Docs, browsers) is a Spanned CharSequence: getStringExtra would return null for it.
+        val text = sharedText(intent?.getCharSequenceExtra(Intent.EXTRA_TEXT))
         val resolver = contentResolver
         // Open every file now, while this activity still holds the sender's
         // URI grant (it ends with finish() below); only the sending is async.
@@ -87,6 +88,12 @@ class ShareActivity : Activity() {
             finish()
             return
         }
+        val sendsText = uris.isEmpty() && text != null
+        if (opened.isEmpty() && !sendsText) {
+            Toast.makeText(this, shareToast(known?.name, 0, false, 0), Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
         val app = applicationContext
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
@@ -114,7 +121,7 @@ class ShareActivity : Activity() {
                     notifyInfo(app, "Could not send ${f.name}", "${peer.name} did not receive it. Is $APP_NAME running there?")
                 }
             }
-            if (uris.isEmpty() && !text.isNullOrBlank()) {
+            if (uris.isEmpty() && text != null) {
                 val isLink = text.startsWith("http://") || text.startsWith("https://")
                 try {
                     node.sendText(peer.id, text, isLink)
@@ -128,7 +135,7 @@ class ShareActivity : Activity() {
                 }
             }
         }
-        Toast.makeText(this, if (known != null) "Sending to ${known.name}" else "Sending to your PC", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, shareToast(known?.name, opened.size, sendsText, uris.size - opened.size), Toast.LENGTH_SHORT).show()
         finish()
     }
 }
