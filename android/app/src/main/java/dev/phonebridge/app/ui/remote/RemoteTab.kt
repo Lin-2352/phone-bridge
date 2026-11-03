@@ -29,9 +29,9 @@ import kotlinx.coroutines.withContext
 enum class RemoteState { Off, Starting, NeedsPairing, Ready }
 
 /** What the tab shows. "Pair" only once the node is up and really has no peer, never from a cold start. */
-fun remoteState(running: Boolean, ready: Boolean, peerCount: Int): RemoteState = when {
+fun remoteState(running: Boolean, ready: Boolean, peerCount: Int?): RemoteState = when {
     !running -> RemoteState.Off
-    !ready -> RemoteState.Starting
+    !ready || peerCount == null -> RemoteState.Starting
     peerCount == 0 -> RemoteState.NeedsPairing
     else -> RemoteState.Ready
 }
@@ -43,7 +43,8 @@ fun RemoteTab() {
     val running = Bridge.running.value
     val ready = Bridge.nodeReady.value
     val linked = Bridge.linked.value
-    val peers by produceState(0, ready, linked) { value = if (ready) withContext(Dispatchers.IO) { Bridge.node?.peers()?.size ?: 0 } else 0 }
+    // null until read: the tab says Starting, never a flash of "Pair your PC first".
+    val peers by produceState<Int?>(null, ready, linked) { value = if (ready) withContext(Dispatchers.IO) { Bridge.node?.peers()?.size ?: 0 } else null }
     val state = remoteState(running, ready, peers)
     Scaffold(topBar = { RelayTopBar("Remote", "Use this phone as your PC's touchpad and keyboard.") }) { pad ->
     Column(Modifier.fillMaxSize().padding(pad), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -56,7 +57,7 @@ fun RemoteTab() {
                     }
                     RemoteState.Starting -> EmptyState("Starting\u2026")
                     else -> EmptyState("Pair your PC first", "On your PC, open $APP_NAME and choose Pair new device, then tap Pair.") {
-                        Button(onClick = { ctx.startActivity(Intent(ctx, ScanActivity::class.java)) }) { Text("Pair") }
+                        Button(onClick = { ctx.startActivity(Intent(ctx, ScanActivity::class.java)) }) { Text("Scan code") }
                     }
                 }
             }
