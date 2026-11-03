@@ -2121,10 +2121,11 @@ mod identity_changed {
         use super::screen::paired;
         use super::*;
         use crate::audio::{
-            request_audio, serve_audio, AudioEvent, AudioFrame, AudioSession, AUDIO_MAGIC,
+            encode_packet, request_audio, serve_audio, AudioEvent, AudioFrame, AudioSession,
         };
 
-        const FRAME: usize = 1920;
+        // One frame fits one datagram, so frames arrive as they were sent.
+        const FRAME: usize = 960;
 
         fn req(direction: u32) -> AudioStart {
             AudioStart {
@@ -2509,6 +2510,9 @@ mod identity_changed {
             let mut prev = None;
             while last != N - 1 {
                 let f = next_frame(&mut rx).await;
+                if f.samples.iter().all(|&b| b == 0) {
+                    continue; // silence for a lost packet (or frame 0)
+                }
                 last = index(&f);
                 if let Some(p) = prev {
                     assert!(last > p, "frames never reorder");
@@ -2517,6 +2521,184 @@ mod identity_changed {
                 seen += 1;
             }
             assert!(seen < N, "old frames were dropped ({seen} of {N})");
+        }
+
+        /// A UDP relay between two nodes that can black traffic out and cap
+        /// its rate, standing in for a congested 2.4 GHz link.
+        struct Impair {
+            blackout: std::sync::atomic::AtomicBool,
+            /// Bytes per second per direction.
+            cap: u64,
+            forwarded: std::sync::atomic::AtomicU64,
+        }
+
+        struct Bucket {
+            tokens: f64,
+            at: Instant,
+        }
+
+        impl Impair {
+            /// Whether this packet survives. Over the cap it is lost, as on a
+            /// full radio queue.
+            fn pass(&self, bucket: &mut Bucket, len: usize) -> bool {
+                use std::sync::atomic::Ordering::Relaxed;
+                if self.blackout.load(Relaxed) {
+                    return false;
+                }
+                let now = Instant::now();
+                bucket.tokens = (bucket.tokens
+                    + now.duration_since(bucket.at).as_secs_f64() * self.cap as f64)
+                    .min(self.cap as f64 / 20.0);
+                bucket.at = now;
+                if bucket.tokens < len as f64 {
+                    return false;
+                }
+                bucket.tokens -= len as f64;
+                self.forwarded.fetch_add(len as u64, Relaxed);
+                true
+            }
+        }
+
+        async fn relay(target: u16, cap: u64) -> (u16, Arc<Impair>) {
+            use tokio::net::UdpSocket;
+            let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let back = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            back.connect(("127.0.0.1", target)).await.unwrap();
+            let port = front.local_addr().unwrap().port();
+            let imp = Arc::new(Impair {
+                blackout: false.into(),
+                cap,
+                forwarded: 0.into(),
+            });
+            let client = Arc::new(Mutex::new(None));
+            let bucket = || Bucket {
+                tokens: 0.0,
+                at: Instant::now(),
+            };
+            {
+                let (front, back, imp, client) =
+                    (front.clone(), back.clone(), imp.clone(), client.clone());
+                let mut b = bucket();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65_536];
+                    while let Ok((n, from)) = front.recv_from(&mut buf).await {
+                        *lock(&client) = Some(from);
+                        if imp.pass(&mut b, n) {
+                            let _ = back.send(&buf[..n]).await;
+                        }
+                    }
+                });
+            }
+            {
+                let imp = imp.clone();
+                let mut b = bucket();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65_536];
+                    while let Ok(n) = back.recv(&mut buf).await {
+                        let to = *lock(&client);
+                        if let (Some(to), true) = (to, imp.pass(&mut b, n)) {
+                            let _ = front.send_to(&buf[..n], to).await;
+                        }
+                    }
+                });
+            }
+            (port, imp)
+        }
+
+        /// The user's bug: after a Wi-Fi stall the PC kept playing old audio
+        /// for many seconds. A 3 s blackout on a link only a little faster
+        /// than the audio must not leave a backlog behind it.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn audio_is_current_again_right_after_a_blackout() {
+            use std::sync::atomic::Ordering::Relaxed;
+            const STEREO_5MS: usize = 960;
+            let (pc, mut pc_ev, pc_store) = super::node(61, "PC").await;
+            let (phone, mut phone_ev, _) = super::node(62, "Phone").await;
+            let (h, j, _, _) = super::pair(&pc, &mut pc_ev, &phone, true, true).await;
+            assert!(h.is_ok() && j.is_ok());
+            // 192 KB/s of audio over a 280 KB/s link.
+            let (port, imp) = relay(phone.port(), 280_000).await;
+            let mut p = lock(&pc_store).get(&phone.peer_id()).unwrap();
+            p.addrs = vec![format!("127.0.0.1:{port}")];
+            lock(&pc_store).pin(p);
+            // A fresh endpoint with the same identity: the old one remembers
+            // the phone's real address from pairing and would dial around
+            // the relay.
+            drop(pc_ev);
+            pc.shutdown().await;
+            let (pc, _pc_ev) = Node::bind(
+                &Identity::from_seed([61; 32]),
+                pc_store.clone(),
+                NodeConfig {
+                    device_name: "PC".into(),
+                    port: None,
+                    discovery_port: None,
+                    tuning: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+            let (a, b) = establish(&pc, &phone, &mut phone_ev, AUDIO_PHONE_TO_PC).await;
+            let (tx, mut rx) = by_role(a, b);
+            let began = Instant::now();
+            let sender = tokio::spawn(async move {
+                let mut i = 0u32;
+                let mut tick = tokio::time::interval(Duration::from_millis(5));
+                while began.elapsed() < Duration::from_secs(13) {
+                    tick.tick().await;
+                    let mut f = vec![1u8; STEREO_5MS];
+                    f[..4].copy_from_slice(&i.to_le_bytes());
+                    f[4..8].copy_from_slice(&(began.elapsed().as_millis() as u32).to_le_bytes());
+                    if tx.send_frame(f).is_err() {
+                        break;
+                    }
+                    i += 1;
+                }
+                tx
+            });
+            let (mut worst_before, mut worst_after, mut after) = (0u32, 0u32, 0u32);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            imp.blackout.store(true, Relaxed);
+            let lifted = tokio::spawn({
+                let imp = imp.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    imp.blackout.store(false, Relaxed);
+                }
+            });
+            // From 1 s after the blackout (t = 6 s), every frame must be recent.
+            while began.elapsed() < Duration::from_secs(12) {
+                let Ok(Some(f)) =
+                    tokio::time::timeout(Duration::from_millis(500), rx.recv_frame()).await
+                else {
+                    continue;
+                };
+                if f.samples.iter().all(|&b| b == 0) {
+                    continue; // silence for a lost packet
+                }
+                let sent = u32::from_le_bytes(f.samples[4..8].try_into().unwrap());
+                let now = began.elapsed().as_millis() as u32;
+                let age = now.saturating_sub(sent);
+                if now < 2_000 {
+                    worst_before = worst_before.max(age);
+                } else if now >= 6_000 {
+                    worst_after = worst_after.max(age);
+                    after += 1;
+                }
+            }
+            lifted.await.unwrap();
+            let forwarded = imp.forwarded.load(Relaxed);
+            drop(sender);
+            eprintln!(
+                "blackout: worst age before {worst_before} ms, after {worst_after} ms,                  {after} frames after, {forwarded} bytes relayed"
+            );
+            assert!(forwarded > 500_000, "the audio must really cross the relay");
+            assert!(after > 50, "audio must flow again after the blackout");
+            assert!(
+                worst_after < 400,
+                "audio was {worst_after} ms old a second after the blackout"
+            );
         }
 
         /// Raw responder for hostile-peer tests: accepts with `accept` itself.
@@ -2532,77 +2714,33 @@ mod identity_changed {
             }
         }
 
-        async fn hostile_stream(s: &Session, parts: Vec<Vec<u8>>) -> iroh::endpoint::SendStream {
-            let mut out = s.conn.open_uni().await.unwrap();
-            out.write_all(AUDIO_MAGIC).await.unwrap();
-            for p in parts {
-                out.write_all(&p).await.unwrap();
-            }
-            out
-        }
-
-        fn len_prefixed(n: u32, body: usize) -> Vec<u8> {
-            let mut v = n.to_le_bytes().to_vec();
-            v.extend(std::iter::repeat_n(0u8, body));
-            v
-        }
-
         #[tokio::test(flavor = "multi_thread")]
-        async fn a_truncated_frame_is_reported_and_closes_the_session() {
-            let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
-            let phone_id = phone.peer_id();
-            let (view, (_raw, mut out)) = tokio::join!(
-                pc.open_audio(&phone_id, req(AUDIO_PHONE_TO_PC), || {}),
-                async {
-                    let raw = raw_responder(&mut phone_ev, ok_accept()).await;
-                    let out =
-                        hostile_stream(&raw, vec![len_prefixed(FRAME as u32, 0), vec![1u8; 100]])
-                            .await;
-                    (raw, out)
-                },
-            );
-            let mut view = view.unwrap();
-            out.finish().unwrap();
-            match next_event(&mut view).await {
-                AudioEvent::Violation(m) => assert!(m.contains("truncated"), "{m}"),
-                other => panic!("unexpected {other:?}"),
-            }
-            assert!(view.recv_frame().await.is_none());
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        async fn oversized_empty_and_misaligned_frames_are_violations() {
-            for bad_len in [0u32, 65_536 + 4, u32::MAX, 6] {
+        async fn malformed_packets_are_violations() {
+            let bad: [Vec<u8>; 3] = [vec![1u8; 3], vec![1u8; 8], vec![1u8; 8 + 6]];
+            for packet in bad {
                 let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
                 let phone_id = phone.peer_id();
-                // One good frame, then only a bad length header: the receiver
-                // must not wait for (or allocate) the claimed body.
-                let (view, _keep) = tokio::join!(
+                let (view, raw) = tokio::join!(
                     pc.open_audio(&phone_id, req(AUDIO_PHONE_TO_PC), || {}),
-                    async {
-                        let raw = raw_responder(&mut phone_ev, ok_accept()).await;
-                        let out = hostile_stream(
-                            &raw,
-                            vec![
-                                len_prefixed(FRAME as u32, FRAME),
-                                bad_len.to_le_bytes().to_vec(),
-                            ],
-                        )
-                        .await;
-                        (raw, out)
-                    },
+                    raw_responder(&mut phone_ev, ok_accept()),
                 );
                 let mut view = view.unwrap();
-                assert_eq!(index(&next_frame(&mut view).await), 0);
+                raw.conn
+                    .send_datagram(encode_packet(0, 0, &frame(4)).into())
+                    .unwrap();
+                assert_eq!(index(&next_frame(&mut view).await), 4);
+                let len = packet.len();
+                raw.conn.send_datagram(packet.into()).unwrap();
                 assert!(
                     matches!(next_event(&mut view).await, AudioEvent::Violation(_)),
-                    "len {bad_len}"
+                    "packet of {len} bytes"
                 );
+                assert!(view.recv_frame().await.is_none());
             }
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn a_write_failure_surfaces_as_an_event() {
+        async fn the_peer_going_away_ends_the_sender_and_refuses_frames() {
             let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
             let phone_id = phone.peer_id();
             let (view, raw) = tokio::join!(
@@ -2610,21 +2748,16 @@ mod identity_changed {
                 raw_responder(&mut phone_ev, ok_accept()),
             );
             let mut view = view.unwrap();
-            let mut incoming = raw.conn.accept_uni().await.unwrap();
-            // The receiver refuses the stream: our writes now fail.
-            incoming.stop(7u32.into()).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while Instant::now() < deadline {
-                let _ = view.send_frame(frame(0));
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                if let Ok(Some(ev)) =
-                    tokio::time::timeout(Duration::from_millis(1), view.events.recv()).await
-                {
-                    assert!(matches!(ev, AudioEvent::WriteFailed(_)), "{ev:?}");
-                    return;
-                }
-            }
-            panic!("no write failure event");
+            raw.conn.close(0u32.into(), b"gone");
+            let ev = next_event(&mut view).await;
+            assert!(
+                matches!(
+                    ev,
+                    AudioEvent::Stopped { by_peer: false } | AudioEvent::WriteFailed(_)
+                ),
+                "{ev:?}"
+            );
+            assert!(view.send_frame(frame(0)).is_err());
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2654,23 +2787,6 @@ mod identity_changed {
                 assert!(matches!(res, Err(Error::Protocol(_))), "{bad:?}");
                 assert!(!pc.audio_slots().is_busy(AUDIO_PHONE_TO_PC));
             }
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        async fn a_wrong_magic_on_the_data_stream_is_not_trusted() {
-            let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
-            let phone_id = phone.peer_id();
-            let (res, _raw) = tokio::join!(
-                pc.open_audio(&phone_id, req(AUDIO_PHONE_TO_PC), || {}),
-                async {
-                    let raw = raw_responder(&mut phone_ev, ok_accept()).await;
-                    let mut out = raw.conn.open_uni().await.unwrap();
-                    out.write_all(b"EVIL").await.unwrap();
-                    (raw, out)
-                },
-            );
-            assert!(matches!(res, Err(Error::Protocol(_))));
-            assert!(!pc.audio_slots().is_busy(AUDIO_PHONE_TO_PC));
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2747,8 +2863,6 @@ mod identity_changed {
                     break;
                 }
             }
-            let mut out = raw_pc.conn.open_uni().await.unwrap();
-            out.write_all(AUDIO_MAGIC).await.unwrap();
             let mut phone_side = served.await.unwrap().unwrap();
 
             // A tag only a newer peer knows, in a valid frame on the control stream.
@@ -2765,9 +2879,10 @@ mod identity_changed {
                 .unwrap();
 
             // The session still carries audio, and an AudioStop still ends it.
-            let mut pcm = 8u32.to_le_bytes().to_vec();
-            pcm.extend_from_slice(&[7u8; 8]);
-            out.write_all(&pcm).await.unwrap();
+            raw_pc
+                .conn
+                .send_datagram(encode_packet(0, 0, &[7u8; 8]).into())
+                .unwrap();
             assert_eq!(next_frame(&mut phone_side).await.samples, vec![7u8; 8]);
             raw_pc
                 .send(ControlMsg::AudioStop(AudioStop { id: 9 }))

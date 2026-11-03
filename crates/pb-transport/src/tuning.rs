@@ -53,6 +53,13 @@ pub struct Tuning {
 /// docs/DECISIONS.md). Memory is used only while received data waits.
 pub const STREAM_WINDOW: u64 = 4 * 1024 * 1024;
 
+/// Unsent datagrams QUIC keeps, oldest dropped first. Only audio uses them;
+/// this is about 100 ms of 48 kHz stereo. The library default (1 MiB, about
+/// 5 s) would turn every Wi-Fi stall into seconds of late audio.
+pub const DATAGRAM_SEND_BUFFER: usize = 20 * 1024;
+/// Received datagrams waiting to be read, oldest dropped first.
+pub const DATAGRAM_RECV_BUFFER: usize = 64 * 1024;
+
 impl Default for Tuning {
     fn default() -> Self {
         Self {
@@ -79,7 +86,9 @@ impl Tuning {
             .enable_segmentation_offload(self.gso)
             .keep_alive_interval(HEARTBEAT)
             .max_concurrent_bidi_streams(4u32.into())
-            .max_concurrent_uni_streams(4u32.into());
+            .max_concurrent_uni_streams(4u32.into())
+            .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER)
+            .datagram_receive_buffer_size(Some(DATAGRAM_RECV_BUFFER));
         if let Some(w) = self.stream_window {
             b = b.stream_receive_window(varint(w));
         }

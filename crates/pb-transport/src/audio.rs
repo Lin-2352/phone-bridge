@@ -7,22 +7,26 @@
 //! every role: [`AudioSession::send_frame`] on the sending end,
 //! [`AudioSession::recv_frame`] on the receiving end.
 //!
-//! Wire format on the uni stream:
-//!   `[4 bytes: AUDIO_MAGIC "PBA0"]` followed by repeated
-//!   `[4 bytes: frame_len as u32 LE] [frame_len bytes: raw PCM, i16 LE]`
+//! PCM travels in QUIC datagrams, never on a reliable stream. A stream would
+//! retransmit in order and QUIC would buffer many seconds of audio during a
+//! Wi-Fi stall, which the listener then hears late. A lost datagram is a
+//! short gap; a stall leaves nothing behind it.
 //!
-//! Every peer-supplied field is checked before it is trusted or allocated:
-//! the format on `AudioStart` and `AudioAccept`, the magic, and each frame
-//! length (1..=64 KiB, a whole number of sample groups). Both ends keep only
-//! about 300 ms of audio queued and drop the oldest beyond that, so a slow
-//! consumer never stalls the other side.
+//! Each datagram: `[4 bytes: sequence, u32 LE] [4 bytes: sender clock in ms,
+//! u32 LE] [raw PCM, i16 LE]`.
+//!
+//! Every peer-supplied field is checked before it is trusted: the format on
+//! `AudioStart` and `AudioAccept`, and each packet's length (a header, then
+//! 1..=64 KiB of whole sample groups). The sender's QUIC buffer holds about
+//! 100 ms ([`crate::tuning::DATAGRAM_SEND_BUFFER`]) and the receiver queue
+//! [`QUEUE_MS`], each dropping the oldest, so neither end can fall behind.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::Instant;
 
-use iroh::endpoint::{ReadExactError, RecvStream, SendStream};
+use iroh::endpoint::{Connection, SendDatagramError};
 use pb_identity::PeerId;
 use pb_protocol::control::{
     audio_frame_len_ok, AudioAccept, AudioReason, AudioStart, AudioStop, ControlMsg,
@@ -31,16 +35,102 @@ use pb_protocol::control::{
 use pb_protocol::CAP_AUDIO;
 use tokio::sync::{mpsc, Notify};
 
-use crate::{lock, screen::ACCEPT_TIMEOUT, tx, Error, Node, Session, SessionCloser};
+use crate::{lock, screen::ACCEPT_TIMEOUT, Error, Node, Session, SessionCloser};
 
-/// Magic header sent at the start of the audio uni-stream.
-pub const AUDIO_MAGIC: &[u8; 4] = b"PBA0";
+/// How much audio the receiver keeps queued before dropping the oldest.
+pub const QUEUE_MS: usize = 100;
 
-/// How much audio either end keeps queued before dropping the oldest.
-pub const QUEUE_MS: usize = 300;
+/// Bytes before the PCM in every audio datagram.
+pub const PACKET_HEADER: usize = 8;
 
-/// Opening the data stream after the accept.
-const STREAM_TIMEOUT: Duration = Duration::from_secs(10);
+/// A lost stretch up to this long is filled with silence so playback keeps
+/// its timing; a longer one is a stall, and filling it would only add delay.
+pub const FILL_MAX_MS: usize = 40;
+
+/// One audio datagram.
+pub fn encode_packet(seq: u32, sent_ms: u32, pcm: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(PACKET_HEADER + pcm.len());
+    p.extend_from_slice(&seq.to_le_bytes());
+    p.extend_from_slice(&sent_ms.to_le_bytes());
+    p.extend_from_slice(pcm);
+    p
+}
+
+/// (sequence, sender clock, PCM) of a datagram, `None` when it is malformed:
+/// too short, or PCM that breaks the format limits.
+pub fn decode_packet(p: &[u8], channels: u32) -> Option<(u32, u32, &[u8])> {
+    let (head, pcm) = p.split_at_checked(PACKET_HEADER)?;
+    if !audio_frame_len_ok(pcm.len(), channels) {
+        return None;
+    }
+    let seq = u32::from_le_bytes(head[..4].try_into().ok()?);
+    let sent = u32::from_le_bytes(head[4..].try_into().ok()?);
+    Some((seq, sent, pcm))
+}
+
+/// PCM bytes that fit one datagram of `max_datagram` bytes, in whole sample
+/// groups. Zero when not even one group fits.
+pub fn pcm_per_packet(max_datagram: usize, channels: u32) -> usize {
+    let group = 2 * channels as usize;
+    if group == 0 {
+        return 0;
+    }
+    let room = max_datagram.saturating_sub(PACKET_HEADER);
+    room - room % group
+}
+
+/// Order of arriving packets: late ones are refused, gaps are counted.
+#[derive(Debug, Default)]
+pub struct SeqTracker {
+    next: Option<u32>,
+    pub lost: u64,
+    pub late: u64,
+}
+
+impl SeqTracker {
+    /// `None`: the packet is late, drop it. `Some(n)`: play it, `n` packets
+    /// before it never came.
+    pub fn accept(&mut self, seq: u32) -> Option<u32> {
+        let missing = match self.next {
+            Some(next) if seq < next => {
+                self.late += 1;
+                return None;
+            }
+            Some(next) => seq - next,
+            None => 0,
+        };
+        self.next = Some(seq.saturating_add(1));
+        self.lost += u64::from(missing);
+        Some(missing)
+    }
+}
+
+/// Bytes of silence to play for `missing` lost packets of `packet_len` bytes.
+/// Zero when the gap is over [`FILL_MAX_MS`].
+pub fn fill_bytes(missing: u32, packet_len: usize, sample_rate: u32, channels: u32) -> usize {
+    let total = (missing as usize).saturating_mul(packet_len);
+    let cap = sample_rate as usize * channels as usize * 2 * FILL_MAX_MS / 1000;
+    if total <= cap {
+        total
+    } else {
+        0
+    }
+}
+
+/// How the audio is doing, for the log. Metadata only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AudioStats {
+    /// Datagrams handed to QUIC (sender) or received (receiver).
+    pub packets: u64,
+    /// Receiver: packets that never came.
+    pub lost: u64,
+    /// Receiver: packets that came too late to play.
+    pub late: u64,
+    /// Receiver: worst delay since the last read, above the lowest delay seen.
+    pub max_age_ms: u32,
+    /// QUIC packets the connection counts as lost.
+    pub quic_lost: u64,
+}
 
 /// One chunk of raw PCM (i16 LE samples, interleaved channels).
 pub struct AudioFrame {
@@ -112,6 +202,14 @@ impl Drop for AudioSlot {
 /// Bytes of audio kept queued: [`QUEUE_MS`] of 16-bit PCM.
 pub fn queue_cap_bytes(sample_rate: u32, channels: u32) -> usize {
     sample_rate as usize * channels as usize * 2 * QUEUE_MS / 1000
+}
+
+#[derive(Default)]
+struct RxCounters {
+    packets: AtomicU64,
+    lost: AtomicU64,
+    late: AtomicU64,
+    max_age_ms: AtomicU32,
 }
 
 #[derive(Default)]
@@ -191,6 +289,7 @@ struct Shared {
     events: mpsc::UnboundedSender<AudioEvent>,
     closer: SessionCloser,
     slot: AudioSlot,
+    counters: RxCounters,
 }
 
 impl Shared {
@@ -224,11 +323,6 @@ enum Cmd {
     Stop,
 }
 
-enum Data {
-    Send(SendStream),
-    Recv(RecvStream),
-}
-
 /// A running audio session, on either side, in either direction.
 ///
 /// Dropping it closes the session.
@@ -242,6 +336,9 @@ pub struct AudioSession {
     sender: bool,
     shared: Arc<Shared>,
     cmd: mpsc::UnboundedSender<Cmd>,
+    conn: Connection,
+    began: Instant,
+    next_seq: AtomicU32,
 }
 
 impl AudioSession {
@@ -255,10 +352,22 @@ impl AudioSession {
         self.sender
     }
 
-    /// Sending end: queue one PCM frame. Never blocks; beyond about 300 ms
-    /// of unsent audio the oldest frames are dropped. Fails on the receiving
-    /// end, on an invalid frame (see [`audio_frame_len_ok`]) and once the
-    /// session has ended.
+    /// How the audio is doing; the receiver's worst age restarts at each read.
+    pub fn stats(&self) -> AudioStats {
+        let c = &self.shared.counters;
+        AudioStats {
+            packets: c.packets.load(Ordering::Relaxed),
+            lost: c.lost.load(Ordering::Relaxed),
+            late: c.late.load(Ordering::Relaxed),
+            max_age_ms: c.max_age_ms.swap(0, Ordering::Relaxed),
+            quic_lost: self.conn.stats().lost_packets,
+        }
+    }
+
+    /// Sending end: send one PCM frame, split into datagrams that fit the
+    /// path. Never blocks; QUIC drops the oldest unsent audio beyond about
+    /// 100 ms. Fails on the receiving end, on an invalid frame (see
+    /// [`audio_frame_len_ok`]) and once the session has ended.
     pub fn send_frame(&self, pcm: Vec<u8>) -> Result<(), Error> {
         if !self.sender {
             return Err(Error::Protocol("this end receives audio".into()));
@@ -269,11 +378,40 @@ impl AudioSession {
                 pcm.len()
             )));
         }
-        if self.shared.queue.push(pcm) {
-            Ok(())
-        } else {
-            Err(Error::Closed)
+        if self.shared.ended.load(Ordering::SeqCst) {
+            return Err(Error::Closed);
         }
+        let Some(max) = self.conn.max_datagram_size() else {
+            return Err(Error::Closed);
+        };
+        let per_packet = pcm_per_packet(max, self.accept.channels);
+        if per_packet == 0 {
+            return Err(Error::Protocol("the path is too small for audio".into()));
+        }
+        let sent_ms = self.began.elapsed().as_millis() as u32;
+        for chunk in pcm.chunks(per_packet) {
+            let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+            match self
+                .conn
+                .send_datagram(encode_packet(seq, sent_ms, chunk).into())
+            {
+                Ok(()) => {
+                    self.shared.counters.packets.fetch_add(1, Ordering::Relaxed);
+                }
+                // The path shrank between the check and the send: this audio
+                // is lost like any other packet.
+                Err(SendDatagramError::TooLarge) => {}
+                Err(e) => {
+                    self.shared.why(format!("audio send error: {e}"));
+                    self.shared.end_and_close(
+                        AudioEvent::WriteFailed(e.to_string()),
+                        b"audio write failed",
+                    );
+                    return Err(Error::Closed);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Receiving end: the next frame, `None` once the session has ended and
@@ -409,46 +547,14 @@ async fn run_request(
         return Err(Error::Protocol(e.to_string()));
     }
 
-    // The sender opens the uni stream; here that is us when the PC sends.
-    let data = if req.direction == AUDIO_PHONE_TO_PC {
-        open_data_in(&s).await
-    } else {
-        open_data_out(&s).await
-    };
-    let data = match data {
-        Ok(d) => d,
-        Err(e) => {
-            s.conn.close(0u32.into(), b"audio stream failed");
-            return Err(e);
-        }
-    };
-    Ok(start_session(s, req, accept, data, slot))
-}
-
-async fn open_data_out(s: &Session) -> Result<Data, Error> {
-    let mut out = tokio::time::timeout(STREAM_TIMEOUT, s.conn.open_uni())
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(tx)?;
-    out.write_all(AUDIO_MAGIC).await.map_err(tx)?;
-    Ok(Data::Send(out))
-}
-
-async fn open_data_in(s: &Session) -> Result<Data, Error> {
-    tokio::time::timeout(STREAM_TIMEOUT, async {
-        let mut input = s.conn.accept_uni().await.map_err(tx)?;
-        let mut magic = [0u8; 4];
-        input
-            .read_exact(&mut magic)
-            .await
-            .map_err(|e| Error::Io(format!("audio stream header read failed: {e}")))?;
-        if &magic != AUDIO_MAGIC {
-            return Err(Error::Protocol("invalid audio stream magic".into()));
-        }
-        Ok(Data::Recv(input))
-    })
-    .await
-    .map_err(|_| Error::Io("the other side did not open the audio stream".into()))?
+    if s.conn.max_datagram_size().is_none() {
+        s.conn.close(0u32.into(), b"no datagrams");
+        return Err(Error::Protocol(
+            "the peer cannot receive audio packets".into(),
+        ));
+    }
+    let sender = req.direction != AUDIO_PHONE_TO_PC;
+    Ok(start_session(s, req, accept, sender, slot))
 }
 
 /// Answer an `AudioStart` that arrived on `session`.
@@ -473,6 +579,10 @@ pub async fn serve_audio(
         refuse(session, start.id, AudioReason::Busy).await;
         return Err(Error::AudioRefused(AudioReason::Busy));
     };
+    if session.conn.max_datagram_size().is_none() {
+        refuse(session, start.id, AudioReason::Unavailable).await;
+        return Err(Error::AudioRefused(AudioReason::Unavailable));
+    }
     let mut accept = match answer {
         Ok(a) => a,
         Err(reason) => {
@@ -491,20 +601,8 @@ pub async fn serve_audio(
         .send(ControlMsg::AudioAccept(accept.clone()))
         .await?;
 
-    // The sender opens the uni stream; here that is us when the phone sends.
-    let data = if start.direction == AUDIO_PHONE_TO_PC {
-        open_data_out(&session).await
-    } else {
-        open_data_in(&session).await
-    };
-    let data = match data {
-        Ok(d) => d,
-        Err(e) => {
-            session.conn.close(0u32.into(), b"audio stream failed");
-            return Err(e);
-        }
-    };
-    Ok(start_session(session, start, accept, data, slot))
+    let sender = start.direction == AUDIO_PHONE_TO_PC;
+    Ok(start_session(session, start, accept, sender, slot))
 }
 
 /// Tell the requester no, and keep the session open in the background until
@@ -526,7 +624,7 @@ fn start_session(
     session: Session,
     start: AudioStart,
     accept: AudioAccept,
-    data: Data,
+    sender: bool,
     slot: AudioSlot,
 ) -> AudioSession {
     let (ev_tx, events) = mpsc::unbounded_channel();
@@ -539,15 +637,16 @@ fn start_session(
         events: ev_tx,
         closer: session.closer(),
         slot,
+        counters: RxCounters::default(),
     });
-    let sender = matches!(data, Data::Send(_));
-    match data {
-        Data::Send(out) => {
-            tokio::spawn(write_loop(out, shared.clone()));
-        }
-        Data::Recv(input) => {
-            tokio::spawn(read_loop(input, accept.channels, shared.clone()));
-        }
+    let conn = session.conn.clone();
+    if !sender {
+        tokio::spawn(read_loop(
+            conn.clone(),
+            accept.sample_rate,
+            accept.channels,
+            shared.clone(),
+        ));
     }
 
     // Control loop: AudioStop either way, and the end of the session.
@@ -597,91 +696,117 @@ fn start_session(
         sender,
         shared,
         cmd,
+        conn,
+        began: Instant::now(),
+        next_seq: AtomicU32::new(0),
     }
 }
 
-/// Sending end: queue to stream, with the length prefix.
-async fn write_loop(mut out: SendStream, shared: Arc<Shared>) {
-    while let Some(frame) = shared.queue.pop().await {
-        let len = (frame.len() as u32).to_le_bytes();
-        let res = match out.write_all(&len).await {
-            Ok(()) => out.write_all(&frame).await,
-            Err(e) => Err(e),
-        };
-        if let Err(e) = res {
-            shared.why(format!("data stream write error: {e}"));
-            shared.end_and_close(
-                AudioEvent::WriteFailed(e.to_string()),
-                b"audio write failed",
-            );
-            return;
-        }
-    }
-    let _ = out.finish();
-}
-
-/// Receiving end: stream to queue. Never waits for the consumer, so the
-/// sender is never held up; the queue drops the oldest instead.
-async fn read_loop(mut input: RecvStream, channels: u32, shared: Arc<Shared>) {
-    let mut len_buf = [0u8; 4];
+/// Receiving end: datagrams to queue. Never waits for the consumer; the
+/// queue drops the oldest instead.
+async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Arc<Shared>) {
+    let began = Instant::now();
+    let mut order = SeqTracker::default();
+    // Lowest (arrival - sent) seen: the clocks differ, so age is measured
+    // above the best the path has done.
+    let mut best: Option<i64> = None;
     loop {
-        match input.read_exact(&mut len_buf).await {
-            Ok(()) => {}
-            // The sender finished the stream between frames.
-            Err(ReadExactError::FinishedEarly(0)) => {
-                shared.end_and_close(AudioEvent::Stopped { by_peer: true }, b"audio ended");
-                return;
-            }
-            Err(ReadExactError::FinishedEarly(_)) => {
-                shared.end_and_close(
-                    AudioEvent::Violation("truncated audio frame header".into()),
-                    b"truncated audio frame",
-                );
-                return;
-            }
-            Err(ReadExactError::ReadError(e)) => {
-                shared.why(format!("data stream read error: {e}"));
+        let packet = match conn.read_datagram().await {
+            Ok(p) => p,
+            Err(e) => {
+                shared.why(format!("audio packets ended: {e}"));
                 shared.end(AudioEvent::Stopped { by_peer: false });
                 return;
             }
-        }
-        let len = u32::from_le_bytes(len_buf) as usize;
-        // Checked before allocating: the length is the peer's word.
-        if !audio_frame_len_ok(len, channels) {
+        };
+        let Some((seq, sent_ms, pcm)) = decode_packet(&packet, channels) else {
             shared.end_and_close(
-                AudioEvent::Violation(format!("bad audio frame length {len}")),
-                b"bad audio frame length",
+                AudioEvent::Violation(format!("bad audio packet of {} bytes", packet.len())),
+                b"bad audio packet",
             );
             return;
+        };
+        let c = &shared.counters;
+        c.packets.fetch_add(1, Ordering::Relaxed);
+        let Some(missing) = order.accept(seq) else {
+            c.late.store(order.late, Ordering::Relaxed);
+            continue;
+        };
+        c.lost.store(order.lost, Ordering::Relaxed);
+        let delay = began.elapsed().as_millis() as i64 - i64::from(sent_ms);
+        let low = best.map_or(delay, |b| b.min(delay));
+        best = Some(low);
+        c.max_age_ms
+            .fetch_max((delay - low) as u32, Ordering::Relaxed);
+        let fill = fill_bytes(missing, pcm.len(), sample_rate, channels);
+        if fill > 0 {
+            shared.queue.push(vec![0; fill]);
         }
-        let mut samples = vec![0u8; len];
-        match input.read_exact(&mut samples).await {
-            Ok(()) => {}
-            Err(ReadExactError::FinishedEarly(_)) => {
-                shared.end_and_close(
-                    AudioEvent::Violation("truncated audio frame".into()),
-                    b"truncated audio frame",
-                );
-                return;
-            }
-            Err(ReadExactError::ReadError(e)) => {
-                shared.why(format!("data stream read error: {e}"));
-                shared.end(AudioEvent::Stopped { by_peer: false });
-                return;
-            }
-        }
-        shared.queue.push(samples);
+        shared.queue.push(pcm.to_vec());
     }
 }
 
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
-    fn the_cap_is_300_ms_of_pcm() {
-        assert_eq!(queue_cap_bytes(48_000, 2), 57_600);
-        assert_eq!(queue_cap_bytes(44_100, 1), 26_460);
+    fn the_cap_is_100_ms_of_pcm() {
+        assert_eq!(queue_cap_bytes(48_000, 2), 19_200);
+        assert_eq!(queue_cap_bytes(44_100, 1), 8_820);
+    }
+
+    #[test]
+    fn a_packet_round_trips() {
+        let p = encode_packet(7, 1234, &[1, 0, 2, 0]);
+        assert_eq!(decode_packet(&p, 2), Some((7, 1234, &[1u8, 0, 2, 0][..])));
+    }
+
+    #[test]
+    fn malformed_packets_are_refused() {
+        assert_eq!(decode_packet(&[], 2), None);
+        assert_eq!(decode_packet(&[0; 7], 2), None, "short header");
+        assert_eq!(decode_packet(&[0; 8], 2), None, "no PCM");
+        assert_eq!(decode_packet(&[0; 14], 2), None, "not whole stereo samples");
+        assert!(decode_packet(&[0; 14], 1).is_some());
+        assert_eq!(
+            decode_packet(&vec![0; PACKET_HEADER + 65_536 + 4], 2),
+            None,
+            "over the frame limit"
+        );
+    }
+
+    #[test]
+    fn a_packet_holds_whole_sample_groups_within_the_datagram() {
+        assert_eq!(pcm_per_packet(1200, 2), 1192);
+        assert_eq!(pcm_per_packet(1201, 2), 1192);
+        assert_eq!(pcm_per_packet(1201, 1), 1192);
+        assert_eq!(pcm_per_packet(11, 2), 0);
+        assert_eq!(pcm_per_packet(1200, 0), 0);
+        assert_eq!(pcm_per_packet(0, 2), 0);
+    }
+
+    #[test]
+    fn order_counts_gaps_and_refuses_late_packets() {
+        let mut t = SeqTracker::default();
+        assert_eq!(t.accept(5), Some(0), "the first packet sets the start");
+        assert_eq!(t.accept(6), Some(0));
+        assert_eq!(t.accept(9), Some(2));
+        assert_eq!(t.accept(8), None, "late");
+        assert_eq!(t.accept(9), None, "duplicate");
+        assert_eq!(t.accept(10), Some(0));
+        assert_eq!((t.lost, t.late), (2, 2));
+    }
+
+    #[test]
+    fn short_gaps_are_filled_and_stalls_are_not() {
+        // 40 ms of 48 kHz stereo is 7680 bytes.
+        assert_eq!(fill_bytes(0, 960, 48_000, 2), 0);
+        assert_eq!(fill_bytes(2, 960, 48_000, 2), 1920);
+        assert_eq!(fill_bytes(8, 960, 48_000, 2), 7680);
+        assert_eq!(fill_bytes(9, 960, 48_000, 2), 0, "a stall leaves no silence");
+        assert_eq!(fill_bytes(u32::MAX, 65_536, 48_000, 2), 0);
     }
 
     #[tokio::test]
