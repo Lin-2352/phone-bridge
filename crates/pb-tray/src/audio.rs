@@ -294,9 +294,9 @@ async fn play_phone_audio(
                     if window.elapsed() >= Duration::from_secs(10) {
                         let n = sess.stats();
                         log.line(&format!(
-                            "AUDIO arrivals {} packets={} lost={} late={} max_age_ms={} quic_lost={}",
+                            "AUDIO arrivals {} packets={} lost={} late={} max_age_ms={} quic_lost={} paths={} rtt_ms={}",
                             arrivals.line(dropped(), underruns()),
-                            n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost
+                            n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost, n.paths, n.rtt_ms
                         ));
                         arrivals.reset_window();
                         window = Instant::now();
@@ -397,7 +397,7 @@ async fn send_test_tone(
                 }
                 if last_log.elapsed() >= Duration::from_secs(10) {
                     let st = sess.stats();
-                    log.line(&format!("AUDIO test tone packets={} quic_lost={}", st.packets, st.quic_lost));
+                    log.line(&format!("AUDIO test tone packets={} quic_lost={} paths={} rtt_ms={}", st.packets, st.quic_lost, st.paths, st.rtt_ms));
                     last_log = Instant::now();
                 }
             }

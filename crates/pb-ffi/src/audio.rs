@@ -87,7 +87,10 @@ impl PbAudioOut {
         match self.session.get() {
             Some(s) => {
                 let n = s.stats();
-                format!("packets={} quic_lost={}", n.packets, n.quic_lost)
+                format!(
+                    "packets={} quic_lost={} paths={} rtt_ms={}",
+                    n.packets, n.quic_lost, n.paths, n.rtt_ms
+                )
             }
             None => "no session yet".into(),
         }
@@ -386,8 +389,8 @@ impl AudioHub {
                             if seen.is_multiple_of(500) {
                                 let n = session.stats();
                                 *lock(&self.rx_line) = format!(
-                                    "packets={} lost={} late={} max_age_ms={} quic_lost={}",
-                                    n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost
+                                    "packets={} lost={} late={} max_age_ms={} quic_lost={} paths={} rtt_ms={}",
+                                    n.packets, n.lost, n.late, n.max_age_ms, n.quic_lost, n.paths, n.rtt_ms
                                 );
                             }
                             let sink = lock(&self.sink).clone();

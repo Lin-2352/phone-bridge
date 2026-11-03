@@ -24,7 +24,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use iroh::endpoint::{Connection, SendDatagramError};
 use pb_identity::PeerId;
@@ -79,29 +79,79 @@ pub fn pcm_per_packet(max_datagram: usize, channels: u32) -> usize {
     room - room % group
 }
 
-/// Order of arriving packets: late ones are refused, gaps are counted.
+/// How long a gap is waited on before giving up on the missing packet. Wi-Fi
+/// sometimes swaps neighbours; anything later than this is a real loss.
+pub const REORDER_WAIT: Duration = Duration::from_millis(15);
+/// Packets held while waiting; beyond this the gap is given up at once.
+const REORDER_HOLD: usize = 8;
+
+/// What the receiver does next, in play order.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reordered {
+    /// PCM to play.
+    Pcm(Vec<u8>),
+    /// This many packets never came.
+    Gap(u32),
+}
+
+/// Puts arriving packets back in order: a packet that arrives ahead of its
+/// predecessor waits briefly for it; late and duplicate packets are dropped.
 #[derive(Debug, Default)]
-pub struct SeqTracker {
+pub struct Reorder {
     next: Option<u32>,
+    held: std::collections::BTreeMap<u32, Vec<u8>>,
     pub lost: u64,
     pub late: u64,
 }
 
-impl SeqTracker {
-    /// `None`: the packet is late, drop it. `Some(n)`: play it, `n` packets
-    /// before it never came.
-    pub fn accept(&mut self, seq: u32) -> Option<u32> {
-        let missing = match self.next {
-            Some(next) if seq < next => {
-                self.late += 1;
-                return None;
-            }
-            Some(next) => seq - next,
-            None => 0,
+impl Reorder {
+    /// A packet arrived. Returns what can be played now.
+    pub fn push(&mut self, seq: u32, pcm: Vec<u8>) -> Vec<Reordered> {
+        let next = *self.next.get_or_insert(seq);
+        if seq < next || self.held.contains_key(&seq) {
+            self.late += 1;
+            return Vec::new();
+        }
+        self.held.insert(seq, pcm);
+        let mut out = Vec::new();
+        self.drain(&mut out);
+        if self.held.len() > REORDER_HOLD {
+            self.give_up(&mut out);
+        }
+        out
+    }
+
+    /// Whether a packet is being held for one that has not come.
+    pub fn waiting(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// The wait is over: count what is missing as lost and play on.
+    pub fn release(&mut self) -> Vec<Reordered> {
+        let mut out = Vec::new();
+        self.give_up(&mut out);
+        out
+    }
+
+    fn drain(&mut self, out: &mut Vec<Reordered>) {
+        while let Some(next) = self.next {
+            let Some(p) = self.held.remove(&next) else {
+                break;
+            };
+            out.push(Reordered::Pcm(p));
+            self.next = Some(next.wrapping_add(1));
+        }
+    }
+
+    fn give_up(&mut self, out: &mut Vec<Reordered>) {
+        let (Some(next), Some((&first, _))) = (self.next, self.held.iter().next()) else {
+            return;
         };
-        self.next = Some(seq.saturating_add(1));
+        let missing = first - next;
         self.lost += u64::from(missing);
-        Some(missing)
+        self.next = Some(first);
+        out.push(Reordered::Gap(missing));
+        self.drain(out);
     }
 }
 
@@ -130,6 +180,10 @@ pub struct AudioStats {
     pub max_age_ms: u32,
     /// QUIC packets the connection counts as lost.
     pub quic_lost: u64,
+    /// Open network paths (more than one can reorder packets).
+    pub paths: usize,
+    /// Round trip on the selected path, in ms (0 when unknown).
+    pub rtt_ms: u64,
 }
 
 /// One chunk of raw PCM (i16 LE samples, interleaved channels).
@@ -361,6 +415,14 @@ impl AudioSession {
             late: c.late.load(Ordering::Relaxed),
             max_age_ms: c.max_age_ms.swap(0, Ordering::Relaxed),
             quic_lost: self.conn.stats().lost_packets,
+            paths: self.conn.paths().iter().count(),
+            rtt_ms: self
+                .conn
+                .paths()
+                .iter()
+                .find(|p| p.is_selected())
+                .and_then(|p| self.conn.rtt(p.id()))
+                .map_or(0, |d| d.as_millis() as u64),
         }
     }
 
@@ -706,12 +768,34 @@ fn start_session(
 /// queue drops the oldest instead.
 async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Arc<Shared>) {
     let began = Instant::now();
-    let mut order = SeqTracker::default();
+    let mut order = Reorder::default();
+    let mut waiting_since: Option<Instant> = None;
+    let mut packet_len = 0usize;
     // Lowest (arrival - sent) seen: the clocks differ, so age is measured
     // above the best the path has done.
     let mut best: Option<i64> = None;
     loop {
-        let packet = match conn.read_datagram().await {
+        let read = match waiting_since {
+            Some(t) => {
+                match tokio::time::timeout(
+                    REORDER_WAIT.saturating_sub(t.elapsed()),
+                    conn.read_datagram(),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        // The missing packet is not coming.
+                        let outs = order.release();
+                        waiting_since = None;
+                        play(&shared, outs, packet_len, sample_rate, channels, &order);
+                        continue;
+                    }
+                }
+            }
+            None => conn.read_datagram().await,
+        };
+        let packet = match read {
             Ok(p) => p,
             Err(e) => {
                 shared.why(format!("audio packets ended: {e}"));
@@ -728,22 +812,47 @@ async fn read_loop(conn: Connection, sample_rate: u32, channels: u32, shared: Ar
         };
         let c = &shared.counters;
         c.packets.fetch_add(1, Ordering::Relaxed);
-        let Some(missing) = order.accept(seq) else {
-            c.late.store(order.late, Ordering::Relaxed);
-            continue;
-        };
-        c.lost.store(order.lost, Ordering::Relaxed);
         let delay = began.elapsed().as_millis() as i64 - i64::from(sent_ms);
         let low = best.map_or(delay, |b| b.min(delay));
         best = Some(low);
         c.max_age_ms
             .fetch_max((delay - low) as u32, Ordering::Relaxed);
-        let fill = fill_bytes(missing, pcm.len(), sample_rate, channels);
-        if fill > 0 {
-            shared.queue.push(vec![0; fill]);
-        }
-        shared.queue.push(pcm.to_vec());
+        packet_len = pcm.len();
+        let outs = order.push(seq, pcm.to_vec());
+        waiting_since = match (order.waiting(), waiting_since) {
+            (true, Some(t)) => Some(t),
+            (true, None) => Some(Instant::now()),
+            (false, _) => None,
+        };
+        play(&shared, outs, packet_len, sample_rate, channels, &order);
     }
+}
+
+/// Queue what the reorder step released (silence for a short gap), and
+/// publish its counters.
+fn play(
+    shared: &Shared,
+    outs: Vec<Reordered>,
+    packet_len: usize,
+    sample_rate: u32,
+    channels: u32,
+    order: &Reorder,
+) {
+    for o in outs {
+        match o {
+            Reordered::Pcm(p) => {
+                shared.queue.push(p);
+            }
+            Reordered::Gap(missing) => {
+                let fill = fill_bytes(missing, packet_len, sample_rate, channels);
+                if fill > 0 {
+                    shared.queue.push(vec![0; fill]);
+                }
+            }
+        }
+    }
+    shared.counters.lost.store(order.lost, Ordering::Relaxed);
+    shared.counters.late.store(order.late, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -787,16 +896,76 @@ mod queue_tests {
         assert_eq!(pcm_per_packet(0, 2), 0);
     }
 
+    fn pcm(n: u8) -> Vec<u8> {
+        vec![n; 4]
+    }
+
+    fn played(out: &[Reordered]) -> Vec<u8> {
+        out.iter()
+            .filter_map(|o| match o {
+                Reordered::Pcm(p) => Some(p[0]),
+                Reordered::Gap(_) => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn order_counts_gaps_and_refuses_late_packets() {
-        let mut t = SeqTracker::default();
-        assert_eq!(t.accept(5), Some(0), "the first packet sets the start");
-        assert_eq!(t.accept(6), Some(0));
-        assert_eq!(t.accept(9), Some(2));
-        assert_eq!(t.accept(8), None, "late");
-        assert_eq!(t.accept(9), None, "duplicate");
-        assert_eq!(t.accept(10), Some(0));
-        assert_eq!((t.lost, t.late), (2, 2));
+    fn in_order_packets_play_at_once() {
+        let mut r = Reorder::default();
+        assert_eq!(played(&r.push(5, pcm(5))), [5], "the first sets the start");
+        assert_eq!(played(&r.push(6, pcm(6))), [6]);
+        assert!(!r.waiting());
+        assert_eq!((r.lost, r.late), (0, 0));
+    }
+
+    #[test]
+    fn swapped_neighbours_are_put_back_in_order() {
+        let mut r = Reorder::default();
+        r.push(1, pcm(1));
+        assert!(r.push(3, pcm(3)).is_empty(), "3 waits for 2");
+        assert!(r.waiting());
+        assert_eq!(played(&r.push(2, pcm(2))), [2, 3]);
+        assert!(!r.waiting());
+        assert_eq!((r.lost, r.late), (0, 0), "nothing was lost");
+    }
+
+    #[test]
+    fn a_missing_packet_is_given_up_after_the_wait() {
+        let mut r = Reorder::default();
+        r.push(1, pcm(1));
+        r.push(4, pcm(4));
+        r.push(5, pcm(5));
+        let out = r.release();
+        assert_eq!(out[0], Reordered::Gap(2));
+        assert_eq!(played(&out), [4, 5]);
+        assert_eq!(r.lost, 2);
+        assert!(r.push(3, pcm(3)).is_empty(), "now late");
+        assert_eq!(r.late, 1);
+    }
+
+    #[test]
+    fn too_many_waiting_packets_give_up_at_once() {
+        let mut r = Reorder::default();
+        r.push(0, pcm(0));
+        let mut out = Vec::new();
+        for seq in 2..=10u32 {
+            out = r.push(seq, pcm(seq as u8));
+        }
+        assert_eq!(out[0], Reordered::Gap(1));
+        assert_eq!(played(&out).len(), 9);
+        assert_eq!(r.lost, 1);
+        assert!(!r.waiting());
+    }
+
+    #[test]
+    fn duplicates_and_old_packets_are_dropped() {
+        let mut r = Reorder::default();
+        r.push(7, pcm(7));
+        assert!(r.push(7, pcm(7)).is_empty());
+        assert!(r.push(2, pcm(2)).is_empty());
+        r.push(9, pcm(9));
+        assert!(r.push(9, pcm(9)).is_empty(), "a held duplicate");
+        assert_eq!(r.late, 3);
     }
 
     #[test]
