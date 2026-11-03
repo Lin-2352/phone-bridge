@@ -464,7 +464,8 @@ class PbService : Service() {
             is PbEvent.ControlRequest -> askControl(e)
             is PbEvent.TransferFailed -> {
                 cancelProgress(true)
-                notifySimple("Transfer from ${e.peerName} failed", e.reason)
+                if (isCancelled(e.reason)) notifySimple("Transfer cancelled", e.reason.replaceFirstChar { it.uppercase() })
+                else notifySimple("Transfer from ${e.peerName} failed", e.reason)
             }
             is PbEvent.TransferProgress -> notifyProgress(e)
             is PbEvent.Connected -> {
@@ -789,10 +790,19 @@ class PbService : Service() {
             return
         }
         val pct = if (e.total == 0uL) 0 else (e.done.toDouble() * 100 / e.total.toDouble()).toInt()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val started = progressStart.compute(e.incoming) { _, old -> if (old != null && old.first == e.name && e.done >= old.third) old else Triple(e.name, now, e.done) }!!
+        val line = transferLine(e.done.toLong() - started.third.toLong(), e.total.toLong() - started.third.toLong(), now - started.second)
+        val stop = PendingIntent.getBroadcast(
+            this, if (e.incoming) 61 else 60,
+            Intent(this, TransferReceiver::class.java).putExtra("do", "cancel").putExtra("incoming", e.incoming),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val n = Notification.Builder(this, CH_PROGRESS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle(if (e.incoming) "Receiving ${e.name}" else "Sending ${e.name}")
-            .setContentText("${if (e.incoming) "From" else "To"} ${e.peerName} \u00b7 $pct%")
+            .setContentText("${if (e.incoming) "From" else "To"} ${e.peerName} \u00b7 $pct% \u00b7 $line")
+            .addAction(Notification.Action.Builder(null, "Cancel", stop).build())
             .setProgress(100, pct, false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -801,7 +811,11 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(id, n)
     }
 
+    /** Per direction: file name, when its first progress arrived and how much was done then (for speed and ETA). */
+    private val progressStart = java.util.concurrent.ConcurrentHashMap<Boolean, Triple<String, Long, ULong>>()
+
     private fun cancelProgress(incoming: Boolean) {
+        progressStart.remove(incoming)
         getSystemService(NotificationManager::class.java).cancel(if (incoming) PROGRESS_IN_ID else PROGRESS_OUT_ID)
     }
 
@@ -945,6 +959,25 @@ fun notifySharing(ctx: Context, peer: String?) {
         .addAction(Notification.Action.Builder(null, "Restore brightness", action("bright", 51)).build())
         .build()
     nm.notify(SCREEN_SHARE_ID, n)
+}
+
+/** "Cancel" on a progress notification and "Retry" on a failed send. */
+class TransferReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.getStringExtra("do")) {
+            "cancel" -> {
+                val incoming = intent.getBooleanExtra("incoming", false)
+                if (!incoming) OutgoingShare.cancelRequested = true
+                Bridge.node?.cancelTransfers(incoming)
+                Log.i(TAG, "TRANSFER cancel requested incoming=$incoming")
+            }
+            "retry" -> {
+                val id = intent.getLongExtra("retry", -1)
+                context.getSystemService(NotificationManager::class.java).cancel(intent.getIntExtra("nid", 0))
+                OutgoingShare.retry(context.applicationContext, id)
+            }
+        }
+    }
 }
 
 class OfferReceiver : BroadcastReceiver() {
