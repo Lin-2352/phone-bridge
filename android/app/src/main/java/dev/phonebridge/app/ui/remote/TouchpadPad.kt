@@ -3,6 +3,8 @@ package dev.phonebridge.app.ui.remote
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -59,6 +61,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.Bridge
+import dev.phonebridge.app.Radius
+import dev.phonebridge.app.ui.components.cardColor
 import kotlinx.coroutines.launch
 import uniffi.pb_ffi.PbInput
 import kotlin.math.abs
@@ -198,10 +202,11 @@ fun TouchpadPad(modifier: Modifier = Modifier) {
             )
             TextButton(onClick = { keyboard = !keyboard }) { Text(if (keyboard) "Hide keyboard" else "Keyboard") }
         }
-        // Edge to edge inside the horizontal safe insets, so a swipe that starts at the screen edge lands on the pad.
+        // The gesture area is full width (inside the horizontal safe insets) so a swipe that starts at the screen
+        // edge, in the gutter beside the card, still lands on the pad; the card is drawn inset inside it.
         Pad(session, Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)))
         Column(Modifier.padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(64.dp).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MouseButton(session, "Left", 0, Modifier.weight(1f))
                 MouseButton(session, "Right", 1, Modifier.weight(1f))
             }
@@ -211,25 +216,26 @@ fun TouchpadPad(modifier: Modifier = Modifier) {
     }
 }
 
+/** A Material tonal button (the app's button shape, ripple and pressed state) that holds the mouse button while it is pressed. */
 @Composable
 private fun MouseButton(session: TouchpadSession, label: String, button: Int, modifier: Modifier) {
-    Box(
-        modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.secondaryContainer)
-            .pointerInput(button) {
-                awaitEachGesture {
-                    awaitFirstDown()
-                    session.input?.button(button.toUByte(), true)
-                    do {
-                        val e = awaitPointerEvent()
-                    } while (e.changes.any { it.pressed })
-                    session.input?.button(button.toUByte(), false)
+    val source = remember { MutableInteractionSource() }
+    LaunchedEffect(source) {
+        var down = false
+        try {
+            source.interactions.collect { i ->
+                when (i) {
+                    is PressInteraction.Press -> if (!down) { down = true; session.input?.button(button.toUByte(), true) }
+                    is PressInteraction.Release, is PressInteraction.Cancel -> if (down) { down = false; session.input?.button(button.toUByte(), false) }
+                    else -> {}
                 }
-            },
-        contentAlignment = Alignment.Center,
-    ) { Text(label, color = MaterialTheme.colorScheme.onSecondaryContainer) }
+            }
+        } finally {
+            // Never leave the PC's button held if the screen goes away mid-press.
+            if (down) session.input?.button(button.toUByte(), false)
+        }
+    }
+    FilledTonalButton(onClick = {}, interactionSource = source, modifier = modifier.fillMaxSize()) { Text(label) }
 }
 
 @Composable
@@ -239,15 +245,13 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
         modifier
             // Swipes that start at the screen edge move the PC cursor instead of triggering Android's Back gesture.
             // Android honours at most 200 dp of exclusion height per edge and drops the rest unpredictably, so ask
-            // for a deterministic band instead of the whole bounds: 200 dp centred vertically, along both edges
-            // (the pad is edge to edge inside the horizontal safe insets).
+            // for a deterministic band instead of the whole bounds: 200 dp centred vertically, along both edges.
+            // This box is full width, so the band reaches the screen edge even though the card is inset.
             .systemGestureExclusion { c ->
                 val h = minOf(c.size.height.toFloat(), 200 * density)
                 val top = (c.size.height - h) / 2f
                 Rect(0f, top, c.size.width.toFloat(), top + h)
             }
-            .clip(RoundedCornerShape(24.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainer)
             .pointerInput(Unit) {
                 var lastTapUp = 0L
                 var lastTapPos = Offset.Zero
@@ -308,15 +312,21 @@ private fun Pad(session: TouchpadSession, modifier: Modifier) {
                         }
                     }
                 }
-            },
-        contentAlignment = Alignment.Center,
+            }
+            .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
-        Text(
-            "Move with one finger · tap to click\nTwo fingers to scroll · two-finger tap to right-click",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(24.dp),
-        )
+        // The card: same gutter, radius and tonal surface as the cards on the other tabs.
+        Box(
+            Modifier.fillMaxSize().clip(RoundedCornerShape(Radius.card)).background(cardColor()),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "Move with one finger · tap to click\nTwo fingers to scroll · two-finger tap to right-click",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(24.dp),
+            )
+        }
     }
 }
 
