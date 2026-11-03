@@ -36,16 +36,11 @@ class ShareActivity : Activity() {
             finish()
             return
         }
-        val uris = mutableListOf<Uri>()
-        when (intent?.action) {
-            Intent.ACTION_SEND -> {
-                @Suppress("DEPRECATION")
-                (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let(uris::add)
-            }
-            Intent.ACTION_SEND_MULTIPLE -> {
-                @Suppress("DEPRECATION")
-                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let(uris::addAll)
-            }
+        val uris = sharedUris(intent)
+        if (uris == null) {
+            Toast.makeText(this, "Could not read the shared files", Toast.LENGTH_LONG).show()
+            finish()
+            return
         }
         // Styled text (Gmail, Docs, browsers) is a Spanned CharSequence: getStringExtra would return null for it.
         val text = sharedText(intent?.getCharSequenceExtra(Intent.EXTRA_TEXT))
@@ -58,7 +53,7 @@ class ShareActivity : Activity() {
             if (uri.scheme != "content" || uri.authority?.startsWith(packageName) == true ||
                 contentResolver.persistedUriPermissions.any { uri.toString().startsWith(it.uri.toString()) }
             ) {
-                Log.e(TAG, "SHARE refused $uri")
+                Log.e(TAG, "SHARE refused scheme=${uri.scheme}")
                 return@mapNotNull null
             }
             try {
@@ -72,7 +67,7 @@ class ShareActivity : Activity() {
                 }
                 val pfd = resolver.openFileDescriptor(uri, "r")
                 if (pfd == null) {
-                    Log.e(TAG, "SHARE could not open $uri: no file descriptor")
+                    Log.e(TAG, "SHARE could not open a file: no file descriptor")
                     return@mapNotNull null
                 }
                 if (size < 0) size = pfd.statSize
@@ -80,7 +75,7 @@ class ShareActivity : Activity() {
                 val keep = runCatching { pfd.dup() }.getOrNull()
                 OutgoingShare.Out(name, size, resolver.getType(uri) ?: "", pfd.detachFd(), keep)
             } catch (t: Throwable) {
-                Log.e(TAG, "SHARE could not open $uri: $t")
+                Log.e(TAG, "SHARE could not open a file: ${t.javaClass.simpleName}")
                 null
             }
         }
@@ -137,6 +132,27 @@ class ShareActivity : Activity() {
     }
 }
 
+/**
+ * The stream URIs of a share intent, or null when the extras are not what a share sends.
+ * Typed getters: a foreign app can put any Parcelable (or a broken one) there; this must never throw.
+ */
+internal fun sharedUris(intent: Intent?): List<Uri>? {
+    if (intent == null) return emptyList()
+    return try {
+        when (intent.action) {
+            Intent.ACTION_SEND ->
+                listOfNotNull(androidx.core.content.IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java))
+            Intent.ACTION_SEND_MULTIPLE ->
+                androidx.core.content.IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?.filterNotNull().orEmpty()
+            else -> emptyList()
+        }
+    } catch (t: Throwable) {
+        Log.e(TAG, "SHARE extras unreadable: ${t.javaClass.simpleName}")
+        null
+    }
+}
+
 /** Sending files: shared by the share sheet and Retry. */
 object OutgoingShare {
     /** Cancel was tapped on the progress notification: the rest of the batch is not sent. */
@@ -152,7 +168,7 @@ object OutgoingShare {
     suspend fun send(app: android.content.Context, node: uniffi.pb_ffi.PbNode, peerId: String, peerName: String, f: Out) {
         try {
             node.sendFileFd(peerId, f.fd, f.name, f.size.toULong(), f.mime)
-            Log.i(TAG, "SHARE sent ${f.name} (${f.size} bytes) to $peerName")
+            Log.i(TAG, "SHARE sent file ext=${LogFields.extOnly(f.name)} (${f.size} bytes)")
             AppLog.event("events", "share_sent", "kind" to "file", "ext" to LogFields.extOnly(f.name), "bytes" to f.size)
             // No uri: the share grant ends with this send, so it could not be opened later.
             Timeline.add(fileEntry(peerName, TlDir.ToPc, f.name, f.size, null))
@@ -194,6 +210,12 @@ object OutgoingShare {
         val p = store.take(id)
         if (p == null) {
             Toast.makeText(app, "That file is no longer available. Share it again", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!Prefs(app).enabled) {
+            // Turned off since the send failed: say so at once instead of waiting for a start that is not coming.
+            runCatching { p.keep.close() }
+            notifyInfo(app, "Could not send ${p.name}", "$APP_NAME is off. Turn it on, then share the file again")
             return
         }
         cancelRequested = false
