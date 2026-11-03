@@ -11,7 +11,12 @@ const SNAP: f32 = 0.01;
 /// Moves `current` toward `target` by an exponential step of `dt_ms`.
 /// Never overshoots; snaps to `target` once within `SNAP`.
 pub fn approach(current: f32, target: f32, dt_ms: u32) -> f32 {
-    if (target - current).abs() <= SNAP {
+    approach_with(crate::fluent::reduced_motion(), current, target, dt_ms)
+}
+
+/// `approach`, with reduced motion given: then the value jumps to the target.
+pub fn approach_with(reduced: bool, current: f32, target: f32, dt_ms: u32) -> f32 {
+    if reduced || (target - current).abs() <= SNAP {
         return target;
     }
     let k = 1.0 - (-(dt_ms as f32) / TIME_CONSTANT_MS).exp();
@@ -72,11 +77,16 @@ pub struct Anim {
 #[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 impl Anim {
     pub fn new(from: f32, to: f32, start: Instant, dur_ms: u32) -> Self {
+        Self::new_with(crate::fluent::reduced_motion(), from, to, start, dur_ms)
+    }
+
+    /// `new`, with reduced motion given: then it is over at once.
+    pub fn new_with(reduced: bool, from: f32, to: f32, start: Instant, dur_ms: u32) -> Self {
         Self {
             from,
             to,
             start,
-            dur_ms,
+            dur_ms: if reduced { 0 } else { dur_ms },
         }
     }
 
@@ -135,6 +145,17 @@ mod tests {
         let mid = a.value(t0 + Duration::from_millis(100));
         assert!(mid > 0.0 && mid < 1.0);
         assert!(a.value(t0 + Duration::from_millis(150)) > mid);
+    }
+
+    #[test]
+    fn reduced_motion_jumps_to_the_end() {
+        assert_eq!(approach_with(true, 0.0, 1.0, 16), 1.0);
+        assert!(approach_with(false, 0.0, 1.0, 16) < 1.0);
+        let t0 = Instant::now();
+        let a = Anim::new_with(true, 0.0, 1.0, t0, 200);
+        assert_eq!(a.value(t0 + Duration::from_millis(1)), 1.0);
+        assert!(!a.running(t0 + Duration::from_millis(1)));
+        assert!(Anim::new_with(false, 0.0, 1.0, t0, 200).running(t0));
     }
 
     #[test]
