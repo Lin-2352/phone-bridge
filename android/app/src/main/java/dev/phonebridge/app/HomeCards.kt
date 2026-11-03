@@ -22,3 +22,12 @@ fun quickTiles(running: Boolean, paired: Boolean, cameraOn: Boolean, screenOn: B
         QuickTile(Quick.Pair, "Pair", false, running),
     )
 }
+
+/** The PC name on Home's link line; [dim] when it is the remembered name (Relay off or starting), not a live one. */
+data class HeroPc(val name: String?, val dim: Boolean)
+
+fun heroPc(linked: String?, stored: String?, running: Boolean, ready: Boolean): HeroPc = when {
+    linked != null -> HeroPc(linked, false)
+    stored != null && !(running && ready) -> HeroPc(stored, true)
+    else -> HeroPc(null, false)
+}

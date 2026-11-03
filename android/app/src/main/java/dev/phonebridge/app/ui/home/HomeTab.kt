@@ -72,6 +72,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.Bridge
+import dev.phonebridge.app.heroPc
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
 import dev.phonebridge.app.ControlService
@@ -120,9 +121,16 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
-    val pc = Bridge.linked.value
+    val linkedPc = Bridge.linked.value
     val running = Bridge.running.value
     val ready = Bridge.nodeReady.value
+    // Remember the PC while it is live; forget it only once the running node says nothing is paired.
+    LaunchedEffect(linkedPc, running, ready) {
+        if (linkedPc != null) { if (prefs.lastPcName != linkedPc) prefs.lastPcName = linkedPc }
+        else if (running && ready && prefs.lastPcName != null) prefs.lastPcName = null
+    }
+    val shown = heroPc(linkedPc, prefs.lastPcName, running, ready)
+    val pc = linkedPc
     val controller = Bridge.controlledBy.value
     val screenTo = ScreenShare.sharingWith.value
     val cameraTo = CameraShare.usedBy.value
@@ -207,7 +215,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
             Modifier.padding(pad).padding(horizontal = Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
         ) {
-            item(key = "hero") { HeroCard(pc, running, ready, live, pcStatus(live, lastSeen, now, paired = pc != null)) }
+            item(key = "hero") { HeroCard(shown.name, shown.dim, running, ready, live, pcStatus(live, lastSeen, now, paired = pc != null)) }
             if (list.isNotEmpty()) {
                 item(key = "needs") {
                     NeedsCard(list, Modifier.animateItem()) { need ->
@@ -279,7 +287,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
 
 /** The PC hero card: both devices joined by the link line, the PC's name and Connected / Last seen. */
 @Composable
-private fun HeroCard(pc: String?, running: Boolean, ready: Boolean, live: Boolean, status: String) {
+private fun HeroCard(pc: String?, pcDim: Boolean, running: Boolean, ready: Boolean, live: Boolean, status: String) {
     val ctx = LocalContext.current
     Column(
         Modifier
@@ -290,7 +298,7 @@ private fun HeroCard(pc: String?, running: Boolean, ready: Boolean, live: Boolea
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        LinkIndicator(Build.MODEL ?: "Phone", pc, live && running)
+        LinkIndicator(Build.MODEL ?: "Phone", pc, live && running, pcDim)
         when {
             !running -> {
                 HeroText("$APP_NAME is off", "Your PC cannot reach this phone.")

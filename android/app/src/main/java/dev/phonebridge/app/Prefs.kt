@@ -108,6 +108,11 @@ class Prefs(context: Context) {
         get() = sp.getLong("last_seen_ms", 0L)
         set(v) = sp.edit().putLong("last_seen_ms", v).apply()
 
+    /** Name of the last paired PC, so Home can show it (dimmed) while Relay is off. Cleared once the node says nothing is paired. */
+    var lastPcName: String?
+        get() = sp.getString("last_pc_name", null)
+        set(v) = sp.edit().putString("last_pc_name", v).apply()
+
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?
         get() = sp.getString("save_tree", null)?.let(Uri::parse)

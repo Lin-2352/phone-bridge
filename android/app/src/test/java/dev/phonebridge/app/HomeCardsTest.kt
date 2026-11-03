@@ -44,3 +44,11 @@ class HomeCardsTest {
         }
     }
 }
+
+class HeroPcTest {
+    @Test fun live_name_wins() = assertEquals(HeroPc("Laptop", false), heroPc("Laptop", "Old", running = true, ready = true))
+    @Test fun off_shows_stored_name_dimmed() = assertEquals(HeroPc("Laptop", true), heroPc(null, "Laptop", running = false, ready = false))
+    @Test fun starting_shows_stored_name_dimmed() = assertEquals(HeroPc("Laptop", true), heroPc(null, "Laptop", running = true, ready = false))
+    @Test fun really_unpaired_shows_nothing() = assertEquals(HeroPc(null, false), heroPc(null, "Laptop", running = true, ready = true))
+    @Test fun never_paired_shows_nothing() = assertEquals(HeroPc(null, false), heroPc(null, null, running = false, ready = false))
+}
