@@ -416,7 +416,12 @@ fun SettingsTab(onDone: () -> Unit) {
     }
     val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         if (uri != null) {
-            ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            // Some document providers refuse to keep the grant; that must not crash, and the folder would be forgotten after a restart.
+            val kept = runCatching { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }.isSuccess
+            if (!kept) {
+                android.widget.Toast.makeText(ctx, "That folder cannot be kept. Choose another one", android.widget.Toast.LENGTH_LONG).show()
+                return@rememberLauncherForActivityResult
+            }
             prefs.saveTree?.let { old -> runCatching { ctx.contentResolver.releasePersistableUriPermission(old, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
             prefs.saveTree = uri
             tree = uri
