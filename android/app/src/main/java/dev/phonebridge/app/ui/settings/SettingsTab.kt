@@ -45,7 +45,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -55,6 +57,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.AppLog
@@ -85,6 +89,7 @@ import dev.phonebridge.app.setBridgeEnabled
 import dev.phonebridge.app.statusLine
 import dev.phonebridge.app.treeLabel
 import dev.phonebridge.app.ui.LocalResumeCount
+import dev.phonebridge.app.ui.home.openSettings
 import dev.phonebridge.app.ui.ThemeChoice
 import dev.phonebridge.app.ui.components.CategoryRow
 import dev.phonebridge.app.ui.components.PillSearch
@@ -115,8 +120,24 @@ private fun LiveBanner(text: String, onStop: () -> Unit) {
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.weight(1f),
         )
-        Button(onClick = onStop, modifier = Modifier.heightIn(min = 48.dp)) { Text("Stop") }
+        Button(onClick = onStop, modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Stop. $text" }) { Text("Stop") }
     }
+}
+
+/**
+ * Whether the accessibility service is running, re-read every second: it switches itself off after each control
+ * session without the app leaving the screen, so a read on resume alone would keep saying "On".
+ */
+@Composable
+private fun rememberControlServiceOn(): Boolean {
+    val resumed = LocalResumeCount.current
+    val on by produceState(ControlService.instance != null, resumed) {
+        while (true) {
+            value = ControlService.instance != null
+            delay(1000)
+        }
+    }
+    return on
 }
 
 /**
@@ -128,8 +149,8 @@ private fun LiveBanner(text: String, onStop: () -> Unit) {
 private fun ControlFromPc() {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
-    val serviceOn = remember(resumed) { ControlService.instance != null }
-    val serviceStuck = remember(resumed) { !serviceOn && ControlService.enabledInSettings(ctx) }
+    val serviceOn = rememberControlServiceOn()
+    val serviceStuck = remember(resumed, serviceOn) { !serviceOn && ControlService.enabledInSettings(ctx) }
     val allow = Bridge.allowControl.value
     val controller = Bridge.controlledBy.value
     if (controller != null) LiveBanner("$controller is controlling this phone") { Bridge.node?.stopControl() }
@@ -144,9 +165,9 @@ private fun ControlFromPc() {
         checked = allow,
         onChecked = { on ->
             Bridge.setAllowControl(ctx, on)
-            if (on && !serviceOn) ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            if (on && !serviceOn) openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         },
-        onClick = if (!serviceOn) ({ ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) else null,
+        onClick = if (!serviceOn) ({ openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) else null,
     )
 }
 
@@ -276,7 +297,7 @@ fun openNotifyAccess(ctx: Context) {
         Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
     }
     runCatching { ctx.startActivity(i) }
-        .onFailure { ctx.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
+        .onFailure { openSettings(ctx, Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) }
 }
 
 @Composable
@@ -401,14 +422,15 @@ fun SettingsTab(onDone: () -> Unit) {
             tree = uri
         }
     }
+    val controlServiceOn = rememberControlServiceOn()
     // Live status lines; re-read on resume and whenever a page is left, so they follow what was changed there.
-    val status = remember(resumed, nav.page, peers, tree, Bridge.allowControl.value) {
+    val status = remember(resumed, nav.page, peers, tree, Bridge.allowControl.value, controlServiceOn) {
         StatusInput(
             audioSkipAsk = prefs.audioSkipConfirmPhoneToPc,
             pairedNames = peers.map { it.name },
             cameraAllowedCount = prefs.allowedCameraPcs.size,
             controlAllowed = Bridge.allowControl.value,
-            controlServiceOn = ControlService.instance != null,
+            controlServiceOn = controlServiceOn,
             notifyOn = prefs.notifyToPc,
             notifyAccess = hasNotifyAccess(ctx),
             saveLabel = treeLabel(tree),
@@ -505,21 +527,9 @@ fun SettingsTab(onDone: () -> Unit) {
                         item { RelayCard { ControlFromPc() } }
                         item { SectionHeader("Showing this screen") }
                         item { RelayCard { ScreenToPc() } }
-                        item {
-                            RelayCard {
-                                val on = remember(resumed) { ControlService.instance != null }
-                                val stuck = remember(resumed) { !on && ControlService.enabledInSettings(ctx) }
-                                RelayRow(
-                                    title = "Accessibility permission",
-                                    supporting = "“$APP_NAME control” lets your PC tap and type here. Without it your PC cannot control this phone",
-                                    trailing = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge) },
-                                    onClick = { ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                                )
-                            }
-                        }
                     }
                     Group.Audio -> {
-                        item { SectionHeader("Sharing this phone's audio") }
+                        item { SectionHeader("Audio") }
                         item { RelayCard { AudioToPc() } }
                     }
                     Group.Notifications -> { item { RelayCard { NotificationsOnPc() } }; item { RelayCard { NotifyBlockRow() } } } // F7 (features agent): per-app block row, ui/settings/NotifyBlockRow.kt
@@ -635,17 +645,18 @@ fun SettingsTab(onDone: () -> Unit) {
                                 val unrestricted = remember(resumed) { mutableStateOf(isBatteryUnrestricted(ctx)) }
                                 RelayRow(
                                     title = "Keep running in background",
-                                    supporting = if (unrestricted.value) "On. Android lets $APP_NAME come back by itself if the phone runs low on memory"
+                                    supporting = if (unrestricted.value) "Android lets $APP_NAME come back by itself if the phone runs low on memory"
                                     else "Recommended. Without it, Android may stop $APP_NAME when memory is low until you open it again",
                                     trailing = { Text(if (unrestricted.value) "On" else "Off", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge) },
                                     onClick = {
                                         if (!unrestricted.value) {
-                                            ctx.startActivity(
+                                            openSettings(
+                                                ctx,
                                                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
                                                     .setData(Uri.parse("package:${ctx.packageName}")),
                                             )
                                         } else {
-                                            ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                            openSettings(ctx, Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                                         }
                                     },
                                 )
@@ -654,7 +665,8 @@ fun SettingsTab(onDone: () -> Unit) {
                                     title = "Hide the status notification",
                                     supporting = "Android needs it while $APP_NAME runs in the background. You can turn it off for this app; $APP_NAME keeps working",
                                     onClick = {
-                                        ctx.startActivity(
+                                        openSettings(
+                                            ctx,
                                             Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
                                                 .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
                                                 .putExtra(Settings.EXTRA_CHANNEL_ID, "status"),
