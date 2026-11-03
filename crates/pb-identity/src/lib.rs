@@ -247,7 +247,12 @@ impl FilePeerStore {
             out.push_str(&format!("{}\t{}\t{}\n", p.id, name, p.addrs.join(",")));
         }
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, out)?;
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(out.as_bytes())?;
+            f.sync_all()?;
+        }
         std::fs::rename(tmp, &self.path)
     }
 }
