@@ -204,10 +204,13 @@ fn run(
         }
         std::thread::sleep(POLL);
     };
-    drop(stream);
+    // Report the cause before the stream is dropped: dropping it drops the
+    // frame callback, which closes the caller's frame channel, and the caller
+    // would otherwise see "ended" before it sees why.
     if let Some(e) = ended {
         on_error(e);
     }
+    drop(stream);
 }
 
 #[cfg(test)]
