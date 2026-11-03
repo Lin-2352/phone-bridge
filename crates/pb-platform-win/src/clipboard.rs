@@ -171,9 +171,7 @@ pub fn get_image(owner: Option<HWND>) -> io::Result<(Option<ClipImage>, bool)> {
         if IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)).is_ok() {
             return Ok((None, false));
         }
-        let private =
-            IsClipboardFormatAvailable(format(w!("ExcludeClipboardContentFromMonitorProcessing")))
-                .is_ok();
+        let private = is_private();
         let png = format(w!("PNG"));
         if IsClipboardFormatAvailable(png).is_ok() {
             if let Some(b) = read_block(png)? {
@@ -193,6 +191,36 @@ pub fn get_image(owner: Option<HWND>) -> io::Result<(Option<ClipImage>, bool)> {
     }
 }
 
+/// True when a DWORD format value says "no" (0): that is how apps opt out of
+/// clipboard history and cloud sync.
+fn dword_is_zero(b: &[u8]) -> bool {
+    b.len() >= 4 && b[..4] == [0, 0, 0, 0]
+}
+
+/// Whether the copying app marked the open clipboard private: the exclude
+/// format (password managers), or history or cloud upload switched off.
+///
+/// # Safety
+/// The clipboard must be open on this thread.
+unsafe fn is_private() -> bool {
+    unsafe {
+        if IsClipboardFormatAvailable(format(w!("ExcludeClipboardContentFromMonitorProcessing")))
+            .is_ok()
+        {
+            return true;
+        }
+        [
+            format(w!("CanIncludeInClipboardHistory")),
+            format(w!("CanUploadToCloudClipboard")),
+        ]
+        .into_iter()
+        .any(|f| {
+            IsClipboardFormatAvailable(f).is_ok()
+                && matches!(read_block(f), Ok(Some(b)) if dword_is_zero(&b))
+        })
+    }
+}
+
 /// The bytes of clipboard format `fmt`, or None if absent or empty.
 ///
 /// # Safety
@@ -208,7 +236,11 @@ unsafe fn read_block(fmt: u32) -> io::Result<Option<Vec<u8>>> {
             return Err(io::Error::other("clipboard image is too large"));
         }
         let p = GlobalLock(hg) as *const u8;
-        if p.is_null() || n == 0 {
+        if p.is_null() {
+            return Ok(None);
+        }
+        if n == 0 {
+            let _ = GlobalUnlock(hg);
             return Ok(None);
         }
         let bytes = std::slice::from_raw_parts(p, n).to_vec();
@@ -238,9 +270,7 @@ pub fn get_text_marked(owner: Option<HWND>) -> io::Result<(ClipText, bool)> {
     let _open = Open::new(owner)?;
     // SAFETY: clipboard is open; the handle is only read while locked.
     unsafe {
-        let private =
-            IsClipboardFormatAvailable(format(w!("ExcludeClipboardContentFromMonitorProcessing")))
-                .is_ok();
+        let private = is_private();
         let text = read_unicode()?;
         Ok((text, private))
     }
@@ -282,6 +312,13 @@ mod tests {
 
     /// Tests share the one real clipboard, so they take turns.
     static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_zero_dword_means_opted_out() {
+        assert!(dword_is_zero(&0u32.to_le_bytes()));
+        assert!(!dword_is_zero(&1u32.to_le_bytes()));
+        assert!(!dword_is_zero(&[0, 0]));
+    }
 
     fn tiny_png() -> Vec<u8> {
         let mut out = Vec::new();
