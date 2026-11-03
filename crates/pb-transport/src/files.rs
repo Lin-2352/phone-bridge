@@ -3,7 +3,7 @@
 //!
 //! Sender: [`Node::send_file`] / [`Node::send_text`] open a fresh session per
 //! transfer. Receiver: the app's session loop calls [`receive_offer`] when an
-//! [`Offer`] arrives. Files are written to `.<name>.partial-<id>` and only
+//! [`Offer`] arrives. Files are written to `.<name>.partial-<random>` and only
 //! renamed into place after the hash matches; any failure deletes the partial.
 
 use std::{
