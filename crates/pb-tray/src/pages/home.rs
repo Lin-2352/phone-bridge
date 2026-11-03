@@ -127,16 +127,18 @@ pub struct Inputs<'a> {
 }
 
 /// Whether the sessions alone prove contact: a live screen, camera or
-/// control session is an open connection too; one that waits to reconnect
-/// is not.
+/// control session, or a running audio session, is an open connection too;
+/// one that waits to reconnect is not.
 pub fn sessions_live(
     screen: bool,
     screen_live: bool,
     camera: bool,
     camera_live: bool,
     control: bool,
+    audio: [crate::audio_state::Phase; 2],
 ) -> bool {
-    (screen && screen_live) || (camera && camera_live) || control
+    let audio_on = audio.contains(&crate::audio_state::Phase::Running);
+    (screen && screen_live) || (camera && camera_live) || control || audio_on
 }
 
 /// The phone as the hero card (and the flyout header) shows it; `live`
@@ -155,7 +157,14 @@ pub fn phone_card(p: PhoneIn, live: bool) -> PhoneCard {
 }
 
 pub fn build(i: Inputs) -> HomeModel {
-    let live = sessions_live(i.screen, i.screen_live, i.camera, i.camera_live, i.control);
+    let live = sessions_live(
+        i.screen,
+        i.screen_live,
+        i.camera,
+        i.camera_live,
+        i.control,
+        i.audio,
+    );
     let phone = i.phone.map(|p| phone_card(p, live));
     let sessions = [
         (i.screen, i.screen_live, SessionKind::Screen),
@@ -1307,6 +1316,22 @@ mod tests {
         assert!(Quick::ALL.iter().all(|q| q.enabled(&m)));
         let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
         assert!(!hits.iter().any(|h| h.id == RESUME));
+    }
+
+    #[test]
+    fn a_running_audio_session_means_connected_not_last_seen() {
+        use crate::audio_state::Phase;
+        let s = Settings::default();
+        let mut i = inputs(&s, &[]);
+        i.phone = Some(phone(false, false));
+        i.audio = [Phase::Idle, Phase::Asking];
+        assert!(!build(i).phone.unwrap().connected);
+        let mut i = inputs(&s, &[]);
+        i.phone = Some(phone(false, false));
+        i.audio = [Phase::Idle, Phase::Running];
+        let p = build(i).phone.unwrap();
+        assert!(p.connected);
+        assert_eq!(p.last_seen, None);
     }
 
     #[test]

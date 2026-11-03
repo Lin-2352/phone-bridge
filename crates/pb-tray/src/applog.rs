@@ -264,6 +264,11 @@ pub fn map_line(msg: &str) -> Option<Ev> {
     if family == "FATAL" {
         return Some(error("FATAL", &msg["FATAL".len()..]));
     }
+    // Audio sessions emit their own `audio` events (`applog::audio`); the words in their log
+    // lines ("refused", an end detail with "failed") must not become a second, `error` event.
+    if family == "AUDIO" {
+        return None;
+    }
     const BAD: [&str; 6] = [
         "failed",
         "not shown",
@@ -486,6 +491,13 @@ mod tests {
 
     fn field<'a>(e: &'a Ev, k: &str) -> Option<&'a Value> {
         e.fields.iter().find(|(n, _)| *n == k).map(|(_, v)| v)
+    }
+
+    #[test]
+    fn audio_lines_never_become_error_events() {
+        assert!(map_line("AUDIO phone refused: Declined").is_none());
+        assert!(map_line("AUDIO pc ended after 4 s: LinkLost (write failed)").is_none());
+        assert!(map_line("TIMELINE write failed: disk full").is_some());
     }
 
     #[test]

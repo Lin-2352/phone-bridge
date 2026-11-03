@@ -436,7 +436,11 @@ fn flyout_phone(st: &State) -> (Option<String>, Option<crate::pages::home::Phone
     use crate::pages::home;
     let first = st.peers.lock().ok().and_then(|g| g.first().cloned());
     let (screen, screen_live, camera, camera_live, control) = session_flags();
-    let live = home::sessions_live(screen, screen_live, camera, camera_live, control);
+    let audio = [
+        crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
+        crate::audio::phase(crate::audio_state::Dir::PcToPhone),
+    ];
+    let live = home::sessions_live(screen, screen_live, camera, camera_live, control, audio);
     let name = first.as_ref().map(|(_, n)| n.clone());
     (name, first.map(|p| home::phone_card(phone_in(p), live)))
 }
