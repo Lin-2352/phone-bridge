@@ -10,6 +10,7 @@
 
 #[cfg(windows)]
 mod a11y;
+mod tooltip;
 mod uia;
 mod app_name;
 #[cfg(windows)]

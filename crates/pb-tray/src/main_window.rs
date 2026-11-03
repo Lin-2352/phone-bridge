@@ -51,9 +51,9 @@ use windows::{
                 WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
                 WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
                 WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
-                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
-                WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN,
-                WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
+                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NOTIFY,
+                WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW,
+                WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -400,6 +400,8 @@ thread_local! {
     /// notifications back into `wndproc`: only `borrow()` it around a call.
     static SEARCH: RefCell<Option<SearchBox>> = const { RefCell::new(None) };
     /// The palette of the last paint, to repaint the search box on a theme change.
+    /// The tooltip over the client area.
+    static TIP: RefCell<Option<crate::tooltip::Tip>> = const { RefCell::new(None) };
     static PAINTED: std::cell::Cell<Option<Palette>> = const { std::cell::Cell::new(None) };
 }
 
@@ -1450,6 +1452,12 @@ fn save_rect(hwnd: HWND) {
     }
 }
 
+/// The `code` of the `NMHDR` a `WM_NOTIFY` points at.
+fn notify_code(lparam: LPARAM) -> u32 {
+    // SAFETY: WM_NOTIFY's lparam points at an NMHDR for the message's duration.
+    unsafe { (*(lparam.0 as *const windows::Win32::UI::Controls::NMHDR)).code }
+}
+
 fn lo(v: isize) -> i32 {
     (v & 0xffff) as i16 as i32
 }
@@ -1662,9 +1670,40 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         // Resize and present in the same message, so dragging an edge never
         // shows stale or black borders.
+        // The tooltip asks what to say about the point under the pointer.
+        WM_NOTIFY if lparam.0 != 0 && notify_code(lparam) == crate::tooltip::TTN_GETDISPINFOW => {
+            let text = with(hwnd, |st| {
+                let (x, y) = cursor_client(hwnd)?;
+                let (f, hits) = layout_now(hwnd, st);
+                let name = match target_at(&f, &hits, x, y)? {
+                    Target::Nav(p) => p.label().to_owned(),
+                    Target::Hit(id) => {
+                        let h = hits.iter().find(|h| h.id == id)?;
+                        pages::describe(st.page, h, &st.model)?.name
+                    }
+                };
+                crate::tooltip::text_for(&name)
+            })
+            .flatten()
+            .unwrap_or_default();
+            crate::tooltip::answer(lparam, &text);
+            LRESULT(0)
+        }
         WM_SIZE => {
             if wparam.0 == SIZE_RESTORED as usize {
                 note_normal(hwnd);
+            }
+            {
+                let mut r = RECT::default();
+                // SAFETY: reads our own window's client rect.
+                let _ = unsafe { GetClientRect(hwnd, &mut r) };
+                TIP.with(|t| {
+                    if let Ok(g) = t.try_borrow() {
+                        if let Some(tip) = g.as_ref() {
+                            tip.fit(r);
+                        }
+                    }
+                });
             }
             fit_scroll(hwnd);
             sync_search(hwnd);
@@ -1984,6 +2023,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         WM_DESTROY => {
             // A delete still waiting for its undo is final now.
             commit_delete(hwnd);
+            TIP.with(|t| t.borrow_mut().take());
             // The edit goes first, outside every borrow (it may notify us).
             let search = SEARCH.with(|cell| cell.borrow_mut().take());
             drop(search);
@@ -2237,6 +2277,12 @@ fn create(page: Page, opened: Instant) {
             SEARCH.with(|cell| *cell.borrow_mut() = Some(sb));
         }
         Err(e) => host.log.line(&format!("UI search box failed: {e}")),
+    }
+    {
+        let mut r = RECT::default();
+        // SAFETY: reads our own window's client rect.
+        let _ = unsafe { GetClientRect(hwnd, &mut r) };
+        TIP.with(|t| *t.borrow_mut() = crate::tooltip::Tip::new(hwnd, r));
     }
     sync_search(hwnd);
     // Before the first paint: Settings needs its rows built.
