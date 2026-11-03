@@ -141,8 +141,8 @@ fn day_headers_and_the_all_control_are_hits_that_toggle() {
     let fh = layout_with(r, view, 1.0, &fm, &|_| FileState::Present);
     let special = fh.iter().filter(|h| h.id >= DAY_BASE).count();
     assert_eq!(special, fm.groups.len() + 1);
-    // Per row: Open, Show in folder and the whole row.
-    assert_eq!(fh.len(), special + 9);
+    // Per row: Open, Show in folder, "..." and the whole row.
+    assert_eq!(fh.len(), special + 12);
 }
 
 #[test]

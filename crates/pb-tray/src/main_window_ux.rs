@@ -464,3 +464,94 @@ fn uia_run() {
     // SAFETY: our own window, destroyed on its thread.
     let _ = unsafe { DestroyWindow(hwnd) };
 }
+
+/// Timeline search, the "..." button, persisted days and the undo bar in
+/// the real window, with captures.
+#[test]
+#[ignore]
+fn timeline_run() {
+    let dir = std::env::var_os("PB_UX_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("pbm_ux_out"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = store::now_unix();
+    let timeline = Arc::new(tl::build(&entries(now), true, now, 0));
+    let settings: crate::core::SharedSettings = Default::default();
+    let spath = dir.join("settings-tl.txt");
+    let _ = std::fs::remove_file(&spath);
+    init(Host {
+        log: crate::core::Log::open(dir.join("tl.log")),
+        settings: settings.clone(),
+        settings_path: spath.clone(),
+        model: Box::new(move || Model {
+            timeline: timeline.clone(),
+            ..Default::default()
+        }),
+        act: Box::new(|_| {}),
+        check_peers: Box::new(|| {}),
+    });
+    open(Page::Timeline);
+    let hwnd = current().expect("window");
+    pump(500);
+    capture(hwnd, &dir, "20-timeline-rows-with-more.bmp");
+    let all_rows = |hwnd| {
+        with(hwnd, |st| {
+            st.model
+                .timeline
+                .groups
+                .iter()
+                .map(|g| g.rows.len())
+                .sum::<usize>()
+        })
+        .unwrap()
+    };
+    let total = all_rows(hwnd);
+    assert_eq!(total, 60);
+    // Search: the native box narrows the list; no match keeps the title.
+    with_search(|sb| sb.set_text("report"));
+    pump(200);
+    let narrowed = all_rows(hwnd);
+    assert!(narrowed > 0 && narrowed < total, "{narrowed}");
+    capture(hwnd, &dir, "21-timeline-search.bmp");
+    with_search(|sb| sb.set_text("zzzz"));
+    pump(200);
+    assert_eq!(all_rows(hwnd), 0);
+    capture(hwnd, &dir, "22-timeline-no-match.bmp");
+    with_search(|sb| sb.set_text(""));
+    pump(200);
+    assert_eq!(all_rows(hwnd), total);
+    // Days are remembered: open every day, check the settings file text.
+    let hits = with(hwnd, |st| layout_now(hwnd, st).1).unwrap();
+    let all = hits.iter().find(|h| h.id == 0xFFFF_0000).unwrap();
+    click_at(
+        hwnd,
+        (all.r.left + all.r.right) / 2.0,
+        (all.r.top + all.r.bottom) / 2.0,
+    );
+    pump(200);
+    let saved = settings.lock().unwrap().timeline_days.clone();
+    assert!(!saved.is_empty() && saved.contains(":1"), "{saved}");
+    assert!(std::fs::read_to_string(&spath)
+        .unwrap()
+        .contains("timeline_days="));
+    // A delete waits for its undo: hide a row by hand as the menu does.
+    let key = with(hwnd, |st| st.model.timeline.groups[0].rows[0].key).unwrap();
+    with(hwnd, |st| {
+        st.hidden.insert(key);
+        st.undo = Some(Undo {
+            keys: vec![key],
+            due: Instant::now() + UNDO_FOR,
+        });
+        let exp = st.model.timeline.exp.clone();
+        rebuild_timeline(st, &exp);
+    });
+    repaint(hwnd);
+    pump(200);
+    assert_eq!(all_rows(hwnd), total - 1);
+    capture(hwnd, &dir, "23-undo-bar.bmp");
+    undo_delete(hwnd);
+    pump(100);
+    assert_eq!(all_rows(hwnd), total, "Undo brings the row back");
+    // SAFETY: our own window, destroyed on its thread.
+    let _ = unsafe { DestroyWindow(hwnd) };
+}

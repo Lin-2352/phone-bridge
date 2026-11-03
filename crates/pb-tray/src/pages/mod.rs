@@ -65,6 +65,14 @@ pub enum Action {
     /// them (`true` = open). Handled by the window, which owns the state.
     TimelineDay(i64),
     TimelineAll(bool),
+    /// Timeline: the row with this key asked for its "..." menu (handled by
+    /// the window, which owns the menu).
+    TimelineMenu(u32),
+    /// Put this text on the clipboard (a row's path); not shared with the phone.
+    CopyText(String),
+    /// Timeline: remove the entries with these keys from the history (a
+    /// delete whose undo window passed).
+    TimelineDelete(Vec<u32>),
 }
 
 /// What kind of control a hit is, for screen readers (UI Automation).

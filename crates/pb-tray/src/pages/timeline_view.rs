@@ -49,6 +49,34 @@ impl Expansion {
         }
     }
 
+    /// The choices as "day:1,day:0", only for days still listed in `days`
+    /// (a day pruned from the history is forgotten).
+    pub fn encode(&self, days: &[i64]) -> String {
+        self.choice
+            .iter()
+            .filter(|(d, _)| days.contains(d))
+            .map(|(d, o)| format!("{d}:{}", u8::from(*o)))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Reads `encode`'s text; anything malformed is skipped.
+    pub fn decode(text: &str) -> Expansion {
+        let choice = text
+            .split(',')
+            .filter_map(|p| {
+                let (d, o) = p.split_once(':')?;
+                let open = match o {
+                    "1" => true,
+                    "0" => false,
+                    _ => return None,
+                };
+                Some((d.parse::<i64>().ok()?, open))
+            })
+            .collect();
+        Expansion { choice }
+    }
+
     /// True when every day is open (the control then offers "Collapse all").
     pub fn all_open(&self, days: &[i64]) -> bool {
         (0..days.len()).all(|k| self.is_open(days, k))
@@ -97,6 +125,27 @@ mod tests {
             !e.is_open(&shifted, 1),
             "Today collapsed by the user stays so"
         );
+    }
+
+    #[test]
+    fn choices_survive_a_restart_and_pruned_days_are_forgotten() {
+        let d = days(5);
+        let mut e = Expansion::default();
+        e.toggle(&d, d[2]);
+        e.toggle(&d, d[0]);
+        let text = e.encode(&d);
+        let back = Expansion::decode(&text);
+        assert_eq!(back, e);
+        assert!(back.is_open(&d, 2) && !back.is_open(&d, 0));
+        // Only the newest three days are still in the history.
+        assert_eq!(e.encode(&d[..2]), format!("{}:0", d[0]));
+        assert_eq!(Expansion::decode("junk,1:2,x:1,5:1,9:0"), {
+            let mut x = Expansion::default();
+            x.set_all(&[5], true);
+            x.set_all(&[9], false);
+            x
+        });
+        assert_eq!(Expansion::decode(""), Expansion::default());
     }
 
     #[test]

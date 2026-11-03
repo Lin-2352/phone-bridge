@@ -202,6 +202,21 @@ impl SearchBox {
         let _ = unsafe { SetWindowTextW(self.edit, PCWSTR(wide.as_ptr())) };
     }
 
+    /// The grey hint shown while the box is empty (also what a screen reader
+    /// reads as its purpose).
+    pub fn set_cue(&self, t: &str) {
+        let wide: Vec<u16> = t.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: EM_SETCUEBANNER (0x1501) copies the NUL-terminated text.
+        unsafe {
+            SendMessageW(
+                self.edit,
+                0x1501,
+                Some(WPARAM(0)),
+                Some(LPARAM(wide.as_ptr() as isize)),
+            )
+        };
+    }
+
     pub fn focus(&self) {
         // SAFETY: focuses our own child.
         let _ = unsafe { SetFocus(Some(self.edit)) };

@@ -152,6 +152,8 @@ pub struct TimelineModel {
     pub height: u32,
     /// Each day's card behind its rows, as (top, bottom) like `tops`.
     pub cards: Vec<(u32, u32)>,
+    /// The search text this list is filtered by (empty: everything).
+    pub query: String,
 }
 
 /// Sizes in logical px.
@@ -165,6 +167,7 @@ const BUTTON_H: f32 = 32.0;
 /// Top of the list in the page, logical px.
 const LIST_TOP: f32 = PAD + TITLE_H;
 const ALL_W: f32 = 112.0;
+const MORE_W: f32 = 36.0;
 
 /// Hit ids: file buttons use 2 key + 1 and 2 key + 2 (below 2^31 + 3);
 /// day headers `DAY_BASE + day`; the collapse / expand all control `ALL_ID`.
@@ -175,6 +178,68 @@ const ROW_BASE: u32 = 0x8000_1000;
 
 fn row_id(key: u32) -> u32 {
     ROW_BASE + (key & 0x1FFF_FFFF)
+}
+
+/// A row's "..." button: above the whole-row ids, below the day ids.
+const MORE_BASE: u32 = 0xA000_2000;
+
+pub fn more_id(key: u32) -> u32 {
+    MORE_BASE + (key & 0x0FFF_FFFF)
+}
+
+/// Every hit id that belongs to the row with `key`.
+pub fn hit_ids(key: u32) -> [u32; 4] {
+    [row_id(key), open_id(key), open_id(key) + 1, more_id(key)]
+}
+
+/// What the row's "..." menu and its context menu offer. Open and Show in
+/// folder are the row's own buttons, so they are not repeated here, and
+/// clipboard text is not stored (by design), so there is no "copy text".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowAct {
+    CopyPath,
+    Details,
+    Delete,
+}
+
+impl RowAct {
+    pub fn label(self) -> &'static str {
+        match self {
+            RowAct::CopyPath => "Copy path",
+            RowAct::Details => "Details",
+            RowAct::Delete => "Delete from history",
+        }
+    }
+}
+
+/// The menu entries for a row, in order.
+pub fn row_actions(x: &RowModel) -> Vec<RowAct> {
+    let mut v = Vec::new();
+    if x.file.is_some() {
+        v.push(RowAct::CopyPath);
+    }
+    v.push(RowAct::Details);
+    v.push(RowAct::Delete);
+    v
+}
+
+/// The text of the Details box for a row.
+pub fn details(x: &RowModel) -> String {
+    let mut s = format!("{}\n{}", x.title, x.meta);
+    if let Some(p) = &x.file {
+        s.push_str(&format!("\nSaved to: {p}"));
+    }
+    s
+}
+
+/// Whether `row` matches a search: every word in the query appears in the
+/// title or the caption, ignoring case.
+pub fn matches(row: &RowModel, query: &str) -> bool {
+    let hay = format!("{} {}", row.title, row.meta).to_lowercase();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|w| hay.contains(w))
 }
 
 fn day_id(day: i64) -> u32 {
@@ -190,7 +255,7 @@ fn item_h(i: &Item) -> u32 {
 
 /// 30 bits of a hash of the entry's fields, so `HIT_BASE + 2 * key + 2`
 /// stays far inside u32.
-fn entry_key(e: &Entry) -> u32 {
+pub fn entry_key(e: &Entry) -> u32 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (
@@ -278,11 +343,43 @@ impl TimelineModel {
 
     /// The same entries with the days opened or closed as `exp` says:
     /// items, offsets, cards and height are recomputed.
+    /// The same list narrowed to the rows matching `query` and not in
+    /// `hidden` (deleted, waiting for the undo window to pass). Days left
+    /// with no rows disappear; the days' open state is kept.
+    pub fn filtered(&self, query: &str, hidden: &std::collections::HashSet<u32>) -> TimelineModel {
+        let q = query.trim();
+        let groups: Vec<Group> = self
+            .groups
+            .iter()
+            .filter_map(|g| {
+                let rows: Vec<RowModel> = g
+                    .rows
+                    .iter()
+                    .filter(|r| !hidden.contains(&r.key) && (q.is_empty() || matches(r, q)))
+                    .cloned()
+                    .collect();
+                (!rows.is_empty()).then(|| Group {
+                    day: g.day,
+                    label: g.label.clone(),
+                    rows,
+                })
+            })
+            .collect();
+        TimelineModel {
+            history_on: self.history_on,
+            groups: Arc::new(groups),
+            query: q.to_owned(),
+            ..Default::default()
+        }
+        .with_expansion(&self.exp)
+    }
+
     pub fn with_expansion(&self, exp: &Expansion) -> TimelineModel {
         let mut m = TimelineModel {
             history_on: self.history_on,
             groups: self.groups.clone(),
             exp: exp.clone(),
+            query: self.query.clone(),
             ..Default::default()
         };
         let days = self.days();
@@ -396,6 +493,18 @@ pub fn visible(r: RectF, view: RectF, s: f32, m: &TimelineModel) -> Range<usize>
     start..(end + 1).min(n).max(start)
 }
 
+/// The search box between the title and the Collapse / Expand all control.
+pub fn search_rect(r: RectF, s: f32) -> RectF {
+    let all = all_rect(r, s);
+    let left = (r.left + (PAD + 150.0) * s).min(all.left);
+    rectf(
+        left,
+        all.top,
+        (all.left - SPACE[2] * s).max(left),
+        all.bottom,
+    )
+}
+
 /// The Collapse all / Expand all control, right of the title.
 fn all_rect(r: RectF, s: f32) -> RectF {
     let right = r.right - PAD * s;
@@ -417,12 +526,26 @@ fn item_rect(r: RectF, s: f32, m: &TimelineModel, k: usize) -> RectF {
     rectf(left, top, (r.right - PAD * s).max(left), top + h)
 }
 
-/// Open and Show in folder at the right of a row.
+/// The "..." button at the right end of a row.
+fn more_rect(row: RectF, s: f32) -> RectF {
+    let pad = SPACE[2] * s;
+    let cy = (row.top + row.bottom) / 2.0;
+    let r = (row.right - pad).max(row.left);
+    rectf(
+        (r - MORE_W * s).max(row.left),
+        cy - BUTTON_H * s / 2.0,
+        r,
+        cy + BUTTON_H * s / 2.0,
+    )
+}
+
+/// Open and Show in folder, left of the "..." button.
 fn buttons(row: RectF, s: f32) -> (RectF, RectF) {
     let pad = SPACE[2] * s;
     let cy = (row.top + row.bottom) / 2.0;
     let (t, b) = (cy - BUTTON_H * s / 2.0, cy + BUTTON_H * s / 2.0);
-    let show_r = (row.right - pad).max(row.left);
+    let show_r = (more_rect(row, s).left - SPACE[1] * s).max(row.left);
+    let _ = pad;
     let show_l = (show_r - SHOW_W * s).max(row.left);
     let open_r = (show_l - SPACE[1] * s).max(row.left);
     let open_l = (open_r - OPEN_W * s).max(row.left);
@@ -485,6 +608,10 @@ pub fn layout_with(
                 r: show,
             });
         }
+        hits.push(Hit {
+            id: more_id(x.key),
+            r: more_rect(item_rect(r, s, m, k), s),
+        });
         // After its buttons: a click on a button reaches the button first.
         hits.push(Hit {
             id: row_id(x.key),
@@ -506,7 +633,9 @@ pub fn content_height(width: f32, s: f32, m: &TimelineModel) -> f32 {
 
 /// Title and body of the empty state: history off, or nothing yet.
 pub fn empty_text(m: &TimelineModel) -> (&'static str, &'static str) {
-    if m.history_on {
+    if m.history_on && !m.query.is_empty() {
+        ("No matches", "Nothing in the history matches that search.")
+    } else if m.history_on {
         (
             "Nothing has moved yet",
             "Files, clipboard and notifications you share will appear here.",
@@ -560,6 +689,23 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hi
     let (s, pal) = (c.s, c.p);
     if m.items.is_empty() {
         let (title, body) = empty_text(m);
+        if m.history_on && !m.query.is_empty() {
+            // The search box stays: keep the page's title above the message.
+            let t = rectf(
+                r.left + PAD * s,
+                r.top + PAD * s,
+                r.right - PAD * s,
+                r.top + (PAD + TITLE_H) * s,
+            );
+            text(c, Font::Title, "Timeline", t, pal.text, Align::Left);
+            let body_r = rectf(
+                r.left,
+                list_top(r, s),
+                r.right,
+                r.bottom.max(list_top(r, s)),
+            );
+            return widgets::empty_state(c, body_r, '\u{E81C}', title, body);
+        }
         return widgets::empty_state(c, r, '\u{E81C}', title, body);
     }
     let title = rectf(
@@ -597,11 +743,15 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hi
         match &m.items[k] {
             Item::Day(d) => day_header(c, ir, d),
             Item::Row(x) if x.file.is_none() => {
-                widgets::row(c, ir, glyph(x.kind), &x.title, &x.meta, "");
+                let more = more_rect(ir, s);
+                let text_r = rectf(ir.left, ir.top, more.left, ir.bottom);
+                widgets::row(c, text_r, glyph(x.kind), &x.title, &x.meta, "");
+                fluent::button(c, more, "\u{2026}", false);
             }
             Item::Row(x) => {
                 let present = hits.iter().any(|h| h.id == open_id(x.key));
                 let (open, show) = buttons(ir, s);
+                fluent::button(c, more_rect(ir, s), "\u{2026}", false);
                 let text_r = rectf(ir.left, ir.top, open.left, ir.bottom);
                 let meta = shown_meta(x, present);
                 widgets::row(c, text_r, glyph(x.kind), &x.title, &meta, "");
@@ -625,6 +775,7 @@ fn row_of(id: u32, m: &TimelineModel) -> Option<(&RowModel, u8)> {
         Item::Row(x) if row_id(x.key) == id => Some((x, 0)),
         Item::Row(x) if open_id(x.key) == id => Some((x, 1)),
         Item::Row(x) if open_id(x.key) + 1 == id => Some((x, 2)),
+        Item::Row(x) if more_id(x.key) == id => Some((x, 3)),
         _ => None,
     })
 }
@@ -653,14 +804,19 @@ pub fn describe(hit: &Hit, m: &TimelineModel) -> Option<super::Desc> {
     Some(match part {
         1 => Desc::new(format!("Open {}", x.title), Role::Button),
         2 => Desc::new(format!("Show {} in folder", x.title), Role::Button),
+        3 => Desc::new(format!("More actions for {}", x.title), Role::Button),
         _ => Desc::new(format!("{}, {}", x.title, x.meta), Role::Item),
     })
 }
 
 pub fn click(hit: &Hit, m: &TimelineModel) -> Option<Action> {
-    if let Some((x, 0)) = row_of(hit.id, m) {
-        // Clicking a received file opens it (the tray re-checks it is there).
-        return x.file.clone().map(Action::OpenFile);
+    if let Some((x, part)) = row_of(hit.id, m) {
+        match part {
+            // Clicking a received file opens it (the tray re-checks it is there).
+            0 => return x.file.clone().map(Action::OpenFile),
+            3 => return Some(Action::TimelineMenu(x.key)),
+            _ => {}
+        }
     }
     if hit.id == ALL_ID {
         return Some(Action::TimelineAll(!m.all_open()));
@@ -868,6 +1024,72 @@ mod tests {
         assert!(describe(row, &m).is_some());
     }
 
+    #[test]
+    fn search_narrows_rows_and_drops_empty_days() {
+        let now = DAY + 8 * H;
+        let entries = [
+            file(now - 60, r"C:/x/report.pdf"),
+            text(now - 120),
+            text(now - 2 * 86_400),
+        ];
+        let m = build(&entries, true, now, 0);
+        let all: usize = m.groups.iter().map(|g| g.rows.len()).sum();
+        assert_eq!(all, 3);
+        let none = std::collections::HashSet::new();
+        assert_eq!(m.filtered("", &none).groups.len(), m.groups.len());
+        let f = m.filtered("REPORT", &none);
+        assert_eq!(f.groups.len(), 1);
+        assert_eq!(f.groups[0].rows.len(), 1);
+        assert_eq!(f.query, "REPORT");
+        assert!(m.filtered("zzz", &none).items.is_empty());
+        // Several words all have to match; the caption counts.
+        assert_eq!(m.filtered("text characters", &none).groups.len(), 2);
+    }
+
+    #[test]
+    fn a_deleted_row_is_hidden_until_the_undo_passes() {
+        let now = DAY + 8 * H;
+        let entries = [text(now - 60), text(now - 120)];
+        let m = build(&entries, true, now, 0);
+        let key = m.groups[0].rows[0].key;
+        let mut hidden = std::collections::HashSet::new();
+        hidden.insert(key);
+        let f = m.filtered("", &hidden);
+        assert_eq!(f.groups[0].rows.len(), 1);
+        assert!(f.groups[0].rows.iter().all(|r| r.key != key));
+        hidden.clear();
+        assert_eq!(m.filtered("", &hidden).groups[0].rows.len(), 2);
+    }
+
+    #[test]
+    fn row_menu_offers_copy_path_only_for_files_and_never_repeats_the_buttons() {
+        let now = DAY + 8 * H;
+        let entries = [file(now - 60, r"C:/x/a.pdf"), text(now - 120)];
+        let m = build(&entries, true, now, 0);
+        let rows: Vec<&RowModel> = m.groups[0].rows.iter().collect();
+        let file_row = rows.iter().find(|r| r.file.is_some()).unwrap();
+        let text_row = rows.iter().find(|r| r.file.is_none()).unwrap();
+        assert_eq!(
+            row_actions(file_row),
+            [RowAct::CopyPath, RowAct::Details, RowAct::Delete]
+        );
+        assert_eq!(row_actions(text_row), [RowAct::Details, RowAct::Delete]);
+        assert!(details(file_row).contains("a.pdf"));
+    }
+
+    #[test]
+    fn the_more_button_asks_for_the_row_menu() {
+        let now = DAY + 8 * H;
+        let m = build(&[text(now - 60)], true, now, 0);
+        let (r, view) = page();
+        let hits = layout_with(r, view, 1.0, &m, &|_| FileState::Present);
+        let more = hits
+            .iter()
+            .find(|h| matches!(click(h, &m), Some(Action::TimelineMenu(_))))
+            .expect("a more button");
+        assert!(describe(more, &m).unwrap().name.starts_with("More actions"));
+    }
+
     fn page() -> (RectF, RectF) {
         // Content rect not scrolled, and the visible pane.
         (
@@ -948,7 +1170,7 @@ mod tests {
             let rows = m.items.iter().filter(|i| matches!(i, Item::Row(_))).count();
             assert_eq!(
                 hits.iter()
-                    .filter(|h| (ROW_BASE..DAY_BASE).contains(&h.id))
+                    .filter(|h| (ROW_BASE..MORE_BASE).contains(&h.id))
                     .count(),
                 rows
             );

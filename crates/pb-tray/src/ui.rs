@@ -484,7 +484,19 @@ fn page_action(a: crate::pages::Action) {
         return;
     };
     match a {
-        Action::Go(_) | Action::TimelineDay(_) | Action::TimelineAll(_) => {}
+        Action::Go(_)
+        | Action::TimelineDay(_)
+        | Action::TimelineAll(_)
+        | Action::TimelineMenu(_) => {}
+        Action::CopyText(t) => {
+            let _ = set_clipboard_own(HWND(raw as *mut _), &t, false);
+        }
+        // A Timeline delete whose undo window passed: gone for good.
+        Action::TimelineDelete(keys) => {
+            crate::timeline::with(|t| {
+                t.remove_where(|e| keys.contains(&crate::pages::timeline::entry_key(e)));
+            });
+        }
         Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
         // The same path as the hotkey and IPC: private clips are refused.
         Action::SendClipboard => post_command(raw, ID_SEND_CLIPBOARD),

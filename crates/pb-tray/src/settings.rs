@@ -59,6 +59,8 @@ pub struct Settings {
     /// Where the main window was last (x, y, width, height in screen
     /// pixels); None until it has been closed once.
     pub main_window_rect: Option<(i32, i32, i32, i32)>,
+    /// The Timeline days the user opened or closed ("day:1,day:0").
+    pub timeline_days: String,
 }
 
 impl Default for Settings {
@@ -94,6 +96,7 @@ impl Default for Settings {
             paused: false,
             log_dir: PathBuf::from(r"D:\Documents\Relay Logs"),
             main_window_rect: None,
+            timeline_days: String::new(),
         }
     }
 }
@@ -166,6 +169,7 @@ impl Settings {
                 "keep_history" => s.keep_history = parse_bool(v).unwrap_or(s.keep_history),
                 "keep_logs" => s.keep_logs = parse_bool(v).unwrap_or(s.keep_logs),
                 "paused" => s.paused = parse_bool(v).unwrap_or(s.paused),
+                "timeline_days" => s.timeline_days = v.chars().take(4096).collect(),
                 "log_dir" if !v.is_empty() => s.log_dir = PathBuf::from(v),
                 "main_window_rect" => {
                     let n: Vec<i32> = v.split(',').filter_map(|f| f.trim().parse().ok()).collect();
@@ -220,6 +224,9 @@ impl Settings {
             self.paused,
             self.log_dir.display()
         );
+        if !self.timeline_days.is_empty() {
+            text += &format!("timeline_days={}\n", self.timeline_days);
+        }
         if let Some((x, y, w, h)) = self.main_window_rect {
             text += &format!("main_window_rect={x},{y},{w},{h}\n");
         }
@@ -290,6 +297,7 @@ mod tests {
             paused: true,
             log_dir: PathBuf::from(r"E:\Logs"),
             main_window_rect: Some((-1200, 40, 1000, 700)),
+            timeline_days: "20000:1,19999:0".into(),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);

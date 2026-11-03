@@ -513,6 +513,19 @@ impl Store {
         }
     }
 
+    /// Removes the entries `gone` says yes to (the Timeline's delete);
+    /// returns how many.
+    pub fn remove_where(&mut self, gone: impl Fn(&Entry) -> bool) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|e| !gone(e));
+        let n = before - self.entries.len();
+        if n > 0 {
+            self.dirty = true;
+            self.version += 1;
+        }
+        n
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
         self.version += 1;

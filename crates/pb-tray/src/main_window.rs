@@ -47,12 +47,13 @@ use windows::{
                 IDC_ARROW, IDC_HAND, MINMAXINFO, NCCALCSIZE_PARAMS, SC_CLOSE, SC_MAXIMIZE,
                 SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
                 SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
-                SW_SHOW, WM_CAPTURECHANGED, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
-                WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE,
-                WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
-                WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND,
-                WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
+                SW_SHOW, WM_CAPTURECHANGED, WM_COMMAND, WM_CONTEXTMENU, WM_CTLCOLOREDIT,
+                WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
+                WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+                WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
+                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT,
+                WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN,
+                WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -329,6 +330,11 @@ struct State {
     /// What the Timeline model was built from (the host's, every day on its
     /// first-view rule); the window applies the user's open / closed days.
     tl_base: Arc<timeline::TimelineModel>,
+    /// The Timeline search text, rows deleted but still undoable, and that
+    /// undo window.
+    tquery: String,
+    hidden: std::collections::HashSet<u32>,
+    undo: Option<Undo>,
     timer: bool,
     /// The last restored (not maximized or minimized) window rect.
     normal: Option<SavedRect>,
@@ -341,6 +347,16 @@ struct State {
     /// The page last entered (`note_page`).
     entered: Option<Page>,
 }
+
+/// Rows removed from the list that can still come back: the host deletes
+/// them for good at `due`, or when the window closes.
+struct Undo {
+    keys: Vec<u32>,
+    due: Instant,
+}
+
+/// How long a Timeline delete can be undone.
+const UNDO_FOR: Duration = Duration::from_secs(8);
 
 /// A press on the scrollbar, until the button comes up.
 #[derive(Clone, Copy, Debug)]
@@ -356,6 +372,7 @@ impl State {
         self.nav_fade.iter().any(|a| a.running(now))
             || self.bar_fade.running(now)
             || matches!(self.drag, Some(Drag::Track { .. }))
+            || self.undo.is_some()
             || self.scroll.iter().any(|s| s.animating(now))
     }
 
@@ -459,16 +476,32 @@ pub fn wants_camera() -> bool {
 fn sync_search(hwnd: HWND) {
     let (w, h) = client_size(hwnd);
     let Some(place) = with(hwnd, |st| {
-        (st.page == Page::Settings).then(|| {
-            let f = frame(w, h, st.scale);
-            (settings::search_rect(f.content, f.pane, st.scale), st.scale)
-        })
+        let f = frame(w, h, st.scale);
+        match st.page {
+            Page::Settings => Some((
+                settings::search_rect(f.content, f.pane, st.scale),
+                st.scale,
+                st.query.clone(),
+                "Search settings",
+            )),
+            Page::Timeline if !st.tl_base.groups.is_empty() || !st.tquery.is_empty() => Some((
+                timeline::search_rect(f.content, st.scale),
+                st.scale,
+                st.tquery.clone(),
+                "Search history",
+            )),
+            _ => None,
+        }
     }) else {
         return;
     };
-    with_search(|sb| match place {
-        Some((r, s)) => {
-            sb.place(r, s);
+    with_search(|sb| match &place {
+        Some((r, s, text, cue)) => {
+            sb.place(*r, *s);
+            if sb.text() != *text {
+                sb.set_text(text);
+            }
+            sb.set_cue(cue);
             sb.show(true);
         }
         None => sb.show(false),
@@ -488,6 +521,17 @@ fn on_search(hwnd: HWND, code: u32) {
         EN_CHANGE => {
             let q = with_search(|sb| settings::clamp_query(&sb.text())).unwrap_or_default();
             let changed = with(hwnd, |st| {
+                if st.page == Page::Timeline {
+                    if st.tquery == q {
+                        return false;
+                    }
+                    st.tquery = q;
+                    let exp = st.model.timeline.exp.clone();
+                    rebuild_timeline(st, &exp);
+                    let sc = &mut st.scroll[Page::Timeline.index()];
+                    *sc = Scroll::new(sc.content, sc.view);
+                    return true;
+                }
                 if st.query == q {
                     return false;
                 }
@@ -741,6 +785,140 @@ fn reveal(hwnd: HWND) {
     with(hwnd, |st| reveal_focus(hwnd, st, now));
 }
 
+/// The undo bar along the bottom of the pane, and its Undo button.
+fn undo_rects(f: &Frame, s: f32) -> (RectF, RectF) {
+    let h = 48.0 * s;
+    let m = SPACE[4] * s;
+    let bar = rectf(
+        f.pane.left + m,
+        (f.pane.bottom - m - h).max(f.pane.top),
+        (f.pane.right - m).max(f.pane.left + m),
+        (f.pane.bottom - m).max(f.pane.top),
+    );
+    let bw = 88.0 * s;
+    let button = rectf(
+        (bar.right - SPACE[2] * s - bw).max(bar.left),
+        bar.top + 8.0 * s,
+        bar.right - SPACE[2] * s,
+        bar.bottom - 8.0 * s,
+    );
+    (bar, button)
+}
+
+/// Brings the rows removed from the list back.
+fn undo_delete(hwnd: HWND) {
+    with(hwnd, |st| {
+        if st.undo.take().is_some() {
+            st.hidden.clear();
+            let exp = st.model.timeline.exp.clone();
+            rebuild_timeline(st, &exp);
+        }
+    });
+    fit_scroll(hwnd);
+    sync_timer(hwnd);
+    repaint(hwnd);
+}
+
+/// Deletes for good the rows whose undo window passed (or the window is
+/// closing). Outside the state borrow: the host posts to the tray.
+fn commit_delete(hwnd: HWND) {
+    let keys = with(hwnd, |st| st.undo.take().map(|u| u.keys)).flatten();
+    if let (Some(keys), Some(host)) = (keys, HOST.get()) {
+        (host.act)(pages::Action::TimelineDelete(keys));
+    }
+}
+
+/// The Timeline row's "..." / context menu at screen point `at`.
+fn row_menu(hwnd: HWND, key: u32, at: POINT) {
+    use pages::timeline::RowAct;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, CreatePopupMenu, DestroyMenu, MessageBoxW, TrackPopupMenuEx,
+        MB_ICONINFORMATION, MB_OK, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    };
+    let row = with(hwnd, |st| {
+        st.model.timeline.items.iter().find_map(|i| match i {
+            timeline::Item::Row(x) if x.key == key => Some(x.clone()),
+            _ => None,
+        })
+    })
+    .flatten();
+    let Some(row) = row else { return };
+    let acts = timeline::row_actions(&row);
+    // SAFETY: a popup menu made, shown and destroyed here; the commands are
+    // 1-based indexes into `acts`.
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        for (i, a) in acts.iter().enumerate() {
+            let label: Vec<u16> = a.label().encode_utf16().chain(Some(0)).collect();
+            let _ = AppendMenuW(menu, MF_STRING, i + 1, PCWSTR(label.as_ptr()));
+        }
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenuEx(
+            menu,
+            (TPM_RETURNCMD | TPM_RIGHTBUTTON).0,
+            at.x,
+            at.y,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        usize::try_from(cmd.0)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|n| acts.get(n).copied())
+    };
+    match chosen {
+        Some(RowAct::CopyPath) => {
+            if let (Some(p), Some(host)) = (row.file.clone(), HOST.get()) {
+                (host.act)(pages::Action::CopyText(p));
+            }
+        }
+        Some(RowAct::Details) => {
+            let body: Vec<u16> = timeline::details(&row)
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            // SAFETY: a modal box on our own window; both strings are NUL-terminated.
+            unsafe {
+                MessageBoxW(
+                    Some(hwnd),
+                    PCWSTR(body.as_ptr()),
+                    w!("Details"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        }
+        Some(RowAct::Delete) => {
+            with(hwnd, |st| {
+                st.hidden.insert(key);
+                let mut keys = st.undo.take().map(|u| u.keys).unwrap_or_default();
+                keys.push(key);
+                st.undo = Some(Undo {
+                    keys,
+                    due: Instant::now() + UNDO_FOR,
+                });
+                let exp = st.model.timeline.exp.clone();
+                rebuild_timeline(st, &exp);
+            });
+            fit_scroll(hwnd);
+            sync_timer(hwnd);
+            repaint(hwnd);
+        }
+        None => {}
+    }
+}
+
+/// The row key of a Timeline hit id (a row, its buttons or its "...").
+fn row_key_of(hwnd: HWND, id: u32) -> Option<u32> {
+    with(hwnd, |st| {
+        st.model.timeline.items.iter().find_map(|i| match i {
+            timeline::Item::Row(x) if timeline::hit_ids(x.key).contains(&id) => Some(x.key),
+            _ => None,
+        })
+    })
+    .flatten()
+}
+
 /// Keys that act on the focus ring; false when nothing is focused (the key
 /// then scrolls as before). Runs the Timeline fold outside the borrow.
 fn arrow_key(hwnd: HWND, vk: u16) -> bool {
@@ -779,9 +957,10 @@ fn arrow_key(hwnd: HWND, vk: u16) -> bool {
                 return Out::None;
             };
             let (_, hits) = layout_now(hwnd, st);
-            let open = hits.iter().find(|h| h.id == id).and_then(|h| {
-                pages::describe(st.page, h, &st.model).and_then(|d| d.expanded)
-            });
+            let open = hits
+                .iter()
+                .find(|h| h.id == id)
+                .and_then(|h| pages::describe(st.page, h, &st.model).and_then(|d| d.expanded));
             return match open.and_then(|o| focus::header_key(o, right)) {
                 Some(_) => Out::Fold(Target::Hit(id)),
                 None => Out::None,
@@ -791,7 +970,10 @@ fn arrow_key(hwnd: HWND, vk: u16) -> bool {
         let (_, hits) = layout_now(hwnd, st);
         let in_nav = cur < HIT_BASE;
         let order: Vec<u32> = if in_nav {
-            Page::ALL.iter().map(|&p| focus_id(Target::Nav(p))).collect()
+            Page::ALL
+                .iter()
+                .map(|&p| focus_id(Target::Nav(p)))
+                .collect()
         } else {
             hits.iter().map(|h| focus_id(Target::Hit(h.id))).collect()
         };
@@ -830,6 +1012,28 @@ fn switch(st: &mut State, page: Page) {
     }
 }
 
+/// The Timeline list for the host's entries, the user's open days, the
+/// search and the rows waiting to be deleted.
+fn rebuild_timeline(st: &mut State, exp: &pages::timeline_view::Expansion) {
+    let base = st.tl_base.with_expansion(exp);
+    st.model.timeline = Arc::new(base.filtered(&st.tquery, &st.hidden));
+}
+
+/// Remembers the open and closed days across restarts (only days still in
+/// the history are kept).
+fn save_days(hwnd: HWND) {
+    let Some(host) = HOST.get() else { return };
+    let Some(text) = with(hwnd, |st| st.model.timeline.exp.encode(&st.tl_base.days())) else {
+        return;
+    };
+    if let Ok(mut s) = host.settings.lock() {
+        if s.timeline_days != text {
+            s.timeline_days = text;
+            let _ = s.save(&host.settings_path);
+        }
+    }
+}
+
 /// Opens or closes Timeline days through `change`, keeping what the user
 /// was looking at where it was (a day closing above must not make the page
 /// jump); the scroll range is re-measured and clamped.
@@ -842,10 +1046,11 @@ fn retimeline(
         let anchor = st.model.timeline.anchor(st.scroll[ix].offset);
         let mut exp = st.model.timeline.exp.clone();
         change(&mut exp, &st.model.timeline);
-        st.model.timeline = Arc::new(st.tl_base.with_expansion(&exp));
+        rebuild_timeline(st, &exp);
         anchor
     })
     .flatten();
+    save_days(hwnd);
     fit_scroll(hwnd);
     with(hwnd, |st| {
         let held = anchor.and_then(|a| st.model.timeline.restore(&a));
@@ -889,6 +1094,26 @@ fn activate(hwnd: HWND, t: Target) {
         Some(pages::Action::TimelineAll(open)) => retimeline(hwnd, |exp, m| {
             exp.set_all(&m.days(), open);
         }),
+        Some(pages::Action::TimelineMenu(key)) => {
+            // Below the "..." button that asked.
+            let at = with(hwnd, |st| {
+                let (_, hits) = layout_now(hwnd, st);
+                hits.iter()
+                    .find(|h| h.id == timeline::more_id(key))
+                    .map(|h| (h.r.left, h.r.bottom))
+            })
+            .flatten();
+            let (x, y) = at.unwrap_or((0.0, 0.0));
+            let mut p = POINT {
+                x: x as i32,
+                y: y as i32,
+            };
+            // SAFETY: client to screen for our window.
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p);
+            }
+            row_menu(hwnd, key, p);
+        }
         Some(pages::Action::SettingsPage(p)) => {
             with(hwnd, |st| {
                 st.sub = p;
@@ -933,6 +1158,10 @@ struct Snapshot {
     bar_look: Look,
     hover: Option<Target>,
     pressed: Option<Target>,
+    /// Rows waiting for their delete (the undo bar shows), and whether the
+    /// Timeline search box is up.
+    undo: usize,
+    tsearch: bool,
     search_focused: bool,
 }
 
@@ -960,6 +1189,9 @@ fn paint(hwnd: HWND) {
         },
         hover: st.hover,
         pressed: st.pressed,
+        undo: st.undo.as_ref().map_or(0, |u| u.keys.len()),
+        tsearch: st.page == Page::Timeline
+            && (!st.tl_base.groups.is_empty() || !st.tquery.is_empty()),
         search_focused: st.search_focused,
     });
     // The search box takes its colours at its own paint: repaint it when
@@ -1086,6 +1318,29 @@ fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
         // The frame around the native edit, which draws itself on top.
         let sb = settings::search_rect(f.content, f.pane, s);
         search_box::draw_frame(c, sb, snap.search_focused);
+    }
+    if snap.tsearch {
+        let sb = timeline::search_rect(f.content, s);
+        search_box::draw_frame(c, sb, snap.search_focused);
+    }
+    if snap.undo > 0 {
+        let (bar, button) = undo_rects(&f, s);
+        round_rect(
+            c,
+            &bar,
+            Some((p.card, 1.0)),
+            Some(p.stroke),
+            RADIUS[1] * s,
+            false,
+        );
+        let msg = if snap.undo == 1 {
+            "Removed from history".to_owned()
+        } else {
+            format!("{} items removed from history", snap.undo)
+        };
+        let t = rectf(bar.left + SPACE[3] * s, bar.top, button.left, bar.bottom);
+        text(c, Font::Body, &msg, t, p.text, Align::Left);
+        fluent::button(c, button, "Undo", true);
     }
     if let Some(id) = snap.focus.filter(|&id| id >= HIT_BASE) {
         if let Some(h) = hits.iter().find(|h| focus_id(Target::Hit(h.id)) == id) {
@@ -1222,6 +1477,53 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        // Right-click on a Timeline row, or the Menu key / Shift+F10 (the
+        // point is -1 then: the focused row's "..." button).
+        WM_CONTEXTMENU => {
+            let (sx, sy) = (lo(lparam.0), hi(lparam.0));
+            let from_key = lparam.0 == -1;
+            let found = with(hwnd, |st| {
+                if st.page != Page::Timeline {
+                    return None;
+                }
+                let (f, hits) = layout_now(hwnd, st);
+                if from_key {
+                    let id = st.focus.and_then(target_of).and_then(|t| match t {
+                        Target::Hit(id) => Some(id),
+                        _ => None,
+                    })?;
+                    let h = hits.iter().find(|h| h.id == id)?;
+                    Some((id, h.r.left, h.r.bottom))
+                } else {
+                    let mut p = POINT { x: sx, y: sy };
+                    // SAFETY: screen to client for our window.
+                    unsafe {
+                        let _ = ScreenToClient(hwnd, &mut p);
+                    }
+                    match target_at(&f, &hits, p.x as f32, p.y as f32) {
+                        Some(Target::Hit(id)) => Some((id, p.x as f32, p.y as f32)),
+                        _ => None,
+                    }
+                }
+            })
+            .flatten();
+            let Some((id, x, y)) = found else {
+                // SAFETY: default handling.
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            };
+            if let Some(key) = row_key_of(hwnd, id) {
+                let mut p = POINT {
+                    x: x as i32,
+                    y: y as i32,
+                };
+                // SAFETY: client to screen for our window.
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p);
+                }
+                row_menu(hwnd, key, p);
+            }
+            LRESULT(0)
+        }
         // The client area covers the whole window (the title bar is ours).
         // Maximized, Windows hangs the frame off-screen: keep it out.
         WM_NCCALCSIZE => {
@@ -1399,6 +1701,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 rehover(hwnd, st, now);
             });
+            if with(hwnd, |st| st.undo.as_ref().is_some_and(|u| now >= u.due)).unwrap_or(false) {
+                commit_delete(hwnd);
+            }
             sync_timer(hwnd);
             repaint(hwnd);
             LRESULT(0)
@@ -1530,6 +1835,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 repaint(hwnd);
                 return LRESULT(0);
             }
+            let on_undo = with(hwnd, |st| {
+                let (w, h) = client_size(hwnd);
+                let f = frame(w, h, st.scale);
+                st.undo.is_some() && within(&undo_rects(&f, st.scale).1, x, y)
+            })
+            .unwrap_or(false);
+            if on_undo {
+                undo_delete(hwnd);
+                return LRESULT(0);
+            }
             let t = with(hwnd, |st| {
                 let (f, hits) = layout_now(hwnd, st);
                 let up = target_at(&f, &hits, x, y);
@@ -1605,7 +1920,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             let has_search = with_search(|_| ()).is_some();
             let moved = with(hwnd, |st| {
                 let (_, hits) = layout_now(hwnd, st);
-                let search = has_search && st.page == Page::Settings;
+                let search = has_search
+                    && (st.page == Page::Settings
+                        || (st.page == Page::Timeline
+                            && (!st.tl_base.groups.is_empty() || !st.tquery.is_empty())));
                 let order = focus_order(&hits, search);
                 let next = tab(&order, st.focus, st.search_focused, back);
                 let into = next == Some(SEARCH_FOCUS);
@@ -1631,6 +1949,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             repaint(hwnd);
             LRESULT(0)
         }
+        // Ctrl+Z takes back the last Timeline delete.
+        WM_KEYDOWN
+            if wparam.0 == 0x5A
+                // SAFETY: plain keyboard state query.
+                && unsafe { GetKeyState(0x11) } < 0
+                && with(hwnd, |st| st.undo.is_some()).unwrap_or(false) =>
+        {
+            undo_delete(hwnd);
+            LRESULT(0)
+        }
         WM_KEYDOWN if wparam.0 == VK_RETURN.0 as usize || wparam.0 == VK_SPACE.0 as usize => {
             // Held down: act once, not at the keyboard repeat rate.
             if is_key_repeat(lparam.0) {
@@ -1654,6 +1982,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
         }
         WM_DESTROY => {
+            // A delete still waiting for its undo is final now.
+            commit_delete(hwnd);
             // The edit goes first, outside every borrow (it may notify us).
             let search = SEARCH.with(|cell| cell.borrow_mut().take());
             drop(search);
@@ -1841,8 +2171,18 @@ fn create(page: Page, opened: Instant) {
     // The tray idles under EcoQoS (efficient cores, low clock); while this
     // window is open the UI thread runs at full speed (undone on WM_DESTROY).
     let _ = pb_platform_win::power::set_thread_eco_exempt(true);
-    let model = (host.model)();
+    let mut model = (host.model)();
     let tl_base = model.timeline.clone();
+    // The days the user opened or closed last time.
+    let days = host
+        .settings
+        .lock()
+        .map(|s| s.timeline_days.clone())
+        .unwrap_or_default();
+    if !days.is_empty() {
+        let exp = pages::timeline_view::Expansion::decode(&days);
+        model.timeline = Arc::new(tl_base.with_expansion(&exp));
+    }
     let saved = host.settings.lock().ok().and_then(|s| s.main_window_rect);
     let rect = restore_rect(saved, &monitors()).unwrap_or_else(default_rect);
     let (hwnd, surface, timing) = match make_window(rect, fluent::transparency_on()) {
@@ -1877,6 +2217,9 @@ fn create(page: Page, opened: Instant) {
             drag: None,
             hover: None,
             tl_base,
+            tquery: String::new(),
+            hidden: Default::default(),
+            undo: None,
             timer: false,
             normal: Some(rect),
             opened,
@@ -1954,8 +2297,18 @@ pub fn refresh() {
         let base = model.timeline.clone();
         if st.tl_base.groups != base.groups || st.tl_base.history_on != base.history_on {
             anchor = st.model.timeline.anchor(st.scroll[ix].offset);
-            model.timeline = Arc::new(base.with_expansion(&st.model.timeline.exp));
             st.tl_base = base;
+            // Rows the host really dropped no longer wait to be hidden.
+            let keys: std::collections::HashSet<u32> = st
+                .tl_base
+                .groups
+                .iter()
+                .flat_map(|g| g.rows.iter().map(|r| r.key))
+                .collect();
+            st.hidden.retain(|k| keys.contains(k));
+            let exp = st.model.timeline.exp.clone();
+            rebuild_timeline(st, &exp);
+            model.timeline = st.model.timeline.clone();
         } else {
             model.timeline = st.model.timeline.clone();
         }
@@ -2182,6 +2535,8 @@ mod tests {
                 bar_look: Look::Idle,
                 hover: None,
                 pressed: None,
+                undo: 0,
+                tsearch: false,
                 search_focused: false,
             };
             surface.resize(w as u32, h as u32);
@@ -2227,6 +2582,8 @@ mod tests {
                 bar_look: look,
                 hover: Some(Target::Hit(1)),
                 pressed: None,
+                undo: 0,
+                tsearch: false,
                 search_focused: false,
             };
             surface
