@@ -53,6 +53,8 @@ pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
 const CLOSE_NOT_PAIRED: u32 = 403;
 const CLOSE_PAIR_FAILED: u32 = 400;
+/// The joiner could not save the pairing: the host takes its own back.
+const CLOSE_PAIR_NOT_SAVED: u32 = 500;
 
 #[derive(Debug)]
 pub enum Error {
@@ -84,6 +86,9 @@ pub enum Error {
     /// The peer, or this node's own slot, refused an audio request for this
     /// reason (`Declined` has its own variant).
     AudioRefused(pb_protocol::control::AudioReason),
+    /// The list of paired devices could not be saved, so the change the user
+    /// asked for (pair, remove) did not happen.
+    Storage(String),
 }
 
 impl fmt::Display for Error {
@@ -106,6 +111,7 @@ impl fmt::Display for Error {
             Self::Io(e) => write!(f, "file error: {e}"),
             Self::Unsupported => f.write_str("the other device does not support this yet: update it"),
             Self::AudioRefused(r) => write!(f, "audio refused: {r:?}"),
+            Self::Storage(e) => write!(f, "could not save the list of paired devices ({e}): nothing changed, try again"),
         }
     }
 }
@@ -120,6 +126,10 @@ impl From<PairError> for Error {
 
 fn tx<E: fmt::Display>(e: E) -> Error {
     Error::Transport(e.to_string())
+}
+
+fn storage(e: std::io::Error) -> Error {
+    Error::Storage(e.to_string())
 }
 
 /// A failed batch included a learned address that is not saved: a
@@ -186,24 +196,30 @@ impl Joining {
         let theirs = tokio::time::timeout(CONFIRM_TIMEOUT, self.recv.next::<Pair>())
             .await
             .map_err(|_| Error::Timeout)??;
+        // The host sends `accepted: true` only once it has saved the pairing
+        // (it reads our Confirm before sending its own).
         let remote_ok = matches!(
             theirs.and_then(|p| p.msg),
             Some(PairMsg::Confirm(PairConfirm { accepted: true }))
         );
-        // Close handshake: the host finishes its stream only after reading our
-        // Confirm, so once we see its end-of-stream both Confirms were read
-        // and closing cannot discard anything.
+        // Close handshake: the host finishes its stream right after its
+        // Confirm, so once we see its end-of-stream closing discards nothing.
         let _ = self.send.finish();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.recv.next::<Pair>()).await;
-        self.conn.close(0u32.into(), b"paired");
-        if accept && remote_ok {
-            lock(&self.node.inner.store).pin(self.peer.clone());
-            // Paired again just now: whatever answered before is this device.
-            self.node.forget_changed(&self.peer.id);
-            Ok(self.peer)
-        } else {
-            Err(Error::Rejected)
+        if !(accept && remote_ok) {
+            self.conn.close(0u32.into(), b"not paired");
+            return Err(Error::Rejected);
         }
+        if let Err(e) = self.node.store_try_pin(self.peer.clone()).await {
+            // The host waits for this close and takes its pairing back.
+            self.conn
+                .close(CLOSE_PAIR_NOT_SAVED.into(), b"pairing not saved");
+            return Err(e);
+        }
+        self.conn.close(0u32.into(), b"paired");
+        // Paired again just now: whatever answered before is this device.
+        self.node.forget_changed(&self.peer.id);
+        Ok(self.peer)
     }
 }
 
@@ -400,9 +416,19 @@ impl Node {
 
     /// Revoke a peer: removed from the store, so it can no longer connect,
     /// and anything it has open now (a transfer, a control session) ends.
+    /// False when it was not paired, and also when the removal could not be
+    /// saved (it is then still paired); [`Self::try_unpair`] tells them apart.
     pub fn unpair(&self, peer: &PeerId) -> bool {
+        self.try_unpair(peer).unwrap_or(false)
+    }
+
+    /// [`Self::unpair`] for the user's Remove button: `Ok(false)` when it was
+    /// not paired, [`Error::Storage`] when the removal could not be saved.
+    /// After an error nothing changed: it is still paired (in memory and on
+    /// disk), its connections stay open, and the user must be told.
+    pub fn try_unpair(&self, peer: &PeerId) -> Result<bool, Error> {
         // Store first: a mismatch noted after the bump below sees it gone.
-        let removed = lock(&self.inner.store).remove(peer);
+        let removed = lock(&self.inner.store).try_remove(peer).map_err(storage)?;
         // `untrusted` stays (see there). The epoch entry stays too, so a
         // later pairing never reuses a value an old dial captured.
         self.forget_changed(peer);
@@ -416,7 +442,26 @@ impl Node {
             }
             false
         });
-        removed
+        Ok(removed)
+    }
+
+    /// Save a pairing the user is told about, off the async threads (the
+    /// store writes and flushes a file).
+    async fn store_try_pin(&self, peer: PairedPeer) -> Result<(), Error> {
+        let store = self.inner.store.clone();
+        tokio::task::spawn_blocking(move || lock(&store).try_pin(peer))
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?
+            .map_err(storage)
+    }
+
+    /// Take back a pairing saved by [`Self::store_try_pin`].
+    async fn store_try_remove(&self, peer: PeerId) -> Result<bool, Error> {
+        let store = self.inner.store.clone();
+        tokio::task::spawn_blocking(move || lock(&store).try_remove(&peer))
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?
+            .map_err(storage)
     }
 
     /// Remember an authenticated connection (and forget finished ones).
@@ -594,7 +639,7 @@ impl Node {
                         // never the rest of the batch. It may be neither a
                         // candidate nor saved: iroh can move to a better path.
                         if let Some(used) = used_addr(&c) {
-                            self.confirm_addrs(&peer, &[used]);
+                            self.confirm_addrs(&peer, &[used]).await;
                         }
                         Ok(c)
                     }
@@ -800,11 +845,9 @@ impl Node {
             .await
             .unwrap_or(Ok(false))
             .unwrap_or(false);
-        write_frame(
-            &mut send,
-            &Pair::from(PairMsg::Confirm(PairConfirm { accepted: accept })),
-        )
-        .await?;
+        // The joiner sends its Confirm before reading ours, so read it first:
+        // the pairing is then saved (or not) before we answer, and the joiner
+        // never believes in a pairing this side failed to save.
         let theirs = tokio::time::timeout(CONFIRM_TIMEOUT, recv.next::<Pair>()).await;
         let remote_ok = matches!(
             theirs,
@@ -812,22 +855,49 @@ impl Node {
                 msg: Some(PairMsg::Confirm(PairConfirm { accepted: true }))
             })))
         );
-        let _ = send.finish();
-        let result = if accept && remote_ok {
-            let peer = PairedPeer {
-                id: joiner,
-                name: start.device_name,
-                addrs: start.addrs,
-            };
-            lock(&self.inner.store).pin(peer.clone());
-            self.forget_changed(&peer.id);
-            Ok(peer)
+        let peer = PairedPeer {
+            id: joiner,
+            name: start.device_name,
+            addrs: start.addrs,
+        };
+        let mut result = if accept && remote_ok {
+            self.store_try_pin(peer.clone()).await.map(|()| peer)
         } else {
             Err(Error::Rejected)
         };
-        // Our finish (above, after reading the joiner's Confirm) tells the
-        // joiner it may close; wait for that rather than closing abruptly.
-        let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+        let confirmed = write_frame(
+            &mut send,
+            &Pair::from(PairMsg::Confirm(PairConfirm {
+                accepted: result.is_ok(),
+            })),
+        )
+        .await;
+        let _ = send.finish();
+        // Our finish tells the joiner it may close; wait for that rather than
+        // closing abruptly. Its close code says whether it kept the pairing.
+        let closed = match confirmed {
+            Ok(()) => tokio::time::timeout(Duration::from_secs(5), conn.closed())
+                .await
+                .ok(),
+            Err(_) => None,
+        };
+        let joiner_lost_it = matches!(
+            &closed,
+            Some(ConnectionError::ApplicationClosed(c))
+                if c.error_code == CLOSE_PAIR_NOT_SAVED.into()
+        );
+        if let Ok(p) = &result {
+            if joiner_lost_it || confirmed.is_err() {
+                // The joiner did not get, or could not keep, the pairing:
+                // take ours back so neither side is paired alone.
+                let _ = self.store_try_remove(p.id).await;
+                result = Err(Error::Storage(
+                    "the other device could not save the pairing".into(),
+                ));
+            } else {
+                self.forget_changed(&p.id);
+            }
+        }
         let _ = done_tx.send(result);
         Ok(())
     }

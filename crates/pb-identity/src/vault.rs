@@ -25,9 +25,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
+    crate::write_atomic(path, bytes)
 }
 
 fn seed_from(bytes: &[u8], what: &str) -> io::Result<[u8; 32]> {

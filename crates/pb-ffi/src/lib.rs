@@ -1791,6 +1791,21 @@ impl PbNode {
             .is_some_and(|p| self.node.unpair(&p.id))
     }
 
+    /// [`Self::unpair`] for the Remove button: `false` when it was not
+    /// paired; an error when the removal could not be saved, and then the
+    /// device is still paired and can still connect: tell the user.
+    pub fn try_unpair(&self, peer_id: String) -> Result<bool, PbError> {
+        match self
+            .node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id.to_string() == peer_id)
+        {
+            Some(p) => self.node.try_unpair(&p.id).map_err(fail),
+            None => Ok(false),
+        }
+    }
+
     /// Send clipboard text to a paired device (user action only).
     pub async fn send_clipboard(
         &self,

@@ -182,6 +182,130 @@ async fn unpairing_ends_a_session_that_is_open() {
     );
 }
 
+/// A store whose saves fail while `fail` is set (a locked or full disk).
+#[derive(Default)]
+struct FlakyStore {
+    mem: MemoryPeerStore,
+    fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FlakyStore {
+    fn failing(&self) -> bool {
+        self.fail.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl PeerStore for FlakyStore {
+    fn get(&self, id: &PeerId) -> Option<PairedPeer> {
+        self.mem.get(id)
+    }
+    fn pin(&mut self, peer: PairedPeer) {
+        self.mem.pin(peer);
+    }
+    fn remove(&mut self, id: &PeerId) -> bool {
+        self.try_remove(id).unwrap_or(false)
+    }
+    fn list(&self) -> Vec<PairedPeer> {
+        self.mem.list()
+    }
+    fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
+        if self.failing() {
+            return Err(std::io::Error::other("disk full"));
+        }
+        self.mem.pin(peer);
+        Ok(())
+    }
+    fn try_remove(&mut self, id: &PeerId) -> std::io::Result<bool> {
+        if self.failing() {
+            return Err(std::io::Error::other("disk full"));
+        }
+        Ok(self.mem.remove(id))
+    }
+}
+
+async fn flaky_node(
+    seed: u8,
+    name: &str,
+) -> (
+    Node,
+    NodeEvents,
+    SharedStore,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
+    let flaky = FlakyStore::default();
+    let fail = flaky.fail.clone();
+    let store: SharedStore = Arc::new(Mutex::new(flaky));
+    let (n, ev) = Node::bind(
+        &Identity::from_seed([seed; 32]),
+        store.clone(),
+        NodeConfig {
+            device_name: name.into(),
+            port: None,
+            discovery_port: None,
+            tuning: Default::default(),
+        },
+    )
+    .await
+    .unwrap();
+    (n, ev, store, fail)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unpair_that_cannot_be_saved_is_reported_and_changes_nothing() {
+    let (pc, mut pc_ev, pc_store, fail) = flaky_node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let s = phone.connect(&pc.peer_id()).await.unwrap();
+    let mut held = pc_ev.sessions.recv().await.unwrap();
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        matches!(pc.try_unpair(&phone.peer_id()), Err(Error::Storage(_))),
+        "the user must hear that the removal failed"
+    );
+    assert!(!pc.unpair(&phone.peer_id()), "no success claimed");
+    assert!(lock(&pc_store).get(&phone.peer_id()).is_some());
+    // Still paired, so nothing it has open is cut either.
+    s.send(ControlMsg::ClipboardText(ClipboardText {
+        text: "still here".into(),
+        sensitive: false,
+    }))
+    .await
+    .unwrap();
+    assert!(matches!(
+        held.recv().await,
+        Ok(Some(ControlMsg::ClipboardText(_)))
+    ));
+    // Once saving works again the removal goes through.
+    fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(pc.try_unpair(&phone.peer_id()).unwrap());
+    assert!(lock(&pc_store).get(&phone.peer_id()).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_the_host_cannot_save_is_reported_on_both_sides() {
+    let (pc, mut pc_ev, pc_store, fail) = flaky_node(1, "PC").await;
+    let (phone, _pev, phone_store) = node(2, "Phone").await;
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(matches!(h, Err(Error::Storage(_))), "{h:?}");
+    assert!(j.is_err(), "the phone must not claim a pairing: {j:?}");
+    assert!(lock(&pc_store).list().is_empty());
+    assert!(lock(&phone_store).list().is_empty(), "no half pairing");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pairing_the_joiner_cannot_save_is_reported_on_both_sides() {
+    let (pc, mut pc_ev, pc_store) = node(1, "PC").await;
+    let (phone, _pev, phone_store, fail) = flaky_node(2, "Phone").await;
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(matches!(j, Err(Error::Storage(_))), "{j:?}");
+    assert!(h.is_err(), "the PC must not claim a pairing: {h:?}");
+    assert!(lock(&phone_store).list().is_empty());
+    assert!(lock(&pc_store).list().is_empty(), "no half pairing");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn rotating_codes_invalidate_the_previous_one_and_closing_kills_the_current() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;

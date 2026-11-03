@@ -324,22 +324,31 @@ impl Node {
 
     /// An authenticated connection succeeded through `addrs`: save them first
     /// in the peer's address list and forget the candidates.
-    pub(crate) fn confirm_addrs(&self, peer: &PeerId, addrs: &[SocketAddr]) {
+    ///
+    /// Runs off the async threads (the store flushes a file). A save that
+    /// fails changes nothing: the old addresses stay, in memory as on disk,
+    /// and the next connection tries again. Nobody waits on this to report it.
+    pub(crate) async fn confirm_addrs(&self, peer: &PeerId, addrs: &[SocketAddr]) {
         lock(&self.inner.candidates).remove(peer);
-        let mut store = lock(&self.inner.store);
-        let Some(mut p) = store.get(peer) else {
-            return;
-        };
+        let store = self.inner.store.clone();
+        let peer = *peer;
         let new: Vec<String> = addrs.iter().map(|a| a.to_string()).collect();
-        if p.addrs.starts_with(&new) {
-            return;
-        }
-        p.addrs.retain(|x| !new.contains(x));
-        let mut merged = new;
-        merged.append(&mut p.addrs);
-        merged.truncate(MAX_ADDRS);
-        p.addrs = merged;
-        store.pin(p);
+        let _ = tokio::task::spawn_blocking(move || {
+            let mut store = lock(&store);
+            let Some(mut p) = store.get(&peer) else {
+                return;
+            };
+            if p.addrs.starts_with(&new) {
+                return;
+            }
+            p.addrs.retain(|x| !new.contains(x));
+            let mut merged = new;
+            merged.append(&mut p.addrs);
+            merged.truncate(MAX_ADDRS);
+            p.addrs = merged;
+            let _ = store.try_pin(p);
+        })
+        .await;
     }
 }
 

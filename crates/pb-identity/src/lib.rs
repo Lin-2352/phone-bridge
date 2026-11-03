@@ -176,10 +176,21 @@ pub trait PeerStore {
     /// for new connections immediately; callers must also close live ones.
     fn remove(&mut self, id: &PeerId) -> bool;
     fn list(&self) -> Vec<PairedPeer>;
+    /// [`Self::pin`] for a decision the user is told about: an error means the
+    /// peer is not pinned (nothing changed, in memory or on disk).
+    fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
+        self.pin(peer);
+        Ok(())
+    }
+    /// [`Self::remove`] for a decision the user is told about: an error means
+    /// the peer is still paired (nothing changed, in memory or on disk).
+    fn try_remove(&mut self, id: &PeerId) -> std::io::Result<bool> {
+        Ok(self.remove(id))
+    }
 }
 
 /// In-memory [`PeerStore`] used in tests and as the base for persistent stores.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MemoryPeerStore {
     peers: BTreeMap<PeerId, PairedPeer>,
 }
@@ -204,7 +215,8 @@ impl PeerStore for MemoryPeerStore {
 
 /// [`PeerStore`] persisted to a small text file (one peer per line:
 /// `hex id<TAB>name<TAB>addr,addr`). Every change is written atomically
-/// (temp file + rename). Names have tabs and newlines replaced.
+/// and durably (temp file, flushed to disk, then rename). Names have tabs and
+/// newlines replaced.
 pub struct FilePeerStore {
     path: std::path::PathBuf,
     mem: MemoryPeerStore,
@@ -230,9 +242,9 @@ impl FilePeerStore {
         Ok(Self { path, mem })
     }
 
-    fn save(&self) -> std::io::Result<()> {
+    fn save(&self, peers: &MemoryPeerStore) -> std::io::Result<()> {
         let mut out = String::new();
-        for p in self.mem.list() {
+        for p in peers.list() {
             let name: String = p
                 .name
                 .chars()
@@ -246,9 +258,47 @@ impl FilePeerStore {
                 .collect();
             out.push_str(&format!("{}\t{}\t{}\n", p.id, name, p.addrs.join(",")));
         }
-        let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, out)?;
-        std::fs::rename(tmp, &self.path)
+        write_atomic(&self.path, out.as_bytes())
+    }
+}
+
+/// Replace `path` so that a crash or power loss leaves the old content or the
+/// new one, never an empty file: the bytes reach the disk before the rename.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        rename_over(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written?;
+    // The rename itself must survive too. Windows cannot open a folder as a
+    // file, and flushes the directory entry with the rename.
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// A virus scanner or backup agent holding the target for a moment makes a
+/// rename on Windows fail with "access denied"; a short retry rides that out.
+fn rename_over(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 4 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
     }
 }
 
@@ -275,23 +325,40 @@ impl PeerStore for FilePeerStore {
         self.mem.get(id)
     }
 
-    /// Persists immediately; on I/O failure the in-memory change is kept
-    /// and the error is only visible on the next successful save.
+    /// Best effort, for what nobody is told about (a new address for a peer
+    /// that is already paired): on I/O failure the in-memory change is kept
+    /// and reaches the file with the next successful save. Use
+    /// [`PeerStore::try_pin`] when the user is told the peer is paired.
     fn pin(&mut self, peer: PairedPeer) {
         self.mem.pin(peer);
-        let _ = self.save();
+        let _ = self.save(&self.mem);
     }
 
+    /// False also when the removal could not be saved: the peer is still paired.
     fn remove(&mut self, id: &PeerId) -> bool {
-        let removed = self.mem.remove(id);
-        if removed {
-            let _ = self.save();
-        }
-        removed
+        self.try_remove(id).unwrap_or(false)
     }
 
     fn list(&self) -> Vec<PairedPeer> {
         self.mem.list()
+    }
+
+    fn try_pin(&mut self, peer: PairedPeer) -> std::io::Result<()> {
+        let mut next = self.mem.clone();
+        next.pin(peer);
+        self.save(&next)?;
+        self.mem = next;
+        Ok(())
+    }
+
+    fn try_remove(&mut self, id: &PeerId) -> std::io::Result<bool> {
+        let mut next = self.mem.clone();
+        if !next.remove(id) {
+            return Ok(false);
+        }
+        self.save(&next)?;
+        self.mem = next;
+        Ok(true)
     }
 }
 
@@ -314,9 +381,7 @@ pub fn load_or_create_identity(path: &std::path::Path) -> std::io::Result<Identi
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, id.seed())?;
-            std::fs::rename(tmp, path)?;
+            write_atomic(path, &id.seed())?;
             Ok(id)
         }
         Err(e) => Err(e),
@@ -472,6 +537,59 @@ mod tests {
         let s = FilePeerStore::open(&path).unwrap();
         assert_eq!(s.list().len(), 1);
         assert_eq!(s.get(&good).unwrap().addrs, Vec::<String>::new());
+    }
+
+    fn peer(seed: u8) -> PairedPeer {
+        PairedPeer {
+            id: id(seed).peer_id(),
+            name: format!("peer {seed}"),
+            addrs: vec!["10.0.0.2:47100".into()],
+        }
+    }
+
+    /// A folder where the temp file goes makes every save fail, on any OS.
+    fn break_saves(path: &std::path::Path) -> std::path::PathBuf {
+        let tmp = path.with_extension("tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn a_remove_that_cannot_be_saved_reports_it_and_changes_nothing() {
+        let path = temp_dir("remove-fail").join("peers.txt");
+        let mut s = FilePeerStore::open(&path).unwrap();
+        let p = peer(1);
+        s.try_pin(p.clone()).unwrap();
+        let block = break_saves(&path);
+        assert!(s.try_remove(&p.id).is_err(), "the failure must be reported");
+        assert_eq!(s.get(&p.id), Some(p.clone()), "still paired, as on disk");
+        assert!(!s.remove(&p.id), "the plain call does not claim success");
+        assert_eq!(s.get(&p.id), Some(p.clone()));
+        assert!(FilePeerStore::open(&path).unwrap().get(&p.id).is_some());
+        // Trying again once the problem is gone works, and survives a restart.
+        std::fs::remove_dir(&block).unwrap();
+        assert!(s.try_remove(&p.id).unwrap());
+        assert!(FilePeerStore::open(&path).unwrap().get(&p.id).is_none());
+    }
+
+    #[test]
+    fn a_pin_that_cannot_be_saved_reports_it_and_changes_nothing() {
+        let path = temp_dir("pin-fail").join("peers.txt");
+        let mut s = FilePeerStore::open(&path).unwrap();
+        let old = peer(1);
+        s.try_pin(old.clone()).unwrap();
+        let block = break_saves(&path);
+        assert!(s.try_pin(peer(2)).is_err());
+        assert_eq!(s.get(&peer(2).id), None);
+        let renamed = PairedPeer {
+            name: "other".into(),
+            ..old.clone()
+        };
+        assert!(s.try_pin(renamed.clone()).is_err());
+        assert_eq!(s.get(&old.id), Some(old), "the old entry is kept");
+        std::fs::remove_dir(&block).unwrap();
+        s.try_pin(renamed.clone()).unwrap();
+        assert_eq!(FilePeerStore::open(&path).unwrap().list(), vec![renamed]);
     }
 
     #[test]
