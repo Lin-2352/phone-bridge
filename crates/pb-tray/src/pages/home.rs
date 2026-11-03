@@ -314,17 +314,6 @@ impl Quick {
         !m.paused && !self.on(m)
     }
 
-    /// Why a disabled tile is disabled, for the tooltip and screen readers.
-    pub fn disabled_reason(self, m: &HomeModel) -> Option<&'static str> {
-        if self.enabled(m) {
-            None
-        } else if m.paused {
-            Some("Relay is paused. Resume it first.")
-        } else {
-            Some("Pair a phone first.")
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             Quick::SendFile => "Send files",
@@ -804,6 +793,24 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
     }
 }
 
+pub fn describe(hit: &Hit, m: &HomeModel) -> Option<super::Desc> {
+    use super::{Desc, Role};
+    let id = hit.id;
+    Some(match id {
+        PAIR => Desc::new(crate::strings::PAIR_DEVICE, Role::Button),
+        RESUME => Desc::new("Resume Relay", Role::Button),
+        SEE_ALL => Desc::new("See all activity", Role::Button),
+        _ if (QUICK..QUICK + Quick::ALL.len() as u32).contains(&id) => {
+            Desc::new(Quick::ALL[(id - QUICK) as usize].label_for(m), Role::Button)
+        }
+        _ if (STOP..STOP + 3).contains(&id) => {
+            let s = m.sessions.get((id - STOP) as usize)?;
+            Desc::new(format!("Stop {}", s.text().1), Role::Button)
+        }
+        _ => return None,
+    })
+}
+
 pub fn click(hit: &Hit, m: &HomeModel) -> Option<Action> {
     match hit.id {
         RESUME if m.paused => Some(Action::Resume),
@@ -1121,7 +1128,6 @@ mod tests {
         let m = paired_model(true);
         for q in Quick::ALL {
             assert!(!q.enabled(&m), "{q:?}");
-            assert!(q.disabled_reason(&m).unwrap().contains("paused"));
         }
         let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
         assert!(hits.iter().any(|h| h.id == RESUME));
@@ -1197,6 +1203,24 @@ mod tests {
         assert_eq!(Quick::Camera.label_for(&m), "Cancel start");
         m.camera_pending = false;
         assert_eq!(Quick::Camera.label_for(&m), "Camera");
+    }
+
+    #[test]
+    fn every_home_hit_has_a_name() {
+        for paused in [false, true] {
+            let mut m = paired_model(paused);
+            m.sessions.push(Session {
+                kind: SessionKind::Camera,
+                stop: Action::Stop(SessionKind::Camera),
+                live: true,
+            });
+            for h in layout(rectf(0.0, 0.0, 900.0, 1400.0), 1.0, &m) {
+                assert!(
+                    !describe(&h, &m).expect("described").name.is_empty(),
+                    "{h:?}"
+                );
+            }
+        }
     }
 
     #[test]

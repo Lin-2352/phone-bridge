@@ -170,6 +170,12 @@ const ALL_W: f32 = 112.0;
 /// day headers `DAY_BASE + day`; the collapse / expand all control `ALL_ID`.
 const DAY_BASE: u32 = 0xC000_0000;
 const ALL_ID: u32 = 0xFFFF_0000;
+/// A whole row (below the day ids, above the 2 key + n button ids).
+const ROW_BASE: u32 = 0x8000_1000;
+
+fn row_id(key: u32) -> u32 {
+    ROW_BASE + (key & 0x1FFF_FFFF)
+}
 
 fn day_id(day: i64) -> u32 {
     DAY_BASE + day.clamp(0, 0x3FFE_0000) as u32
@@ -448,7 +454,12 @@ pub fn layout_with(
     if !m.items.is_empty() && all.bottom > view.top && all.top < view.bottom {
         hits.push(Hit { id: ALL_ID, r: all });
     }
-    for k in visible(r, view, s, m) {
+    // Every item has hits, in view or not: Tab can walk the whole list (the
+    // window scrolls the focused one into view) and so can a screen reader.
+    // The Open / Show buttons exist only for rows near the view: each needs
+    // a (cached, off-thread) check that its file is still there.
+    let near = visible(r, view, s, m);
+    for k in 0..m.items.len() {
         let x = match &m.items[k] {
             Item::Row(x) => x,
             Item::Day(d) => {
@@ -459,9 +470,10 @@ pub fn layout_with(
                 continue;
             }
         };
-        if x.file
-            .as_deref()
-            .is_some_and(|p| state(p) == FileState::Present)
+        if near.contains(&k)
+            && x.file
+                .as_deref()
+                .is_some_and(|p| state(p) == FileState::Present)
         {
             let (open, show) = buttons(item_rect(r, s, m, k), s);
             hits.push(Hit {
@@ -473,6 +485,11 @@ pub fn layout_with(
                 r: show,
             });
         }
+        // After its buttons: a click on a button reaches the button first.
+        hits.push(Hit {
+            id: row_id(x.key),
+            r: item_rect(r, s, m, k),
+        });
     }
     hits
 }
@@ -602,7 +619,49 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &TimelineModel, hits: &[Hi
 
 /// The row is found by its key, so a click that spans an insert still
 /// acts on the row that was pressed (or nothing, if it scrolled away).
+/// The row model of a hit id (a row, its Open or its Show in folder).
+fn row_of(id: u32, m: &TimelineModel) -> Option<(&RowModel, u8)> {
+    m.items.iter().find_map(|i| match i {
+        Item::Row(x) if row_id(x.key) == id => Some((x, 0)),
+        Item::Row(x) if open_id(x.key) == id => Some((x, 1)),
+        Item::Row(x) if open_id(x.key) + 1 == id => Some((x, 2)),
+        _ => None,
+    })
+}
+
+pub fn describe(hit: &Hit, m: &TimelineModel) -> Option<super::Desc> {
+    use super::{Desc, Role};
+    if hit.id == ALL_ID {
+        let name = if m.all_open() {
+            "Collapse all days"
+        } else {
+            "Expand all days"
+        };
+        return Some(Desc::new(name, Role::Button));
+    }
+    if hit.id >= DAY_BASE {
+        let g = m.groups.iter().find(|g| day_id(g.day) == hit.id)?;
+        let open = m
+            .items
+            .iter()
+            .any(|i| matches!(i, Item::Day(d) if d.day == g.day && d.open));
+        let mut d = Desc::new(format!("{}, {} items", g.label, g.rows.len()), Role::Header);
+        d.expanded = Some(open);
+        return Some(d);
+    }
+    let (x, part) = row_of(hit.id, m)?;
+    Some(match part {
+        1 => Desc::new(format!("Open {}", x.title), Role::Button),
+        2 => Desc::new(format!("Show {} in folder", x.title), Role::Button),
+        _ => Desc::new(format!("{}, {}", x.title, x.meta), Role::Item),
+    })
+}
+
 pub fn click(hit: &Hit, m: &TimelineModel) -> Option<Action> {
+    if let Some((x, 0)) = row_of(hit.id, m) {
+        // Clicking a received file opens it (the tray re-checks it is there).
+        return x.file.clone().map(Action::OpenFile);
+    }
     if hit.id == ALL_ID {
         return Some(Action::TimelineAll(!m.all_open()));
     }
@@ -772,6 +831,43 @@ mod tests {
         assert!(group_by_day(&[], now, 0).is_empty());
     }
 
+    #[test]
+    fn every_hit_is_described_with_day_state_and_row_names() {
+        let now = DAY + 8 * H;
+        let entries = [
+            file(now - 60, r"C:/x/a.pdf"),
+            text(now - 120),
+            text(now - 2 * 86_400),
+        ];
+        let m = build(&entries, true, now, 0);
+        let (r, view) = page();
+        let hits = layout_with(r, view, 1.0, &m, &|_| FileState::Present);
+        let mut ids = std::collections::HashSet::new();
+        for h in &hits {
+            assert!(ids.insert(h.id), "duplicate id {}", h.id);
+            let d = describe(h, &m).expect("described");
+            assert!(!d.name.is_empty());
+            if d.role == super::super::Role::Header {
+                assert!(d.expanded.is_some());
+            }
+        }
+        let rows = hits
+            .iter()
+            .filter_map(|h| describe(h, &m))
+            .filter(|d| d.role == super::super::Role::Item)
+            .count();
+        assert_eq!(
+            rows,
+            3.min(m.items.iter().filter(|i| matches!(i, Item::Row(_))).count())
+        );
+        // A file row's click opens it.
+        let row = hits
+            .iter()
+            .find(|h| matches!(click(h, &m), Some(Action::OpenFile(_))) && h.id >= ROW_BASE)
+            .expect("the file row opens on click");
+        assert!(describe(row, &m).is_some());
+    }
+
     fn page() -> (RectF, RectF) {
         // Content rect not scrolled, and the visible pane.
         (
@@ -793,7 +889,7 @@ mod tests {
         let (r, view) = page();
         let hits = layout_with(r, view, 1.0, &m, &file_state);
         // Open and Show in folder on the file row; nothing on the text row.
-        let hits: Vec<Hit> = hits.into_iter().filter(|h| h.id < DAY_BASE).collect();
+        let hits: Vec<Hit> = hits.into_iter().filter(|h| h.id < ROW_BASE).collect();
         assert_eq!(hits.len(), 2);
         assert_eq!(file_state(&p), FileState::Present);
         // Gone between the layout and the click: the page cannot know yet,
@@ -806,7 +902,7 @@ mod tests {
         let m = build(&entries, true, now, 0);
         assert!(layout_with(r, view, 1.0, &m, &file_state)
             .iter()
-            .all(|h| h.id >= DAY_BASE));
+            .all(|h| h.id >= ROW_BASE));
         let row = m
             .items
             .iter()
@@ -846,11 +942,20 @@ mod tests {
             assert!(!range.is_empty());
             assert!(range.len() <= most, "{range:?} at {offset}");
             let hits = layout_with(r, v, s, &m, &|_| FileState::Present);
-            assert!(hits.len() <= 2 * range.len());
+            // Buttons only near the view; one whole-row hit per row.
+            let buttons = hits.iter().filter(|h| h.id < ROW_BASE).count();
+            assert!(buttons <= 2 * range.len());
+            let rows = m.items.iter().filter(|i| matches!(i, Item::Row(_))).count();
+            assert_eq!(
+                hits.iter()
+                    .filter(|h| (ROW_BASE..DAY_BASE).contains(&h.id))
+                    .count(),
+                rows
+            );
             assert!(!hits.is_empty());
             // Every hit is in view or on the one overscan row beside it.
             let near = 2.0 * 56.0 * s;
-            for h in &hits {
+            for h in hits.iter().filter(|h| h.id < ROW_BASE) {
                 assert!(
                     h.r.bottom >= v.top - near && h.r.top <= v.bottom + near,
                     "{h:?} outside {v:?} at {offset}"

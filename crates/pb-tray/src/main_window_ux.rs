@@ -348,3 +348,119 @@ fn ux_run() {
     // SAFETY: our own window, destroyed on its thread.
     let _ = unsafe { DestroyWindow(hwnd) };
 }
+
+/// What a UI Automation client (a Narrator stand-in, on its own MTA thread
+/// like a real one) sees and does: names and roles of the nav items, day
+/// headers with their expanded state, rows; then it expands a day and
+/// selects the Settings tab through the patterns.
+fn uia_client(hwnd: isize, out: std::sync::mpsc::Sender<Result<Vec<(String, i32)>, String>>) {
+    use windows::Win32::{
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+        },
+        UI::Accessibility::{
+            CUIAutomation, IUIAutomation, IUIAutomationExpandCollapsePattern,
+            IUIAutomationSelectionItemPattern, TreeScope_Descendants, UIA_ExpandCollapsePatternId,
+            UIA_SelectionItemPatternId,
+        },
+    };
+    let run = || -> windows::core::Result<Vec<(String, i32)>> {
+        // SAFETY: COM on this thread, which owns every interface it makes.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let auto: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let root = auto.ElementFromHandle(HWND(hwnd as *mut _))?;
+            let all = root.FindAll(TreeScope_Descendants, &auto.CreateTrueCondition()?)?;
+            let mut seen = Vec::new();
+            for i in 0..all.Length()? {
+                let e = all.GetElement(i)?;
+                seen.push((e.CurrentName()?.to_string(), e.CurrentControlType()?.0));
+            }
+            // Expand the first closed day header through ExpandCollapse.
+            for i in 0..all.Length()? {
+                let e = all.GetElement(i)?;
+                if e.CurrentControlType()?.0 == 50024 {
+                    let p: IUIAutomationExpandCollapsePattern =
+                        e.GetCurrentPatternAs(UIA_ExpandCollapsePatternId)?;
+                    if p.CurrentExpandCollapseState()?.0 == 0 {
+                        p.Expand()?;
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(400));
+            // Select the Settings tab.
+            for i in 0..all.Length()? {
+                let e = all.GetElement(i)?;
+                if e.CurrentName()? == "Settings" && e.CurrentControlType()?.0 == 50019 {
+                    let p: IUIAutomationSelectionItemPattern =
+                        e.GetCurrentPatternAs(UIA_SelectionItemPatternId)?;
+                    p.Select()?;
+                }
+            }
+            Ok(seen)
+        }
+    };
+    let _ = out.send(run().map_err(|e| e.to_string()));
+}
+
+#[test]
+#[ignore]
+fn uia_run() {
+    let dir = std::env::var_os("PB_UX_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("pbm_ux_out"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let now = store::now_unix();
+    let timeline = Arc::new(tl::build(&entries(now), true, now, 0));
+    let log = crate::core::Log::open(dir.join("uia.log"));
+    init(Host {
+        log,
+        settings: Default::default(),
+        settings_path: dir.join("settings-uia.txt"),
+        model: Box::new(move || Model {
+            timeline: timeline.clone(),
+            ..Default::default()
+        }),
+        act: Box::new(|_| {}),
+        check_peers: Box::new(|| {}),
+    });
+    open(Page::Timeline);
+    let hwnd = current().expect("window");
+    pump(600);
+    let rows0 = with(hwnd, |st| st.model.timeline.items.len()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let raw = hwnd.0 as isize;
+    std::thread::spawn(move || uia_client(raw, tx));
+    // The window thread must keep pumping: UIA sends it WM_GETOBJECT.
+    let end = Instant::now() + Duration::from_secs(20);
+    let seen = loop {
+        pump(50);
+        match rx.try_recv() {
+            Ok(r) => break r.expect("UIA client"),
+            Err(_) if Instant::now() > end => panic!("UIA client timed out"),
+            Err(_) => {}
+        }
+    };
+    pump(300);
+    let has = |name: &str, ct: i32| seen.iter().any(|(n, c)| n == name && *c == ct);
+    for tab in ["Home", "Timeline", "Devices", "Settings"] {
+        assert!(has(tab, 50019), "nav item {tab} missing: {seen:?}");
+    }
+    assert!(
+        seen.iter().any(|(n, c)| *c == 50024 && n.contains("items")),
+        "day headers"
+    );
+    assert!(
+        seen.iter()
+            .any(|(n, c)| *c == 50007 && n.contains("Pixel 8")),
+        "rows"
+    );
+    assert!(has("Collapse all days", 50000) || has("Expand all days", 50000));
+    // The patterns acted on the real window.
+    let (rows1, page) = with(hwnd, |st| (st.model.timeline.items.len(), st.page)).unwrap();
+    assert!(rows1 > rows0, "Expand opened a day: {rows0} -> {rows1}");
+    assert_eq!(page, Page::Settings, "Select on the Settings tab");
+    // SAFETY: our own window, destroyed on its thread.
+    let _ = unsafe { DestroyWindow(hwnd) };
+}

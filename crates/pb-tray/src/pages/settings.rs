@@ -428,9 +428,7 @@ pub fn layout(r: RectF, view: RectF, s: f32, m: &SettingsModel) -> Vec<Hit> {
     let area = list_area(r, view, s);
     for (item, card) in placed(r, s, m) {
         let Item::Row(row) = item else { continue };
-        if card.bottom <= area.top || card.top >= area.bottom {
-            continue;
-        }
+        let off = card.bottom <= area.top || card.top >= area.bottom;
         for (id, b) in controls(&row, card, s, &m.rows) {
             let cut = rectf(
                 b.left,
@@ -438,12 +436,110 @@ pub fn layout(r: RectF, view: RectF, s: f32, m: &SettingsModel) -> Vec<Hit> {
                 b.right,
                 b.bottom.min(area.bottom),
             );
-            if cut.bottom > cut.top {
+            // Every control has a hit so Tab reaches rows below the fold (the
+            // window scrolls the focused one into view); one out of view
+            // keeps its real rect only when it is outside the pane, else it
+            // is empty and takes no clicks.
+            if !off && cut.bottom > cut.top {
                 hits.push(Hit { id, r: cut });
+            } else {
+                let y = if b.top >= area.bottom {
+                    b.top
+                } else {
+                    area.top
+                };
+                hits.push(Hit {
+                    id,
+                    r: rectf(b.left, y, b.right, y),
+                });
             }
         }
     }
     hits
+}
+
+/// Where control `id` really is, scrolled with `r` and not clipped (its
+/// hit is empty while it is out of view).
+pub fn full_rect(id: u32, r: RectF, s: f32, m: &SettingsModel) -> Option<RectF> {
+    placed(r, s, m).into_iter().find_map(|(item, card)| {
+        let Item::Row(row) = item else { return None };
+        controls(&row, card, s, &m.rows)
+            .into_iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, b)| b)
+    })
+}
+
+/// The accessible description of a Settings hit: found by walking the
+/// same rows and controls the layout uses.
+pub fn describe(hit: &Hit, m: &SettingsModel) -> Option<super::Desc> {
+    use super::{Desc, Role};
+    if (LINK..THEME).contains(&hit.id) {
+        let (p, label) = pages().get((hit.id - LINK) as usize).copied()?;
+        let mut d = Desc::new(label, Role::Radio);
+        d.selected = m.sub == p;
+        return Some(d);
+    }
+    let card = rectf(0.0, 0.0, 800.0, 120.0);
+    for item in items(&m.rows, m.sub, &m.query) {
+        let Item::Row(row) = item else { continue };
+        for (k, (id, _)) in controls(&row, card, 1.0, &m.rows).into_iter().enumerate() {
+            if id != hit.id {
+                continue;
+            }
+            let rm = &m.rows;
+            return Some(match &row {
+                Row::Theme => {
+                    let n = ["System", "Light", "Dark"][k.min(2)];
+                    let mut d = Desc::new(format!("Theme: {n}"), Role::Radio);
+                    d.selected = usize::from(rm.theme) == k;
+                    d
+                }
+                Row::Toggle(key, title, _) => {
+                    let mut d = Desc::new(*title, Role::Toggle);
+                    d.toggled = Some(rm.get(*key));
+                    d
+                }
+                Row::Choice(key, title, labels) => {
+                    let mut d = Desc::new(format!("{title}: {}", labels[k.min(2)]), Role::Radio);
+                    d.selected = usize::from(rm.choice(*key)) == k;
+                    d
+                }
+                Row::App(i) => {
+                    let (name, shown) = rm.apps.get(*i)?;
+                    let mut d = Desc::new(format!("Show notifications from {name}"), Role::Toggle);
+                    d.toggled = Some(*shown);
+                    d
+                }
+                Row::Folder => Desc::new(
+                    if k == 0 {
+                        "Open received files folder"
+                    } else {
+                        "Change received files folder"
+                    },
+                    Role::Button,
+                ),
+                Row::Device(i) => {
+                    Desc::new(format!("Remove {}", rm.devices.get(*i)?.0), Role::Button)
+                }
+                Row::Pair => Desc::new(crate::strings::PAIR_DEVICE, Role::Button),
+                Row::CameraStatus => Desc::new(
+                    if k == 0 {
+                        "Camera: start or stop"
+                    } else {
+                        "Repair camera"
+                    },
+                    Role::Button,
+                ),
+                Row::CameraWindow => Desc::new("Open camera window", Role::Button),
+                Row::ClearHistory => Desc::new("Clear history", Role::Button),
+                Row::LogFolder => Desc::new("Open log folder", Role::Button),
+                Row::ClearLogs => Desc::new("Clear all logs", Role::Button),
+                Row::Header(_) | Row::About => return None,
+            });
+        }
+    }
+    None
 }
 
 /// The action for a click on `hit`; an app or a device is looked up by its
@@ -747,6 +843,45 @@ mod tests {
         settings_rows::{rows, Action as SAction, CameraAct, ChoiceKey, Key, Model, Row},
     };
 
+    #[test]
+    fn every_hit_on_every_page_has_a_unique_name_and_role() {
+        use std::collections::HashSet;
+        for (p, _) in pages() {
+            let m = on(p, model());
+            let r = rectf(104.0, 56.0, 976.0, 3000.0);
+            let view = rectf(80.0, 32.0, 1000.0, 532.0);
+            let hits = layout(r, view, 1.0, &m);
+            assert!(!hits.is_empty());
+            let mut names = HashSet::new();
+            let mut ids = HashSet::new();
+            for h in hits {
+                assert!(ids.insert(h.id), "duplicate hit id {}", h.id);
+                let d =
+                    describe(&h, &m).unwrap_or_else(|| panic!("hit {} of {p:?} undescribed", h.id));
+                assert!(!d.name.is_empty());
+                assert!(
+                    names.insert(d.name.clone()),
+                    "two controls named {:?}",
+                    d.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rows_below_the_fold_have_hits_and_a_real_rect() {
+        let m = on(Page::Notifications, model());
+        let r = rectf(104.0, 56.0, 976.0, 3000.0);
+        let view = rectf(80.0, 32.0, 1000.0, 300.0);
+        let hits = layout(r, view, 1.0, &m);
+        let below: Vec<_> = hits.iter().filter(|h| h.r.bottom <= h.r.top).collect();
+        assert!(!below.is_empty());
+        for h in below {
+            let full = full_rect(h.id, r, 1.0, &m).expect("real rect");
+            assert!(full.bottom > full.top);
+        }
+    }
+
     fn model() -> Model {
         Model {
             share: true,
@@ -1022,7 +1157,8 @@ mod tests {
         assert_eq!(links(c), links(scrolled));
         // A row scrolled up under the search box takes no clicks there.
         for h in layout(scrolled, view, 1.0, &m) {
-            if matches!(click(&h, &m), Some(Action::Settings(_))) {
+            // (A control out of view has an empty hit: it takes no clicks.)
+            if h.r.bottom > h.r.top && matches!(click(&h, &m), Some(Action::Settings(_))) {
                 assert!(h.r.top > sb.bottom, "{h:?} under the search box");
                 assert!(h.r.bottom <= view.bottom + 0.5);
                 assert!(h.r.left >= sb.left - 0.5, "rows sit right of the links");

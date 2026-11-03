@@ -67,6 +67,64 @@ pub enum Action {
     TimelineAll(bool),
 }
 
+/// What kind of control a hit is, for screen readers (UI Automation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Button,
+    /// On / off (switch).
+    Toggle,
+    /// One of a group of choices; `selected` says which.
+    Radio,
+    /// A day header: expands and collapses.
+    Header,
+    /// A list entry (a Timeline row).
+    Item,
+    /// A nav rail item; `selected` marks the page shown.
+    Tab,
+}
+
+/// The accessible description of a hit: derived from the same model that
+/// draws and hit-tests it, so the screen reader's tree cannot drift.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Desc {
+    pub name: String,
+    pub role: Role,
+    pub toggled: Option<bool>,
+    pub expanded: Option<bool>,
+    pub selected: bool,
+}
+
+impl Desc {
+    pub fn new(name: impl Into<String>, role: Role) -> Desc {
+        Desc {
+            name: name.into(),
+            role,
+            toggled: None,
+            expanded: None,
+            selected: false,
+        }
+    }
+}
+
+/// The description of `hit` on `page`.
+pub fn describe(page: Page, hit: &Hit, m: &Model) -> Option<Desc> {
+    match page {
+        Page::Home => home::describe(hit, &m.home),
+        Page::Timeline => timeline::describe(hit, &m.timeline),
+        Page::Devices => devices::describe(hit, &m.devices),
+        Page::Settings => settings::describe(hit, &m.settings),
+    }
+}
+
+/// Where `hit` really is when its rect is empty (a Settings control out of
+/// view), so keyboard focus can scroll to it.
+pub fn full_rect(page: Page, id: u32, r: RectF, s: f32, m: &Model) -> Option<RectF> {
+    match page {
+        Page::Settings => settings::full_rect(id, r, s, &m.settings),
+        _ => None,
+    }
+}
+
 /// The page's hits inside `r` (its content rect, already scrolled), at
 /// scale `s`. `view` is the visible pane in pixels: long lists lay out only
 /// what is in it.

@@ -48,7 +48,7 @@ use windows::{
                 SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
                 SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
                 SW_SHOW, WM_CAPTURECHANGED, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
-                WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN,
+                WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN,
                 WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE,
                 WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP,
                 WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND,
@@ -670,6 +670,15 @@ fn reveal_focus(hwnd: HWND, st: &mut State, now: Instant) {
     let Some(h) = hits.iter().find(|h| focus_id(Target::Hit(h.id)) == id) else {
         return;
     };
+    let mut h = *h;
+    if h.r.bottom <= h.r.top {
+        // Out of view: its hit is empty; ask the page where it really is.
+        let sc = &st.scroll[st.page.index()];
+        let r = scrolled(f.content, st.scale, sc);
+        if let Some(full) = pages::full_rect(st.page, h.id, r, st.scale, &st.model) {
+            h.r = full;
+        }
+    }
     let margin = SPACE[1] * st.scale;
     let sc = &mut st.scroll[st.page.index()];
     let shift = if h.r.top < f.content.top + margin {
@@ -681,6 +690,132 @@ fn reveal_focus(hwnd: HWND, st: &mut State, now: Instant) {
     };
     let to = sc.offset + shift / st.scale;
     sc.ease_to(to, now);
+}
+
+/// Publishes the screen reader's tree: the nav rail and the page's hits as
+/// laid out now. Skipped while no client listens, unless `force` (the first
+/// `WM_GETOBJECT`).
+fn publish_tree(hwnd: HWND, force: bool) {
+    if !force && !crate::uia::listening() {
+        return;
+    }
+    let snap = with(hwnd, |st| {
+        let (f, hits) = layout_now(hwnd, st);
+        let nav: Vec<crate::a11y::NavItem> = f
+            .nav
+            .iter()
+            .map(|(r, p)| crate::a11y::NavItem {
+                id: focus_id(Target::Nav(*p)),
+                label: p.label(),
+                rect: *r,
+                current: *p == st.page,
+            })
+            .collect();
+        let nodes = crate::a11y::tree(&nav, st.page, &hits, HIT_BASE, &st.model);
+        crate::uia::Snapshot {
+            nodes,
+            focus: st.focus,
+        }
+    });
+    if let Some(snap) = snap {
+        crate::uia::publish(snap);
+    }
+}
+
+/// A pattern call from a screen reader for node `id` (a focus id).
+fn uia_act(hwnd: HWND, id: u32, act: isize) {
+    let Some(t) = target_of(id) else { return };
+    if act == crate::uia::Act::Focus as isize {
+        with(hwnd, |st| st.focus = Some(id));
+        reveal(hwnd);
+        crate::uia::raise_focus(hwnd, id);
+        repaint(hwnd);
+    } else {
+        activate(hwnd, t);
+    }
+}
+
+/// Scrolls the focused hit into view now.
+fn reveal(hwnd: HWND) {
+    let now = Instant::now();
+    with(hwnd, |st| reveal_focus(hwnd, st, now));
+}
+
+/// Keys that act on the focus ring; false when nothing is focused (the key
+/// then scrolls as before). Runs the Timeline fold outside the borrow.
+fn arrow_key(hwnd: HWND, vk: u16) -> bool {
+    use focus::Move;
+    let now = Instant::now();
+    let mv = match vk {
+        k if k == VK_UP.0 => Some(Move::Prev),
+        k if k == VK_DOWN.0 => Some(Move::Next),
+        k if k == VK_HOME.0 => Some(Move::First),
+        k if k == VK_END.0 => Some(Move::Last),
+        _ => None,
+    };
+    const VK_ESC: u16 = 0x1B;
+    const VK_LEFT: u16 = 0x25;
+    const VK_RIGHT: u16 = 0x27;
+    let fold = (vk == VK_LEFT || vk == VK_RIGHT).then_some(vk == VK_RIGHT);
+    if mv.is_none() && fold.is_none() && vk != VK_ESC {
+        return false;
+    }
+    enum Out {
+        None,
+        Moved(u32),
+        Fold(Target),
+        Cleared,
+    }
+    let out = with(hwnd, |st| {
+        let Some(cur) = st.focus else {
+            return Out::None;
+        };
+        if vk == VK_ESC {
+            st.focus = None;
+            return Out::Cleared;
+        }
+        if let Some(right) = fold {
+            let Some(Target::Hit(id)) = target_of(cur) else {
+                return Out::None;
+            };
+            let (_, hits) = layout_now(hwnd, st);
+            let open = hits.iter().find(|h| h.id == id).and_then(|h| {
+                pages::describe(st.page, h, &st.model).and_then(|d| d.expanded)
+            });
+            return match open.and_then(|o| focus::header_key(o, right)) {
+                Some(_) => Out::Fold(Target::Hit(id)),
+                None => Out::None,
+            };
+        }
+        let mv = mv.unwrap_or(Move::Next);
+        let (_, hits) = layout_now(hwnd, st);
+        let in_nav = cur < HIT_BASE;
+        let order: Vec<u32> = if in_nav {
+            Page::ALL.iter().map(|&p| focus_id(Target::Nav(p))).collect()
+        } else {
+            hits.iter().map(|h| focus_id(Target::Hit(h.id))).collect()
+        };
+        match focus::step(&order, Some(cur), mv) {
+            Some(n) => {
+                st.focus = Some(n);
+                reveal_focus(hwnd, st, now);
+                Out::Moved(n)
+            }
+            None => Out::None,
+        }
+    });
+    match out {
+        Some(Out::Moved(id)) => crate::uia::raise_focus(hwnd, id),
+        Some(Out::Fold(t)) => {
+            activate(hwnd, t);
+            return true;
+        }
+        Some(Out::Cleared) => {}
+        _ => return false,
+    }
+    sync_timer(hwnd);
+    repaint(hwnd);
+    true
 }
 
 fn switch(st: &mut State, page: Page) {
@@ -1073,6 +1208,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     match msg {
         WM_PAINT => {
             paint(hwnd);
+            publish_tree(hwnd, false);
+            LRESULT(0)
+        }
+        // A screen reader asks for the window's UI Automation tree.
+        WM_GETOBJECT if lparam.0 as i32 == crate::uia::ROOT_OBJECT_ID => {
+            publish_tree(hwnd, true);
+            crate::uia::root_for(hwnd, wparam, lparam)
+        }
+        // A pattern call from UI Automation, run like a click or a Tab.
+        crate::uia::WM_UIA_ACT => {
+            uia_act(hwnd, wparam.0 as u32, lparam.0);
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
@@ -1419,6 +1565,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(1)
         }
+        // With the focus ring on something: arrows, Home and End move it
+        // inside its group (the nav rail, or the page); Left / Right fold a
+        // Timeline day; Esc drops the ring.
+        WM_KEYDOWN if arrow_key(hwnd, wparam.0 as u16) => LRESULT(0),
         WM_KEYDOWN if scroll_key(wparam.0 as u16) => {
             let key = wparam.0 as u16;
             with(hwnd, |st| {
@@ -1461,15 +1611,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let into = next == Some(SEARCH_FOCUS);
                 st.focus = if into { None } else { next };
                 reveal_focus(hwnd, st, now);
-                (into, st.search_focused)
+                (into, st.search_focused, st.focus)
             });
             sync_timer(hwnd);
             // After the borrow: focus changes notify us.
+            if let Some((_, _, Some(id))) = moved {
+                crate::uia::raise_focus(hwnd, id);
+            }
             match moved {
-                Some((true, _)) => {
+                Some((true, _, _)) => {
                     with_search(|sb| sb.focus());
                 }
-                Some((false, true)) => {
+                Some((false, true, _)) => {
                     // SAFETY: focus change to our own window.
                     let _ = unsafe { SetFocus(Some(hwnd)) };
                 }
