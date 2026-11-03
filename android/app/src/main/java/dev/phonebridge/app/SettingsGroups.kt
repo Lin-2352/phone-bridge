@@ -25,11 +25,11 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Connection, "Paired PCs", "Remove a PC you no longer use"),
     SettingEntry(Group.Connection, "Pair a new PC", "Scan the QR code shown on your PC"),
     SettingEntry(Group.Camera, "PCs always allowed to use the camera", "Skip the question; Android's camera indicator still shows"),
-    SettingEntry(Group.Screen, "Let my PC control this phone", "Use the PC's mouse and keyboard here"),
+    SettingEntry(Group.Screen, "Let my PC control this phone", "Use the PC's mouse and keyboard here; needs Accessibility permission"),
     SettingEntry(Group.Notifications, "Notifications on PC", "Show this phone's notifications on your PC"),
+    SettingEntry(Group.Notifications, "Apps on your PC", "Choose which apps may show notifications on your PC; banking apps are blocked by default"),
     SettingEntry(Group.Screen, "Instant screen", "Skip Android's prompt after the first share"),
     SettingEntry(Group.Screen, "Show my screen on my PC without asking", "Skip the question before your screen is shared"),
-    SettingEntry(Group.Screen, "Accessibility permission", "$APP_NAME control lets your PC tap and type here"),
     SettingEntry(Group.Files, "Accept from my devices automatically", "Only paired devices can send"),
     SettingEntry(Group.Files, "Save files to", "Choose the folder for received files"),
     SettingEntry(Group.Audio, "Share this phone's audio without asking", "Skips only $APP_NAME's question; Android's capture prompt and the microphone question always appear"),
@@ -109,7 +109,7 @@ fun statusLine(g: Group, s: StatusInput): String = when (g) {
         s.controlAllowed -> "PC control allowed"
         else -> "PC control asks first"
     }
-    Group.Audio -> if (s.audioSkipAsk) "Phone audio starts without our question" else "Phone audio asks first"
+    Group.Audio -> if (s.audioSkipAsk) "Phone audio starts without $APP_NAME's question" else "Phone audio asks first"
     Group.Notifications -> when {
         !s.notifyOn -> "Off"
         !s.notifyAccess -> "On, needs notification access"
