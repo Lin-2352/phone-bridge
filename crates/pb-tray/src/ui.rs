@@ -1963,7 +1963,8 @@ fn set_paused(hwnd: HWND, st: &State, on: bool) {
         }
         crate::screen_window::close();
         crate::camera_window::close();
-        crate::camera::stop();
+        // Tearing the virtual camera down waits on the Frame Server: not on this thread.
+        std::thread::spawn(crate::camera::stop);
         crate::audio::stop_all();
         // A pairing code on screen would be refused by the core: take it down.
         let _ = st.cmds.send(crate::core::Cmd::CancelPair);
