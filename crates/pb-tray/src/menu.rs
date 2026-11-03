@@ -412,7 +412,7 @@ mod tests {
             Item::separator(),
             Item::heading("Quick settings"),
             Item::new(' ', "Pause Relay", 26).checked(true),
-            Item::new(' ', "Sync clipboard", 5).checked(false),
+            Item::new(' ', "Share clipboard", 5).checked(false),
             Item::new(fluent::glyph::SEND, "Send files", 4).disabled("Pair a phone first"),
             Item::separator(),
             Item::new(fluent::glyph::POWER, "Quit Relay", 2),

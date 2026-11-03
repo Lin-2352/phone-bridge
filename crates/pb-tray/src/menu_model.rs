@@ -39,8 +39,7 @@ pub struct Inputs<'a> {
     pub logs_available: bool,
 }
 
-const PAUSED: &str = "Relay is paused";
-const NO_PEER: &str = "Pair a phone first";
+use crate::strings::{NO_PEER, PAUSED};
 const NO_LOGS: &str = "Log folder is not available";
 
 pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
@@ -76,7 +75,7 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
         Camera::Running => action(glyph::PHONE, "Stop phone camera", ids.camera, None),
         Camera::Idle => action(glyph::PHONE, "Use phone as camera", ids.camera, start_block),
     };
-    let mut logs = toggle("Keep logs", ID_TOGGLE_LOGS, s.keep_logs);
+    let mut logs = toggle(crate::strings::KEEP_LOGS, ID_TOGGLE_LOGS, s.keep_logs);
     if !i.logs_available {
         logs = logs.disabled(NO_LOGS);
     }
@@ -99,14 +98,18 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
         Item::separator(),
         Item::heading("Quick settings"),
         toggle("Pause Relay", ID_PAUSE, s.paused),
-        toggle("Sync clipboard", ids.clipboard_sync, s.universal_clipboard),
         toggle(
-            "Show phone notifications",
+            crate::strings::SHARE_CLIPBOARD,
+            ids.clipboard_sync,
+            s.universal_clipboard,
+        ),
+        toggle(
+            crate::strings::PHONE_NOTIFICATIONS,
             ID_TOGGLE_NOTIFY,
             s.notify_enabled,
         ),
         toggle(
-            "Allow phone to control this PC",
+            crate::strings::PHONE_CONTROL,
             ID_TOGGLE_ALLOW_CONTROL,
             s.allow_control,
         ),
@@ -115,6 +118,35 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
         Item::new(glyph::SETTINGS, "Settings", ids.settings),
         Item::new(glyph::POWER, "Quit Relay", ids.quit),
     ]
+}
+
+/// The labels of the menu's setting toggles other than Pause (the ones
+/// Settings also shows); for the wording test.
+#[cfg(test)]
+pub fn toggle_labels() -> Vec<String> {
+    let ids = Ids {
+        open: 0,
+        send_files: 0,
+        send_clipboard: 0,
+        screen: 0,
+        camera: 0,
+        clipboard_sync: 0,
+        settings: 0,
+        quit: 0,
+    };
+    let settings = Settings::default();
+    let inputs = Inputs {
+        settings: &settings,
+        has_peer: true,
+        screen_open: false,
+        camera: Camera::Idle,
+        logs_available: true,
+    };
+    build(&inputs, &ids)
+        .into_iter()
+        .filter(|i| i.checked.is_some() && i.label != "Pause Relay")
+        .map(|i| i.label)
+        .collect()
 }
 
 #[cfg(test)]
@@ -168,9 +200,9 @@ mod tests {
                 "Use phone as camera",
                 "Quick settings",
                 "Pause Relay",
-                "Sync clipboard",
+                "Share clipboard",
                 "Show phone notifications",
-                "Allow phone to control this PC",
+                "Let my phone control this PC",
                 "Keep logs",
                 "Settings",
                 "Quit Relay",
@@ -219,9 +251,9 @@ mod tests {
         };
         let toggles = [
             "Pause Relay",
-            "Sync clipboard",
+            "Share clipboard",
             "Show phone notifications",
-            "Allow phone to control this PC",
+            "Let my phone control this PC",
             "Keep logs",
         ];
         for t in toggles {
@@ -244,7 +276,7 @@ mod tests {
     fn ids_are_unique_and_reuse_the_existing_command() {
         let s = Settings::default();
         let items = build(&inputs(&s), &IDS);
-        assert_eq!(find(&items, "Sync clipboard").id, IDS.clipboard_sync);
+        assert_eq!(find(&items, "Share clipboard").id, IDS.clipboard_sync);
         let ids: Vec<usize> = items.iter().filter(|i| i.id != 0).map(|i| i.id).collect();
         let mut uniq = ids.clone();
         uniq.sort_unstable();

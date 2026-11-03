@@ -91,6 +91,7 @@ mod settings_rows;
 mod share;
 #[cfg(windows)]
 mod status;
+mod strings;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod timeline;
 #[cfg(windows)]

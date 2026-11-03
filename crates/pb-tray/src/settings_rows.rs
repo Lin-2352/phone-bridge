@@ -160,7 +160,7 @@ pub fn rows(m: &Model) -> Vec<Row> {
         Row::Header("Clipboard"),
         Row::Toggle(
             Key::Share,
-            "Share clipboard",
+            crate::strings::SHARE_CLIPBOARD,
             "Copy on one device, paste on the other",
         ),
         Row::Toggle(
