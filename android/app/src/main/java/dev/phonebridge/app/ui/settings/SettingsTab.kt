@@ -49,6 +49,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -694,6 +695,7 @@ fun SettingsTab(onDone: () -> Unit) {
 private fun LogRows(say: (String, String?, () -> Unit) -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var keep by remember { mutableStateOf(prefs.keepLogs) }
     var size by remember { mutableStateOf(AppLog.sizeBytes()) }
     var days by remember { mutableStateOf(AppLog.dayCount()) }
@@ -738,9 +740,12 @@ private fun LogRows(say: (String, String?, () -> Unit) -> Unit) {
         title = "Export logs",
         supporting = "Share a zip of the daily logs",
         onClick = {
-            val i = runCatching { AppLog.exportIntent(ctx) }.getOrNull()
-            if (i == null) say("No logs to export", null) {}
-            else if (runCatching { ctx.startActivity(i) }.isFailure) say("No app can share the logs", null) {}
+            // Zipping the logs reads the disk: off the main thread.
+            scope.launch {
+                val i = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { AppLog.exportIntent(ctx) }.getOrNull() }
+                if (i == null) say("No logs to export", null) {}
+                else if (runCatching { ctx.startActivity(i) }.isFailure) say("No app can share the logs", null) {}
+            }
         },
     )
     RowDivider()

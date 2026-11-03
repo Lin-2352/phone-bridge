@@ -318,6 +318,8 @@ class PbService : Service() {
         // The webcam goes with the service: its camera, encoder and "in use" notice must not outlive "Relay is off".
         if (CameraShare.capture != null || CameraShare.usedBy.value != null) CameraShare.stop(userStopped = true)
         AudioShare.stopAll()
+        // The speaker comes back even if the stop path above could not reach it (instance is already null).
+        PhoneSpeaker.restore(this)
         ControlService.instance?.endForServiceStop()
         val n = synchronized(Bridge) {
             destroyed = true
