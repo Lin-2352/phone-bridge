@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -220,7 +221,7 @@ fun TouchpadPad(modifier: Modifier = Modifier) {
             session.stop()
         }
     }
-    var keyboard by remember { mutableStateOf(false) }
+    var keyboard by rememberSaveable { mutableStateOf(false) }
     Column(modifier.imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -411,14 +412,15 @@ private fun KeyboardRow(session: TouchpadSession) {
         keyboardActions = KeyboardActions(onSend = { session.key(Scan.ENTER) }),
         modifier = Modifier.size(1.dp).focusRequester(focus),
     )
+    // Arrows and media keys are symbols, so each one is also given a spoken name.
     val keys = listOf(
-        "Esc" to Scan.ESC, "Tab" to Scan.TAB, "←" to Scan.LEFT, "↑" to Scan.UP,
-        "↓" to Scan.DOWN, "→" to Scan.RIGHT, "Enter" to Scan.ENTER, "⌫" to Scan.BACKSPACE,
-        "Win" to Scan.WIN, "Vol −" to Scan.VOL_DOWN, "Vol +" to Scan.VOL_UP, "⏯" to Scan.PLAY,
+        Triple("Esc", "Escape", Scan.ESC), Triple("Tab", "Tab", Scan.TAB), Triple("←", "Left arrow", Scan.LEFT), Triple("↑", "Up arrow", Scan.UP),
+        Triple("↓", "Down arrow", Scan.DOWN), Triple("→", "Right arrow", Scan.RIGHT), Triple("Enter", "Enter", Scan.ENTER), Triple("⌫", "Backspace", Scan.BACKSPACE),
+        Triple("Win", "Windows key", Scan.WIN), Triple("Vol −", "Volume down", Scan.VOL_DOWN), Triple("Vol +", "Volume up", Scan.VOL_UP), Triple("⏯", "Play or pause", Scan.PLAY),
     )
     LazyRow(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        items(keys) { (label, code) ->
-            FilledTonalButton(onClick = { session.key(code) }) { Text(label) }
+        items(keys) { (label, spoken, code) ->
+            FilledTonalButton(onClick = { session.key(code) }, modifier = Modifier.semantics { contentDescription = spoken }) { Text(label) }
         }
     }
 }
