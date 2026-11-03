@@ -8,6 +8,8 @@
     <!-- Phone screen on the PC (only while sharing). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- Explicit microphone mode only (never a fallback for playback capture). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Send each new screenshot to the PC (only when the user turns that on). -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -140,7 +142,7 @@
         <service
             android:name=".PbService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|mediaProjection|camera" />
+            android:foregroundServiceType="connectedDevice|mediaProjection|camera|microphone" />
         <service
             android:name=".BridgeTileService"
             android:exported="true"
