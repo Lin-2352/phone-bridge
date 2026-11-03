@@ -807,6 +807,12 @@ impl Node {
         // The TLS handshake proved it holds the paired key: not changed.
         self.forget_changed(&peer);
         self.track(peer, &conn);
+        // Unpaired between the check above and `track`: `unpair` closed only
+        // the connections it could see, not this one.
+        if lock(&self.inner.store).get(&peer).is_none() {
+            conn.close(CLOSE_NOT_PAIRED.into(), b"unpaired");
+            return;
+        }
         let Ok(Ok((send, recv))) = tokio::time::timeout(HEARTBEAT * 3, conn.accept_bi()).await
         else {
             return;

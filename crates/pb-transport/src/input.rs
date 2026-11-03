@@ -22,8 +22,34 @@ use crate::{files::new_id, tx, Error, Node, PeerId, Session};
 pub struct InputSender {
     tx: UnboundedSender<InputEvent>,
     done: tokio::task::JoinHandle<()>,
-    /// Set by `stop`: whatever is still queued (a long paste) is dropped.
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set by `cancel`: whatever is still queued (a long paste) is dropped.
+    cancel: std::sync::Arc<Stop>,
+}
+
+/// The cancel flag, plus a wake-up for a write stalled by flow control.
+#[derive(Default)]
+struct Stop {
+    flag: std::sync::atomic::AtomicBool,
+    wake: tokio::sync::Notify,
+}
+
+impl Stop {
+    fn is_set(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Write `buf` unless cancelled first or while waiting: a link stalled by
+/// flow control must not keep a cancelled session's input queued. False when
+/// not written.
+async fn write_unless_stopped(out: &mut SendStream, buf: &[u8], stop: &Stop) -> bool {
+    if stop.is_set() {
+        return false;
+    }
+    tokio::select! {
+        r = out.write_all(buf) => r.is_ok(),
+        () = stop.wake.notified() => false,
+    }
 }
 
 impl InputSender {
@@ -45,7 +71,10 @@ impl InputSender {
     /// must not keep typing after the user stopped).
     pub fn cancel(self) {
         self.cancel
+            .flag
             .store(true, std::sync::atomic::Ordering::Release);
+        // A permit if the sender is not waiting yet: its next wait ends.
+        self.cancel.wake.notify_one();
         drop(self.tx);
     }
 }
@@ -106,7 +135,7 @@ pub(crate) fn sender_on(
 ) -> InputSender {
     {
         let (tx, mut rx) = mpsc::unbounded_channel::<InputEvent>();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = std::sync::Arc::new(Stop::default());
         let stopped = cancel.clone();
         let done = tokio::spawn(async move {
             let mut seq: u16 = 0;
@@ -125,7 +154,7 @@ pub(crate) fn sender_on(
             let mut pending_touch: Option<InputEvent> = None;
             let mut open = true;
             'run: while open || pending.is_some() || pending_touch.is_some() {
-                if stopped.load(std::sync::atomic::Ordering::Acquire) {
+                if stopped.is_set() {
                     break;
                 }
                 let mut batch = Vec::new();
@@ -167,10 +196,7 @@ pub(crate) fn sender_on(
                                 push(t, &mut buf);
                             }
                             while !others.try_take() {
-                                if stopped.load(std::sync::atomic::Ordering::Acquire) {
-                                    break 'run;
-                                }
-                                if out.write_all(&buf).await.is_err() {
+                                if !write_unless_stopped(&mut out, &buf, &stopped).await {
                                     break 'run;
                                 }
                                 buf.clear();
@@ -189,11 +215,17 @@ pub(crate) fn sender_on(
                         push(t, &mut buf);
                     }
                 }
-                if !buf.is_empty() && out.write_all(&buf).await.is_err() {
+                if !buf.is_empty() && !write_unless_stopped(&mut out, &buf, &stopped).await {
                     break;
                 }
             }
-            let _ = out.finish();
+            if stopped.is_set() {
+                // Drop what QUIC still holds too: nothing queued may reach
+                // the peer once the link comes back.
+                let _ = out.reset(0u32.into());
+            } else {
+                let _ = out.finish();
+            }
             after.await;
         });
         InputSender { tx, done, cancel }
