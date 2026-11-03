@@ -11,6 +11,9 @@ use pb_transport::{Joining, Node, NodeConfig, Session, SharedStore};
 
 uniffi::setup_scaffolding!();
 
+mod audio;
+pub use audio::{AudioSink, PbAudioEnd, PbAudioOut};
+
 #[derive(Debug, uniffi::Error)]
 pub enum PbError {
     Failed { reason: String },
@@ -146,6 +149,46 @@ pub enum PbEvent {
         /// Codecs the PC decodes, best first (1 H.265 Main10, 2 H.265, 3 H.264).
         codecs: Vec<u8>,
         resume: bool,
+    },
+    /// A paired PC asks for this phone's audio (phone to PC). Ask the user
+    /// (playback: Relay's own dialog unless the skip setting is on, then
+    /// Android's projection dialog; microphone: always Relay's dialog and
+    /// the RECORD_AUDIO grant), then call `PbNode::answer_audio_accept` with
+    /// the format that will be sent, or `answer_audio_refuse`.
+    AudioRequest {
+        id: u64,
+        peer_name: String,
+        /// 0 playback (system audio), 1 microphone.
+        source: u8,
+        sample_rate: u32,
+        channels: u32,
+    },
+    /// The question `id` is over without an answer from the app (the PC gave
+    /// up, the link dropped, the time ran out or `stop_audio(0)`): close the dialog.
+    AudioAskEnded {
+        id: u64,
+    },
+    /// The PC has the stream. `direction` 0 phone to PC (start sending),
+    /// 1 PC to phone (frames arrive on the `AudioSink`; start the player).
+    AudioStarted {
+        peer_name: String,
+        direction: u8,
+        source: u8,
+        sample_rate: u32,
+        channels: u32,
+    },
+    /// An audio session ended (also after a failed start of an accepted one).
+    AudioEnded {
+        direction: u8,
+        cause: PbAudioEnd,
+    },
+    /// The phone itself refused a request without asking: `reason` is the wire
+    /// code (2 unavailable, 3 busy, 4 bad parameters).
+    AudioRefused {
+        peer_name: String,
+        direction: u8,
+        source: u8,
+        reason: u8,
     },
     /// A file transfer is under way (at most every 0.7 s, and once at the end).
     TransferProgress {
@@ -693,6 +736,7 @@ struct Shared {
     /// The user stopped sharing: requests from that PC are declined quietly
     /// for a while (the PC retries after a dropped link).
     screen_user_stop: Mutex<Option<Grace>>,
+    audio: Arc<audio::AudioHub>,
 }
 
 /// A picture from the PC is applied only when the user turned on clipboard
@@ -824,7 +868,7 @@ pub async fn start_node(
     }
     let (node, ev) = Node::bind(&identity, store, config).await.map_err(fail)?;
     let shared = Arc::new(Shared {
-        events: listener,
+        events: listener.clone(),
         incoming_dir: dir.join("incoming"),
         auto_accept: std::sync::atomic::AtomicBool::new(true),
         clipboard_sync: std::sync::atomic::AtomicBool::new(false),
@@ -853,6 +897,10 @@ pub async fn start_node(
         camera_user_stop: Mutex::new(None),
         camera_current: Mutex::new(None),
         screen_user_stop: Mutex::new(None),
+        audio: Arc::new(audio::AudioHub::new(
+            listener.clone(),
+            node.audio_slots().clone(),
+        )),
     });
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
@@ -896,6 +944,10 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
         match s.recv().await {
             Ok(Some(ControlMsg::ScreenStart(start))) => {
                 break screen_session(s, start, sh.clone(), name.clone()).await;
+            }
+            Ok(Some(ControlMsg::AudioStart(start))) => {
+                let audio = sh.audio.clone();
+                break audio.serve(s, start, name.clone()).await;
             }
             Ok(Some(ControlMsg::CameraStart(start))) => {
                 break camera_session(s, start, sh.clone(), name.clone()).await;
@@ -1898,6 +1950,41 @@ impl PbNode {
                 None
             }
         }
+    }
+
+    /// Register (the audio player exists) or clear the receiver of PC audio.
+    /// Without one, PC to phone requests are refused as unavailable.
+    pub fn set_audio_sink(&self, sink: Option<Arc<dyn AudioSink>>) {
+        self.shared.audio.set_sink(sink);
+    }
+
+    /// Accept an `AudioRequest`: send audio in this format (the request's
+    /// rate and channels). Returns the handle to feed PCM into.
+    pub fn answer_audio_accept(
+        &self,
+        id: u64,
+        sample_rate: u32,
+        channels: u32,
+    ) -> Option<Arc<PbAudioOut>> {
+        self.shared.audio.accept(id, sample_rate, channels)
+    }
+
+    /// Refuse an `AudioRequest` with a wire reason code (1 declined,
+    /// 2 unavailable, 3 busy, 4 bad parameters, 5 no permission,
+    /// 6 app blocks capture; others read as declined).
+    pub fn answer_audio_refuse(&self, id: u64, reason: u8) {
+        self.shared.audio.refuse(id, reason);
+    }
+
+    /// End the audio session (or the open question) of `direction` (0 phone to
+    /// PC, 1 PC to phone). The PC is told. False when none is running.
+    pub fn stop_audio(&self, direction: u8) -> bool {
+        self.shared.audio.stop(direction)
+    }
+
+    /// Whether `direction` has a question open or a session running.
+    pub fn audio_active(&self, direction: u8) -> bool {
+        self.shared.audio.active(direction)
     }
 
     /// Register or clear the camera session handler.
