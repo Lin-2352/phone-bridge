@@ -628,8 +628,19 @@ fn point_at(hwnd: HWND, st: &mut State, x: f32, y: f32, now: Instant) -> bool {
     set_nav_hover(st, nav, now) | hover_changed
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The scripted run (`ux`) stands in for the real pointer.
+    static FAKE_CURSOR: std::cell::Cell<Option<Option<(f32, f32)>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// The pointer's client position, if it is over our window.
 fn cursor_client(hwnd: HWND) -> Option<(f32, f32)> {
+    #[cfg(test)]
+    if let Some(p) = FAKE_CURSOR.with(|c| c.get()) {
+        return p;
+    }
     let mut pt = POINT::default();
     // SAFETY: plain queries on our own window.
     unsafe {
@@ -1810,6 +1821,10 @@ pub fn refresh() {
         repaint(hwnd);
     }
 }
+
+#[cfg(test)]
+#[path = "main_window_ux.rs"]
+mod ux;
 
 #[cfg(test)]
 mod tests {
