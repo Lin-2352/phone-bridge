@@ -19,3 +19,16 @@ fun photoDenial(granted: Boolean, canAskAgain: Boolean): PhotoDenial = when {
     canAskAgain -> PhotoDenial.Explain
     else -> PhotoDenial.OpenSettings
 }
+
+/** One app in the "Apps on your PC" list; [installed] is false for a package that has since been removed (its label is the package name). */
+data class AppRow(val pkg: String, val label: String, val installed: Boolean)
+
+/** Installed apps first, each group by name; removed apps sink to the end so they never look like real ones. */
+fun orderAppRows(rows: List<AppRow>): List<AppRow> =
+    rows.sortedWith(compareBy<AppRow>({ !it.installed }, { it.label.lowercase() }))
+
+/** The rows whose name or package contains [query]; a blank query keeps all. */
+fun filterAppRows(rows: List<AppRow>, query: String): List<AppRow> {
+    val q = query.trim()
+    return if (q.isEmpty()) rows else rows.filter { it.label.contains(q, ignoreCase = true) || it.pkg.contains(q, ignoreCase = true) }
+}

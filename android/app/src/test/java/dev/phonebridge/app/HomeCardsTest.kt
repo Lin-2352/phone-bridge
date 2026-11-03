@@ -78,4 +78,14 @@ class HeroPcTest {
     @Test fun starting_shows_stored_name_dimmed() = assertEquals(HeroPc("Laptop", true), heroPc(null, "Laptop", running = true, ready = false))
     @Test fun really_unpaired_shows_nothing() = assertEquals(HeroPc(null, false), heroPc(null, "Laptop", running = true, ready = true))
     @Test fun never_paired_shows_nothing() = assertEquals(HeroPc(null, false), heroPc(null, null, running = false, ready = false))
+
+    @Test
+    fun a_live_tile_points_at_the_one_stop_button_instead_of_stopping() {
+        for (tile in listOf("Screen", "Camera", "Phone audio", "PC audio")) {
+            val t = liveTileText(tile)
+            assertTrue(t, t.contains(tile))
+            assertTrue(t, t.contains("Stop"))
+            assertTrue("$t is too long for a snackbar line", t.length <= 60)
+        }
+    }
 }

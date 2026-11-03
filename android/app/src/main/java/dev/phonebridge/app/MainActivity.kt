@@ -87,7 +87,8 @@ class MainActivity : ComponentActivity() {
         Bridge.allowControl.value = prefs.allowControl
         // A process killed without onDestroy left the widget's last state behind: opening the app corrects it.
         RelayWidget.update(this)
-        if (Build.VERSION.SDK_INT >= 33 &&
+        // Only on a fresh start: a recreation (dark mode, font size) must not ask again.
+        if (savedInstanceState == null && Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)

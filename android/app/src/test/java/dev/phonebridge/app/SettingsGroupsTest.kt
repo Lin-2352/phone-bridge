@@ -170,4 +170,23 @@ class SettingsStatusTest {
         assertEquals("Theme dark, logs 4.2 MB", statusLine(Group.Settings, base.copy(themeName = "Dark")))
         assertEquals("Theme system, logs off", statusLine(Group.Settings, base.copy(keepLogs = false)))
     }
+
+    @Test
+    fun search_finds_the_per_app_notification_block_list() {
+        for (q in listOf("block", "banking", "apps on your pc")) {
+            val hits = searchSettings(q)
+            assertEquals(q, true, hits.any { it.group == Group.Notifications && it.title == "Apps on your PC" })
+        }
+    }
+
+    @Test
+    fun accessibility_is_reached_through_the_control_row_only() {
+        assertEquals(false, settingEntries.any { it.title == "Accessibility permission" })
+        assertEquals(listOf("Let my PC control this phone"), searchSettings("accessibility").map { it.title })
+    }
+
+    @Test
+    fun audio_status_says_relay_not_our() {
+        assertEquals("Phone audio starts without $APP_NAME's question", statusLine(Group.Audio, base.copy(audioSkipAsk = true)))
+    }
 }

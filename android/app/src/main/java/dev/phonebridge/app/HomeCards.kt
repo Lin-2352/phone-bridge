@@ -8,8 +8,8 @@ data class QuickTile(val quick: Quick, val label: String, val on: Boolean, val e
 
 /**
  * The quick actions. Sending and the touchpad need a paired PC and a running node; Pair needs the node.
- * Screen, Camera and the two audio tiles start from the PC, so on the phone they only stop a live share: a live one stays
- * enabled even without a connection so it can still be stopped.
+ * Screen, Camera and the two audio tiles start from the PC; while one is live it is a status light only (its card has the
+ * one Stop), and it stays enabled so a tap can still say where that Stop is.
  */
 fun quickTiles(
     running: Boolean,
@@ -36,6 +36,9 @@ fun quickTiles(
 
 /** The toast for a tile that only the PC can start; short enough that Android does not cut it off. */
 fun startsOnPcText(tile: String): String = "Start it from your PC: choose $tile in $APP_NAME"
+
+/** What a live tile says when tapped: the tile only shows the share is on; the card below it has the one Stop. */
+fun liveTileText(tile: String): String = "$tile is on. Press Stop on its card below to end it"
 
 /** Why a dimmed tile does nothing, for the message when it is tapped. */
 fun tileDisabledReason(running: Boolean, paired: Boolean): String =

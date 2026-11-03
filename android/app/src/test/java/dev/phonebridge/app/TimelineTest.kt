@@ -2,6 +2,7 @@ package dev.phonebridge.app
 
 import dev.phonebridge.app.ui.timeline.RecentItem
 import dev.phonebridge.app.ui.timeline.recentItem
+import dev.phonebridge.app.ui.timeline.tapHint
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -130,8 +131,17 @@ class TimelineTest {
         val r = recentItem(fileEntry("Lin's PC", TlDir.ToPhone, "photo.jpg", 3_400_000, "content://x/1"))
         assertEquals(RecentItem("photo.jpg, 3.4 MB", "From Lin's PC", RecentItem.Kind.File, "content://x/1"), r)
         val t = recentItem(clipTextEntry("Lin's PC", "secret words"))
-        assertEquals(RecentItem("Text, 12 characters", "Sent to Lin's PC", RecentItem.Kind.Clipboard), t)
+        assertEquals(RecentItem("Text, 12 characters", "Sent to Lin's PC", RecentItem.Kind.Clipboard, null, tapHint(clipTextEntry("Lin's PC", "secret words"))), t)
         assertEquals(RecentItem.Kind.Link, recentItem(linkEntry("p", "https://a")).kind)
+    }
+
+    @Test fun home_recent_rows_keep_their_own_icon_and_say_why_they_cannot_open() {
+        val a = recentItem(audioEntry("Lin's PC", TlDir.ToPc, audioTitle(TlDir.ToPc), 12, now))
+        assertEquals(RecentItem.Kind.Audio, a.kind)
+        assertTrue(a.hint!!.contains("never the audio"))
+        assertEquals(RecentItem.Kind.Picture, recentItem(pic()).kind)
+        assertEquals(RecentItem.Kind.Notification, recentItem(TlEntry(TlKind.Notification, TlDir.ToPhone, "p", now, app = "Mail")).kind)
+        assertNull(recentItem(fileEntry("p", TlDir.ToPhone, "a.txt", 1, "content://x/1")).hint)
     }
 
     // --- The store, with a fake file and hand-run I/O queue (deterministic ordering). ---

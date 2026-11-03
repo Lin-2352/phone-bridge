@@ -1,10 +1,11 @@
 package dev.phonebridge.app.ui.settings
 
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -12,11 +13,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.phonebridge.app.MirrorVerdict
+import dev.phonebridge.app.RelayDialog
 import dev.phonebridge.app.Prefs
 import dev.phonebridge.app.blockedByDefault
 import dev.phonebridge.app.mirrorVerdict
@@ -33,7 +36,7 @@ fun NotifyBlockRow() {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
-    var open by remember { mutableStateOf(false) }
+    var open by rememberSaveable { mutableStateOf(false) }
     var blocked by remember(resumed, open) { mutableStateOf(prefs.notifyBlocked) }
     var allowed by remember(resumed, open) { mutableStateOf(prefs.notifyAllowed) }
     var counts by remember(resumed, open) { mutableStateOf(prefs.mirrorCounts) }
@@ -47,22 +50,41 @@ fun NotifyBlockRow() {
         onClick = { open = true },
     )
     if (open) {
-        fun label(pkg: String): String = runCatching {
-            ctx.packageManager.getApplicationInfo(pkg, 0).loadLabel(ctx.packageManager).toString()
-        }.getOrDefault(pkg)
-        AlertDialog(
+        var query by remember { mutableStateOf("") }
+        val rows = remember(apps) {
+            orderAppRows(apps.map { pkg ->
+                val label = runCatching { ctx.packageManager.getApplicationInfo(pkg, 0).loadLabel(ctx.packageManager).toString() }.getOrNull()
+                AppRow(pkg, label ?: pkg, label != null)
+            })
+        }
+        val shown = filterAppRows(rows, query)
+        RelayDialog(
+            title = "Apps on your PC",
             onDismissRequest = { open = false },
-            title = { Text("Apps on your PC") },
-            text = {
-                if (apps.isEmpty()) {
-                    Text("Apps appear here once they post a notification. Blocked apps never leave this phone.")
+            confirmText = "Done",
+            onConfirm = { open = false },
+        ) {
+            if (apps.isEmpty()) {
+                Text("Apps appear here once they post a notification. Blocked apps never leave this phone.")
+            } else {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    label = { Text("Search apps") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (shown.isEmpty()) {
+                    Text("No app matches.", style = MaterialTheme.typography.bodyMedium)
                 } else {
-                    LazyColumn(Modifier.heightIn(max = 360.dp)) {
-                        items(apps, key = { it }) { pkg ->
+                    LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                        items(shown, key = { it.pkg }) { row ->
+                            val pkg = row.pkg
                             val sends = mirrorVerdict(pkg, false, blocked, allowed) == MirrorVerdict.Send
                             RelayRow(
-                                title = label(pkg),
-                                supporting = if (sends) "Shown on PC" else if (pkg !in blocked && blockedByDefault(pkg)) "Blocked by default" else "Blocked",
+                                title = row.label,
+                                supporting = (if (!row.installed) "Not installed. " else "") +
+                                    if (sends) "Shown on PC" else if (pkg !in blocked && blockedByDefault(pkg)) "Blocked by default" else "Blocked",
                                 checked = sends,
                                 onChecked = { on ->
                                     if (on) {
@@ -79,11 +101,12 @@ fun NotifyBlockRow() {
                         }
                     }
                 }
-            },
-            confirmButton = { TextButton(onClick = { open = false }) { Text("Done") } },
-            dismissButton = {
-                TextButton(onClick = { prefs.mirrorCounts = dev.phonebridge.app.MirrorCounts(); counts = prefs.mirrorCounts }) { Text("Reset counts") }
-            },
-        )
+                Text(counts.summary(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(
+                    onClick = { prefs.mirrorCounts = dev.phonebridge.app.MirrorCounts(); counts = prefs.mirrorCounts },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text("Reset counts") }
+            }
+        }
     }
 }

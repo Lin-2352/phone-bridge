@@ -122,9 +122,9 @@ fun TimelineTab() {
     val snack = remember { SnackbarHostState() }
     val entries by Timeline.entries.collectAsState()
     val historyOn by Timeline.historyOn.collectAsState()
-    var confirmOff by remember { mutableStateOf(false) }
-    var confirmClear by remember { mutableStateOf(false) }
-    var menu by remember { mutableStateOf(false) }
+    var confirmOff by rememberSaveable { mutableStateOf(false) }
+    var confirmClear by rememberSaveable { mutableStateOf(false) }
+    var menu by rememberSaveable { mutableStateOf(false) }
     // Bumped when the date, time or time zone changes, and on resume, so "Today" and the clock times are redrawn.
     var dayTick by remember { mutableIntStateOf(0) }
     var opening by remember { mutableStateOf(false) }
@@ -182,6 +182,16 @@ fun TimelineTab() {
         }
     }
 
+    fun share(e: TlEntry) {
+        val uri = e.uri ?: return say("This file cannot be shared again")
+        if (opening) return
+        opening = true
+        scope.launch {
+            val msg = try { shareSavedFile(ctx, uri) } finally { opening = false }
+            msg?.let { snack.showSnackbar(it) }
+        }
+    }
+
     fun tap(e: TlEntry) {
         if (isOpenable(e)) open(e) else say(tapHint(e) ?: "")
     }
@@ -189,7 +199,7 @@ fun TimelineTab() {
     fun act(e: TlEntry, a: EntryAction) {
         when (a) {
             EntryAction.Open -> open(e)
-            EntryAction.ShareAgain -> shareAgain(ctx, e)?.let { say(it) }
+            EntryAction.ShareAgain -> share(e)
             EntryAction.CopyName -> {
                 val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 cm.setPrimaryClip(android.content.ClipData.newPlainText("file name", e.name.orEmpty()))
@@ -408,19 +418,5 @@ private fun EntryRow(e: TlEntry, zone: ZoneId, onTap: () -> Unit, onAction: (Ent
                 }
             }
         }
-    }
-}
-
-/** Offers a received file to Android's share sheet again. Returns a message when it cannot. */
-private fun shareAgain(ctx: Context, e: TlEntry): String? {
-    val uri = e.uri ?: return "This file cannot be shared again"
-    val u = Uri.parse(uri)
-    val type = runCatching { ctx.contentResolver.getType(u) }.getOrNull() ?: "*/*"
-    val send = Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_STREAM, u).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    return try {
-        ctx.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-        null
-    } catch (x: Exception) {
-        "No app can share this file"
     }
 }
