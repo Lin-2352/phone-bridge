@@ -1,0 +1,322 @@
+//! Audio sharing on the PC: dials the phone, plays its audio on the speakers
+//! or captures this PC's audio for the phone, and ends cleanly on Stop, a
+//! peer stop, a link drop or a device failure. The decisions and every
+//! sentence are in `audio_state` (pure, tested); this file wires them to the
+//! transport and the audio devices.
+//!
+//! The PC always dials. The microphone is never involved on this side.
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use pb_identity::PeerId;
+use pb_platform_win::{audio_capture::AudioCapture, audio_out::AudioOut};
+use pb_protocol::control::{AudioStart, AUDIO_SOURCE_PLAYBACK};
+use pb_transport::{audio::AudioEvent, Node};
+use tokio::sync::{mpsc, oneshot, Notify};
+
+use crate::audio_state::{self as st, Dir, End, Phase, Tracker};
+use crate::core::{Log, OfferReply, SharedSettings, UiEvent};
+
+type Ui = Arc<dyn Fn(UiEvent) + Send + Sync>;
+
+/// How long the PC's own question waits before it counts as "no".
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
+
+static TRACK: Mutex<Tracker> = Mutex::new(Tracker::new());
+/// The stop signal of each direction's running task.
+static STOPS: Mutex<[Option<Arc<Notify>>; 2]> = Mutex::new([None, None]);
+
+fn track<T>(f: impl FnOnce(&mut Tracker) -> T) -> T {
+    f(&mut TRACK.lock().unwrap_or_else(|p| p.into_inner()))
+}
+
+/// What this direction is doing now (the menu, Home and the flyout read it).
+pub fn phase(d: Dir) -> Phase {
+    track(|t| t.phase(d))
+}
+
+/// Ask a direction to end: a question not yet answered is cancelled, a
+/// running session is stopped (the phone is told). Nothing happens when idle.
+pub fn stop(d: Dir) {
+    if let Some(n) = STOPS.lock().unwrap_or_else(|p| p.into_inner())[d.index()].as_ref() {
+        n.notify_one();
+    }
+}
+
+/// Stop both (Relay paused, tray exiting).
+pub fn stop_all() {
+    for d in Dir::ALL {
+        stop(d);
+    }
+}
+
+/// Ends the direction when the task ends in any way, including being
+/// dropped with the runtime, so the state shown is never left behind.
+struct Guard {
+    d: Dir,
+    ui: Ui,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        STOPS.lock().unwrap_or_else(|p| p.into_inner())[self.d.index()] = None;
+        track(|t| t.end(self.d));
+        (self.ui)(UiEvent::AudioChanged);
+    }
+}
+
+/// Start (or refuse to start) a session with `peer`. Returns false when that
+/// direction is already asking or running.
+#[allow(clippy::too_many_arguments)]
+pub fn start(
+    node: Node,
+    peer: PeerId,
+    name: String,
+    d: Dir,
+    log: Log,
+    ui: Ui,
+    settings: SharedSettings,
+) -> bool {
+    if !track(|t| t.begin(d)) {
+        return false;
+    }
+    let stop = Arc::new(Notify::new());
+    STOPS.lock().unwrap_or_else(|p| p.into_inner())[d.index()] = Some(stop.clone());
+    ui(UiEvent::AudioChanged);
+    tokio::spawn(run(node, peer, name, d, log, ui, settings, stop));
+    true
+}
+
+fn timeline_dir(d: Dir) -> crate::timeline::Dir {
+    match d {
+        Dir::PhoneToPc => crate::timeline::Dir::ToPc,
+        Dir::PcToPhone => crate::timeline::Dir::ToPhone,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run(
+    node: Node,
+    peer: PeerId,
+    name: String,
+    d: Dir,
+    log: Log,
+    ui: Ui,
+    settings: SharedSettings,
+    stop: Arc<Notify>,
+) {
+    let _guard = Guard { d, ui: ui.clone() };
+    let word = d.log_word();
+    let skip = settings
+        .lock()
+        .map(|s| s.audio_skip_confirm_pc_to_phone)
+        .unwrap_or(false);
+
+    // 1. The PC's own question (PC audio on the phone only).
+    if st::needs_pc_confirm(d, skip) {
+        let (tx, rx) = oneshot::channel();
+        ui(UiEvent::AskAudioShare {
+            from: name.clone(),
+            reply: OfferReply::new(tx),
+        });
+        let answer = tokio::select! {
+            a = tokio::time::timeout(CONFIRM_TIMEOUT, rx) => a,
+            () = stop.notified() => {
+                log.line(&format!("AUDIO {word} cancelled before asking"));
+                return;
+            }
+        };
+        if !matches!(answer, Ok(Ok(true))) {
+            log.line(&format!("AUDIO {word} not confirmed on the PC"));
+            crate::applog::emit(crate::applog::audio("declined_here", word, 0, ""));
+            return;
+        }
+    }
+
+    // 2. Ask the phone (it asks its own user for its audio).
+    let req = AudioStart {
+        id: 0,
+        sample_rate: 48_000,
+        channels: 2,
+        direction: d.wire(),
+        source: AUDIO_SOURCE_PLAYBACK,
+    };
+    let asked = {
+        let (ui, name) = (ui.clone(), name.clone());
+        move || {
+            if d == Dir::PhoneToPc {
+                ui(UiEvent::Info(format!(
+                    "Asking {name} to share its audio\u{2026} approve it on the phone"
+                )));
+            }
+        }
+    };
+    log.line(&format!("AUDIO {word} asking"));
+    crate::applog::emit(crate::applog::audio("asked", word, 0, ""));
+    let opened = tokio::select! {
+        r = crate::core::dial(&node, &peer, node.open_audio(&peer, req, asked)) => r,
+        () = stop.notified() => {
+            log.line(&format!("AUDIO {word} request cancelled by the user"));
+            crate::applog::emit(crate::applog::audio("cancelled", word, 0, ""));
+            return;
+        }
+    };
+    let mut sess = match opened {
+        Ok(s) => s,
+        Err(e) => {
+            log.line(&format!("AUDIO {word} refused: {e}"));
+            crate::applog::emit(crate::applog::audio("refused", word, 0, &e.to_string()));
+            ui(UiEvent::Info(st::refused_text(d, &name, &e)));
+            return;
+        }
+    };
+    if !track(|t| t.running(d)) {
+        sess.stop();
+        return;
+    }
+    crate::core::touch(&peer);
+    log.line(&format!(
+        "AUDIO {word} started ({} Hz, {} ch)",
+        sess.accept.sample_rate, sess.accept.channels
+    ));
+    crate::applog::emit(crate::applog::audio("started", word, 0, ""));
+    ui(UiEvent::AudioChanged);
+    let began = Instant::now();
+
+    // 3. Move audio until something ends it.
+    let (sess, end) = match d {
+        // The output stream is not `Send`: it lives on one thread for the
+        // whole session, which drives the async loop from there.
+        Dir::PhoneToPc => {
+            let (handle, stop, log) =
+                (tokio::runtime::Handle::current(), stop.clone(), log.clone());
+            let joined = tokio::task::spawn_blocking(move || {
+                let mut sess = sess;
+                let end = handle.block_on(play_phone_audio(&mut sess, &stop, &log));
+                (sess, end)
+            })
+            .await;
+            match joined {
+                Ok(r) => r,
+                Err(_) => return,
+            }
+        }
+        Dir::PcToPhone => {
+            let end = capture_pc_audio(&mut sess, &stop, &log).await;
+            (sess, end)
+        }
+    };
+    sess.stop();
+    let secs = began.elapsed().as_secs();
+    log.line(&format!("AUDIO {word} ended after {secs} s: {end:?}"));
+    crate::applog::emit(crate::applog::audio(
+        "ended",
+        word,
+        secs,
+        &format!("{end:?}"),
+    ));
+    crate::core::record(
+        &settings,
+        crate::timeline::audio_entry(&name, timeline_dir(d), d.title(), secs),
+    );
+    if let Some(text) = st::ended_text(d, &name, &end) {
+        ui(UiEvent::Info(text));
+    }
+}
+
+fn cause_of(ev: Option<AudioEvent>) -> End {
+    match ev {
+        Some(AudioEvent::Stopped { by_peer: true }) => End::PeerStopped,
+        Some(AudioEvent::Violation(_)) => End::Violation,
+        Some(AudioEvent::Stopped { by_peer: false } | AudioEvent::WriteFailed(_)) | None => {
+            End::LinkLost
+        }
+    }
+}
+
+/// The phone sends, this PC plays.
+async fn play_phone_audio(
+    sess: &mut pb_transport::audio::AudioSession,
+    stop: &Notify,
+    log: &Log,
+) -> End {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
+    let out = match AudioOut::start(sess.accept.sample_rate, sess.accept.channels, rx) {
+        Ok(o) => o,
+        Err(e) => {
+            log.line(&format!("AUDIO output could not start: {e}"));
+            return End::DeviceFailed(st::device_text(Dir::PhoneToPc, &e.to_string()));
+        }
+    };
+    // `recv_frame` borrows the whole session: watch its events separately.
+    let mut events = std::mem::replace(&mut sess.events, mpsc::unbounded_channel().1);
+    let end = loop {
+        tokio::select! {
+            f = sess.recv_frame() => match f {
+                // A full player queue drops the newest chunk; the device
+                // side keeps its own latency bound.
+                Some(f) => { let _ = tx.try_send(f.samples); }
+                None => break cause_of(events.recv().await),
+            },
+            ev = events.recv() => break cause_of(ev),
+            () = stop.notified() => break End::LocalStop,
+        }
+    };
+    log.line(&format!(
+        "AUDIO playback dropped {} chunks, {} underruns",
+        out.dropped_frames(),
+        out.underruns()
+    ));
+    drop(out);
+    end
+}
+
+/// This PC captures its output, the phone plays.
+async fn capture_pc_audio(
+    sess: &mut pb_transport::audio::AudioSession,
+    stop: &Notify,
+    log: &Log,
+) -> End {
+    let (ftx, mut frx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (etx, mut erx) = mpsc::unbounded_channel::<String>();
+    let started = tokio::task::spawn_blocking(move || {
+        AudioCapture::start(
+            move |f| {
+                let _ = ftx.send(f);
+            },
+            move |e| {
+                let _ = etx.send(e.to_string());
+            },
+        )
+    })
+    .await;
+    let cap = match started {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
+            log.line(&format!("AUDIO capture could not start: {e}"));
+            return End::DeviceFailed(st::device_text(Dir::PcToPhone, &e.to_string()));
+        }
+        Err(_) => return End::DeviceFailed(st::device_text(Dir::PcToPhone, "capture failed")),
+    };
+    let end = loop {
+        tokio::select! {
+            f = frx.recv() => match f {
+                Some(f) => {
+                    if sess.send_frame(f).is_err() {
+                        break cause_of(sess.events.recv().await);
+                    }
+                }
+                None => break End::DeviceFailed(st::device_text(Dir::PcToPhone, "capture ended")),
+            },
+            e = erx.recv() => if let Some(e) = e {
+                break End::DeviceFailed(st::device_text(Dir::PcToPhone, &e));
+            },
+            ev = sess.events.recv() => break cause_of(ev),
+            () = stop.notified() => break End::LocalStop,
+        }
+    };
+    // Joining the capture thread may wait on the device: not on the runtime.
+    let _ = tokio::task::spawn_blocking(move || drop(cap)).await;
+    end
+}

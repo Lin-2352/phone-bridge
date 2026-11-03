@@ -40,10 +40,12 @@ pub fn needs_network(c: &Cmd) -> bool {
         | Cmd::ControlPhone
         | Cmd::ShowScreen
         | Cmd::StartCamera
+        | Cmd::StartAudio(_)
         | Cmd::SendText { .. }
         | Cmd::NotifyAction { .. } => true,
         Cmd::CancelPair
         | Cmd::StopCamera
+        | Cmd::StopAudio(_)
         | Cmd::SwitchCameraLens
         | Cmd::RepairCamera
         | Cmd::RemoveCamera
@@ -138,6 +140,12 @@ mod tests {
         assert!(needs_network(&Cmd::ShowScreen));
         assert!(needs_network(&Cmd::StartCamera));
         assert!(needs_network(&Cmd::ControlPhone));
+        assert!(needs_network(&Cmd::StartAudio(
+            crate::audio_state::Dir::PcToPhone
+        )));
+        assert!(!needs_network(&Cmd::StopAudio(
+            crate::audio_state::Dir::PcToPhone
+        )));
         assert!(needs_network(&Cmd::Pair));
         assert!(!needs_network(&Cmd::StopCamera));
         assert!(!needs_network(&Cmd::CancelPair));

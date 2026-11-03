@@ -40,6 +40,8 @@ pub enum Kind {
     ClipText,
     ClipImage,
     Notification,
+    /// An audio session; `chars` holds its length in seconds.
+    Audio,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +137,16 @@ pub fn notification_entry(peer: &str, app: &str) -> Entry {
     }
 }
 
+/// A finished audio session: who, which way, how long. Never any audio.
+/// `name` is the session title; the length goes in `chars`.
+pub fn audio_entry(peer: &str, dir: Dir, title: &str, secs: u64) -> Entry {
+    Entry {
+        name: Some(title.to_owned()),
+        chars: Some(secs.min(u64::from(u32::MAX)) as u32),
+        ..blank(Kind::Audio, dir, peer)
+    }
+}
+
 fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
@@ -205,6 +217,7 @@ pub fn encode(v: &[Entry]) -> Vec<u8> {
             Kind::ClipText => "T",
             Kind::ClipImage => "I",
             Kind::Notification => "N",
+            Kind::Audio => "A",
         };
         let dir = match e.dir {
             Dir::ToPhone => "p",
@@ -246,6 +259,7 @@ pub fn parse(b: &[u8]) -> Result<Vec<Entry>, String> {
             "T" => Kind::ClipText,
             "I" => Kind::ClipImage,
             "N" => Kind::Notification,
+            "A" => Kind::Audio,
             _ => return Err("bad kind".into()),
         };
         let dir = match f[1] {
@@ -320,6 +334,16 @@ pub fn summary(e: &Entry) -> String {
             s
         }
         Kind::Notification => format!("{} notification", e.app.as_deref().unwrap_or("App")),
+        Kind::Audio => {
+            let title = e.name.as_deref().unwrap_or("Audio");
+            match e.chars {
+                Some(s) => format!(
+                    "{title}, {}",
+                    crate::audio_state::duration_text(u64::from(s))
+                ),
+                None => title.to_owned(),
+            }
+        }
     }
 }
 

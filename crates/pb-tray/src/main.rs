@@ -16,6 +16,10 @@ mod applog;
 #[cfg(windows)]
 mod applog_sys;
 #[cfg(windows)]
+mod audio;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod audio_state;
+#[cfg(windows)]
 mod camera;
 #[cfg(windows)]
 mod camera_device;

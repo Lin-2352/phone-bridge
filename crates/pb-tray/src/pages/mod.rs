@@ -45,6 +45,9 @@ pub enum Action {
     /// Run a flyout command (Home's quick actions and Pair), through the
     /// same handler the flyout uses.
     Flyout(crate::flyout::Action),
+    /// Start audio sharing in this direction, or cancel its open question
+    /// (the tray menu's entry).
+    Audio(crate::audio_state::Dir),
     /// Send the clipboard's text once (the tray's "Send clipboard").
     SendClipboard,
     /// Start Relay again after its core stopped (the tray restarts itself).

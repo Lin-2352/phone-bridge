@@ -23,6 +23,8 @@ pub enum Key {
     KeepHistory,
     /// Write the day-by-day structured logs.
     KeepLogs,
+    /// Do not ask on this PC before playing its audio on the phone.
+    AudioSkipConfirm,
 }
 
 /// Three-way choices, painted as segmented buttons.
@@ -49,6 +51,7 @@ pub struct Model {
     pub control: bool,
     pub keep_history: bool,
     pub keep_logs: bool,
+    pub audio_skip_confirm: bool,
     /// Where the logs go, and how big they are now (bytes).
     pub log_dir: String,
     pub log_bytes: u64,
@@ -88,6 +91,7 @@ impl Model {
             Key::NotifyQuietMirror => self.notify_quiet_mirror,
             Key::KeepHistory => self.keep_history,
             Key::KeepLogs => self.keep_logs,
+            Key::AudioSkipConfirm => self.audio_skip_confirm,
         }
     }
 
@@ -248,6 +252,12 @@ pub fn rows(m: &Model) -> Vec<Row> {
             Key::Control,
             "Let my phone control this PC",
             "Use the phone as a touchpad and keyboard",
+        ),
+        Row::Header("Audio"),
+        Row::Toggle(
+            Key::AudioSkipConfirm,
+            "Play PC audio without asking",
+            "Skips this PC's question; the phone still asks before sharing its own audio",
         ),
         Row::Header("History"),
         Row::Toggle(

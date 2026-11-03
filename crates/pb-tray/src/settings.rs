@@ -51,6 +51,9 @@ pub struct Settings {
     pub keep_history: bool,
     /// Write the day-by-day structured logs (metadata only).
     pub keep_logs: bool,
+    /// Do not ask on this PC before playing its audio on the phone. Off by
+    /// default; the phone asks for its own audio, so there is no twin toggle.
+    pub audio_skip_confirm_pc_to_phone: bool,
     /// Relay is paused from the tray menu: no sessions, nothing sent.
     /// Survives a restart, so a pause is never lost silently.
     pub paused: bool,
@@ -92,6 +95,7 @@ impl Default for Settings {
             screen_dim: false,
             screen_sharp: false,
             keep_history: true,
+            audio_skip_confirm_pc_to_phone: false,
             keep_logs: true,
             paused: false,
             log_dir: PathBuf::from(r"D:\Documents\Relay Logs"),
@@ -168,6 +172,10 @@ impl Settings {
                 "screen_sharp" => s.screen_sharp = parse_bool(v).unwrap_or(s.screen_sharp),
                 "keep_history" => s.keep_history = parse_bool(v).unwrap_or(s.keep_history),
                 "keep_logs" => s.keep_logs = parse_bool(v).unwrap_or(s.keep_logs),
+                "audio_skip_confirm_pc_to_phone" => {
+                    s.audio_skip_confirm_pc_to_phone =
+                        parse_bool(v).unwrap_or(s.audio_skip_confirm_pc_to_phone)
+                }
                 "paused" => s.paused = parse_bool(v).unwrap_or(s.paused),
                 "timeline_days" => s.timeline_days = v.chars().take(4096).collect(),
                 "log_dir" if !v.is_empty() => s.log_dir = PathBuf::from(v),
@@ -219,8 +227,9 @@ impl Settings {
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
         text += &format!(
-            "keep_logs={}\npaused={}\nlog_dir={}\n",
+            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nlog_dir={}\n",
             self.keep_logs,
+            self.audio_skip_confirm_pc_to_phone,
             self.paused,
             self.log_dir.display()
         );
@@ -294,6 +303,7 @@ mod tests {
             screen_sharp: true,
             keep_history: false,
             keep_logs: false,
+            audio_skip_confirm_pc_to_phone: true,
             paused: true,
             log_dir: PathBuf::from(r"E:\Logs"),
             main_window_rect: Some((-1200, 40, 1000, 700)),

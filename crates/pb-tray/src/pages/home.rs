@@ -41,6 +41,10 @@ pub enum SessionKind {
     Screen,
     Camera,
     Control,
+    /// The phone's audio plays on this PC.
+    PhoneAudio,
+    /// This PC's audio plays on the phone.
+    PcAudio,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +79,9 @@ pub struct HomeModel {
     pub paused: bool,
     /// A camera request is waiting for the phone (not a session yet).
     pub camera_pending: bool,
+    /// An audio question is open (not a session yet): phone audio on this
+    /// PC, PC audio on the phone.
+    pub audio_pending: [bool; 2],
     /// Why the core stopped (it never came up or died): nothing works until
     /// Relay restarts.
     pub error: Option<String>,
@@ -104,6 +111,8 @@ pub struct Inputs<'a> {
     pub control: bool,
     /// A camera request still waits for the phone.
     pub camera_pending: bool,
+    /// What each audio direction is doing.
+    pub audio: [crate::audio_state::Phase; 2],
     /// Mirrored phone notifications, newest first.
     pub notes: &'a [Notification],
     pub settings: &'a Settings,
@@ -148,6 +157,16 @@ pub fn build(i: Inputs) -> HomeModel {
         (i.screen, i.screen_live, SessionKind::Screen),
         (i.camera, i.camera_live, SessionKind::Camera),
         (i.control, true, SessionKind::Control),
+        (
+            i.audio[0] == crate::audio_state::Phase::Running,
+            true,
+            SessionKind::PhoneAudio,
+        ),
+        (
+            i.audio[1] == crate::audio_state::Phase::Running,
+            true,
+            SessionKind::PcAudio,
+        ),
     ]
     .into_iter()
     .filter(|(on, _, _)| *on)
@@ -200,6 +219,10 @@ pub fn build(i: Inputs) -> HomeModel {
         now: i.now,
         paused: i.settings.paused,
         camera_pending: i.camera_pending && !i.camera,
+        audio_pending: [
+            i.audio[0] == crate::audio_state::Phase::Asking,
+            i.audio[1] == crate::audio_state::Phase::Asking,
+        ],
         error: None,
     }
 }
@@ -270,15 +293,19 @@ pub enum Quick {
     Screen,
     Camera,
     Control,
+    PhoneAudio,
+    PcAudio,
 }
 
 impl Quick {
-    pub const ALL: [Quick; 5] = [
+    pub const ALL: [Quick; 7] = [
         Quick::SendFile,
         Quick::Clipboard,
         Quick::Screen,
         Quick::Camera,
         Quick::Control,
+        Quick::PhoneAudio,
+        Quick::PcAudio,
     ];
 
     /// What this runs: the flyout tile's command, or for Send clipboard the
@@ -290,13 +317,15 @@ impl Quick {
             Quick::Screen => Action::Flyout(flyout::Action::ShowScreen),
             Quick::Camera => Action::Flyout(flyout::Action::ToggleCamera),
             Quick::Control => Action::Flyout(flyout::Action::ControlPhone),
+            Quick::PhoneAudio => Action::Audio(crate::audio_state::Dir::PhoneToPc),
+            Quick::PcAudio => Action::Audio(crate::audio_state::Dir::PcToPhone),
         }
     }
 
     /// The tile's label; a camera request that waits for the phone offers
     /// an explicit Cancel so a second click is a decision, not an accident.
     fn label_for(self, m: &HomeModel) -> &'static str {
-        if self == Quick::Camera && m.camera_pending {
+        if (self == Quick::Camera && m.camera_pending) || self.audio_pending(m) {
             return "Cancel start";
         }
         self.label()
@@ -312,10 +341,19 @@ impl Quick {
         if m.phone.is_none() || m.error.is_some() {
             return false;
         }
-        if self == Quick::Camera && m.camera_pending {
+        if (self == Quick::Camera && m.camera_pending) || self.audio_pending(m) {
             return true;
         }
         !m.paused && !self.on(m)
+    }
+
+    /// An audio question for this tile is open: the tile cancels it.
+    fn audio_pending(self, m: &HomeModel) -> bool {
+        match self {
+            Quick::PhoneAudio => m.audio_pending[0],
+            Quick::PcAudio => m.audio_pending[1],
+            _ => false,
+        }
     }
 
     fn label(self) -> &'static str {
@@ -325,6 +363,8 @@ impl Quick {
             Quick::Screen => "Phone screen",
             Quick::Camera => "Camera",
             Quick::Control => "Control phone",
+            Quick::PhoneAudio => crate::audio_state::Dir::PhoneToPc.tile(),
+            Quick::PcAudio => crate::audio_state::Dir::PcToPhone.tile(),
         }
     }
 
@@ -335,6 +375,8 @@ impl Quick {
             Quick::Screen => '\u{E7F4}',
             Quick::Camera => '\u{E714}',
             Quick::Control => fluent::glyph::KEYBOARD,
+            Quick::PhoneAudio => '\u{E767}',
+            Quick::PcAudio => '\u{E7F4}',
         }
     }
 
@@ -343,9 +385,12 @@ impl Quick {
         let running = |k| m.sessions.iter().any(|x| x.kind == k);
         match self {
             Quick::Camera if m.camera_pending => true,
+            _ if self.audio_pending(m) => true,
             Quick::Screen => running(SessionKind::Screen),
             Quick::Camera => running(SessionKind::Camera),
             Quick::Control => running(SessionKind::Control),
+            Quick::PhoneAudio => running(SessionKind::PhoneAudio),
+            Quick::PcAudio => running(SessionKind::PcAudio),
             Quick::SendFile | Quick::Clipboard => false,
         }
     }
@@ -360,6 +405,16 @@ impl Session {
                 fluent::glyph::KEYBOARD,
                 "Control phone",
                 "This PC's mouse and keyboard drive the phone",
+            ),
+            SessionKind::PhoneAudio => (
+                '\u{E767}',
+                crate::audio_state::Dir::PhoneToPc.title(),
+                crate::audio_state::Dir::PhoneToPc.running_meta(),
+            ),
+            SessionKind::PcAudio => (
+                '\u{E7F4}',
+                crate::audio_state::Dir::PcToPhone.title(),
+                crate::audio_state::Dir::PcToPhone.running_meta(),
             ),
         };
         (
@@ -405,6 +460,19 @@ const NONE_H: f32 = 48.0;
 const BUTTON_W: f32 = 88.0;
 const BUTTON_H: f32 = 32.0;
 const SEE_ALL_W: f32 = 64.0;
+
+/// How many quick tiles share a row: all of them while each keeps room for
+/// its label, otherwise two rows.
+fn quick_columns(avail: f32, n: usize, s: f32) -> usize {
+    const MIN_TILE_W: f32 = 104.0;
+    let gap = SPACE[1] * s;
+    let one_row = (avail - gap * (n as f32 - 1.0)) / n as f32;
+    if one_row >= MIN_TILE_W * s {
+        n
+    } else {
+        n.div_ceil(2)
+    }
+}
 
 /// Where everything goes, in pixels.
 struct Parts {
@@ -498,13 +566,23 @@ fn parts(r: RectF, s: f32, m: &HomeModel) -> Parts {
     let (mut quick_head, mut quick) = (None, Vec::new());
     if m.phone.is_some() {
         quick_head = Some(take(HEAD_H));
-        let row = take(TILE_H);
         let gap = SPACE[1] * s;
-        let n = Quick::ALL.len() as f32;
-        let w = ((row.right - row.left - gap * (n - 1.0)) / n).max(0.0);
-        quick = (0..Quick::ALL.len())
+        let total = Quick::ALL.len();
+        let cols = quick_columns(right - left, total, s);
+        let rows = total.div_ceil(cols);
+        let row_rects: Vec<RectF> = (0..rows)
             .map(|k| {
-                let l = row.left + k as f32 * (w + gap);
+                if k > 0 {
+                    take(SPACE[1]);
+                }
+                take(TILE_H)
+            })
+            .collect();
+        let w = ((right - left - gap * (cols as f32 - 1.0)) / cols as f32).max(0.0);
+        quick = (0..total)
+            .map(|k| {
+                let row = &row_rects[k / cols];
+                let l = row.left + (k % cols) as f32 * (w + gap);
                 rectf(l, row.top, l + w, row.bottom)
             })
             .collect();
@@ -794,6 +872,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
             timeline::Kind::ClipText => fluent::glyph::CLIPBOARD,
             timeline::Kind::ClipImage => '\u{EB9F}',
             timeline::Kind::Notification => '\u{EA8F}',
+            timeline::Kind::Audio => '\u{E767}',
         };
         let meta = match e.dir {
             timeline::Dir::ToPhone => format!("To {}", e.peer),
@@ -872,6 +951,7 @@ mod tests {
             camera_live: false,
             control: false,
             camera_pending: false,
+            audio: Default::default(),
             notes,
             settings,
             locked: false,
@@ -1149,7 +1229,9 @@ mod tests {
         }
         let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
         assert!(hits.iter().any(|h| h.id == RESUME));
-        assert!(!hits.iter().any(|h| (QUICK..QUICK + 5).contains(&h.id)));
+        assert!(!hits
+            .iter()
+            .any(|h| (QUICK..QUICK + Quick::ALL.len() as u32).contains(&h.id)));
         let r = hits.iter().find(|h| h.id == RESUME).unwrap();
         assert_eq!(click(r, &m), Some(Action::Resume));
     }

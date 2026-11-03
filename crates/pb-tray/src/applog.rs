@@ -98,6 +98,20 @@ pub fn pause(on: bool) -> Ev {
         vec![],
     )
 }
+/// An audio session event: `what` is asked, refused, started, ended or
+/// failed; `dir` is `phone_to_pc` or `pc_to_phone`. Metadata only: no device
+/// name, never any audio.
+pub fn audio(what: &'static str, dir: &'static str, secs: u64, why: &str) -> Ev {
+    let mut f: Vec<(&'static str, Value)> = vec![
+        ("what", what.into()),
+        ("dir", dir.into()),
+        ("secs", secs.into()),
+    ];
+    if !why.is_empty() {
+        f.push(("why", scrub(why).into()));
+    }
+    ev(Stream::Events, "audio", f)
+}
 pub fn device_released() -> Ev {
     ev(Stream::Events, "device_released", vec![])
 }
@@ -597,6 +611,16 @@ mod tests {
         assert_eq!(field(&e, "where"), Some(&Value::s("SCREEN")));
         assert!(map_line("TOAST identity registered").is_none());
         assert!(map_line("CLIP from \"P\" (12 chars)").is_none());
+    }
+
+    #[test]
+    fn audio_events_carry_metadata_only() {
+        let e = audio("ended", "pc_to_phone", 42, "link lost to \"Pixel\"");
+        assert_eq!(e.kind, "audio");
+        assert_eq!(field(&e, "dir"), Some(&Value::s("pc_to_phone")));
+        assert_eq!(field(&e, "secs"), Some(&Value::Int(42)));
+        assert!(!format!("{e:?}").contains("Pixel"));
+        assert!(field(&audio("started", "phone_to_pc", 0, ""), "why").is_none());
     }
 
     #[test]

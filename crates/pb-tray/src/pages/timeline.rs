@@ -654,6 +654,7 @@ fn glyph(k: Kind) -> char {
         Kind::ClipText => fluent::glyph::CLIPBOARD,
         Kind::ClipImage => '\u{EB9F}',
         Kind::Notification => '\u{EA8F}',
+        Kind::Audio => '\u{E767}',
     }
 }
 

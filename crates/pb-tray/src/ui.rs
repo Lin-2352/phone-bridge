@@ -541,6 +541,13 @@ fn page_action(a: crate::pages::Action) {
         Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
         Action::Stop(SessionKind::Camera) => post_command(raw, ID_CAMERA_STOP),
         Action::Stop(SessionKind::Control) => post_command(raw, ID_CONTROL_STOP),
+        Action::Stop(SessionKind::PhoneAudio)
+        | Action::Audio(crate::audio_state::Dir::PhoneToPc) => {
+            post_command(raw, crate::menu_model::ID_AUDIO_PHONE)
+        }
+        Action::Stop(SessionKind::PcAudio) | Action::Audio(crate::audio_state::Dir::PcToPhone) => {
+            post_command(raw, crate::menu_model::ID_AUDIO_PC)
+        }
         // The tray's own Remove: it asks first, then unpairs.
         Action::Unpair(i) => post_command(raw, ID_UNPAIR_BASE + i),
         // On a worker: the check and the shell may wait on a slow share.
@@ -784,6 +791,10 @@ fn page_model(st: &State) -> crate::pages::Model {
         camera_live,
         control,
         camera_pending: crate::camera::pending(),
+        audio: [
+            crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
+            crate::audio::phase(crate::audio_state::Dir::PcToPhone),
+        ],
         notes: &notes,
         settings: &settings,
         locked,
@@ -1243,6 +1254,19 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         }
         // Nothing to do here: the settings window is rebuilt after every event batch.
         UiEvent::PeersChecked => {}
+        // The menu, Home and the flyout read the state when they draw.
+        UiEvent::AudioChanged => refresh_flyout(st),
+        UiEvent::AskAudioShare { from, reply } => {
+            let alive = reply.clone();
+            let (title, body, yes, no) = crate::audio_state::confirm_text(&from);
+            crate::dialog_window::ask_while(
+                Dialog::question(title, body, yes, no),
+                move || alive.alive(),
+                move |ok| {
+                    let _ = reply.answer(ok);
+                },
+            );
+        }
         UiEvent::Info(msg) => {
             if msg.starts_with("Sent ") {
                 note_activity(&format!("Last: {}", msg));
@@ -1817,6 +1841,17 @@ fn end_control(hwnd: HWND, why: &str) {
     balloon(hwnd, "Relay", why);
 }
 
+/// The menu entry and the Home tile: start when idle, otherwise stop or
+/// cancel the question.
+fn toggle_audio(st: &State, d: crate::audio_state::Dir) {
+    let cmd = if crate::audio::phase(d) == crate::audio_state::Phase::Idle {
+        Cmd::StartAudio(d)
+    } else {
+        Cmd::StopAudio(d)
+    };
+    let _ = st.cmds.send(cmd);
+}
+
 fn show_menu(hwnd: HWND) {
     use crate::menu_model::{build, Camera, Ids, Inputs};
     let Some(st) = STATE.get() else { return };
@@ -1836,6 +1871,10 @@ fn show_menu(hwnd: HWND) {
             has_peer,
             screen_open: crate::screen_window::is_open(),
             camera,
+            audio: [
+                crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
+                crate::audio::phase(crate::audio_state::Dir::PcToPhone),
+            ],
             logs_available: crate::applog::handle().is_some(),
         },
         &Ids {
@@ -1874,6 +1913,7 @@ fn set_paused(hwnd: HWND, st: &State, on: bool) {
         crate::screen_window::close();
         crate::camera_window::close();
         crate::camera::stop();
+        crate::audio::stop_all();
         // A pairing code on screen would be refused by the core: take it down.
         let _ = st.cmds.send(crate::core::Cmd::CancelPair);
         crate::qr_window::close();
@@ -1919,6 +1959,7 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         control,
         keep_history: n.keep_history,
         keep_logs: n.keep_logs,
+        audio_skip_confirm: n.audio_skip_confirm_pc_to_phone,
         log_dir: crate::applog::dir().display().to_string(),
         log_bytes: crate::applog::size_bytes(),
         devices: paired_devices(st),
@@ -2098,6 +2139,14 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                     }
                 },
             );
+        }
+        // Read by the next PC audio request: no restart needed.
+        Action::Toggle(Key::AudioSkipConfirm) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.audio_skip_confirm_pc_to_phone = !s.audio_skip_confirm_pc_to_phone);
+            save_settings(st);
         }
         Action::Toggle(Key::KeepLogs) => {
             let on = st
@@ -2361,6 +2410,8 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             crate::settings_rows::Action::Toggle(crate::settings_rows::Key::KeepLogs),
         ),
         ID_CONTROL => toggle_control(hwnd, st),
+        crate::menu_model::ID_AUDIO_PHONE => toggle_audio(st, crate::audio_state::Dir::PhoneToPc),
+        crate::menu_model::ID_AUDIO_PC => toggle_audio(st, crate::audio_state::Dir::PcToPhone),
         ID_CONTROL_STOP => {
             if crate::control::is_active() {
                 end_control(hwnd, "Back to this PC");

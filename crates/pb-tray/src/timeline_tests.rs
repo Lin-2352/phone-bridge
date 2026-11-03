@@ -56,7 +56,12 @@ fn round_trips_all_kinds_with_tabs_and_newlines_in_names() {
     n.at = 103;
     let mut empty_name = f.clone();
     empty_name.name = Some(String::new());
-    let v = vec![f, t, i, n, empty_name];
+    let mut a = audio_entry("Phone", Dir::ToPc, "Phone audio on this PC", 252);
+    a.at = 104;
+    assert_eq!(summary(&a), "Phone audio on this PC, 4 min 12 s");
+    assert_eq!(a.size, None);
+    assert_eq!(a.path, None);
+    let v = vec![f, t, i, n, empty_name, a];
     assert_eq!(parse(&encode(&v)).unwrap(), v);
     assert!(parse(b"tl2\n").is_err());
     assert!(parse(b"tl1\nF\tp\n").is_err());

@@ -39,6 +39,7 @@ pub const OPTIONS: &[&str] = &[
     "Show in Explorer \u{201c}Send to\u{201d}",
     "Start with Windows",
     "Let my phone control this PC",
+    "Play PC audio without asking",
     "Keep history",
     "Clear history",
     "Keep logs",
@@ -84,7 +85,7 @@ pub fn pages() -> [(Page, &'static str); 7] {
 /// Page of an option label; anything unknown lands on General.
 pub fn page_of(option: &str) -> Page {
     match option {
-        "Paired device" | "Pair device" => Page::Devices,
+        "Paired device" | "Pair device" | "Play PC audio without asking" => Page::Devices,
         "Share clipboard"
         | "Share images"
         | "Passwords and codes"

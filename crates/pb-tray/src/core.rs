@@ -67,7 +67,7 @@ pub fn is_changed(id: &PeerId) -> bool {
 
 /// Where the transport's "changed" flags come from: the node (or a test
 /// stand-in).
-trait ChangedFlags {
+pub(crate) trait ChangedFlags {
     fn changed(&self, id: &PeerId) -> bool;
     fn paired(&self) -> Vec<PeerId>;
 }
@@ -141,7 +141,7 @@ fn refresh_changed(flags: &impl ChangedFlags) {
 /// its flag when the connection works and sets it on `PeerChanged`, so the
 /// note follows the attempt either way. Every tray-side dial goes through
 /// here (`every_dial_notes_the_changed_flag`).
-async fn dial<T>(
+pub(crate) async fn dial<T>(
     flags: &impl ChangedFlags,
     peer: &PeerId,
     attempt: impl std::future::Future<Output = T>,
@@ -336,6 +336,10 @@ pub enum Cmd {
     StartCamera,
     /// Stop the phone camera (and remove the virtual camera).
     StopCamera,
+    /// Start audio sharing in this direction (the PC dials).
+    StartAudio(crate::audio_state::Dir),
+    /// Stop or cancel audio sharing in this direction.
+    StopAudio(crate::audio_state::Dir),
     /// Switch the phone camera's lens (front or back).
     SwitchCameraLens,
     /// Install the camera again (one UAC prompt), then forget the start error.
@@ -448,6 +452,15 @@ pub enum UiEvent {
         peer: PeerId,
         keys: Vec<String>,
     },
+    /// Ask whether to play this PC's audio on the phone (when the Settings
+    /// toggle does not skip the question). The dialog closes itself when
+    /// `reply` is no longer alive.
+    AskAudioShare {
+        from: String,
+        reply: OfferReply,
+    },
+    /// An audio session started, ended or is being asked for: repaint.
+    AudioChanged,
     /// The phone shares its screen: the "Asking…" pill goes.
     ScreenShown,
     /// The phone-screen window's Pin changed (to remember it).
@@ -886,6 +899,21 @@ pub async fn run(
                         }
                     }
                     tokio::task::spawn_blocking(crate::camera::stop);
+                }
+                Some(Cmd::StartAudio(d)) => {
+                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let Some((id, name)) = target else {
+                        ui(UiEvent::Info("Pair a phone first".into()));
+                        continue;
+                    };
+                    let ui: Arc<dyn Fn(UiEvent) + Send + Sync> = ui.clone();
+                    if !crate::audio::start(node.clone(), id, name, d, log.clone(), ui, settings.clone()) {
+                        log.line("AUDIO start ignored: already asking or running");
+                    }
+                }
+                Some(Cmd::StopAudio(d)) => {
+                    log.line("AUDIO stop requested by the user");
+                    crate::audio::stop(d);
                 }
                 Some(Cmd::SwitchCameraLens) => crate::camera::switch_lens(),
                 Some(Cmd::RepairCamera) => {

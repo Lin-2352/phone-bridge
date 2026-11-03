@@ -183,7 +183,7 @@ const APP_BIT: u32 = 0x1000_0000;
 const DEVICE_BIT: u32 = 0x2000_0000;
 const KEY_MASK: u32 = 0x0FFF_FFFF;
 
-const KEYS: [Key; 16] = [
+const KEYS: [Key; 17] = [
     Key::Share,
     Key::ShareImages,
     Key::Passwords,
@@ -200,6 +200,7 @@ const KEYS: [Key; 16] = [
     Key::NotifyQuietMirror,
     Key::KeepHistory,
     Key::KeepLogs,
+    Key::AudioSkipConfirm,
 ];
 
 /// Every key is in `KEYS` (a test checks), so this never falls back.
@@ -1016,6 +1017,7 @@ mod tests {
             Key::NotifyQuietMirror,
             Key::KeepHistory,
             Key::KeepLogs,
+            Key::AudioSkipConfirm,
         ] {
             want.push(set(SAction::Toggle(k)));
         }
@@ -1259,7 +1261,8 @@ mod tests {
             | Key::NotifyOtp
             | Key::NotifyQuietMirror
             | Key::KeepHistory
-            | Key::KeepLogs => KEYS.contains(&k),
+            | Key::KeepLogs
+            | Key::AudioSkipConfirm => KEYS.contains(&k),
         };
         let m = on(Page::General, model());
         for (i, k) in KEYS.iter().enumerate() {
@@ -1271,7 +1274,7 @@ mod tests {
             };
             assert_eq!(click(&h, &m), Some(set(SAction::Toggle(*k))));
         }
-        assert_eq!(KEYS.len(), 16);
+        assert_eq!(KEYS.len(), 17);
         for r in rows(&model()) {
             if let Row::Toggle(k, ..) = r {
                 assert!(KEYS.contains(&k), "{k:?} missing from KEYS");

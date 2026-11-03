@@ -9,6 +9,8 @@ pub const ID_PAUSE: usize = 26;
 pub const ID_TOGGLE_NOTIFY: usize = 27;
 pub const ID_TOGGLE_ALLOW_CONTROL: usize = 28;
 pub const ID_TOGGLE_LOGS: usize = 29;
+pub const ID_AUDIO_PHONE: usize = 30;
+pub const ID_AUDIO_PC: usize = 31;
 
 /// The ids the actions already had in the tray's command table.
 pub struct Ids {
@@ -35,6 +37,9 @@ pub struct Inputs<'a> {
     pub has_peer: bool,
     pub screen_open: bool,
     pub camera: Camera,
+    /// What each audio direction is doing (phone audio on this PC, PC audio
+    /// on the phone).
+    pub audio: [crate::audio_state::Phase; 2],
     /// The log writer could open its folder (otherwise the toggle cannot apply).
     pub logs_available: bool,
 }
@@ -75,6 +80,24 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
         Camera::Running => action(glyph::PHONE, "Stop phone camera", ids.camera, None),
         Camera::Idle => action(glyph::PHONE, "Use phone as camera", ids.camera, start_block),
     };
+    let audio = |d: crate::audio_state::Dir, id| {
+        use crate::audio_state::{Dir, Phase};
+        match (i.audio[d.index()], d) {
+            (Phase::Asking, Dir::PhoneToPc) => {
+                action(glyph::PHONE, "Cancel phone audio request", id, None)
+            }
+            (Phase::Asking, Dir::PcToPhone) => {
+                action(glyph::PHONE, "Cancel PC audio request", id, None)
+            }
+            (Phase::Running, Dir::PhoneToPc) => {
+                action(glyph::PHONE, "Stop phone audio on this PC", id, None)
+            }
+            (Phase::Running, Dir::PcToPhone) => {
+                action(glyph::PHONE, "Stop PC audio on the phone", id, None)
+            }
+            (Phase::Idle, d) => action(glyph::PHONE, d.title(), id, start_block),
+        }
+    };
     let mut logs = toggle(crate::strings::KEEP_LOGS, ID_TOGGLE_LOGS, s.keep_logs);
     if !i.logs_available {
         logs = logs.disabled(NO_LOGS);
@@ -95,6 +118,8 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
         ),
         screen,
         camera,
+        audio(crate::audio_state::Dir::PhoneToPc, ID_AUDIO_PHONE),
+        audio(crate::audio_state::Dir::PcToPhone, ID_AUDIO_PC),
         Item::separator(),
         Item::heading("Quick settings"),
         toggle("Pause Relay", ID_PAUSE, s.paused),
@@ -140,6 +165,7 @@ pub fn toggle_labels() -> Vec<String> {
         has_peer: true,
         screen_open: false,
         camera: Camera::Idle,
+        audio: Default::default(),
         logs_available: true,
     };
     build(&inputs, &ids)
@@ -170,6 +196,7 @@ mod tests {
             has_peer: true,
             screen_open: false,
             camera: Camera::Idle,
+            audio: Default::default(),
             logs_available: true,
         }
     }
@@ -198,6 +225,8 @@ mod tests {
                 "Send clipboard now",
                 "Show phone screen",
                 "Use phone as camera",
+                "Phone audio on this PC",
+                "PC audio on the phone",
                 "Quick settings",
                 "Pause Relay",
                 "Share clipboard",
