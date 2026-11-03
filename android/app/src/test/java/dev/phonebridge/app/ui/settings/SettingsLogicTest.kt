@@ -28,4 +28,22 @@ class SettingsLogicTest {
         assertEquals(PhotoDenial.Explain, photoDenial(granted = false, canAskAgain = true))
         assertEquals(PhotoDenial.OpenSettings, photoDenial(granted = false, canAskAgain = false))
     }
+
+    private val rows = listOf(
+        AppRow("com.bank.app", "Zed Bank", true),
+        AppRow("com.gone.app", "com.gone.app", false),
+        AppRow("com.mail", "Mail", true),
+        AppRow("com.chat", "chat", true),
+    )
+
+    @Test fun app_rows_list_installed_apps_first_by_name_and_old_packages_last() {
+        assertEquals(listOf("chat", "Mail", "Zed Bank", "com.gone.app"), orderAppRows(rows).map { it.label })
+    }
+
+    @Test fun app_rows_filter_by_name_or_package_ignoring_case() {
+        assertEquals(rows, filterAppRows(rows, "  "))
+        assertEquals(listOf("Zed Bank"), filterAppRows(rows, "BANK").map { it.label })
+        assertEquals(listOf("com.mail"), filterAppRows(rows, "com.mail").map { it.pkg })
+        assertEquals(emptyList<AppRow>(), filterAppRows(rows, "nothing"))
+    }
 }
