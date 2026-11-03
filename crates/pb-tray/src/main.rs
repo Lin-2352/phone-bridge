@@ -105,9 +105,9 @@ mod toast;
 mod toast_images;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod toast_xml;
-mod transfers;
 #[cfg(windows)]
 mod transfer_window;
+mod transfers;
 // Generated; some tokens (spacing, other durations) are used by the widgets (pages use them from Task 8 on).
 #[cfg(windows)]
 // Used from Task 11 (the settings page search).

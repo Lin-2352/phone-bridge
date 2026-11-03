@@ -50,7 +50,7 @@ const ROW_H: i32 = 112;
 const MAX_ROWS: usize = 4;
 const BUTTON_H: i32 = 28;
 
-static HWND_RAW: AtomicIsize = AtomicIsize::new(0);
+pub(crate) static HWND_RAW: AtomicIsize = AtomicIsize::new(0);
 static OPENING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -655,3 +655,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transfer_window_ux.rs"]
+mod transfer_window_ux;
