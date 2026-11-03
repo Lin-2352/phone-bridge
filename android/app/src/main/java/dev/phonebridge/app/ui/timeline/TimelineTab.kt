@@ -37,7 +37,19 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import dev.phonebridge.app.Radius
+import dev.phonebridge.app.ui.components.EmptyState
+import dev.phonebridge.app.ui.components.IconBadge
+import dev.phonebridge.app.ui.components.RelayCard
+import dev.phonebridge.app.ui.components.RelayRow
+import dev.phonebridge.app.ui.components.RelayTint
+import dev.phonebridge.app.ui.components.RelayTopBar
+import dev.phonebridge.app.ui.components.SectionHeader
+import dev.phonebridge.app.ui.components.cardColor
+import dev.phonebridge.app.ui.components.tintColor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableIntStateOf
@@ -136,8 +148,8 @@ fun TimelineTab() {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Timeline") },
+            RelayTopBar(
+                title = "Timeline",
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -154,14 +166,12 @@ fun TimelineTab() {
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
             item(key = "keep") {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Keep history", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                    Switch(
+                RelayCard {
+                    RelayRow(
+                        title = "Keep history",
+                        supporting = "Remember what you send and receive here",
                         checked = historyOn,
-                        onCheckedChange = { on ->
+                        onChecked = { on ->
                             if (on) {
                                 Timeline.setEnabled(true)
                             } else {
@@ -173,13 +183,7 @@ fun TimelineTab() {
             }
             if (grouped.isEmpty()) {
                 item(key = "empty") {
-                    Box(Modifier.fillMaxWidth().padding(Spacing.xl), contentAlignment = Alignment.Center) {
-                        Text(
-                            emptyText(historyOn),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    EmptyState(emptyText(historyOn))
                 }
             }
             for (day in grouped) {
@@ -222,14 +226,7 @@ fun TimelineTab() {
 @Composable
 private fun DayHeader(label: String) {
     // Opaque, so rows scroll under it while it sticks.
-    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) {
-        Text(
-            label,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-        )
-    }
+    Surface(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface) { SectionHeader(label) }
 }
 
 private fun kindIcon(k: TlKind) = when (k) {
@@ -240,18 +237,28 @@ private fun kindIcon(k: TlKind) = when (k) {
     TlKind.Notification -> Icons.Filled.Notifications
 }
 
+private fun kindTint(k: TlKind) = when (k) {
+    TlKind.File, TlKind.Link -> RelayTint.Primary
+    TlKind.ClipText -> RelayTint.Accent
+    TlKind.ClipImage -> RelayTint.Success
+    TlKind.Notification -> RelayTint.Warning
+}
+
 @Composable
 private fun EntryRow(e: TlEntry, zone: ZoneId, onOpen: () -> Unit) {
     // A sent file has no uri (the share permission was temporary): not openable, which is not "moved or deleted".
     val openable = isOpenable(e)
     Row(
         Modifier.fillMaxWidth()
+            .padding(horizontal = Spacing.lg, vertical = Spacing.xs)
+            .clip(RoundedCornerShape(Radius.card))
+            .background(cardColor())
             .then(if (openable) Modifier.clickable(onClick = onOpen) else Modifier)
             .padding(horizontal = Spacing.lg, vertical = Spacing.md),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
-        Icon(kindIcon(e.kind), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        IconBadge(kindIcon(e.kind), tintColor(kindTint(e.kind)))
         Column(Modifier.weight(1f)) {
             Text(summary(e), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically) {

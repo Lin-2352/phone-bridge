@@ -44,6 +44,10 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -89,7 +93,11 @@ import dev.phonebridge.app.pruneAllowed
 import dev.phonebridge.app.quickTiles
 import dev.phonebridge.app.setBridgeEnabled
 import dev.phonebridge.app.ui.LocalResumeCount
-import dev.phonebridge.app.ui.components.KindBadge
+import dev.phonebridge.app.ui.components.IconBadge
+import dev.phonebridge.app.ui.components.RelayTint
+import dev.phonebridge.app.ui.components.RelayTopBar
+import dev.phonebridge.app.ui.components.cardColor
+import dev.phonebridge.app.ui.components.tintColor
 import dev.phonebridge.app.ui.components.LinkIndicator
 import dev.phonebridge.app.ui.settings.openNotifyAccess
 import dev.phonebridge.app.RelayDialog
@@ -189,8 +197,8 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
     Scaffold(
         snackbarHost = { SnackbarHost(snack) },
         topBar = {
-            TopAppBar(
-                title = { Text(APP_NAME) },
+            RelayTopBar(
+                title = APP_NAME,
                 actions = { IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, "Settings") } },
             )
         },
@@ -234,7 +242,7 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
             cameraTo?.let { item(key = "session-camera") { SessionCard("$it is using the camera", "This phone is your PC's webcam", Modifier.animateItem()) { CameraShare.stop(userStopped = true) } } }
             item(key = "recent-head") {
                 Row(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Recent", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.sm))
+                    Text("Recent", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.lg))
                     if (recent.isNotEmpty()) TextButton(onClick = onTimeline) { Text("See all") }
                 }
             }
@@ -245,8 +253,15 @@ fun HomeTab(onSettings: () -> Unit, onTimeline: () -> Unit) {
                 ListItem(
                     headlineContent = { Text(r.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(r.subtitle) },
-                    leadingContent = { KindBadge(r.kind) },
-                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).clickable(enabled = isOpenable(r.kind == RecentItem.Kind.File, r.uri)) {
+                    leadingContent = {
+                        when (r.kind) {
+                            RecentItem.Kind.File -> IconBadge(Icons.AutoMirrored.Filled.InsertDriveFile, tintColor(RelayTint.Primary))
+                            RecentItem.Kind.Clipboard -> IconBadge(Icons.Filled.ContentPaste, tintColor(RelayTint.Accent))
+                            RecentItem.Kind.Link -> IconBadge(Icons.Filled.Link, tintColor(RelayTint.Primary))
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    modifier = Modifier.clip(RoundedCornerShape(Radius.card)).background(cardColor()).clickable(enabled = isOpenable(r.kind == RecentItem.Kind.File, r.uri)) {
                         val uri = r.uri
                         if (uri != null && !opening) {
                             opening = true // one tap, one viewer or one message, as in Timeline
@@ -392,11 +407,12 @@ private fun QuickCard(tile: QuickTile, modifier: Modifier, onClick: () -> Unit) 
     val colors = if (tile.on) {
         CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
     } else {
-        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer, contentColor = MaterialTheme.colorScheme.onSurface)
+        CardDefaults.cardColors(containerColor = cardColor(), contentColor = MaterialTheme.colorScheme.onSurface)
     }
     Card(onClick = onClick, enabled = tile.enabled, shape = RoundedCornerShape(Radius.card), colors = colors, modifier = modifier.animateContentSize()) {
         Column(Modifier.fillMaxWidth().padding(Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            Icon(tile.quick.icon(), null, Modifier.size(24.dp))
+            if (tile.on) Icon(tile.quick.icon(), null, Modifier.size(24.dp))
+            else IconBadge(tile.quick.icon(), tintColor(if (tile.quick == Quick.Pair) RelayTint.Muted else RelayTint.Primary))
             Text(tile.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (tile.on) Text("On · tap to stop", style = MaterialTheme.typography.bodySmall, color = LocalContentColor.current.copy(alpha = 0.7f))
         }

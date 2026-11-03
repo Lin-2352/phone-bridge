@@ -1,4 +1,4 @@
-package dev.phonebridge.app.ui.settings
+package dev.phonebridge.app.ui.components
 
 import android.content.Context
 import android.provider.Settings
@@ -29,6 +29,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,11 +46,70 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.phonebridge.app.Radius
+import dev.phonebridge.app.ui.Tokens
 import dev.phonebridge.app.ui.isDark
 
 /** True unless the system "remove animations" setting (animator scale 0) is on. */
 fun animationsEnabled(ctx: Context): Boolean =
     runCatching { Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f }.getOrDefault(true)
+
+/*
+ * Shared building blocks: every tab and sub-page is built from these so the app reads as one design.
+ * Page = RelayTopBar over a list; groups = SectionHeader + RelayCard; entries = RelayRow / CategoryRow
+ * (tinted IconBadge, title, supporting text, chevron or switch); PillSearch; EmptyState.
+ * Spacing is 16 dp gutters on an 8 dp rhythm, cards use Radius.card, type comes from RelayTypography.
+ */
+
+/** The category tints, from the shared tokens so they follow light and dark. */
+enum class RelayTint { Primary, Accent, Success, Warning, Muted }
+
+@Composable
+fun tintColor(t: RelayTint): Color {
+    val c = if (isDark()) Tokens.Dark else Tokens.Light
+    return when (t) {
+        RelayTint.Primary -> c.primary
+        RelayTint.Accent -> c.accent
+        RelayTint.Success -> c.success
+        RelayTint.Warning -> c.warning
+        RelayTint.Muted -> c.textMuted
+    }
+}
+
+/** The page header used by every tab: one title (with an optional quiet line under it) on the page colour. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun RelayTopBar(
+    title: String,
+    subtitle: String? = null,
+    navigationIcon: @Composable () -> Unit = {},
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    TopAppBar(
+        title = {
+            Column {
+                Text(title, style = MaterialTheme.typography.titleLarge)
+                if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        navigationIcon = navigationIcon,
+        actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+    )
+}
+
+/** An empty or waiting state: one line of what is going on, optional hint, optional action slot. */
+@Composable
+fun EmptyState(title: String, hint: String? = null, modifier: Modifier = Modifier, action: (@Composable () -> Unit)? = null) {
+    Column(
+        modifier.fillMaxWidth().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center)
+        if (hint != null) Text(hint, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        action?.invoke()
+    }
+}
 
 /** The filled card colour: one step above the page, a touch brighter in light mode so it reads on the grey page. */
 @Composable
@@ -55,7 +118,7 @@ fun cardColor(): Color =
 
 /** A section header: sentence case, quiet, above its card. */
 @Composable
-fun SettingsHeader(title: String) {
+fun SectionHeader(title: String) {
     Text(
         title,
         style = MaterialTheme.typography.titleSmall,
@@ -69,7 +132,7 @@ fun SettingsHeader(title: String) {
 
 /** A filled, rounded surface that holds a section's rows. No outline: the tone carries the edge. */
 @Composable
-fun SettingsCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+fun RelayCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Column(
         modifier
             .fillMaxWidth()
@@ -101,12 +164,12 @@ fun IconBadge(icon: ImageVector, tint: Color, modifier: Modifier = Modifier) {
 }
 
 /**
- * One row inside a [SettingsCard]. With [checked] set it is a switch row: the whole row toggles (unless
+ * One row inside a [RelayCard]. With [checked] set it is a switch row: the whole row toggles (unless
  * [onClick] is given, then only the Switch does) and TalkBack reads label, text and state as one switch.
  * [danger] paints the label in the error colour.
  */
 @Composable
-fun SettingItem(
+fun RelayRow(
     title: String,
     supporting: String? = null,
     modifier: Modifier = Modifier,

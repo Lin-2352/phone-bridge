@@ -41,8 +41,6 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,8 +81,16 @@ import dev.phonebridge.app.statusLine
 import dev.phonebridge.app.treeLabel
 import dev.phonebridge.app.ui.LocalResumeCount
 import dev.phonebridge.app.ui.ThemeChoice
-import dev.phonebridge.app.ui.Tokens
-import dev.phonebridge.app.ui.isDark
+import dev.phonebridge.app.ui.components.CategoryRow
+import dev.phonebridge.app.ui.components.PillSearch
+import dev.phonebridge.app.ui.components.RelayCard
+import dev.phonebridge.app.ui.components.RelayRow
+import dev.phonebridge.app.ui.components.RelayTint
+import dev.phonebridge.app.ui.components.RelayTopBar
+import dev.phonebridge.app.ui.components.RowDivider
+import dev.phonebridge.app.ui.components.SectionHeader
+import dev.phonebridge.app.ui.components.animationsEnabled
+import dev.phonebridge.app.ui.components.tintColor
 
 /** A "who is using this now" strip with a Stop button, shown above a page's rows while it applies. */
 @Composable
@@ -122,7 +128,7 @@ private fun ControlFromPc() {
     val allow = Bridge.allowControl.value
     val controller = Bridge.controlledBy.value
     if (controller != null) LiveBanner("$controller is controlling this phone") { Bridge.node?.stopControl() }
-    SettingItem(
+    RelayRow(
         title = "Let my PC control this phone",
         supporting = when {
             serviceStuck -> "Android stopped “$APP_NAME control”. Tap, then turn it off and on again"
@@ -151,7 +157,7 @@ private fun ScreenToPc() {
     val viewer = ScreenShare.sharingWith.value
     if (viewer != null) LiveBanner("$viewer can see this screen") { ScreenShare.stop(userStopped = true) }
     var instant by remember { mutableStateOf(prefs.instantScreen) }
-    SettingItem(
+    RelayRow(
         title = "Instant screen",
         supporting = when {
             !instant -> "Off. Android asks each time your PC shows this screen"
@@ -166,7 +172,7 @@ private fun ScreenToPc() {
         },
     )
     RowDivider()
-    SettingItem(
+    RelayRow(
         title = "Show my screen on my PC without asking",
         supporting = when {
             !always -> "Off. This phone asks you first"
@@ -190,7 +196,7 @@ private fun CameraForPc() {
     var allowed by remember(resumed) { mutableStateOf(prefs.allowedCameraPcs) }
     val user = CameraShare.usedBy.value
     if (user != null) LiveBanner("$user is using the camera") { CameraShare.stop(userStopped = true) }
-    SettingItem(
+    RelayRow(
         title = "PCs always allowed to use the camera",
         supporting = if (allowed.isNotEmpty()) "${allowed.size} PC(s) skip the question. Android's camera indicator still shows"
         else "None. This phone asks you first (choose Always allow in the question)",
@@ -229,7 +235,7 @@ private fun NotificationsOnPc() {
     var on by remember { mutableStateOf(prefs.notifyToPc) }
     val access = remember(resumed) { hasNotifyAccess(ctx) }
     val openAccess = { openNotifyAccess(ctx) }
-    SettingItem(
+    RelayRow(
         title = "Notifications on PC",
         supporting = when {
             !on -> "Off"
@@ -257,19 +263,16 @@ private val GroupIcon: Map<Group, ImageVector> = mapOf(
     Group.Settings to Icons.Filled.Tune,
 )
 
-/** Category tints, from the shared tokens so they follow light and dark. */
 @Composable
-private fun groupTint(g: Group): Color {
-    val t = if (isDark()) Tokens.Dark else Tokens.Light
-    return when (g) {
-        Group.Connection -> t.primary
-        Group.Camera -> t.accent
-        Group.Screen -> t.success
-        Group.Notifications -> t.warning
-        Group.Files -> t.primary
-        Group.Settings -> t.textMuted
-    }
-}
+private fun groupTint(g: Group): Color = tintColor(
+    when (g) {
+        Group.Connection, Group.Files -> RelayTint.Primary
+        Group.Camera -> RelayTint.Accent
+        Group.Screen -> RelayTint.Success
+        Group.Notifications -> RelayTint.Warning
+        Group.Settings -> RelayTint.Muted
+    },
+)
 
 /**
  * The Settings tab: the group list with search, and one page per group. Back closes a page or
@@ -345,9 +348,8 @@ fun SettingsTab(onDone: () -> Unit) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            TopAppBar(
-                title = { Text(nav.page?.let(::groupTitle) ?: "Settings", style = MaterialTheme.typography.titleLarge) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+            RelayTopBar(
+                title = nav.page?.let(::groupTitle) ?: "Settings",
                 // A top-level tab: the arrow shows only on a group's page.
                 navigationIcon = {
                     if (nav.page != null) IconButton(onClick = { goBack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
@@ -365,7 +367,7 @@ fun SettingsTab(onDone: () -> Unit) {
                             item { Text("No settings match", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp)) }
                         } else {
                             item {
-                                SettingsCard {
+                                RelayCard {
                                     hits.forEachIndexed { i, h ->
                                         if (i > 0) RowDivider(inset = true)
                                         CategoryRow(GroupIcon.getValue(h.group), groupTint(h.group), h.title, "${groupTitle(h.group)}: ${h.subtitle}") { nav = nav.open(h.group) }
@@ -379,9 +381,9 @@ fun SettingsTab(onDone: () -> Unit) {
                             "Share with your PC" to listOf(Group.Camera, Group.Screen, Group.Notifications, Group.Files),
                             "This phone" to listOf(Group.Settings),
                         )) {
-                            item { SettingsHeader(header) }
+                            item { SectionHeader(header) }
                             item {
-                                SettingsCard {
+                                RelayCard {
                                     groups.forEachIndexed { i, g ->
                                         if (i > 0) RowDivider(inset = true)
                                         CategoryRow(GroupIcon.getValue(g), groupTint(g), groupTitle(g), statusLine(g, status)) { nav = nav.open(g) }
@@ -392,13 +394,13 @@ fun SettingsTab(onDone: () -> Unit) {
                     }
                 } else when (page) {
                     Group.Connection -> {
-                        item { SettingsHeader("Paired PCs") }
+                        item { SectionHeader("Paired PCs") }
                         item {
-                            SettingsCard {
-                                if (peers.isEmpty()) SettingItem("No PC paired yet", "Scan the QR code shown on your PC")
+                            RelayCard {
+                                if (peers.isEmpty()) RelayRow("No PC paired yet", "Scan the QR code shown on your PC")
                                 peers.forEachIndexed { i, p ->
                                     if (i > 0) RowDivider()
-                                    SettingItem(
+                                    RelayRow(
                                         title = p.name,
                                         supporting = "Fingerprint ${p.fingerprint.take(9)}",
                                         trailing = {
@@ -411,8 +413,8 @@ fun SettingsTab(onDone: () -> Unit) {
                             }
                         }
                         item {
-                            SettingsCard {
-                                SettingItem(
+                            RelayCard {
+                                RelayRow(
                                     title = "Pair a new PC",
                                     supporting = "Scan the QR code shown on your PC",
                                     titleColor = MaterialTheme.colorScheme.primary,
@@ -422,17 +424,17 @@ fun SettingsTab(onDone: () -> Unit) {
                             }
                         }
                     }
-                    Group.Camera -> item { SettingsCard { CameraForPc() } }
+                    Group.Camera -> item { RelayCard { CameraForPc() } }
                     Group.Screen -> {
-                        item { SettingsHeader("Control from your PC") }
-                        item { SettingsCard { ControlFromPc() } }
-                        item { SettingsHeader("Showing this screen") }
-                        item { SettingsCard { ScreenToPc() } }
+                        item { SectionHeader("Control from your PC") }
+                        item { RelayCard { ControlFromPc() } }
+                        item { SectionHeader("Showing this screen") }
+                        item { RelayCard { ScreenToPc() } }
                         item {
-                            SettingsCard {
+                            RelayCard {
                                 val on = remember(resumed) { ControlService.instance != null }
                                 val stuck = remember(resumed) { !on && ControlService.enabledInSettings(ctx) }
-                                SettingItem(
+                                RelayRow(
                                     title = "Accessibility permission",
                                     supporting = "“$APP_NAME control” lets your PC tap and type here. Without it your PC cannot control this phone",
                                     trailing = { Text(if (on) "On" else if (stuck) "Stopped" else "Off", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge) },
@@ -441,19 +443,19 @@ fun SettingsTab(onDone: () -> Unit) {
                             }
                         }
                     }
-                    Group.Notifications -> item { SettingsCard { NotificationsOnPc() } }
+                    Group.Notifications -> item { RelayCard { NotificationsOnPc() } }
                     Group.Files -> {
-                        item { SettingsHeader("Receiving") }
+                        item { SectionHeader("Receiving") }
                         item {
-                            SettingsCard {
-                                SettingItem(
+                            RelayCard {
+                                RelayRow(
                                     title = "Accept from my devices automatically",
                                     supporting = "Only paired devices can send",
                                     checked = auto,
                                     onChecked = { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) },
                                 )
                                 RowDivider()
-                                SettingItem(
+                                RelayRow(
                                     title = "Save files to",
                                     supporting = treeLabel(tree),
                                     trailing = if (tree != null) ({
@@ -472,9 +474,9 @@ fun SettingsTab(onDone: () -> Unit) {
                         }
                     }
                     Group.Settings -> {
-                        item { SettingsHeader("Appearance") }
+                        item { SectionHeader("Appearance") }
                         item {
-                            SettingsCard {
+                            RelayCard {
                                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(16.dp)) {
                                     listOf("System", "Light", "Dark").forEachIndexed { i, label ->
                                         SegmentedButton(
@@ -487,17 +489,17 @@ fun SettingsTab(onDone: () -> Unit) {
                                 }
                             }
                         }
-                        item { SettingsHeader("Clipboard") }
+                        item { SectionHeader("Clipboard") }
                         item {
-                            SettingsCard {
-                                SettingItem(
+                            RelayCard {
+                                RelayRow(
                                     title = "Share clipboard",
                                     supporting = "Share what you copy with your paired PC",
                                     checked = clipOn,
                                     onChecked = { clipOn = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) },
                                 )
                                 RowDivider()
-                                SettingItem(
+                                RelayRow(
                                     title = "Passwords and codes",
                                     supporting = "Off: text an app marks sensitive never leaves this phone. On: it is sent, kept out of clipboard history and hidden in notifications on the PC",
                                     checked = sens,
@@ -505,7 +507,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                     switchEnabled = clipOn,
                                 )
                                 RowDivider()
-                                SettingItem(
+                                RelayRow(
                                     title = "Share copied images",
                                     supporting = "Pictures copied on your PC land on this phone's clipboard. Needs Share clipboard, and Share images on your PC",
                                     checked = images,
@@ -513,7 +515,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                     switchEnabled = clipOn,
                                 )
                                 RowDivider()
-                                SettingItem(
+                                RelayRow(
                                     title = "Send new screenshots to PC",
                                     supporting = "Each screenshot you take is copied to your PC's clipboard. Only screenshots are sent, never other photos. Needs Share images on your PC",
                                     checked = shots,
@@ -541,10 +543,10 @@ fun SettingsTab(onDone: () -> Unit) {
                                 modifier = Modifier.padding(horizontal = 32.dp, vertical = 4.dp),
                             )
                         }
-                        item { SettingsHeader("Background") }
+                        item { SectionHeader("Background") }
                         item {
-                            SettingsCard {
-                                SettingItem(
+                            RelayCard {
+                                RelayRow(
                                     title = APP_NAME,
                                     supporting = if (Bridge.running.value) "On: your PC can reach this phone. Quick Settings tile turns it off" else "Off: your PC cannot reach this phone",
                                     checked = Bridge.running.value,
@@ -552,7 +554,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                 )
                                 RowDivider()
                                 val unrestricted = remember(resumed) { mutableStateOf(isBatteryUnrestricted(ctx)) }
-                                SettingItem(
+                                RelayRow(
                                     title = "Keep running in background",
                                     supporting = if (unrestricted.value) "On. Android lets $APP_NAME come back by itself if the phone runs low on memory"
                                     else "Recommended. Without it, Android may stop $APP_NAME when memory is low until you open it again",
@@ -569,7 +571,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                     },
                                 )
                                 RowDivider()
-                                SettingItem(
+                                RelayRow(
                                     title = "Hide the status notification",
                                     supporting = "Android needs it while $APP_NAME runs in the background. You can turn it off for this app; $APP_NAME keeps working",
                                     onClick = {
@@ -582,8 +584,8 @@ fun SettingsTab(onDone: () -> Unit) {
                                 )
                             }
                         }
-                        item { SettingsHeader("Logs") }
-                        item { SettingsCard { LogRows() } }
+                        item { SectionHeader("Logs") }
+                        item { RelayCard { LogRows() } }
                     }
                 }
             }
@@ -621,20 +623,20 @@ private fun LogRows() {
             Text("This deletes ${LogFields.mb(size)} of logs from this phone. Nothing else is affected.", style = MaterialTheme.typography.bodyMedium)
         }
     }
-    SettingItem(
+    RelayRow(
         title = "Keep logs",
         supporting = "Technical notes about connections and transfers, to find problems. Never clipboard text, notifications or file contents",
         checked = keep,
         onChecked = { keep = it; prefs.keepLogs = it; AppLog.setEnabled(it); refresh() },
     )
     RowDivider()
-    SettingItem(
+    RelayRow(
         title = "Log size",
         supporting = note ?: "${LogFields.mb(size)} in $days ${if (days == 1) "day" else "days"}",
         onClick = { refresh() },
     )
     RowDivider()
-    SettingItem(
+    RelayRow(
         title = "Export logs",
         supporting = "Share a zip of the daily logs",
         onClick = {
@@ -643,7 +645,7 @@ private fun LogRows() {
         },
     )
     RowDivider()
-    SettingItem(
+    RelayRow(
         title = "Clear all logs",
         supporting = "Delete every daily log on this phone",
         danger = true,
