@@ -113,8 +113,19 @@ class ScreenCapture(
         measure()
         projection.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
-                Log.i(TAG, "SCREEN projection stopped by the system")
-                ScreenShare.stop(userStopped = true)
+                val me = this@ScreenCapture
+                when {
+                    ScreenShare.capture === me -> {
+                        Log.i(TAG, "SCREEN projection stopped by the system")
+                        ScreenShare.stop(userStopped = true)
+                    }
+                    ScreenShare.armed === me -> {
+                        Log.i(TAG, "SCREEN kept projection stopped by the system")
+                        ScreenShare.disarm()
+                    }
+                    // Our own stop() echoing back, or an older grant ended by a newer one: not the current share.
+                    else -> Log.i(TAG, "SCREEN projection stop ignored (not the current share)")
+                }
             }
         }, Handler(Looper.getMainLooper()))
         startEncoder()
