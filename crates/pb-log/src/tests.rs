@@ -434,7 +434,17 @@ fn flat_json_rejects_nesting_long_values_and_garbage() {
 fn scrub_removes_quotes_and_paths_and_cuts() {
     assert_eq!(
         scrub("cannot open \"my file.txt\" in C:\\a\\b now"),
-        "cannot open <q> in <path> now"
+        "cannot open <q> in <path>"
     );
     assert_eq!(scrub(&"x".repeat(500)).len(), 120);
+}
+
+#[test]
+fn scrub_drops_the_tail_of_unquoted_paths_with_spaces() {
+    let a = scrub("java.io.FileNotFoundException: /storage/emulated/0/Download/My Report.pdf: open failed: ENOENT");
+    assert_eq!(a, "java.io.FileNotFoundException: <path> open failed: ENOENT");
+    assert!(!a.contains("Report"));
+    let b = scrub(r"Access denied: C:\Users\Harsh Raj");
+    assert_eq!(b, "Access denied: <path>");
+    assert!(!b.contains("Raj"));
 }

@@ -249,7 +249,7 @@ impl P<'_> {
 }
 
 /// An error text safe to keep: quoted parts (names) and path-like words are
-/// replaced, and it is cut to 120 characters.
+/// replaced (with the rest of an unquoted path up to the next "word:"), and it is cut to 120 characters.
 pub fn scrub(e: &str) -> String {
     let mut out = String::new();
     let mut in_q = false;
@@ -263,9 +263,20 @@ pub fn scrub(e: &str) -> String {
             out.push(c);
         }
     }
-    let words: Vec<&str> = out
-        .split_whitespace()
-        .map(|w| if w.contains(['\\', '/']) { "<path>" } else { w })
-        .collect();
+    // A path may hold spaces, so once a path-like word is seen everything up
+    // to the next word that ends in ':' (the usual "path: reason" boundary),
+    // or the end, is part of it and goes too.
+    let mut words: Vec<&str> = Vec::new();
+    let mut in_path = false;
+    for w in out.split_whitespace() {
+        if in_path {
+            in_path = !w.ends_with(':');
+        } else if w.contains(['\\', '/']) {
+            words.push("<path>");
+            in_path = !w.ends_with(':');
+        } else {
+            words.push(w);
+        }
+    }
     words.join(" ").chars().take(120).collect()
 }
