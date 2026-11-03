@@ -242,6 +242,8 @@ pub fn encode(v: &[Entry]) -> Vec<u8> {
     o.into_bytes()
 }
 
+/// Strict: the first bad line fails it. (The store uses [`parse_lossy`].)
+#[cfg(test)]
 pub fn parse(b: &[u8]) -> Result<Vec<Entry>, String> {
     let (v, bad) = parse_lossy(b)?;
     match bad.into_iter().next() {

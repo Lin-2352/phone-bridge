@@ -253,8 +253,8 @@ impl Arrivals {
 
     /// Note the loudest sample of a PCM chunk (16-bit LE).
     pub fn level(&mut self, pcm: &[u8]) {
-        for b in pcm.chunks_exact(2) {
-            let v = i16::from_le_bytes([b[0], b[1]]).unsigned_abs().min(32767);
+        for b in pcm.as_chunks::<2>().0 {
+            let v = i16::from_le_bytes(*b).unsigned_abs().min(32767);
             self.peak = self.peak.max(v);
         }
     }
