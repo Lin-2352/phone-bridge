@@ -8,6 +8,9 @@ import dev.phonebridge.app.ui.Tab
 import dev.phonebridge.app.ui.ThemeChoice
 import dev.phonebridge.app.ui.isDark
 import dev.phonebridge.app.ui.startTab
+import dev.phonebridge.app.ui.pairing.PairPhase
+import dev.phonebridge.app.ui.pairing.PairingFlow
+import dev.phonebridge.app.ui.pairing.pairingProgressText
 import dev.phonebridge.app.ui.Amber
 import dev.phonebridge.app.ui.AmberDark
 import dev.phonebridge.app.widget.RelayWidget
@@ -34,6 +37,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.semantics.liveRegion
+import dev.phonebridge.app.ui.components.animationsEnabled
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -137,8 +146,8 @@ class MainActivity : ComponentActivity() {
         if (!intent.hasExtra("pair_code") && !intent.hasExtra("confirm") && !intent.hasExtra("send_text")) return
         Bridge.scope.launch {
             val node = Bridge.awaitNode() ?: return@launch
-            intent.getStringExtra("pair_code")?.let { Bridge.join(it) }
-            intent.getStringExtra("confirm")?.let { Bridge.confirm(applicationContext, it == "yes") }
+            intent.getStringExtra("pair_code")?.let { PairingFlow.start(it) }
+            intent.getStringExtra("confirm")?.let { PairingFlow.confirm(applicationContext, it == "yes") }
             intent.getStringExtra("send_text")?.let { t ->
                 val peer = node.peers().firstOrNull() ?: return@let
                 runCatching { node.sendText(peer.id, t, false) }.onSuccess { Log.i(TAG, "SENT ${t.length} chars to ${peer.name}") }
@@ -157,9 +166,9 @@ class MainActivity : ComponentActivity() {
                 title = "Pair with this PC?",
                 onDismissRequest = {},
                 confirmText = "Yes, it matches",
-                onConfirm = { scope.launch { Bridge.confirm(applicationContext, true) } },
+                onConfirm = { scope.launch { PairingFlow.confirm(applicationContext, true) } },
                 dismissText = "No",
-                onDismiss = { scope.launch { Bridge.confirm(applicationContext, false) } },
+                onDismiss = { scope.launch { PairingFlow.confirm(applicationContext, false) } },
             ) {
                 Text("Check that your PC shows this code.", style = MaterialTheme.typography.bodyMedium)
                 Text(
@@ -167,7 +176,8 @@ class MainActivity : ComponentActivity() {
                     fontSize = 40.sp,
                     fontWeight = FontWeight.Medium,
                     letterSpacing = 2.sp,
-                    color = amber,
+                    // The digits carry the contrast (amber on the light tint is under 3:1); the amber is decoration.
+                    color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -179,9 +189,47 @@ class MainActivity : ComponentActivity() {
                 Text("If the codes are different, choose No. Someone may be trying to intercept the connection.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        when (val ph = PairingFlow.phase.value) {
+            is PairPhase.Joining -> PairingProgress(ph.startedAt)
+            is PairPhase.Failed -> RelayDialog(
+                title = "Pairing did not work",
+                onDismissRequest = { PairingFlow.dismiss() },
+                confirmText = "Scan again",
+                onConfirm = { PairingFlow.dismiss(); startActivity(Intent(this@MainActivity, ScanActivity::class.java)) },
+                dismissText = "Close",
+                onDismiss = { PairingFlow.dismiss() },
+            ) { Text(ph.text, style = MaterialTheme.typography.bodyMedium) }
+            PairPhase.Idle -> {}
+        }
         message.value?.let { m ->
             RelayDialog(title = null, onDismissRequest = { message.value = null }, confirmText = "OK", onConfirm = { message.value = null }) { Text(m, style = MaterialTheme.typography.bodyMedium) }
         }
+    }
+}
+
+/** Shown from the scan until the code check or an error: what is happening, with a way out. */
+@Composable
+private fun PairingProgress(startedAt: Long) {
+    var elapsed by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(startedAt) {
+        while (true) {
+            elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+    val animate = animationsEnabled(androidx.compose.ui.platform.LocalContext.current)
+    RelayDialog(
+        title = "Pairing with your PC…",
+        onDismissRequest = {},
+        confirmText = "Cancel",
+        onConfirm = { PairingFlow.cancel() },
+    ) {
+        if (animate) androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth())
+        Text(
+            pairingProgressText(elapsed),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
+        )
     }
 }
 
