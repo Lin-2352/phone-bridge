@@ -42,6 +42,40 @@ pub const WM_CORE_EVENT: u32 = WM_APP + 2;
 pub const ID_PAIR: usize = 1;
 pub const ID_SEND_CLIPBOARD: usize = 2;
 pub const ID_QUIT: usize = 3;
+/// Why the core stopped (it never came up, or died): Home, the flyout and
+/// the tooltip say so, and Restart starts the tray again.
+static CORE_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn core_error() -> Option<String> {
+    CORE_ERROR.lock().ok().and_then(|g| g.clone())
+}
+
+/// Called by the core thread when `core::run` ends with an error.
+pub fn core_failed(hwnd_raw: isize, msg: String) {
+    if let Ok(mut g) = CORE_ERROR.lock() {
+        *g = Some(msg.clone());
+    }
+    post_event(hwnd_raw, UiEvent::Info(format!("Relay stopped: {msg}")));
+}
+
+/// Starts a new tray (same data folder) a moment after this one is gone
+/// (the single-instance mutex is released then), and quits this one.
+fn restart_app(raw: isize) {
+    if let Ok(exe) = std::env::current_exe() {
+        let args = crate::relaunch::quoted(crate::relaunch::args());
+        let line = format!(
+            "ping -n 3 127.0.0.1 >nul & start \"\" \"{}\" {args}",
+            exe.display()
+        );
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", &line])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn();
+    }
+    post_command(raw, ID_QUIT);
+}
+
 /// The user said yes to "a transfer is running, quit anyway?".
 static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ID_UNPAIR_BASE: usize = 100;
@@ -431,6 +465,7 @@ fn flyout_model(st: &State) -> crate::flyout::Model {
         camera_fps: crate::camera::fps(),
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
         paused: st.settings.lock().map(|s| s.paused).unwrap_or(false),
+        stopped: core_error().is_some(),
     }
 }
 
@@ -500,6 +535,7 @@ fn page_action(a: crate::pages::Action) {
         Action::Flyout(f) => flyout_action(raw, &st.cmds, f),
         // The same path as the hotkey and IPC: private clips are refused.
         Action::SendClipboard => post_command(raw, ID_SEND_CLIPBOARD),
+        Action::Restart => restart_app(raw),
         // The page only offers Resume while paused, so the menu's toggle resumes.
         Action::Resume => post_command(raw, crate::menu_model::ID_PAUSE),
         Action::Stop(SessionKind::Screen) => post_command(raw, ID_SCREEN_HIDE),
@@ -740,23 +776,25 @@ fn page_model(st: &State) -> crate::pages::Model {
     let now = crate::timeline::now_unix();
     let (timeline, recent) = timeline_model(settings.keep_history, now);
     let phone = phone.map(phone_in);
+    let mut home_model = home::build(home::Inputs {
+        phone,
+        screen,
+        screen_live,
+        camera,
+        camera_live,
+        control,
+        camera_pending: crate::camera::pending(),
+        notes: &notes,
+        settings: &settings,
+        locked,
+        recent: &recent,
+        // Whole minutes: the labels change no faster, and an unchanged
+        // model is not repainted.
+        now: now / 60 * 60,
+    });
+    home_model.error = core_error();
     crate::pages::Model {
-        home: home::build(home::Inputs {
-            phone,
-            screen,
-            screen_live,
-            camera,
-            camera_live,
-            control,
-            camera_pending: crate::camera::pending(),
-            notes: &notes,
-            settings: &settings,
-            locked,
-            recent: &recent,
-            // Whole minutes: the labels change no faster, and an unchanged
-            // model is not repainted.
-            now: now / 60 * 60,
-        }),
+        home: home_model,
         timeline,
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
@@ -2484,6 +2522,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 .unwrap_or_default();
             for e in drained {
                 handle_event(hwnd, st, e);
+            }
+            if let Some(why) = core_error() {
+                set_tip(hwnd, &crate::pause::failed_tooltip(&why));
             }
             if crate::main_window::is_open() {
                 crate::main_window::refresh();

@@ -75,6 +75,9 @@ pub struct HomeModel {
     pub paused: bool,
     /// A camera request is waiting for the phone (not a session yet).
     pub camera_pending: bool,
+    /// Why the core stopped (it never came up or died): nothing works until
+    /// Relay restarts.
+    pub error: Option<String>,
 }
 
 /// The paired phone as the tray knows it.
@@ -197,6 +200,7 @@ pub fn build(i: Inputs) -> HomeModel {
         now: i.now,
         paused: i.settings.paused,
         camera_pending: i.camera_pending && !i.camera,
+        error: None,
     }
 }
 
@@ -305,7 +309,7 @@ impl Quick {
     /// one Stop button (a request still waiting for the phone is not listed
     /// there, so the Camera tile alone cancels it).
     pub fn enabled(self, m: &HomeModel) -> bool {
-        if m.phone.is_none() {
+        if m.phone.is_none() || m.error.is_some() {
             return false;
         }
         if self == Quick::Camera && m.camera_pending {
@@ -367,6 +371,16 @@ impl Session {
                 "Reconnecting\u{2026}"
             },
         )
+    }
+}
+
+/// The button that replaces Pair when Relay cannot work: Restart when its
+/// core stopped, Resume while paused.
+fn resume_label(m: &HomeModel) -> &'static str {
+    if m.error.is_some() {
+        "Restart"
+    } else {
+        "Resume"
     }
 }
 
@@ -441,7 +455,7 @@ fn parts(r: RectF, s: f32, m: &HomeModel) -> Parts {
                 cx + BUTTON_W * s / 2.0,
                 hero.bottom - SPACE[4] * s,
             );
-            if m.paused {
+            if m.paused || m.error.is_some() {
                 (hero, None, None)
             } else {
                 (hero, None, Some(pair))
@@ -461,7 +475,7 @@ fn parts(r: RectF, s: f32, m: &HomeModel) -> Parts {
             (hero, warn, None)
         }
     };
-    let resume = m.paused.then(|| match &m.phone {
+    let resume = (m.paused || m.error.is_some()).then(|| match &m.phone {
         None => {
             let cx = (hero.left + hero.right) / 2.0;
             rectf(
@@ -618,7 +632,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
                 fluent::button(c, b, crate::strings::PAIR_DEVICE, true);
             }
             if let Some(b) = p.resume {
-                fluent::button(c, b, "Resume", true);
+                fluent::button(c, b, resume_label(m), true);
             }
         }
         Some(card) => {
@@ -649,7 +663,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
             } else {
                 0.0
             };
-            let resume_w = if m.paused {
+            let resume_w = if m.paused || m.error.is_some() {
                 (BUTTON_W + SPACE[2]) * s
             } else {
                 0.0
@@ -658,7 +672,10 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
             let name = rectf(tx, cy - 24.0 * s, tr, cy);
             text(c, Font::Subtitle, &card.name, name, pal.text, Align::Left);
             let line = rectf(tx, cy, tr, cy + 22.0 * s);
-            let status = status_text(card, m.now, m.paused);
+            let status = match &m.error {
+                Some(e) => format!("Relay stopped: {e}"),
+                None => status_text(card, m.now, m.paused),
+            };
             text(c, Font::Body, &status, line, pal.text2, Align::Left);
             if card.connected && !m.paused {
                 let b = rectf(
@@ -670,7 +687,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
                 widgets::badge(c, b, "Connected", pal.success);
             }
             if let Some(b) = p.resume {
-                fluent::button(c, b, "Resume", true);
+                fluent::button(c, b, resume_label(m), true);
             }
             if let (Some(w), Some(msg)) = (p.warn, warning(card)) {
                 widgets::info_bar(c, w, InfoKind::Warning, &msg);
@@ -798,7 +815,7 @@ pub fn describe(hit: &Hit, m: &HomeModel) -> Option<super::Desc> {
     let id = hit.id;
     Some(match id {
         PAIR => Desc::new(crate::strings::PAIR_DEVICE, Role::Button),
-        RESUME => Desc::new("Resume Relay", Role::Button),
+        RESUME => Desc::new(resume_label(m).to_owned() + " Relay", Role::Button),
         SEE_ALL => Desc::new("See all activity", Role::Button),
         _ if (QUICK..QUICK + Quick::ALL.len() as u32).contains(&id) => {
             Desc::new(Quick::ALL[(id - QUICK) as usize].label_for(m), Role::Button)
@@ -813,6 +830,7 @@ pub fn describe(hit: &Hit, m: &HomeModel) -> Option<super::Desc> {
 
 pub fn click(hit: &Hit, m: &HomeModel) -> Option<Action> {
     match hit.id {
+        RESUME if m.error.is_some() => Some(Action::Restart),
         RESUME if m.paused => Some(Action::Resume),
         PAIR if m.phone.is_none() && !m.paused => Some(Action::Flyout(flyout::Action::Pair)),
         SEE_ALL => Some(Action::Go(Page::Timeline)),
@@ -1221,6 +1239,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_stopped_core_disables_everything_and_offers_restart() {
+        let mut m = paired_model(false);
+        m.error = Some("address already in use".into());
+        assert!(Quick::ALL.iter().all(|q| !q.enabled(&m)));
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        let r = hits.iter().find(|h| h.id == RESUME).expect("restart");
+        assert_eq!(click(r, &m), Some(Action::Restart));
+        assert_eq!(describe(r, &m).unwrap().name, "Restart Relay");
+        assert!(!hits.iter().any(|h| (QUICK..QUICK + 5).contains(&h.id)));
+        // Paired or not, Pair is not offered while it cannot work.
+        m.phone = None;
+        let hits = layout(rectf(0.0, 0.0, 900.0, 900.0), 1.0, &m);
+        assert!(!hits.iter().any(|h| h.id == PAIR));
+        assert!(hits.iter().any(|h| h.id == RESUME));
     }
 
     #[test]

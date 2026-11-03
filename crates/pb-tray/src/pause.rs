@@ -61,6 +61,15 @@ pub fn is_quiet(c: &Cmd) -> bool {
     )
 }
 
+/// The tray tooltip after the core stopped: what happened and the way out.
+pub fn failed_tooltip(reason: &str) -> String {
+    // A tooltip holds 127 characters.
+    let head = "Relay stopped. Open Relay and choose Restart. ";
+    let room = 127usize.saturating_sub(head.chars().count());
+    let why: String = reason.chars().take(room).collect();
+    format!("{head}{why}")
+}
+
 /// The tray tooltip: the short fingerprint, and the pause when it is on.
 pub fn tooltip(paused: bool, fingerprint: &str) -> String {
     match (paused, fingerprint.is_empty()) {
@@ -106,6 +115,14 @@ pub fn close_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stopped_core_says_so_in_the_tooltip_within_the_limit() {
+        let t = failed_tooltip("address already in use");
+        assert!(t.starts_with("Relay stopped"));
+        assert!(t.contains("address already in use"));
+        assert!(failed_tooltip(&"x".repeat(500)).chars().count() <= 127);
+    }
 
     #[test]
     fn transitions_fire_only_on_a_change() {

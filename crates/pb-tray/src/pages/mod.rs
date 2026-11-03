@@ -47,6 +47,8 @@ pub enum Action {
     Flyout(crate::flyout::Action),
     /// Send the clipboard's text once (the tray's "Send clipboard").
     SendClipboard,
+    /// Start Relay again after its core stopped (the tray restarts itself).
+    Restart,
     /// Resume Relay after a pause (the tray menu's Resume).
     Resume,
     /// End a running session the way the tray menu does.

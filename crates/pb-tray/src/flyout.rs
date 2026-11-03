@@ -84,6 +84,8 @@ pub struct Model {
     pub last: String,
     /// Relay is paused: tiles and the drop zone are disabled, the header says so.
     pub paused: bool,
+    /// The core stopped: nothing works until Relay restarts.
+    pub stopped: bool,
 }
 
 /// User actions the flyout reports back to the UI thread.
@@ -155,7 +157,7 @@ fn clickable(m: &Model, h: Hit) -> bool {
     match h {
         Hit::Tile(k) => tiles(m).iter().any(|t| t.kind == k && t.enabled),
         // Like the dimmed Send files tile: nothing to send to without a phone.
-        Hit::Drop => m.peer.is_some() && !m.paused,
+        Hit::Drop => m.peer.is_some() && !m.paused && !m.stopped,
         _ => true,
     }
 }
@@ -497,6 +499,9 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
 
 /// The drop zone's hint.
 fn drop_label(m: &Model) -> String {
+    if m.stopped {
+        return "Relay stopped".to_owned();
+    }
     if m.paused {
         return "Relay is paused".to_owned();
     }

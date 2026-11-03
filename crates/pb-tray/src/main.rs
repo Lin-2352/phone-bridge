@@ -382,7 +382,7 @@ fn main() {
         ));
         if let Err(e) = result {
             core_log.line(&format!("FATAL {e}"));
-            ui::post_event(hwnd, core::UiEvent::Info(format!("Relay stopped: {e}")));
+            ui::core_failed(hwnd, e.to_string());
         }
     });
     log.line("tray started");

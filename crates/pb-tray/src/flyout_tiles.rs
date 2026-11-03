@@ -27,8 +27,8 @@ pub struct Tile {
 pub fn tiles(m: &Model) -> Vec<Tile> {
     // Paused: the core refuses everything that needs the phone, so say so up
     // front instead of after the click (a live session may still be stopped).
-    let phone = m.peer.is_some() && !m.paused;
-    let free = !m.paused;
+    let phone = m.peer.is_some() && !m.paused && !m.stopped;
+    let free = !m.paused && !m.stopped;
     let camera = if !m.camera_on {
         "Camera".to_owned()
     } else if m.camera_fps > 0 {
@@ -78,6 +78,9 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
 /// One line under the grid: the paired phone and the last activity, clipped
 /// to at most `max_chars` characters with a trailing ellipsis.
 pub fn status_line(m: &Model, max_chars: usize) -> String {
+    if m.stopped {
+        return "Relay stopped. Restart it from Home.".to_owned();
+    }
     if m.paused {
         return "Paused. Resume in the tray menu.".to_owned();
     }
@@ -167,6 +170,16 @@ mod tests {
             assert!(!t.enabled, "{:?} must be disabled while paused", t.kind);
         }
         assert_eq!(status_line(&m, 80), "Paused. Resume in the tray menu.");
+    }
+
+    #[test]
+    fn a_stopped_core_disables_every_tile() {
+        let m = Model {
+            stopped: true,
+            ..paired()
+        };
+        assert!(tiles(&m).iter().all(|t| !t.enabled));
+        assert!(status_line(&m, 80).contains("stopped"));
     }
 
     #[test]
