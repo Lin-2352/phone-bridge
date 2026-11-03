@@ -390,6 +390,33 @@ async fn idle_pairing_connections_cannot_lock_out_paired_devices() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_silent_peer_times_out_even_when_recv_is_raced_in_a_select_loop() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let out = phone.connect(&pc.peer_id()).await.unwrap();
+    let mut held = pc_ev.sessions.recv().await.unwrap();
+    // The phone goes silent (no heartbeats) but its connection stays up.
+    out.heartbeat.abort();
+    // Like the screen loop: a control tick wins every 100 ms.
+    let started = Instant::now();
+    let end = loop {
+        tokio::select! {
+            r = held.recv() => break r,
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(25),
+            "never timed out"
+        );
+    };
+    assert!(matches!(end, Err(Error::Timeout)), "{end:?}");
+    assert!(started.elapsed() < HEARTBEAT * 4, "{:?}", started.elapsed());
+    drop(out);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn names_a_peer_sends_at_pairing_are_cleaned_and_capped() {
     let evil = format!("Phone\n{}\tx\u{202e}{}", "a".repeat(64), "b".repeat(200));
     let (pc, mut pc_ev, pc_store) = node(1, "PC\tbox").await;

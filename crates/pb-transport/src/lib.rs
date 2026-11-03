@@ -1020,6 +1020,10 @@ pub struct Session {
     send: Arc<tokio::sync::Mutex<SendStream>>,
     recv: FrameReader,
     heartbeat: tokio::task::JoinHandle<()>,
+    /// When the peer last sent anything: `recv`'s deadline counts from here,
+    /// not from each call, so a `select!` that keeps cancelling `recv` still
+    /// notices a silent peer.
+    last_rx: Instant,
 }
 
 impl Session {
@@ -1072,6 +1076,7 @@ impl Session {
             send,
             recv,
             heartbeat,
+            last_rx: Instant::now(),
         })
     }
 
@@ -1083,9 +1088,11 @@ impl Session {
     /// three heartbeat intervals ends the session with [`Error::Timeout`].
     pub async fn recv(&mut self) -> Result<Option<ControlMsg>, Error> {
         loop {
-            let next = tokio::time::timeout(HEARTBEAT * 3, self.recv.next::<Control>())
+            let deadline = tokio::time::Instant::from_std(self.last_rx + HEARTBEAT * 3);
+            let next = tokio::time::timeout_at(deadline, self.recv.next::<Control>())
                 .await
                 .map_err(|_| Error::Timeout)??;
+            self.last_rx = Instant::now();
             match next.map(|c| c.msg) {
                 None => return Ok(None),
                 Some(Some(ControlMsg::Heartbeat(_))) | Some(None) => continue,
