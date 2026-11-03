@@ -51,6 +51,9 @@ pub struct Settings {
     pub keep_history: bool,
     /// Write the day-by-day structured logs (metadata only).
     pub keep_logs: bool,
+    /// Relay is paused from the tray menu: no sessions, nothing sent.
+    /// Survives a restart, so a pause is never lost silently.
+    pub paused: bool,
     /// Where the day folders go.
     pub log_dir: PathBuf,
     /// Where the main window was last (x, y, width, height in screen
@@ -88,6 +91,7 @@ impl Default for Settings {
             screen_sharp: false,
             keep_history: true,
             keep_logs: true,
+            paused: false,
             log_dir: PathBuf::from(r"D:\Documents\Relay Logs"),
             main_window_rect: None,
         }
@@ -161,6 +165,7 @@ impl Settings {
                 "screen_sharp" => s.screen_sharp = parse_bool(v).unwrap_or(s.screen_sharp),
                 "keep_history" => s.keep_history = parse_bool(v).unwrap_or(s.keep_history),
                 "keep_logs" => s.keep_logs = parse_bool(v).unwrap_or(s.keep_logs),
+                "paused" => s.paused = parse_bool(v).unwrap_or(s.paused),
                 "log_dir" if !v.is_empty() => s.log_dir = PathBuf::from(v),
                 "main_window_rect" => {
                     let n: Vec<i32> = v.split(',').filter_map(|f| f.trim().parse().ok()).collect();
@@ -210,8 +215,9 @@ impl Settings {
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
         text += &format!(
-            "keep_logs={}\nlog_dir={}\n",
+            "keep_logs={}\npaused={}\nlog_dir={}\n",
             self.keep_logs,
+            self.paused,
             self.log_dir.display()
         );
         if let Some((x, y, w, h)) = self.main_window_rect {
@@ -246,6 +252,7 @@ mod tests {
         assert!(s.keep_history, "the timeline records by default");
         assert_eq!(s.main_window_rect, None);
         assert!(s.keep_logs, "logs are kept by default");
+        assert!(!s.paused, "Relay starts unpaused");
         assert_eq!(s.log_dir, PathBuf::from(r"D:\Documents\Relay Logs"));
     }
 
@@ -280,6 +287,7 @@ mod tests {
             screen_sharp: true,
             keep_history: false,
             keep_logs: false,
+            paused: true,
             log_dir: PathBuf::from(r"E:\Logs"),
             main_window_rect: Some((-1200, 40, 1000, 700)),
         };
