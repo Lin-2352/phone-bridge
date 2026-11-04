@@ -2,7 +2,7 @@
 //! Settings). The Settings phrasing is the source of truth.
 
 pub const SHARE_CLIPBOARD: &str = "Share clipboard";
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub const PHONE_NOTIFICATIONS: &str = "Show phone notifications";
 pub const PHONE_CONTROL: &str = "Let my phone control this PC";
 #[cfg(test)]

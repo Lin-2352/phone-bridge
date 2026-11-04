@@ -382,6 +382,7 @@ fn pause_cancels_every_live_transfer_fires_the_handles_and_leaves_done_ones() {
 }
 
 #[test]
+#[cfg(windows)]
 fn pause_refuses_new_sends_and_quiet_commands_stay_quiet() {
     use crate::core::Cmd;
     assert!(crate::pause::needs_network(&Cmd::SendFiles(vec![])));
