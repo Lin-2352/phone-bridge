@@ -1,4 +1,4 @@
-# Phone Bridge: wire protocol (draft v0)
+# Relay: wire protocol (draft v0)
 
 Status: draft. Matches the `pb-protocol` crate at protocol version 0. Versions must match exactly until 1.0; there is no compatibility promise yet.
 

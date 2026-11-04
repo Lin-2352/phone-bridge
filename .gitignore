@@ -18,3 +18,9 @@ build/
 # Kotlin compiler caches
 .kotlin/
 dist/
+
+# Local working notes
+/.claude/
+/.superpowers/
+/docs/superpowers/
+/docs/upstream/

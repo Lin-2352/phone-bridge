@@ -1,6 +1,6 @@
-# Phone Bridge: architecture decisions
+# Relay: design decisions and measurements
 
-Status: Phase 0. Derived from `pre_build_research/RESEARCH.txt`, `pre_build_research/phone_bridge_deep_research.md` and a shared Gemini report. Claims marked *unverified* came from those reports and must be re-checked in Phase 0 spikes.
+A running engineering log, newest at the end. The project was called Phone Bridge when most of this was written. The first section is the original plan, and later sections record what was measured and what changed. Claims marked *unverified* came from early research and were to be re-checked by the spikes.
 
 ## Scope
 - Android phone + Windows PC only. LAN and cross-network.
@@ -440,3 +440,11 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Bluetooth was considered.** Windows can act as a Bluetooth speaker for the phone (`AudioPlaybackConnection`), with no helper and no stored access. The user chose the helper for its Wi-Fi range and since it matches the behaviour they showed. Delay and quality of the Bluetooth route were not measured.
 - **The mute path stays** as the fallback for phones without the helper.
 
+## Silencing the speaker with an effect (2026-11-04)
+
+- **The problem.** Android's capture leaves the sound on the speaker. Muting broke the volume keys: a press unmuted for a moment, and the bar showed nothing useful. The audio helper above gave the right behaviour but needs adb, which needs Developer options.
+- **Why the helper can't do it.** Anything started through adb sits in adbd's process group (measured: `0::/uid_0/pid_3176`), and Shizuku's manual says to keep USB debugging and Developer options on. Banks refuse those settings: PayZapp refuses USB debugging. `pm grant` for `WRITE_SECURE_SETTINGS` also failed silently on this phone, most likely ColorOS's Permission monitoring switch, though the refusal text wasn't captured. The helper is switched off (`HELPER_OFFERED`) and its code remains.
+- **What's used instead.** A `DynamicsProcessing` effect at -96 dB on audio session 0, needing only `MODIFY_AUDIO_SETTINGS`. The volume index moves normally, so the real bar works, and Relay maps it onto the PC's level. Android placed the effect on the deep-buffer output, and captured sound is taken before it.
+- **Measured on a realme RMX3561, Android 13, video in Google Photos.** With the bar at the maximum, the user heard nothing from the speaker and the video on the PC. Captured peak stayed at 22,000 to 27,000. Notifications, calls and alarms still played on the speaker.
+- **During a share the bar belongs to the PC.** The phone's own volume is saved first and put back on stop before the effect is released, or at the next start after a crash. A share starts at the last share's level, so a leftover 0 can't silence the PC. If Android refuses the effect or another app takes it, Relay falls back to muting.
+- **Limits.** Not tested on other phones or with apps that use another output, such as games. Android chooses where a session-0 effect goes, and session-0 insert effects are documented as deprecated for some effect types. While Relay is dead nothing silences the speaker, so sound can return at the share's level until the service restarts. A route change during a share can restore the volume to the wrong output.

@@ -1,6 +1,6 @@
-# Phone Bridge: threat model (draft, Phase 0)
+# Relay: threat model
 
-Status: draft. No external review yet. Update whenever a feature adds a new trust boundary.
+No external review yet. Update whenever a feature adds a new trust boundary.
 
 ## What we protect
 | Asset | Why it matters |
@@ -59,7 +59,7 @@ Both of these remove a protection Android normally gives, so both are the user's
 
 **The hands-free grant.** If the user allows `PROJECT_MEDIA` for Relay outside the app, Android approves its capture prompt automatically, for audio and for screen sharing alike, with the capture icon still shown. Only a paired PC can request a capture, subject to Relay's own settings. Undone with `appops set ... PROJECT_MEDIA default`.
 
-**The audio helper.** After its one-time setup:
+**The audio helper (switched off, see `HELPER_OFFERED`; kept here for if it returns).** After its one-time setup:
 - Relay holds a paired adb identity, which amounts to shell access to this phone. It is kept outside backups, encrypted under a key in Android's keystore, and used only for fixed commands. Anything that takes over Relay's process can use it: that is the main cost of this feature, and why it is off until the user sets it up after being told this.
 - Relay holds `WRITE_SECURE_SETTINGS`, which covers far more than Wireless debugging. Same reasoning.
 - While starting the helper, Wireless debugging is on for a few seconds, listening on the network and open to paired keys only. It goes back to how the user had it.
@@ -69,6 +69,8 @@ Both of these remove a protection Android normally gives, so both are the user's
 - A dead helper or Relay stops recording: recording exists only while Relay holds the connection. The helper exits when the APK it came from goes away.
 - `libadb-android` has never had a security audit, and it runs in Relay's process during setup and starts.
 - Turning the helper off stops it, revokes the grant when it can reach adb, and deletes the identity. The phone's Paired devices list still shows Relay until the user removes it, though the key is gone.
+
+**Silencing the speaker.** The effect that silences the phone during a share needs no special access. Its risk is sound: if Relay dies, the speaker can play at the share's level until the service restarts and puts the volume back. Relay's notification stays the sign that a share is running.
 
 ## Rules that follow from this
 1. No feature acts on a peer that is not in the paired-peer store.
