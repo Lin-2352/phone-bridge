@@ -93,7 +93,6 @@ mod settings_groups;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod settings_rows;
 #[cfg(windows)]
-#[cfg(windows)]
 mod share;
 #[cfg(windows)]
 mod status;
@@ -109,10 +108,12 @@ mod toast;
 mod toast_images;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod toast_xml;
+#[cfg(windows)]
 mod tooltip;
 #[cfg(windows)]
 mod transfer_window;
 mod transfers;
+#[cfg(windows)]
 mod uia;
 // Generated; some tokens (spacing, other durations) are used by the widgets (pages use them from Task 8 on).
 #[cfg(windows)]

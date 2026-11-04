@@ -10,6 +10,7 @@ const SNAP: f32 = 0.01;
 
 /// Moves `current` toward `target` by an exponential step of `dt_ms`.
 /// Never overshoots; snaps to `target` once within `SNAP`.
+#[cfg(windows)]
 pub fn approach(current: f32, target: f32, dt_ms: u32) -> f32 {
     approach_with(crate::fluent::reduced_motion(), current, target, dt_ms)
 }
@@ -76,6 +77,7 @@ pub struct Anim {
 
 #[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
 impl Anim {
+    #[cfg(windows)]
     pub fn new(from: f32, to: f32, start: Instant, dur_ms: u32) -> Self {
         Self::new_with(crate::fluent::reduced_motion(), from, to, start, dur_ms)
     }
