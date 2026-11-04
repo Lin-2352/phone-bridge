@@ -1,0 +1,41 @@
+name: publish package
+
+# Copies a release's files to GitHub Packages as an OCI artifact, because
+# Packages has no type for plain files. The release page stays the place to
+# download from; this is for pulling a version with `oras`.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, such as v0.2.0
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      REGISTRY_TOKEN: ${{ github.token }}
+    steps:
+      - uses: oras-project/setup-oras@v1
+      - run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+      - name: Push to ghcr.io
+        working-directory: assets
+        run: |
+          echo "$REGISTRY_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          files=()
+          for f in *; do files+=("$f:application/octet-stream"); done
+          oras push "ghcr.io/$owner/relay:${TAG#v}" \
+            --artifact-type application/vnd.relay.release \
+            --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "org.opencontainers.image.description=Relay $TAG: Windows and Android builds" \
+            --annotation "org.opencontainers.image.licenses=MIT OR Apache-2.0" \
+            "${files[@]}"
