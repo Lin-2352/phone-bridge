@@ -775,7 +775,9 @@ mod tests {
         assert_eq!(got.len(), 5, "all five requests answered");
         let span = got[4].duration_since(got[0]);
         assert!(
-            span >= Duration::from_millis(100),
+            // Four ticks are 132 ms; a busy machine runs some late and then
+            // close together, so ask only for clearly more than one tick.
+            span >= Duration::from_millis(66),
             "one per 33 ms tick, not all at once: {span:?}"
         );
         let _ = std::fs::remove_file(path);

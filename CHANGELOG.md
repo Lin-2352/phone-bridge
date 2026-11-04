@@ -35,6 +35,7 @@ See the [README](README.md#known-issues). Also not fixed yet:
 - If the joining device dies right after the host confirms, pairing can end up on one side only.
 - After the host declines a pairing, the other device can keep waiting for up to 2 minutes.
 - Anyone on the same network can use up pairing attempts by sending bad codes.
+- A host on the same network that plants a false address for a paired device can occasionally make one connection attempt fail. The wrong device is still refused, and a later attempt reaches the real one.
 
 ## 0.1.0
 
