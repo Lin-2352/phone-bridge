@@ -116,21 +116,21 @@ mod tests {
 
     #[test]
     fn moves_toward_the_target_without_overshoot() {
-        let next = approach(0.0, 1.0, 16);
+        let next = approach_with(false, 0.0, 1.0, 16);
         assert!(next > 0.0 && next < 1.0);
-        let down = approach(1.0, 0.0, 16);
+        let down = approach_with(false, 1.0, 0.0, 16);
         assert!(down > 0.0 && down < 1.0);
     }
 
     #[test]
     fn a_longer_step_moves_further() {
-        assert!(approach(0.0, 1.0, 50) > approach(0.0, 1.0, 10));
+        assert!(approach_with(false, 0.0, 1.0, 50) > approach_with(false, 0.0, 1.0, 10));
     }
 
     #[test]
     fn snaps_when_close() {
-        assert_eq!(approach(0.995, 1.0, 16), 1.0);
-        assert_eq!(approach(0.005, 0.0, 16), 0.0);
+        assert_eq!(approach_with(false, 0.995, 1.0, 16), 1.0);
+        assert_eq!(approach_with(false, 0.005, 0.0, 16), 0.0);
     }
 
     #[test]
@@ -138,7 +138,7 @@ mod tests {
         use crate::tokens::motion;
         use std::time::{Duration, Instant};
         let t0 = Instant::now();
-        let a = Anim::new(0.0, 1.0, t0, motion::NORMAL_MS);
+        let a = Anim::new_with(false, 0.0, 1.0, t0, motion::NORMAL_MS);
         assert_eq!(a.value(t0), 0.0);
         assert_eq!(a.value(t0 + Duration::from_millis(200)), 1.0);
         assert!(a.running(t0 + Duration::from_millis(100)));

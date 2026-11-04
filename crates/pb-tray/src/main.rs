@@ -10,6 +10,7 @@
 
 #[cfg(windows)]
 mod a11y;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod app_name;
 #[cfg(windows)]
 mod applog;
@@ -71,6 +72,7 @@ mod notify;
 mod pages;
 #[cfg(windows)]
 mod pause;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod portable;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
@@ -96,6 +98,7 @@ mod settings_rows;
 mod share;
 #[cfg(windows)]
 mod status;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod strings;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod timeline;

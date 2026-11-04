@@ -51,6 +51,11 @@ impl Scroll {
     /// A wheel event (120 = one notch, positive = up): eases to the new
     /// target, adding to any scroll still in flight.
     pub fn wheel(&mut self, delta: i32, now: Instant) {
+        self.wheel_with(crate::fluent::reduced_motion(), delta, now);
+    }
+
+    /// `wheel`, with reduced motion given.
+    fn wheel_with(&mut self, reduced: bool, delta: i32, now: Instant) {
         let base = self.anim.map_or(self.offset, |a| a.to);
         let target = (base - delta as f32 / 120.0 * WHEEL_STEP).clamp(0.0, self.max_offset());
         if target == self.offset {
@@ -58,7 +63,13 @@ impl Scroll {
             self.anim = None;
             return;
         }
-        self.anim = Some(Anim::new(self.offset, target, now, motion::FAST_MS));
+        self.anim = Some(Anim::new_with(
+            reduced,
+            self.offset,
+            target,
+            now,
+            motion::FAST_MS,
+        ));
     }
 
     /// Where the offset is heading: the end of the ease in flight, else the
@@ -347,12 +358,12 @@ mod tests {
     fn wheel_eases_one_notch_down_and_stays_in_range() {
         let t0 = Instant::now();
         let mut s = Scroll::new(2000.0, 400.0);
-        s.wheel(-120, t0);
+        s.wheel_with(false, -120, t0);
         assert!(s.tick(t0 + Duration::from_millis(10)));
         assert!(s.offset > 0.0 && s.offset < 48.0);
         assert!(!s.tick(t0 + Duration::from_millis(500)));
         assert_eq!(s.offset, 48.0);
-        s.wheel(120 * 5, t0 + Duration::from_millis(600));
+        s.wheel_with(false, 120 * 5, t0 + Duration::from_millis(600));
         s.tick(t0 + Duration::from_millis(1200));
         assert_eq!(s.offset, 0.0);
     }
@@ -415,15 +426,15 @@ mod tests {
     fn scroll_animation_is_read_only_and_idle_at_the_limits() {
         let t0 = Instant::now();
         let mut s = Scroll::new(2000.0, 400.0);
-        s.wheel(120, t0); // up at the top: nothing to ease
+        s.wheel_with(false, 120, t0); // up at the top: nothing to ease
         assert!(!s.animating(t0));
-        s.wheel(-120, t0);
+        s.wheel_with(false, -120, t0);
         assert!(s.animating(t0 + Duration::from_millis(10)));
         assert_eq!(s.offset, 0.0, "animating() does not advance the ease");
         assert!(!s.animating(t0 + Duration::from_millis(500)));
         let mut end = Scroll::new(2000.0, 400.0);
         end.offset = 1600.0;
-        end.wheel(-120, t0); // down at the bottom
+        end.wheel_with(false, -120, t0); // down at the bottom
         assert!(!end.animating(t0));
     }
 
