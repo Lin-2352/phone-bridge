@@ -5,13 +5,13 @@ pub const SHARE_CLIPBOARD: &str = "Share clipboard";
 #[cfg(all(test, windows))]
 pub const PHONE_NOTIFICATIONS: &str = "Show phone notifications";
 pub const PHONE_CONTROL: &str = "Let my phone control this PC";
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub const KEEP_LOGS: &str = "Keep logs";
 pub const NO_PEER: &str = "Pair a phone first";
 pub const PAIR_DEVICE: &str = "Pair device";
 pub const PAUSED: &str = "Relay is paused";
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::{menu_model, settings_groups::OPTIONS};
