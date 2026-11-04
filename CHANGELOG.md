@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0-beta (unreleased)
+## 0.2.0 (unreleased)
 
 ### Added
 - Audio sharing in both directions: hear the phone on the PC, or the PC on the phone, including from the tray's quick panel.
@@ -30,6 +30,11 @@ See the [README](README.md#known-issues). Also not fixed yet:
 - If the tray's core fails to start, *Send to* can silently lose files while the tray is up.
 - A paired PC that floods screen or camera control messages could exhaust the phone's memory.
 - The quick panel can't be read by Narrator.
+- If a PC closes at the moment you accept an audio request, capture can keep running with nothing being sent.
+- If saving fails when re-pairing a PC, the host drops the working pairing while the other side keeps it.
+- If the joining device dies right after the host confirms, pairing can end up on one side only.
+- After the host declines a pairing, the other device can keep waiting for up to 2 minutes.
+- Anyone on the same network can use up pairing attempts by sending bad codes.
 
 ## 0.1.0
 

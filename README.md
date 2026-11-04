@@ -13,11 +13,11 @@ Relay connects an Android phone and a Windows PC directly over your local networ
 |---|---|
 | **Clipboard** | Copy on one device, paste on the other: text and pictures. Off until you turn it on. |
 | **Files and links** | Send from Explorer's *Send to* or Android's share sheet. |
-| **Notifications** | Phone notifications appear in Windows, with reply and call buttons where the app allows them. |
+| **Notifications** | Phone notifications appear in Windows. Reply and call buttons exist but are less tested. |
 | **Phone screen** | View the phone in a window on the PC and control it with your mouse and keyboard. |
 | **Control** | Use the phone from the PC, after the phone asks you. It can also work as a touchpad for the PC. |
 | **Camera** | Use the phone as a Windows 11 webcam, seen by any app as a normal camera. |
-| **Audio** | Hear the phone on the PC, or the PC on the phone. The phone stays silent while its real volume bar sets the level on the PC. |
+| **Audio** | Hear the phone on the PC, or the PC on the phone. While sharing, the phone's speaker stays silent and its volume bar is meant to set the level on the PC. |
 
 ## Install
 
@@ -40,7 +40,7 @@ Details are in the [threat model](docs/THREAT_MODEL.md). To report a vulnerabili
 
 ### Banking apps
 
-Some banking apps refuse to open while Android's accessibility service or USB debugging is on. Relay needs no developer settings for everyday use. Its *Control* feature does use an accessibility service, which it switches on only during a control session. Relay does not try to hide any of this from those apps.
+Some banking apps refuse to open while Android's accessibility service or USB debugging is on. Relay doesn't ask for developer settings, though this hasn't yet been tried with them switched off and a banking app open. Its *Control* feature does use an accessibility service, which it switches on only during a control session. Relay does not try to hide any of this from those apps.
 
 ## How it works
 
@@ -93,7 +93,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 ## Known issues
 
 - **One PC at a time.** You can pair several, but status and sends use the first one, and there's no picker yet.
-- **Silencing the speaker has been tested on one phone.** Android decides where the effect that silences it applies, so an app using a different audio output, such as a game, may still be heard. If the effect is refused or taken away, Relay falls back to muting, where volume keys work less smoothly.
+- **A share starts at half volume the first time.** If the speaker effect doesn't reach an app, that app plays at that level.
+- **Silencing the speaker has been tested on one phone, with one app.** Android decides where the effect that silences it applies, so an app using a different audio output, such as a game, may still be heard. If the effect is refused or taken away, Relay falls back to muting, where volume keys work less smoothly.
 - **Headphones during a share.** Plugging them in or removing them mid-share can leave the phone's volume at a different level afterwards.
 - **If Relay is killed mid-share**, the phone can play at the share's volume until Relay restarts and puts it back.
 - **PC audio plays on the phone without a question on the phone.** The request comes from a PC you paired, and it shows on the phone with a Stop button.
