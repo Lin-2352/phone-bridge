@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import dev.phonebridge.app.audio.helperScript
 import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import io.github.muntashirakon.adb.android.AdbMdns
 import java.io.ByteArrayInputStream
@@ -36,6 +37,8 @@ private const val KEY_BITS = 2048
 private const val GCM_TAG_BITS = 128
 private const val CONNECT_FIND_MS = 5000L
 private const val STREAM_TIMEOUT_S = 10L
+private const val SHELL_LIMIT_MS = 30_000L
+private const val READ_BYTES = 1024
 private const val CERT_YEARS_MS = 20L * 365 * 24 * 60 * 60 * 1000
 
 /**
@@ -137,18 +140,51 @@ object AdbBridge {
         }
     }
 
+    fun hasIdentity(ctx: Context) = file(ctx).exists()
+
     /**
-     * Connects to this phone's Wireless debugging and runs [commands] as the shell, returning each
-     * one's output. Throws when not connectable or not paired.
+     * Connects to this phone's Wireless debugging and runs [commands] in one shell, waiting for it to
+     * exit. They go in through the stream because adbd logs a command in the service name, and one
+     * holds the helper's secret. Throws when not connectable or not paired. Returns what the shell
+     * printed, errors included, and callers check the result itself: a refused command still exits.
      */
-    fun shell(ctx: Context, commands: List<String>): List<String> {
+    fun shell(ctx: Context, commands: List<String>): String {
         val m = manager(ctx)
+        val giveUp = Thread({
+            try {
+                Thread.sleep(SHELL_LIMIT_MS)
+                runCatching { m.close() }
+            } catch (_: InterruptedException) {
+                // Finished in time.
+            }
+        }, "pb-adb-limit").apply {
+            isDaemon = true
+            start()
+        }
         try {
             check(m.connectTls(ctx.applicationContext, CONNECT_FIND_MS)) { "adb connection was not made" }
-            return commands.map { cmd ->
-                m.openStream("shell:$cmd").use { s -> s.openInputStream().use { String(it.readBytes()) } }
+            return m.openStream("exec:sh").use { s ->
+                s.openOutputStream().run {
+                    write(helperScript(listOf("exec 2>&1") + commands).toByteArray())
+                    flush()
+                }
+                val input = s.openInputStream()
+                val buf = ByteArray(READ_BYTES)
+                val printed = ByteArrayOutputStream()
+                try {
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n == -1) break
+                        printed.write(buf, 0, n)
+                    }
+                } catch (e: java.io.IOException) {
+                    // The library throws this when the far end closes during a read: that's the shell exiting.
+                    if (!s.isClosed) throw e
+                }
+                printed.toString()
             }
         } finally {
+            giveUp.interrupt()
             runCatching { m.close() }
         }
     }

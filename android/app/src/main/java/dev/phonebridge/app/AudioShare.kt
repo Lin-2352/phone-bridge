@@ -68,6 +68,7 @@ object AudioShare {
 
     /** Sends one capture frame to the PC: as Opus when this phone can, else as it is. */
     private fun send(o: PbAudioOut, enc: OpusEncoder?, buf: ByteArray, len: Int, channels: Int) {
+        SpeakerSilencer.notePeak(buf, len)
         PhoneSpeaker.applyLevel(buf, len, channels)
         if (enc != null) enc.encode(buf, len) { o.sendFrame(it) } else o.sendFrame(buf.copyOf(len))
     }
@@ -158,7 +159,7 @@ object AudioShare {
         }
         out.set(o)
         // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
-        if (a.source == AudioSource.PLAYBACK && !helper) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
+        if (a.source == AudioSource.PLAYBACK && !helper && !SpeakerSilencer.active) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
         Log.i(TAG, "AUDIO phone to PC started source=${a.source} helper=$helper")

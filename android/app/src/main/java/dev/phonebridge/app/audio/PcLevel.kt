@@ -8,6 +8,10 @@ private const val DB_PER_STEP = 3f
 
 fun clampStep(step: Int): Int = step.coerceIn(0, PC_LEVEL_STEPS)
 
+/** The PC level for the phone's own volume. Rounds up, so only a real 0 is silent. */
+fun stepForIndex(index: Int, max: Int): Int =
+    if (max <= 0) PC_LEVEL_STEPS else clampStep((index.coerceAtLeast(0) * PC_LEVEL_STEPS + max - 1) / max)
+
 /** 3 dB a step, roughly what a phone's own volume keys do; step 0 is silence. */
 fun gainForStep(step: Int): Float = when (val s = clampStep(step)) {
     0 -> 0f

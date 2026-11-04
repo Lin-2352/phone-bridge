@@ -1,6 +1,8 @@
 package dev.phonebridge.app.audio
 
 import dev.phonebridge.helper.HelperProtocol
+import io.github.muntashirakon.adb.AdbAuthenticationFailedException
+import io.github.muntashirakon.adb.AdbPairingRequiredException
 
 /** After a failed start, wait this long before trying by itself. */
 const val HELPER_RETRY_MS = 5 * 60_000L
@@ -49,7 +51,31 @@ private fun shellQuote(s: String) = "'" + s.replace("'", "'\\''") + "'"
 fun helperStartCommand(secretHex: String, apk: String): String {
     val path = shellQuote(apk)
     return "${HelperProtocol.SECRET_ENV}=${shellQuote(secretHex)} CLASSPATH=$path " +
-        "nohup app_process / dev.phonebridge.helper.Main $path >/dev/null 2>&1 &"
+        "nohup app_process / dev.phonebridge.helper.Main $path </dev/null >/dev/null 2>&1 &"
+}
+
+/** What goes into the shell's input. adbd logs a command in the service name, and one holds the secret. */
+fun helperScript(commands: List<String>): String = (commands + "exit").joinToString("\n", postfix = "\n")
+
+const val HELPER_SHELL_TAIL = 300
+
+/** The end of what a shell answered: where a refusal says why. */
+fun helperShellTail(answer: String): String = answer.trim().takeLast(HELPER_SHELL_TAIL)
+
+private const val MAX_CAUSES = 8
+
+/** The whole cause chain, safe to log and to keep: the secret never survives this. */
+fun helperErrorText(t: Throwable, secretHex: String): String {
+    val text = generateSequence(t) { it.cause }.take(MAX_CAUSES).joinToString(" <- ") { e ->
+        val name = e.javaClass.simpleName
+        if (e.message == null) name else "$name: ${e.message}"
+    }
+    return if (secretHex.isEmpty()) text else text.replace(secretHex, "<secret>")
+}
+
+/** Only a key adb no longer accepts needs a new code. Anything else would just fail again after pairing. */
+fun needsPairingAgain(t: Throwable): Boolean = generateSequence(t) { it.cause }.take(MAX_CAUSES).any {
+    it is AdbPairingRequiredException || it is AdbAuthenticationFailedException
 }
 
 /** The digits Android shows, tolerant of spaces. Null when it can't be one. */

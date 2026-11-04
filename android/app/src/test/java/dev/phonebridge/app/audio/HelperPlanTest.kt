@@ -96,6 +96,57 @@ class HelperPlanTest {
         assertTrue(c, c.contains("""'/a'\''; reboot; '\''.apk'"""))
     }
 
+    /** A background helper must not hold the adb stream open, or the start never returns. */
+    @Test
+    fun the_helper_does_not_keep_the_adb_stream_as_its_input() {
+        assertTrue(helperStartCommand("abc123", "/a.apk").contains("</dev/null"))
+    }
+
+    /** adbd logs a command given in the service name, so commands go in through the stream. */
+    @Test
+    fun the_shell_script_runs_each_command_then_exits() {
+        assertEquals("one\ntwo\nexit\n", helperScript(listOf("one", "two")))
+    }
+
+    @Test
+    fun an_error_says_what_went_wrong_all_the_way_down() {
+        val e = java.io.IOException("Connection failed", javax.net.ssl.SSLException("protocol error"))
+        val text = helperErrorText(e, "abc123")
+        assertTrue(text, text.contains("IOException: Connection failed"))
+        assertTrue(text, text.contains("SSLException: protocol error"))
+    }
+
+    @Test
+    fun an_error_never_carries_the_secret() {
+        val e = java.io.IOException("failed: RELAY_HELPER_SECRET='abc123'", RuntimeException("abc123 again"))
+        val text = helperErrorText(e, "abc123")
+        assertFalse(text, text.contains("abc123"))
+        assertTrue(text, text.contains("<secret>"))
+    }
+
+    @Test
+    fun an_empty_secret_leaves_the_error_readable() {
+        assertEquals("IOException: boom", helperErrorText(java.io.IOException("boom"), ""))
+    }
+
+    /** Only a rejected key needs a new code. Any other failure would just repeat after pairing. */
+    @Test
+    fun only_a_rejected_key_sends_the_user_back_to_pairing() {
+        assertTrue(needsPairingAgain(io.github.muntashirakon.adb.AdbPairingRequiredException("no")))
+        assertTrue(needsPairingAgain(io.github.muntashirakon.adb.AdbAuthenticationFailedException()))
+        assertFalse(needsPairingAgain(java.io.IOException("Connection failed")))
+    }
+
+    /** Enough of a shell's answer to read why a command was refused, without keeping all of it. */
+    @Test
+    fun a_shell_answer_is_kept_short_with_its_end() {
+        assertEquals("ok", helperShellTail(" ok\n"))
+        val long = "x".repeat(1000) + "the reason"
+        val tail = helperShellTail(long)
+        assertEquals(HELPER_SHELL_TAIL, tail.length)
+        assertTrue(tail, tail.endsWith("the reason"))
+    }
+
     @Test
     fun a_pairing_code_is_six_digits() {
         assertEquals("123456", pairingCode(" 123456 "))

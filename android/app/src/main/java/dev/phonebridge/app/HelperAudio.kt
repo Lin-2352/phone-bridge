@@ -53,6 +53,9 @@ object HelperAudio {
             s.getOutputStream().write(HelperProtocol.CMD_PING.toInt())
             s.getInputStream().read() == HelperProtocol.VERSION.toInt()
         }
+    } catch (_: java.net.ConnectException) {
+        // Nothing running, the normal answer. Settings asks every few seconds, so this stays out of the log.
+        false
     } catch (e: Exception) {
         Log.i(TAG, "AUDIO helper not answering: $e")
         false

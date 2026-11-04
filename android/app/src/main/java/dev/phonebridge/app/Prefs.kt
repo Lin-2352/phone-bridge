@@ -120,6 +120,11 @@ class Prefs(context: Context) {
         get() = sp.getLong("audio_helper_last_attempt", 0)
         set(v) = sp.edit().putLong("audio_helper_last_attempt", v).apply()
 
+    /** What the last setup or start did, kept because the phone's log only lasts minutes. Never holds the secret. */
+    var audioHelperLastResult: String
+        get() = sp.getString("audio_helper_last_result", "").orEmpty()
+        set(v) = sp.edit().putString("audio_helper_last_result", v).apply()
+
     var audioHelperLastConnect: Long
         get() = sp.getLong("audio_helper_last_connect", 0)
         set(v) = sp.edit().putLong("audio_helper_last_connect", v).apply()

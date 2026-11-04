@@ -19,9 +19,12 @@ import android.provider.Settings
 import android.util.Log
 import dev.phonebridge.app.audio.HelperFacts
 import dev.phonebridge.app.audio.HelperStep
+import dev.phonebridge.app.audio.helperErrorText
 import dev.phonebridge.app.audio.helperRenewDue
+import dev.phonebridge.app.audio.helperShellTail
 import dev.phonebridge.app.audio.helperStartCommand
 import dev.phonebridge.app.audio.helperStep
+import dev.phonebridge.app.audio.needsPairingAgain
 import dev.phonebridge.app.audio.pairingCode
 import dev.phonebridge.app.audio.turnWirelessOffAfter
 import dev.phonebridge.helper.HelperProtocol
@@ -30,7 +33,7 @@ private const val TAG = "PhoneBridgeAudio"
 private const val ADB_WIFI = "adb_wifi_enabled"
 private const val ALIVE_WAIT_MS = 3000L
 private const val ALIVE_POLL_MS = 200L
-private const val PAIR_WINDOW_MS = 3 * 60_000L
+private const val PAIR_WINDOW_MS = 10 * 60_000L
 private const val PAIR_NOTICE_ID = 14
 internal const val REPLY_KEY = "code"
 private const val CHANNEL = "control"
@@ -51,7 +54,7 @@ object HelperStarter {
                 sdk = Build.VERSION.SDK_INT,
                 wifi = onWifi(ctx),
                 alive = HelperAudio.alive(ctx),
-                canToggle = ctx.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED,
+                canToggle = canToggle(ctx),
                 msSinceAttempt = System.currentTimeMillis() - p.audioHelperLastAttempt,
             ),
             asked,
@@ -110,18 +113,28 @@ object HelperStarter {
         val p = Prefs(ctx)
         p.audioHelperLastAttempt = System.currentTimeMillis()
         val began = SystemClock.elapsedRealtime()
+        val devOptions = Settings.Global.getInt(ctx.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0)
         try {
             withWireless(ctx) { AdbBridge.shell(ctx, listOf(startCommand(ctx))) }
             p.audioHelperLastConnect = System.currentTimeMillis()
         } catch (e: Exception) {
-            // Never the message: the command it might quote holds the secret.
-            Log.i(TAG, "AUDIO helper start failed: ${e.javaClass.simpleName}")
+            record(ctx, "start failed, developer options $devOptions", e)
             return false
         }
         return awaitAlive(ctx).also {
-            Log.i(TAG, "AUDIO helper start took ${SystemClock.elapsedRealtime() - began} ms, alive=$it")
+            record(ctx, "start took ${SystemClock.elapsedRealtime() - began} ms, developer options $devOptions, alive=$it")
         }
     }
+
+    private fun record(ctx: Context, what: String, e: Throwable? = null) {
+        val p = Prefs(ctx)
+        val text = if (e == null) what else "$what: ${helperErrorText(e, HelperProtocol.secretToHex(p.audioHelperSecret()))}"
+        p.audioHelperLastResult = text
+        Log.i(TAG, "AUDIO helper $text")
+    }
+
+    private fun canToggle(ctx: Context) =
+        ctx.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
 
     /** Checked after Wireless debugging went back off: that is the state it has to survive. */
     private fun awaitAlive(ctx: Context): Boolean {
@@ -138,22 +151,51 @@ object HelperStarter {
     private var stopLooking: (() -> Unit)? = null
     private val main = Handler(Looper.getMainLooper())
 
-    /** Opens Android's page and waits for its "Pair with code" dialog to appear. */
+    /** Already paired with Wireless debugging on: no code needed. Otherwise, pairing from the start. */
     fun beginSetup(ctx: Context) {
         val app = ctx.applicationContext
         cancelLooking()
-        notify(app, "Turn on Wireless debugging", "Then tap \"Pair device with pairing code\". $APP_NAME will ask for the code here.")
+        val on = Settings.Global.getInt(app.contentResolver, ADB_WIFI, 0) == 1
+        if (!AdbBridge.hasIdentity(app) || !on) {
+            beginPairing(app)
+            return
+        }
+        notify(app, "Connecting...", "This takes a few seconds.")
+        Thread({
+            val failure = completeSetup(app)
+            when {
+                failure == null -> Unit
+                needsPairingAgain(failure) -> main.post { beginPairing(app) }
+                else -> notifyNotFinished(app)
+            }
+        }, "pb-helper-setup").start()
+    }
+
+    private fun developerPage() = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+        .putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** Opens Android's page and waits for its "Pair with code" dialog to appear. */
+    private fun beginPairing(app: Context) {
+        val open = PendingIntent.getActivity(app, 71, developerPage(), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        app.getSystemService(NotificationManager::class.java).notify(
+            PAIR_NOTICE_ID,
+            notice(app, "Turn on Wireless debugging", "Then tap \"Pair device with pairing code\". $APP_NAME will ask for the code here.")
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build(),
+        )
         stopLooking = AdbBridge.findPairingPort(app) { port ->
             main.post {
                 cancelLooking()
                 askForCode(app, port)
             }
         }
-        main.postDelayed({ cancelLooking() }, PAIR_WINDOW_MS)
-        val page = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-            .putExtra(":settings:fragment_args_key", "toggle_adb_wireless")
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { ctx.startActivity(page) }.onFailure { Log.i(TAG, "AUDIO developer options not opened: $it") }
+        main.postDelayed({
+            cancelLooking()
+            notify(app, "Setup timed out", "$APP_NAME stopped waiting for the pairing dialog. Tap Set up in its Settings to try again.")
+        }, PAIR_WINDOW_MS)
+        runCatching { app.startActivity(developerPage()) }.onFailure { Log.i(TAG, "AUDIO developer options not opened: $it") }
     }
 
     private fun cancelLooking() {
@@ -181,7 +223,8 @@ object HelperStarter {
         )
         val input = RemoteInput.Builder(REPLY_KEY).setLabel("6-digit code").build()
         val action = Notification.Action.Builder(null, "Enter code", reply).addRemoteInput(input).build()
-        val n = notice(ctx, "Enter the pairing code", "Type the 6-digit code Android is showing, without closing its dialog.")
+        // Inline only: opening any screen would take Android's pairing dialog away, and the code with it.
+        val n = notice(ctx, "Enter the pairing code", "Tap Enter code below and type the 6 digits Android is showing. Leave its dialog open. No button? Drag this notification down.")
             .addAction(action)
             .setOngoing(true)
             .build()
@@ -200,17 +243,27 @@ object HelperStarter {
 
     /** Pairs, gives Relay what it needs to restart the helper alone, and starts it. */
     private fun finishSetup(ctx: Context, port: Int, code: String) {
-        val p = Prefs(ctx)
         try {
             AdbBridge.pair(ctx, port, code)
         } catch (e: Exception) {
-            Log.i(TAG, "AUDIO pairing failed: ${e.javaClass.simpleName}")
+            record(ctx, "pairing failed", e)
             notify(ctx, "Pairing didn't work", "Check the code and that Android's dialog was still open, then try again from $APP_NAME's Settings.")
             return
         }
+        if (completeSetup(ctx) != null) notifyNotFinished(ctx)
+    }
+
+    private fun notifyNotFinished(ctx: Context) {
+        notify(ctx, "Setup didn't finish", "Pairing worked, but $APP_NAME couldn't connect. Keep Wireless debugging on and tap Set up again. You won't need a new code.")
+    }
+
+    /** With a key adb accepts, takes the grant and starts the helper. Returns what went wrong, if anything. */
+    private fun completeSetup(ctx: Context): Exception? {
+        val p = Prefs(ctx)
+        val began = SystemClock.elapsedRealtime()
         try {
             val pkg = ctx.packageName
-            AdbBridge.shell(
+            val answer = AdbBridge.shell(
                 ctx,
                 listOf(
                     "pm grant $pkg ${Manifest.permission.WRITE_SECURE_SETTINGS}",
@@ -218,15 +271,15 @@ object HelperStarter {
                     startCommand(ctx),
                 ),
             )
+            check(canToggle(ctx)) { "the shell ran but Android did not give the grant. It said: ${helperShellTail(answer)}" }
             p.audioHelperPaired = true
             p.audioHelperLastConnect = System.currentTimeMillis()
         } catch (e: Exception) {
-            Log.i(TAG, "AUDIO setup after pairing failed: ${e.javaClass.simpleName}")
-            notify(ctx, "Setup didn't finish", "Pairing worked, but $APP_NAME couldn't connect. Keep Wireless debugging on, then try again from Settings.")
-            return
+            record(ctx, "setup after pairing failed after ${SystemClock.elapsedRealtime() - began} ms", e)
+            return e
         }
         val alive = awaitAlive(ctx)
-        Log.i(TAG, "AUDIO helper setup finished, alive=$alive")
+        record(ctx, "setup finished in ${SystemClock.elapsedRealtime() - began} ms, alive=$alive")
         // The user turned it on only for this.
         runCatching { Settings.Global.putInt(ctx.contentResolver, ADB_WIFI, 0) }
         if (alive) {
@@ -234,6 +287,7 @@ object HelperStarter {
         } else {
             notify(ctx, "The helper didn't start", "$APP_NAME tries again by itself. Until then, sharing uses Android's capture.")
         }
+        return null
     }
 
     /** Off, and Relay gives up its access: everything it can undo from here. */

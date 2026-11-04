@@ -77,6 +77,11 @@ object PhoneSpeaker {
     /** The captured sound at the level the PC should hear. Capture thread. */
     fun applyLevel(buf: ByteArray, len: Int, channels: Int) = level.apply(buf, len, channels)
 
+    /** The PC's level, set directly by the [SpeakerSilencer] trial. */
+    fun setLevelStep(step: Int) {
+        level.step = step
+    }
+
     /** A share of this phone's audio started. */
     @Synchronized
     fun begin(ctx: Context, frameMs: Int) {

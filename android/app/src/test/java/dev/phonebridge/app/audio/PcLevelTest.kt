@@ -5,6 +5,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PcLevelTest {
+    /** With an effect silencing the speaker, the phone's real volume sets the PC's level. */
+    @org.junit.Test
+    fun the_real_volume_maps_onto_the_pc_level() {
+        org.junit.Assert.assertEquals(0, stepForIndex(0, 16))
+        org.junit.Assert.assertEquals(PC_LEVEL_STEPS, stepForIndex(16, 16))
+        org.junit.Assert.assertEquals(8, stepForIndex(8, 16))
+        org.junit.Assert.assertEquals(PC_LEVEL_STEPS, stepForIndex(15, 15))
+        org.junit.Assert.assertEquals(1, stepForIndex(1, 25))
+    }
+
+    @org.junit.Test
+    fun a_strange_volume_reading_never_breaks_the_level() {
+        org.junit.Assert.assertEquals(PC_LEVEL_STEPS, stepForIndex(3, 0))
+        org.junit.Assert.assertEquals(PC_LEVEL_STEPS, stepForIndex(99, 16))
+        org.junit.Assert.assertEquals(0, stepForIndex(-1, 16))
+    }
+
     private fun frame(vararg samples: Int): ByteArray {
         val b = ByteArray(samples.size * 2)
         samples.forEachIndexed { i, v ->
