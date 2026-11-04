@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-04, pre-release)
 
 ### Added
 - Audio sharing in both directions: hear the phone on the PC, or the PC on the phone, including from the tray's quick panel.

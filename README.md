@@ -79,7 +79,7 @@ pwsh scripts/make-portable.ps1 -Zip      # dist\Relay and a zip
 pwsh scripts/android-build.ps1
 ```
 
-Checks that CI runs:
+Checks to run before a pull request (CI covers the Rust ones and Android lint, not the Android unit tests):
 
 ```powershell
 cargo fmt --all -- --check
