@@ -185,7 +185,6 @@ private fun AudioToPc() {
     val prefs = remember { Prefs(ctx) }
     var skip by remember { mutableStateOf(prefs.audioSkipConfirmPhoneToPc) }
     var silence by remember { mutableStateOf(prefs.audioSilencePhone) }
-    var silenceWorks by remember { mutableStateOf(!prefs.audioSilenceUnsupported) }
     val listener = AudioShare.sharingWith.value
     if (listener != null) LiveBanner("$listener can hear this phone") { AudioShare.stop(AudioDirection.PHONE_TO_PC) }
     val from = AudioShare.playingFrom.value
@@ -199,7 +198,7 @@ private fun AudioToPc() {
             prefs.audioSkipConfirmPhoneToPc = v
         },
     )
-    HelperRow()
+    if (dev.phonebridge.app.audio.HELPER_OFFERED) HelperRow()
     // Re-read when the row is drawn: the user comes back from Android's page.
     val overDisplay = android.provider.Settings.canDrawOverlays(ctx)
     val captureAllowed = runCatching {
@@ -226,17 +225,15 @@ private fun AudioToPc() {
     RelayRow(
         title = "Silence this phone while streaming",
         supporting = when {
-            !silenceWorks -> "Off. Muting this phone also silenced what $APP_NAME captures. Turn on to try again"
-            silence -> "On. Audio plays only on the PC, and the volume keys set its level there. Your sound comes back when streaming stops"
+            silence -> "On. Audio plays only on the PC, and this phone's volume bar sets its level. Your own volume comes back when streaming stops"
             else -> "Off. Audio plays on this phone and on the PC"
         },
-        checked = silence && silenceWorks,
+        checked = silence,
         onChecked = { v ->
             silence = v
             prefs.audioSilencePhone = v
             if (v) {
                 prefs.audioSilenceUnsupported = false
-                silenceWorks = true
             }
             PhoneSpeaker.settingChanged(ctx)
         },
@@ -392,6 +389,7 @@ private fun NotificationsOnPc() {
         supporting = when {
             !on -> "Off"
             !access -> "Not allowed yet. Tap Grant, then turn on $APP_NAME"
+            !NotifyListener.connected.value -> "Allowed, but Android hasn't connected it yet. Turn it off and on if this stays"
             else -> "Showing on your PC"
         },
         checked = on,
@@ -486,7 +484,7 @@ fun SettingsTab(onDone: () -> Unit) {
                 runCatching { Bridge.node?.tryUnpair(p.id) }.exceptionOrNull()?.let {
                     notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
                 }
-                Prefs(ctx).let { it.allowedCameraPcs = pruneAllowed(it.allowedCameraPcs, Bridge.node?.peers()?.map { q -> q.id }.orEmpty()) }
+                Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
                 Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
                 PbService.refresh(ctx)
                 onDone()

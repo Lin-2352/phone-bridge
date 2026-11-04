@@ -1287,7 +1287,7 @@ mod tests {
     #[test]
     fn long_save_paths_keep_the_folder_name() {
         let fits = |n: usize| move |t: &str| t.chars().count() <= n;
-        let p = r"C:\Users\Harsh Raj\Documents\Relay\Received";
+        let p = r"C:\Users\Alex Kim\Documents\Relay\Received";
         assert_eq!(shorten_path(p, fits(100)), p);
         assert_eq!(shorten_path(p, fits(28)), "C:\\\u{2026}\\Relay\\Received");
         assert_eq!(shorten_path(p, fits(18)), "C:\\\u{2026}\\Received");

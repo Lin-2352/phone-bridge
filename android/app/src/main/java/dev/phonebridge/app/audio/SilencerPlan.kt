@@ -6,3 +6,14 @@ fun shareStartIndex(remembered: Int, max: Int): Int =
 
 /** Relative steps that give the phone its own volume back. Negative [saved]: no share was running. */
 fun stepsBack(current: Int, saved: Int): Int = if (saved < 0) 0 else saved - current
+
+/** The PC level a muted share starts at. A saved 0 would be silence with nothing on screen to explain it. */
+fun muteShareStartStep(saved: Int): Int = if (saved <= 0) PC_LEVEL_STEPS else clampStep(saved)
+
+/** Home's card for a share: title and line. */
+fun audioShareCard(source: AudioSource, peer: String): Pair<String, String> =
+    if (source == AudioSource.MICROPHONE) {
+        "Sharing your microphone with $peer" to "Your PC hears this phone's microphone"
+    } else {
+        "Sharing this phone's audio with $peer" to "What this phone plays goes to your PC"
+    }

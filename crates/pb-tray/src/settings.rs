@@ -98,11 +98,19 @@ impl Default for Settings {
             audio_skip_confirm_pc_to_phone: false,
             keep_logs: true,
             paused: false,
-            log_dir: PathBuf::from(r"D:\Documents\Relay Logs"),
+            log_dir: PathBuf::new(),
             main_window_rect: None,
             timeline_days: String::new(),
         }
     }
+}
+
+/// Logs live with the rest of the data, unless the user picks a folder.
+fn default_log_dir(settings_file: &Path) -> PathBuf {
+    settings_file
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("logs")
 }
 
 fn parse_bool(v: &str) -> Option<bool> {
@@ -117,6 +125,7 @@ impl Settings {
     pub fn load(path: &Path) -> Self {
         let mut s = Self::default();
         let Ok(text) = std::fs::read_to_string(path) else {
+            s.log_dir = default_log_dir(path);
             return s;
         };
         for line in text.lines() {
@@ -196,6 +205,9 @@ impl Settings {
                 _ => {}
             }
         }
+        if s.log_dir.as_os_str().is_empty() {
+            s.log_dir = default_log_dir(path);
+        }
         s
     }
 
@@ -231,7 +243,13 @@ impl Settings {
             self.keep_logs,
             self.audio_skip_confirm_pc_to_phone,
             self.paused,
-            self.log_dir.display()
+            // Not written when it is the default, so a moved folder keeps its logs with it.
+            if self.log_dir == default_log_dir(path) {
+                PathBuf::new()
+            } else {
+                self.log_dir.clone()
+            }
+            .display()
         );
         if !self.timeline_days.is_empty() {
             text += &format!("timeline_days={}\n", self.timeline_days);
@@ -269,7 +287,30 @@ mod tests {
         assert_eq!(s.main_window_rect, None);
         assert!(s.keep_logs, "logs are kept by default");
         assert!(!s.paused, "Relay starts unpaused");
-        assert_eq!(s.log_dir, PathBuf::from(r"D:\Documents\Relay Logs"));
+        assert_eq!(s.log_dir, PathBuf::new(), "logs follow the data folder");
+    }
+
+    #[test]
+    fn logs_live_beside_the_settings_unless_the_user_chose_a_folder() {
+        let dir = std::env::temp_dir().join(format!("relay logs {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(Settings::load(&path).log_dir, dir.join("logs"));
+        Settings::load(&path).save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(
+                "log_dir=
+"
+            ),
+            "a moved folder must not keep the old path"
+        );
+        let mut chosen = Settings::load(&path);
+        chosen.log_dir = PathBuf::from(r"E:\Logs");
+        chosen.save(&path).unwrap();
+        assert_eq!(Settings::load(&path).log_dir, PathBuf::from(r"E:\Logs"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -338,7 +379,10 @@ new"
         assert!(!t.auto_accept);
         assert_eq!(
             Settings::load(&dir.join("missing.txt")),
-            Settings::default()
+            Settings {
+                log_dir: dir.join("logs"),
+                ..Settings::default()
+            }
         );
     }
 }

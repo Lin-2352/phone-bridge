@@ -4,7 +4,7 @@
 #   samples.txt        every -SampleSeconds (default 300): memory pressure (PSI), MemAvailable/swap,
 #                      top 10 processes by PSS, Phone Bridge PSS and threads
 # Stops after -Hours (default 24). Usage: pwsh scripts/phone-watch.ps1 [-Serial X] [-Hours 24]
-param([string]$Serial = "79KRFEJVPVOBQCHQ", [int]$Hours = 24, [int]$SampleSeconds = 300)
+param([Parameter(Mandatory = $true)][string]$Serial, [int]$Hours = 24, [int]$SampleSeconds = 300)
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $dir = "$env:TEMP\pb-phone-watch"; New-Item -ItemType Directory -Force $dir | Out-Null
 (Get-Process -Id $PID).PriorityClass = "BelowNormal"

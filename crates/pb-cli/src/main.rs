@@ -1,4 +1,4 @@
-//! `pb`: Phone Bridge command-line client (test harness until the tray app).
+//! `pb`: Relay command-line client.
 //!
 //! pb [--dir DIR] [--port N] [--name NAME] <command>
 //!   pair-host [--auto-accept]   show a pairing code, confirm the SAS, pin the peer

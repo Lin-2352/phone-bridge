@@ -37,4 +37,21 @@ class SilencerPlanTest {
     fun with_nothing_saved_the_volume_stays_where_it_is() {
         assertEquals(0, stepsBack(current = 16, saved = -1))
     }
+
+    /** A level left at 0 must not make the next share silent on the PC for no visible reason. */
+    @Test
+    fun a_muted_share_starts_at_a_saved_pc_level_unless_it_was_silence() {
+        assertEquals(5, muteShareStartStep(5))
+        assertEquals(PC_LEVEL_STEPS, muteShareStartStep(0))
+    }
+
+    /** A microphone share must say the microphone: it is what the user would want to know. */
+    @Test
+    fun home_says_what_is_being_shared() {
+        val mic = audioShareCard(AudioSource.MICROPHONE, "Desk")
+        assertEquals("Sharing your microphone with Desk", mic.first)
+        org.junit.Assert.assertTrue(mic.second, mic.second.contains("microphone"))
+        val phone = audioShareCard(AudioSource.PLAYBACK, "Desk")
+        assertEquals("Sharing this phone's audio with Desk", phone.first)
+    }
 }

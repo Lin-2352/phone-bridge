@@ -1,6 +1,6 @@
 [package]
 name = "pb-tray"
-description = "Phone Bridge Windows tray app (Win32, no WebView)"
+description = "Relay Windows tray app (Win32, no WebView)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

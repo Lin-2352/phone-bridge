@@ -45,7 +45,11 @@ class BootReceiver : BroadcastReceiver() {
 fun ensureRunning(ctx: Context, why: String) {
     // A fresh process (the job or boot woke it): the widget may still show the dead process's "Connected".
     if (!Bridge.running.value) RelayWidget.update(ctx)
-    if (honourUserStop(ctx)) return
+    if (honourUserStop(ctx)) {
+        // A forced stop can land mid-share, and no service will run to put the volume back.
+        PhoneSpeaker.restore(ctx)
+        return
+    }
     if (!Prefs(ctx).enabled || Bridge.running.value) return
     try {
         ctx.startForegroundService(Intent(ctx, PbService::class.java))

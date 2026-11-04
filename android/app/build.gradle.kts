@@ -20,8 +20,8 @@ android {
         applicationId = "dev.phonebridge.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.0"
+        versionCode = 5
+        versionName = "0.2.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
@@ -43,6 +43,12 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+        }
+        // The release build, signed so it installs over a debug-signed app: how to try R8's output on a real phone.
+        create("qa") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
         }
     }
 

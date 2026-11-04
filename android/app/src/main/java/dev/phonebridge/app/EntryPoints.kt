@@ -9,6 +9,10 @@ import android.util.Log
 import android.widget.Toast
 import kotlinx.coroutines.launch
 
+/** Whether a content authority is one of ours. Android reads "0@authority" as that user's copy of it. */
+internal fun isOwnAuthority(authority: String?, pkg: String): Boolean =
+    authority?.substringAfterLast('@')?.startsWith(pkg) == true
+
 private const val TAG = "PhoneBridge"
 
 /**
@@ -50,7 +54,7 @@ class ShareActivity : Activity() {
         val opened = uris.mapNotNull { uri ->
             // Only content shared by another app: never our own files, raw
             // paths, or the save folder we hold access to.
-            if (uri.scheme != "content" || uri.authority?.startsWith(packageName) == true ||
+            if (uri.scheme != "content" || isOwnAuthority(uri.authority, packageName) ||
                 contentResolver.persistedUriPermissions.any { uri.toString().startsWith(it.uri.toString()) }
             ) {
                 Log.e(TAG, "SHARE refused scheme=${uri.scheme}")

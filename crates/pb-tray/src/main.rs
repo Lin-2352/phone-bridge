@@ -71,6 +71,7 @@ mod notify;
 mod pages;
 #[cfg(windows)]
 mod pause;
+mod portable;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;
 #[cfg(windows)]
@@ -177,8 +178,11 @@ fn main() {
         .unwrap_or_else(std::env::temp_dir)
         .join("PhoneBridge")
         .join("tray");
+    let portable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().and_then(portable::data_dir));
     let mut opts = core::Options {
-        dir: default_dir.clone(),
+        dir: portable_dir.unwrap_or_else(|| default_dir.clone()),
         port: 47200,
         name: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into()),
         pair_on_start: false,

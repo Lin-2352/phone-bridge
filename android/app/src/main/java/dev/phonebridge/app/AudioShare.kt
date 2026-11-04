@@ -51,6 +51,9 @@ object AudioShare {
     /** The PC this phone's audio is going to, while it is (Home's card and the Stop button read it). */
     val sharingWith = mutableStateOf<String?>(null)
 
+    /** What [sharingWith] is hearing. */
+    val sharingSource = mutableStateOf(AudioSource.PLAYBACK)
+
     /** The PC whose audio plays on this phone, while it does. */
     val playingFrom = mutableStateOf<String?>(null)
 
@@ -158,6 +161,7 @@ object AudioShare {
         }
         out.set(o)
         // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
+        sharingSource.value = a.source
         if (a.source == AudioSource.PLAYBACK && !helper) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)

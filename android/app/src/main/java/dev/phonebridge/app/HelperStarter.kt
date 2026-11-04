@@ -17,6 +17,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import dev.phonebridge.app.audio.HELPER_OFFERED
 import dev.phonebridge.app.audio.HelperFacts
 import dev.phonebridge.app.audio.HelperStep
 import dev.phonebridge.app.audio.helperErrorText
@@ -80,6 +81,7 @@ object HelperStarter {
 
     /** From the recovery job: bring the helper back, and keep the adb key from expiring. */
     fun maintain(ctx: Context) {
+        if (!HELPER_OFFERED) return
         Thread({
             synchronized(startLock) {
                 val p = Prefs(ctx)

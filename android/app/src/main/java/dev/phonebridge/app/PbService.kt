@@ -321,6 +321,12 @@ class PbService : Service() {
         AudioShare.stopAll()
         // The speaker comes back even if the stop path above could not reach it (instance is already null).
         PhoneSpeaker.restore(this)
+        // Those paths skip their notices for the same reason: none may claim a share with Relay off.
+        getSystemService(NotificationManager::class.java).run {
+            cancel(AUDIO_SHARE_ID)
+            cancel(AUDIO_PLAY_ID)
+        }
+        notifySharing(this, null)
         ControlService.instance?.endForServiceStop()
         val n = synchronized(Bridge) {
             destroyed = true
@@ -897,7 +903,12 @@ class PbService : Service() {
             .setContentText("Its mouse and keyboard would work here until you stop it")
             .setContentIntent(PendingIntent.getActivity(this, 42, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .addAction(Notification.Action.Builder(null, "Deny", answer(false)).build())
-            .addAction(Notification.Action.Builder(null, "Allow", answer(true)).build())
+            .addAction(
+                Notification.Action.Builder(null, "Allow", answer(true)).apply {
+                    // Control of the phone must not be granted from a locked screen.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setAuthenticationRequired(true)
+                }.build(),
+            )
             .setCategory(Notification.CATEGORY_CALL)
             .setTimeoutAfter(30_000)
             .setAutoCancel(true)

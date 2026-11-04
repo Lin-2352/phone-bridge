@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import dev.phonebridge.app.audio.AudioReason
+import dev.phonebridge.app.audio.HELPER_OFFERED
 import dev.phonebridge.helper.HelperProtocol
 import java.io.DataInputStream
 import java.net.InetAddress
@@ -48,7 +49,7 @@ object HelperAudio {
     }
 
     /** A real round trip: never remembered, since the helper can die at any time. */
-    fun alive(ctx: Context): Boolean = try {
+    fun alive(ctx: Context): Boolean = if (!HELPER_OFFERED) false else try {
         connect(ctx).use { s ->
             s.getOutputStream().write(HelperProtocol.CMD_PING.toInt())
             s.getInputStream().read() == HelperProtocol.VERSION.toInt()

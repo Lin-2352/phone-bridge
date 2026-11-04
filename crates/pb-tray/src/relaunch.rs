@@ -46,6 +46,16 @@ pub fn command_line(exe: &Path, args: &[String]) -> String {
     }
 }
 
+/// What `cmd` gets to start this exe again a moment after this one is gone
+/// (the single-instance mutex is released then). Passed raw: `/S` makes cmd drop
+/// only the outer quotes, and C-style escaped quotes would break it.
+pub fn restart_line(exe: &Path, args: &[String]) -> String {
+    format!(
+        r#"/S /C "ping -n 3 127.0.0.1 >nul & start "" {}""#,
+        command_line(exe, args)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +95,39 @@ mod tests {
             quoted(&a),
             r#""--dir" "D:\My Apps\Relay\data" "--name" "PC""#
         );
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn the_restart_line_keeps_paths_with_spaces_whole() {
+        let line = restart_line(
+            Path::new(r"C:\A B\Relay.exe"),
+            &["--dir".into(), r"C:\A B\data".into()],
+        );
+        assert_eq!(
+            line,
+            r#"/S /C "ping -n 3 127.0.0.1 >nul & start "" "C:\A B\Relay.exe" "--dir" "C:\A B\data"""#
+        );
+    }
+
+    /// cmd reads this form itself: quotes escaped for C programs would break it.
+    #[test]
+    fn cmd_understands_that_form() {
+        use std::os::windows::process::CommandExt;
+        let dir = std::env::temp_dir().join(format!("relay restart {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out file.txt");
+        let line = format!(r#"/S /C "echo ok> "{}"""#, out.display());
+        let status = std::process::Command::new("cmd")
+            .raw_arg(&line)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(std::fs::read_to_string(&out).unwrap().contains("ok"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -80,6 +80,14 @@ class Prefs(context: Context) {
         }
     }
 
+    /** A PC was removed: what it was allowed goes with it, so pairing it again asks again. */
+    fun dropAllowancesExcept(pairedIds: List<String>) {
+        allowedCameraPcs = pruneAllowed(allowedCameraPcs, pairedIds)
+        allowedControlPcs = pruneAllowed(allowedControlPcs, pairedIds)
+        allowedScreenPcs = pruneAllowed(allowedScreenPcs, pairedIds)
+        sp.edit().remove("allow_control").remove("allow_screen").apply()
+    }
+
     /** "Phone Bridge stopped" was shown and not yet resolved (shown once, not every 15 min). */
     var stoppedNotified: Boolean
         get() = sp.getBoolean("stopped_notified", false)

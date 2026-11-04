@@ -12,6 +12,7 @@ import dev.phonebridge.app.audio.PcLevel
 import dev.phonebridge.app.audio.SpeakerAction
 import dev.phonebridge.app.audio.SpeakerGuard
 import dev.phonebridge.app.audio.keyStep
+import dev.phonebridge.app.audio.muteShareStartStep
 import dev.phonebridge.app.audio.undoStep
 
 /**
@@ -109,6 +110,7 @@ object PhoneSpeaker {
         Log.i(TAG, "AUDIO silencer lost its effect: falling back to muting")
         silencing = false
         SpeakerSilencer.stop(ctx)
+        level.step = PC_LEVEL_STEPS
         apply(ctx, tryEffect = false)
     }
 
@@ -129,7 +131,7 @@ object PhoneSpeaker {
             return
         }
         val am = audio(ctx)
-        level.step = p.audioPcLevel
+        level.step = muteShareStartStep(p.audioPcLevel)
         if (am.isStreamMute(AudioManager.STREAM_MUSIC)) {
             // The user's own mute: not ours to undo later, and its volume can't be read to restore.
             pinned = false

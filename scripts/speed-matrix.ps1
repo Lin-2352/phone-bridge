@@ -10,7 +10,7 @@
 # phone -> PC, checks MD5, records link facts, appends to %TEMP%\pb-speed-matrix.csv.
 param(
     [Parameter(Mandatory)] [string]$Scenario,
-    [string]$Serial = "79KRFEJVPVOBQCHQ",
+    [Parameter(Mandatory = $true)][string]$Serial,
     [string]$TrayDir = "$env:TEMP\pbm2_trayPhone",
     [string]$InboxDir = "$env:TEMP\pbm3in"
 )

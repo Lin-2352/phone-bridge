@@ -447,7 +447,7 @@ fn scrub_drops_the_tail_of_unquoted_paths_with_spaces() {
         "java.io.FileNotFoundException: <path> open failed: ENOENT"
     );
     assert!(!a.contains("Report"));
-    let b = scrub(r"Access denied: C:\Users\Harsh Raj");
+    let b = scrub(r"Access denied: C:\Users\Alex Kim");
     assert_eq!(b, "Access denied: <path>");
     assert!(!b.contains("Raj"));
 }

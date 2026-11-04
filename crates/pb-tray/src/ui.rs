@@ -62,14 +62,9 @@ pub fn core_failed(hwnd_raw: isize, msg: String) {
 /// (the single-instance mutex is released then), and quits this one.
 fn restart_app(raw: isize) {
     if let Ok(exe) = std::env::current_exe() {
-        let args = crate::relaunch::quoted(crate::relaunch::args());
-        let line = format!(
-            "ping -n 3 127.0.0.1 >nul & start \"\" \"{}\" {args}",
-            exe.display()
-        );
         use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new("cmd")
-            .args(["/C", &line])
+            .raw_arg(crate::relaunch::restart_line(&exe, crate::relaunch::args()))
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .spawn();
     }

@@ -4,6 +4,13 @@ import dev.phonebridge.helper.HelperProtocol
 import io.github.muntashirakon.adb.AdbAuthenticationFailedException
 import io.github.muntashirakon.adb.AdbPairingRequiredException
 
+/**
+ * The helper isn't offered: [dev.phonebridge.app.SpeakerSilencer] gives the same result with no adb,
+ * no stored shell access and no Developer options, which banking apps refuse. Its code stays, off,
+ * for phones where the effect turns out not to reach the speaker.
+ */
+const val HELPER_OFFERED = false
+
 /** After a failed start, wait this long before trying by itself. */
 const val HELPER_RETRY_MS = 5 * 60_000L
 

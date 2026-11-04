@@ -606,7 +606,8 @@ pub async fn receive_offer_with(
     match kind {
         OfferKind::Text | OfferKind::Link => {
             wait_for_close(session).await;
-            return Ok(if kind == OfferKind::Link {
+            // Only a web address gets a one-tap "open": a peer's upi: or tel: stays plain text.
+            return Ok(if kind == OfferKind::Link && is_web_link(&offer.text) {
                 Received::Link(offer.text)
             } else {
                 Received::Text(offer.text)
@@ -902,5 +903,40 @@ mod tests {
         assert_eq!(unique_path(&dir, "a.txt"), dir.join("a (3).txt"));
         std::fs::write(dir.join("noext"), b"1").unwrap();
         assert_eq!(unique_path(&dir, "noext"), dir.join("noext (2)"));
+    }
+}
+
+/// Whether a shared link may be opened with one tap on the other device.
+pub(crate) fn is_web_link(text: &str) -> bool {
+    let t = text.trim_start().to_ascii_lowercase();
+    t.starts_with("https://") || t.starts_with("http://")
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::is_web_link;
+
+    #[test]
+    fn web_addresses_are_links() {
+        assert!(is_web_link("https://example.com/a?b=c"));
+        assert!(is_web_link("http://example.com"));
+        assert!(is_web_link("  HTTPS://EXAMPLE.COM"));
+    }
+
+    /// One tap on a "link" must not pay, call or open local files.
+    #[test]
+    fn other_schemes_are_only_text() {
+        for t in [
+            "upi://pay?pa=x",
+            "tel:123",
+            "intent://x#Intent;end",
+            "file:///c:/x",
+            "ms-settings:",
+            "javascript:alert(1)",
+            "https",
+            "",
+        ] {
+            assert!(!is_web_link(t), "{t}");
+        }
     }
 }

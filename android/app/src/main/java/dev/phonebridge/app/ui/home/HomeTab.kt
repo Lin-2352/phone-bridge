@@ -267,7 +267,7 @@ fun HomeTab(onTimeline: () -> Unit) {
             controller?.let { item(key = "session-control") { SessionCard("$it is controlling this phone", "Its mouse and keyboard work here", Modifier.animateItem()) { Bridge.node?.stopControl() } } }
             screenTo?.let { item(key = "session-screen") { SessionCard("Sharing your screen with $it", "Everything on this screen shows on your PC", Modifier.animateItem()) { ScreenShare.stop(userStopped = true) } } }
             cameraTo?.let { item(key = "session-camera") { SessionCard("$it is using the camera", "This phone is your PC's webcam", Modifier.animateItem()) { CameraShare.stop(userStopped = true) } } }
-            audioOut?.let { item(key = "session-audio-out") { SessionCard("Sharing this phone's audio with $it", "What this phone plays also plays on your PC", Modifier.animateItem()) { AudioShare.stop(AudioDirection.PHONE_TO_PC) } } }
+            audioOut?.let { item(key = "session-audio-out") { SessionCard(dev.phonebridge.app.audio.audioShareCard(AudioShare.sharingSource.value, it).first, dev.phonebridge.app.audio.audioShareCard(AudioShare.sharingSource.value, it).second, Modifier.animateItem()) { AudioShare.stop(AudioDirection.PHONE_TO_PC) } } }
             audioIn?.let { item(key = "session-audio-in") { SessionCard("Playing audio from $it", "Your PC's sound plays on this phone", Modifier.animateItem()) { AudioShare.stop(AudioDirection.PC_TO_PHONE) } } }
             item(key = "recent-head") {
                 Row(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
@@ -504,7 +504,7 @@ private fun removeForgottenPcs(ctx: Context) {
             }
         }
         val prefs = Prefs(ctx)
-        prefs.allowedCameraPcs = pruneAllowed(prefs.allowedCameraPcs, node.peers().map { it.id })
+        prefs.dropAllowancesExcept(node.peers().map { it.id })
         Bridge.linked.value = node.peers().firstOrNull()?.name
         PbService.refresh(ctx)
     }
