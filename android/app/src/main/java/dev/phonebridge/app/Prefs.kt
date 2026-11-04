@@ -120,6 +120,16 @@ class Prefs(context: Context) {
         get() = sp.getLong("audio_helper_last_attempt", 0)
         set(v) = sp.edit().putLong("audio_helper_last_attempt", v).apply()
 
+    /** The phone's own volume while an effect silences it for a share, -1 when none does. Written at once: a crash must not lose it. */
+    var audioSilencedFrom: Int
+        get() = sp.getInt("audio_silenced_from", -1)
+        set(v) = sp.edit().putInt("audio_silenced_from", v).commit().let {}
+
+    /** Where the volume bar was left in the last silenced share: the next one starts there. */
+    var audioShareIndex: Int
+        get() = sp.getInt("audio_share_index", -1)
+        set(v) = sp.edit().putInt("audio_share_index", v).apply()
+
     /** What the last setup or start did, kept because the phone's log only lasts minutes. Never holds the secret. */
     var audioHelperLastResult: String
         get() = sp.getString("audio_helper_last_result", "").orEmpty()

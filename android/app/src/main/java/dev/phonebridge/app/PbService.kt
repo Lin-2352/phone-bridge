@@ -248,9 +248,7 @@ class PbService : Service() {
         Timeline.init(this)
         PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
         Prefs(this).audioHelperSecret()
-        HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do
-        SpeakerSilencer.registerDebug(this)
-        // A new process shares nothing yet: drop the old process's ongoing notifications.
+        HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do        // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
         // Bars from a process that was killed mid-transfer never end by themselves.
         nm.cancel(PROGRESS_IN_ID)

@@ -15,11 +15,14 @@ import dev.phonebridge.app.audio.keyStep
 import dev.phonebridge.app.audio.undoStep
 
 /**
- * "Silence this phone while streaming". Mutes the media stream during a share and always gives it
- * back: on Stop, on a dropped link, and on the next start after a crash (the flags in [Prefs]). The
- * setting applies at once, also in the middle of a stream. If muting proves to silence the capture
- * too ([SpeakerGuard]), it unmutes, remembers that, and says so: never a toggle that quietly sends
- * nothing.
+ * "Silence this phone while streaming". Uses [SpeakerSilencer] where Android allows it, which leaves
+ * the volume keys alone. The rest of this file is the fallback for phones that refuse it, or when
+ * another app takes the effect over.
+ *
+ * The fallback mutes the media stream during a share and always gives it back: on Stop, on a dropped
+ * link, and on the next start after a crash (the flags in [Prefs]). The setting applies at once, also
+ * in the middle of a stream. If muting proves to silence the capture too ([SpeakerGuard]), it
+ * unmutes, remembers that, and says so: never a toggle that quietly sends nothing.
  *
  * The volume keys set the PC's level while the phone is silent. A foreground video app sends the
  * keys straight to the phone's volume, and a raise also unmutes it, so no app can catch them first.
@@ -42,6 +45,7 @@ object PhoneSpeaker {
 
     private var guard: SpeakerGuard? = null
     private var sharing = false
+    private var silencing = false
     private var frameMs = 10
     private var frames = 0
     private var musicActive = false
@@ -69,7 +73,7 @@ object PhoneSpeaker {
     }
 
     /** [count] relative steps of the phone's volume, up when positive. */
-    private fun stepIndex(ctx: Context, count: Int) {
+    fun stepIndex(ctx: Context, count: Int) {
         val how = if (count > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
         repeat(kotlin.math.abs(count)) { adjust(ctx, how) }
     }
@@ -77,7 +81,7 @@ object PhoneSpeaker {
     /** The captured sound at the level the PC should hear. Capture thread. */
     fun applyLevel(buf: ByteArray, len: Int, channels: Int) = level.apply(buf, len, channels)
 
-    /** The PC's level, set directly by the [SpeakerSilencer] trial. */
+    /** The PC's level, which follows the real volume bar under [SpeakerSilencer]. */
     fun setLevelStep(step: Int) {
         level.step = step
     }
@@ -95,20 +99,35 @@ object PhoneSpeaker {
     fun settingChanged(ctx: Context) {
         if (!sharing) return
         val p = Prefs(ctx)
-        if (p.audioSilencePhone && !p.audioSilenceUnsupported) apply(ctx) else stopMuting(ctx)
+        if (Prefs(ctx).audioSilencePhone) apply(ctx) else stopMuting(ctx)
     }
 
-    private fun apply(ctx: Context) {
+    /** Another app took the effect over, so the speaker would come back: mute instead. */
+    @Synchronized
+    private fun effectLost(ctx: Context) {
+        if (!silencing || !sharing) return
+        Log.i(TAG, "AUDIO silencer lost its effect: falling back to muting")
+        silencing = false
+        SpeakerSilencer.stop(ctx)
+        apply(ctx, tryEffect = false)
+    }
+
+    private fun apply(ctx: Context, tryEffect: Boolean = true) {
         val p = Prefs(ctx)
         if (!p.audioSilencePhone) {
             Log.i(TAG, "AUDIO phone speaker stays on: the setting is off")
+            return
+        }
+        if (silencing || listening) return
+        val app = ctx.applicationContext
+        if (tryEffect && SpeakerSilencer.start(app) { effectLost(app) }) {
+            silencing = true
             return
         }
         if (p.audioSilenceUnsupported) {
             Log.i(TAG, "AUDIO phone speaker stays on: muting silenced the capture before")
             return
         }
-        if (listening) return
         val am = audio(ctx)
         level.step = p.audioPcLevel
         if (am.isStreamMute(AudioManager.STREAM_MUSIC)) {
@@ -204,6 +223,8 @@ object PhoneSpeaker {
     }
 
     private fun stopMuting(ctx: Context) {
+        silencing = false
+        SpeakerSilencer.stop(ctx)
         guard = null
         pinned = false
         if (listening) {
