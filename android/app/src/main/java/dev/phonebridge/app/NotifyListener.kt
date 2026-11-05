@@ -54,8 +54,18 @@ class NotifyListener : NotificationListenerService() {
         private const val SEEN_MAX = 40
         val connected = mutableStateOf(false)
 
-        /** key -> live notification, for actions a PC asks for. */
-        val live = ConcurrentHashMap<String, StatusBarNotification>()
+        /** key -> what a PC's actions need from each live notification (no pictures or extras). */
+        val live = LiveStore<LiveNote<PendingIntent, Array<RemoteInput>>>()
+
+        fun liveNoteOf(sbn: StatusBarNotification): LiveNote<PendingIntent, Array<RemoteInput>> {
+            val n = sbn.notification
+            return LiveNote(
+                category = n.category,
+                title = n.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.take(80),
+                content = n.contentIntent,
+                actions = n.actions.orEmpty().map { LiveAction(it.actionIntent, it.remoteInputs) },
+            )
+        }
 
         /** Apps whose icon the node already has (sent once per process). */
         private val iconSent: MutableSet<String> = ConcurrentHashMap.newKeySet()
@@ -74,6 +84,7 @@ class NotifyListener : NotificationListenerService() {
     override fun onListenerDisconnected() {
         connected.value = false
         instance = null
+        live.clear() // reseeded on the next connect
         Log.i(TAG, "NOTIFY listener disconnected")
         requestRebind(ComponentName(this, NotifyListener::class.java))
     }
@@ -92,7 +103,7 @@ class NotifyListener : NotificationListenerService() {
         bg.execute {
             try {
                 val list = active.filterNot(::skip).map {
-                    live[it.key] = it
+                    live.put(it.key, liveNoteOf(it))
                     toPb(it, quiet = true, withMedia = false)
                 }
                 node.notifySeed(list)
@@ -119,7 +130,7 @@ class NotifyListener : NotificationListenerService() {
             }
             return
         }
-        val update = live.put(sbn.key, sbn) != null
+        val update = live.put(sbn.key, liveNoteOf(sbn))
         val node = Bridge.node ?: return
         if (!Prefs(this).notifyToPc) return
         val r = Ranking()
@@ -367,27 +378,27 @@ object NotifyActions : NotifyHandler {
 
     override fun onAction(key: String, kind: PbNotifyActionKind, index: UInt, text: String) {
         val svc = NotifyListener.instance ?: fail("Notification access is off on the phone")
-        val sbn = NotifyListener.live[key]
+        val note = NotifyListener.live.get(key)
         Log.i(TAG, notifyLogLine("action $kind", keyHash(key)))
         try {
             when (kind) {
                 PbNotifyActionKind.DISMISS -> svc.cancelNotification(key)
                 PbNotifyActionKind.BUTTON ->
-                    (action(sbn, index).actionIntent ?: fail(GONE)).send(svc, 0, null, null, null, null, ActionSend.options())
+                    (action(note, index).intent ?: fail(GONE)).send(svc, 0, null, null, null, null, ActionSend.options())
                 PbNotifyActionKind.REPLY -> {
-                    val a = action(sbn, index)
-                    val inputs = a.remoteInputs ?: fail(GONE)
+                    val a = action(note, index)
+                    val inputs = a.inputs ?: fail(GONE)
                     val input = inputs.firstOrNull { it.allowFreeFormInput } ?: fail(GONE)
                     val intent = Intent()
                     RemoteInput.addResultsToIntent(inputs, intent, Bundle().apply { putCharSequence(input.resultKey, text) })
-                    (a.actionIntent ?: fail(GONE)).send(svc, 0, intent)
+                    (a.intent ?: fail(GONE)).send(svc, 0, intent)
                 }
                 PbNotifyActionKind.OPEN -> {
-                    val pi = sbn?.notification?.contentIntent ?: fail(GONE)
+                    val pi = note?.content ?: fail(GONE)
                     when (openOutcome(ActionSend.canStartActivity(svc))) {
                         OpenOutcome.SEND -> pi.send(svc, 0, null, null, null, null, ActionSend.options())
                         OpenOutcome.TAP_ON_PHONE -> {
-                            ActionSend.postTap(svc, pi, sbn?.notification?.extras?.getCharSequence(Notification.EXTRA_TITLE))
+                            ActionSend.postTap(svc, pi, note.title)
                             fail(TAP_ON_PHONE_TEXT)
                         }
                     }
@@ -399,8 +410,8 @@ object NotifyActions : NotifyHandler {
         }
     }
 
-    private fun action(sbn: StatusBarNotification?, index: UInt): Notification.Action =
-        sbn?.notification?.actions?.getOrNull(index.toInt()) ?: fail(GONE)
+    private fun action(note: LiveNote<PendingIntent, Array<RemoteInput>>?, index: UInt): LiveAction<PendingIntent, Array<RemoteInput>> =
+        note?.actions?.getOrNull(index.toInt()) ?: fail(GONE)
 
     private fun silence(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java)

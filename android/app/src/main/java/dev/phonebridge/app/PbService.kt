@@ -444,7 +444,7 @@ class PbService : Service() {
             // So the node knows what is already on the phone (sync with PCs).
             NotifyListener.instance?.seedAll()
             // A call silenced from the PC ended while Phone Bridge was not running.
-            if (NotifyListener.live.values.none { it.notification.category == android.app.Notification.CATEGORY_CALL }) {
+            if (!NotifyListener.live.any { it.category == android.app.Notification.CATEGORY_CALL }) {
                 restoreRinger(this)
             }
             Bridge.linked.value = n.peers().firstOrNull()?.name
