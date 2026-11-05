@@ -299,6 +299,25 @@ mod tests {
     }
 
     #[test]
+    fn decode_survives_random_text() {
+        // Whatever another process writes into the pipe: no panic.
+        let parts = [
+            "send", "pair", "text", "open", "1", "0", "\n", "C:\\a", "", "\u{0}", "\u{e9}",
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..20_000 {
+            let mut t = String::new();
+            for _ in 0..seed % 9 {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                t.push_str(parts[(seed >> 33) as usize % parts.len()]);
+            }
+            let _ = decode(&t);
+        }
+    }
+
+    #[test]
     fn requests_round_trip_and_garbage_is_rejected() {
         let r = Request::Send(vec![
             PathBuf::from(r"C:\a b\c.jpg"),

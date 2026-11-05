@@ -294,6 +294,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn settings_load_survives_random_files() {
+        // Pseudo-random settings files (keys Relay knows, garbage values,
+        // stray characters, lines without "="): loading never panics, and
+        // after one save what loads is stable.
+        let keys = [
+            "universal_clipboard",
+            "auto_accept",
+            "theme",
+            "save_dir",
+            "notify_content",
+            "notify_apps",
+            "main_window_rect",
+            "timeline_days",
+            "log_dir",
+            "paused",
+            "x",
+            "",
+        ];
+        let alphabet: Vec<char> = "=,:;019- truefalsx\\/\r\t\u{0}\u{e9}\u{202e}"
+            .chars()
+            .collect();
+        let dir =
+            std::env::temp_dir().join(format!("relay settings random {}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..2000 {
+            let mut text = String::new();
+            for _ in 0..next() % 12 {
+                text.push_str(keys[next() % keys.len()]);
+                if next() % 4 != 0 {
+                    text.push('=');
+                }
+                for _ in 0..next() % 20 {
+                    text.push(alphabet[next() % alphabet.len()]);
+                }
+                text.push('\n');
+            }
+            std::fs::write(&path, &text).unwrap();
+            Settings::load(&path).save(&path).unwrap();
+            let once = Settings::load(&path);
+            once.save(&path).unwrap();
+            let twice = Settings::load(&path);
+            assert_eq!(format!("{once:?}"), format!("{twice:?}"), "{text:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn defaults_are_private_by_default() {
         let s = Settings::default();
         assert!(!s.universal_clipboard, "clipboard sync must be opt-in");

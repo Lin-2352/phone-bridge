@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.8 (all parts) and M1.13 part 1
-- **Next task:** the rest of M1.13 (see its line), then M1.R (milestone review), then the M2 plan ([plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Tasks 13 and 14)
+- **Last finished task:** M1.13
+- **Next task:** M1.R (milestone review: CI green, one reviewer over the M1 diff against the M1 plan's Review Focus, fixes test-first), then write the M2 plan
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -70,7 +70,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.10 Android 17 audio hardening (A8): restore volume only under a foreground service, otherwise defer
 - [x] M1.11 Local network permission (A9): declare it; a helper for target 37
 - [x] M1.12 Release hygiene (S6): `test-hooks` feature and an exe scan in CI; `relay-cli.exe` out of the zip; the release APK fails without its key
-- [~] M1.13 Fuzz crate (`fuzz/`, pinned nightly) with targets for every existing parser; smoke run in CI — done: crate, CI job, 6 targets (control frames, input datagrams, pairing, discovery packets, file names, notification text). Left: video records, camera frames-file header, audio datagrams, `peers.txt`, and pb-tray's `ipc::decode`, clipboard DIB and settings parsers (these live in the binary crate: move them into a library first)
+- [x] M1.13 Fuzzing: `fuzz/` (nightly-2026-11-01, cargo-fuzz 0.13.2) with 10 targets (control frames, input datagrams, pairing, discovery packets, file names, notification text, video config, audio packets, camera frames file, peers.txt) and the fuzz-smoke CI job; the PC binary's settings and pipe parsers get randomized in-crate tests instead (cargo-fuzz can't link a binary); no DIB target (Windows decodes clipboard images, not our code)
 - [ ] M1.R Milestone review and CI green
 
 ## M2 Review sweep (every remaining finding)
