@@ -44,6 +44,8 @@ mod control;
 mod core;
 #[cfg(windows)]
 mod d2d;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod devices;
 #[cfg(windows)]
 mod dialog_window;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -348,8 +350,18 @@ fn main() {
     let ipc_tx = cmd_tx.clone();
     let peers: core::Peers = Arc::new(Mutex::new(Vec::new()));
     let settings_path = opts.dir.join("settings.txt");
-    let settings: core::SharedSettings =
-        Arc::new(Mutex::new(settings::Settings::load(&settings_path)));
+    // Relay ran here before if it already has an identity or pairings: older settings files
+    // (no version) are migrated once, so a new default can't move an existing install's folders.
+    let migrate_cx = settings::MigrateCtx {
+        existing_install: opts.dir.join("peers.txt").exists()
+            || opts.dir.join("identity.sealed").exists(),
+        home: std::env::var_os("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir),
+    };
+    let settings: core::SharedSettings = Arc::new(Mutex::new(
+        settings::Settings::load_and_migrate(&settings_path, &migrate_cx),
+    ));
     fluent::set_theme(settings.lock().map(|s| s.theme).unwrap_or(0));
     {
         let (want, keep) = settings

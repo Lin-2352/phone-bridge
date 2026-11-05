@@ -73,6 +73,10 @@ pub struct Settings {
     pub main_window_rect: Option<(i32, i32, i32, i32)>,
     /// The Timeline days the user opened or closed ("day:1,day:0").
     pub timeline_days: String,
+    /// The settings file's format version (`version=` on its first line).
+    pub version: u32,
+    /// Keys this build doesn't know (from a newer or older build), written back unchanged.
+    pub extra: Vec<(String, String)>,
 }
 
 impl Default for Settings {
@@ -113,8 +117,52 @@ impl Default for Settings {
             log_dir: PathBuf::new(),
             main_window_rect: None,
             timeline_days: String::new(),
+            version: SETTINGS_VERSION,
+            extra: Vec::new(),
         }
     }
+}
+
+/// The settings file's format version. 1 introduced `version=` and pinned the save folder of
+/// installs that existed before the default changed.
+pub const SETTINGS_VERSION: u32 = 1;
+
+/// The folder name received files went to before "Relay" names (installs keep it).
+const LEGACY_SAVE_FOLDER: &str = "Phone Bridge";
+
+/// What a migration needs to know about the install.
+pub struct MigrateCtx {
+    /// `peers.txt` or `identity.sealed` exists: Relay ran here before.
+    pub existing_install: bool,
+    /// The user's profile folder (where `Downloads` lives).
+    pub home: PathBuf,
+}
+
+/// Brings the file's `key=value` pairs from version `from` to [SETTINGS_VERSION], one step at a
+/// time. A file from a newer build is returned as it is.
+pub fn migrate(
+    from: u32,
+    mut pairs: Vec<(String, String)>,
+    cx: &MigrateCtx,
+) -> (u32, Vec<(String, String)>) {
+    let mut v = from;
+    while v < SETTINGS_VERSION {
+        if v == 0 && cx.existing_install && !pairs.iter().any(|(k, _)| k == "save_dir") {
+            // Before 1 the default folder was never written: pin it, so a new default for new installs can't move it.
+            let old = cx.home.join("Downloads").join(LEGACY_SAVE_FOLDER);
+            pairs.push(("save_dir".into(), old.display().to_string()));
+        }
+        v += 1;
+    }
+    (v.max(from), pairs)
+}
+
+/// `key=value` lines in order, repeats kept (`notify_app` repeats); lines without `=` are skipped.
+fn parse_pairs(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        .collect()
 }
 
 /// Logs live with the rest of the data, unless the user picks a folder.
@@ -134,18 +182,48 @@ fn parse_bool(v: &str) -> Option<bool> {
 }
 
 impl Settings {
-    pub fn load(path: &Path) -> Self {
-        let mut s = Self::default();
+    /// Reads the file, migrates it and saves it back if a migration changed it, so each step
+    /// runs once. A missing file gives the defaults and is not created.
+    pub fn load_and_migrate(path: &Path, cx: &MigrateCtx) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
-            s.log_dir = default_log_dir(path);
-            return s;
+            return Self::load(path);
         };
-        for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else {
-                continue;
-            };
-            let (k, v) = (k.trim(), v.trim());
+        let pairs = parse_pairs(&text);
+        let from = pairs
+            .iter()
+            .find(|(k, _)| k == "version")
+            .and_then(|(_, v)| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let (to, migrated) = migrate(from, pairs.clone(), cx);
+        if to == from {
+            return Self::from_pairs(&pairs, path);
+        }
+        let mut s = Self::from_pairs(&migrated, path);
+        s.version = to;
+        let _ = s.save(path);
+        s
+    }
+
+    pub fn load(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::from_pairs(&parse_pairs(&text), path),
+            Err(_) => Self {
+                log_dir: default_log_dir(path),
+                ..Self::default()
+            },
+        }
+    }
+
+    fn from_pairs(pairs: &[(String, String)], path: &Path) -> Self {
+        let mut s = Self::default();
+        // A file without a version is from before versions: not migrated yet until load_and_migrate says so.
+        if !pairs.iter().any(|(k, _)| k == "version") {
+            s.version = 0;
+        }
+        for (k, v) in pairs {
+            let (k, v) = (k.as_str(), v.as_str());
             match k {
+                "version" => s.version = v.parse().unwrap_or(s.version),
                 "universal_clipboard" => {
                     s.universal_clipboard = parse_bool(v).unwrap_or(s.universal_clipboard)
                 }
@@ -168,7 +246,11 @@ impl Settings {
                 "allow_shortcut_files" => {
                     s.allow_shortcut_files = parse_bool(v).unwrap_or(s.allow_shortcut_files)
                 }
-                "save_dir" if !v.is_empty() => s.save_dir = PathBuf::from(v),
+                "save_dir" => {
+                    if !v.is_empty() {
+                        s.save_dir = PathBuf::from(v)
+                    }
+                }
                 "notify_enabled" => s.notify_enabled = parse_bool(v).unwrap_or(s.notify_enabled),
                 "notify_content" => {
                     s.notify_content = v
@@ -206,7 +288,11 @@ impl Settings {
                 }
                 "paused" => s.paused = parse_bool(v).unwrap_or(s.paused),
                 "timeline_days" => s.timeline_days = v.chars().take(4096).collect(),
-                "log_dir" if !v.is_empty() => s.log_dir = PathBuf::from(v),
+                "log_dir" => {
+                    if !v.is_empty() {
+                        s.log_dir = PathBuf::from(v)
+                    }
+                }
                 "main_window_rect" => {
                     let n: Vec<i32> = v.split(',').filter_map(|f| f.trim().parse().ok()).collect();
                     if let [x, y, w, h] = n[..] {
@@ -221,7 +307,7 @@ impl Settings {
                         }
                     }
                 }
-                _ => {}
+                _ => s.extra.push((k.to_owned(), v.to_owned())),
             }
         }
         if s.log_dir.as_os_str().is_empty() {
@@ -231,7 +317,8 @@ impl Settings {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        let mut text = format!(
+        let mut text = format!("version={}\n", self.version);
+        text += &format!(
             "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
@@ -288,6 +375,9 @@ impl Settings {
                 clean(name)
             );
         }
+        for (k, v) in &self.extra {
+            text += &format!("{}={}\n", clean(k), clean(v));
+        }
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, text)?;
         std::fs::rename(tmp, path)
@@ -297,6 +387,118 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mig_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("relay-mig-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn cx(existing_install: bool) -> MigrateCtx {
+        MigrateCtx {
+            existing_install,
+            home: PathBuf::from("/home/u"),
+        }
+    }
+
+    fn phone_bridge_dir() -> PathBuf {
+        PathBuf::from("/home/u")
+            .join("Downloads")
+            .join("Phone Bridge")
+    }
+
+    #[test]
+    fn old_install_without_save_dir_keeps_phone_bridge() {
+        let d = mig_dir("old");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "theme=dark\n").unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(s.save_dir, phone_bridge_dir());
+        assert_eq!(s.version, SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn old_install_with_save_dir_is_unchanged() {
+        let d = mig_dir("pinned");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "save_dir=D:\\Inbox\n").unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(s.save_dir, PathBuf::from("D:\\Inbox"));
+    }
+
+    #[test]
+    fn new_install_has_no_pin() {
+        let d = mig_dir("new");
+        let f = d.join("settings.txt");
+        // No file at all, and a file on a install that has no identity yet.
+        let none = Settings::load_and_migrate(&f, &cx(false));
+        assert_ne!(none.save_dir, phone_bridge_dir());
+        assert!(!f.exists(), "loading alone does not create the file");
+        std::fs::write(&f, "theme=dark\n").unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(false));
+        assert_ne!(s.save_dir, phone_bridge_dir());
+    }
+
+    #[test]
+    fn current_version_is_unchanged() {
+        let d = mig_dir("cur");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "version=1\ntheme=dark\n").unwrap();
+        let before = std::fs::read_to_string(&f).unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(true));
+        assert_ne!(
+            s.save_dir,
+            phone_bridge_dir(),
+            "no pin once at the current version"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            before,
+            "nothing rewritten"
+        );
+    }
+
+    #[test]
+    fn newer_file_is_left_alone() {
+        let d = mig_dir("newer");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "version=9\nfuture_key=1\n").unwrap();
+        let before = std::fs::read_to_string(&f).unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(s.version, 9);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), before);
+        // A later save keeps the newer version and its keys.
+        s.save(&f).unwrap();
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert!(after.starts_with("version=9\n"), "{after}");
+        assert!(after.contains("future_key=1"), "{after}");
+    }
+
+    #[test]
+    fn migration_is_saved_so_it_runs_once() {
+        let d = mig_dir("once");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "theme=dark\n").unwrap();
+        let first = Settings::load_and_migrate(&f, &cx(true));
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.starts_with("version=1\n"), "{text}");
+        assert!(text.contains(LEGACY_SAVE_FOLDER), "{text}");
+        // Later, with the default folder changed for new installs, this install keeps its pin.
+        let second = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(first.save_dir, second.save_dir);
+    }
+
+    #[test]
+    fn unknown_keys_survive_a_save() {
+        let d = mig_dir("extra");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "version=1\nfuture_key=abc\ntheme=light\n").unwrap();
+        let s = Settings::load(&f);
+        s.save(&f).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("future_key=abc"), "{text}");
+    }
 
     #[test]
     fn settings_load_survives_random_files() {
@@ -309,7 +511,8 @@ mod tests {
             "theme",
             "save_dir",
             "notify_content",
-            "notify_apps",
+            "notify_app",
+            "version",
             "main_window_rect",
             "timeline_days",
             "log_dir",
@@ -435,6 +638,8 @@ mod tests {
             log_dir: PathBuf::from(r"E:\Logs"),
             main_window_rect: Some((-1200, 40, 1000, 700)),
             timeline_days: "20000:1,19999:0".into(),
+            version: SETTINGS_VERSION,
+            extra: vec![("future_key".into(), "7".into())],
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);

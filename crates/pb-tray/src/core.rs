@@ -607,6 +607,9 @@ pub async fn run(
     }
     // Toast images of a previous run are dropped here.
     let images = Arc::new(ToastImages::new(opts.dir.join("toast-images")));
+    // What this PC remembers per paired device (their Relay version, for now).
+    let devices_path = opts.dir.join("devices.txt");
+    let devices = Arc::new(Mutex::new(crate::devices::DeviceStore::load(&devices_path)));
     let identity = pb_identity::vault::open_identity(&opts.dir, &pb_platform_win_wrapper())?;
     let store: SharedStore = Arc::new(Mutex::new(FilePeerStore::open(opts.dir.join("peers.txt"))?));
     // A taken port (another app, or a Windows excluded range) falls back to one the system picks.
@@ -781,6 +784,11 @@ pub async fn run(
                         Ok(_) => {
                             refresh_changed(&node);
                             log.line(&format!("UNPAIRED {id}"));
+                            if let Ok(mut d) = devices.lock() {
+                                if d.forget(&id.to_string()) {
+                                    let _ = d.save(&devices_path);
+                                }
+                            }
                             refresh(&node, &peers);
                             // Its toasts go with it.
                             ui(UiEvent::NotifySync { peer: id, keys: Vec::new() });
@@ -1165,6 +1173,14 @@ pub async fn run(
                     s.closer().close(b"paused");
                     log.line("SESSION refused: Relay is paused");
                     continue;
+                }
+                // Their Relay version, remembered per device (empty from Relay 0.2.0: nothing stored).
+                if !s.remote_hello.app_version.is_empty() {
+                    if let Ok(mut d) = devices.lock() {
+                        if d.set(&s.peer.to_string(), "app_version", &s.remote_hello.app_version) {
+                            let _ = d.save(&devices_path);
+                        }
+                    }
                 }
                 tokio::spawn(pump(s, node.clone(), log.clone(), ui.clone(), settings.clone(), clip.clone(), images.clone()));
             }
