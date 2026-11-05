@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.15 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.16 (stopping audio capture never waits under the lock)
+- **Last finished task:** M2.16 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.17 (alarms and ringtones are never silenced)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -89,7 +89,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.13 B10: audio focus and `AUDIO_BECOMING_NOISY` in `AudioPlayer`
 - [x] M2.14 B11: rank pairing addresses (real LAN first)
 - [x] M2.15 B12: ephemeral QUIC port fallback; status when the discovery port is taken
-- [ ] M2.16 B13: `teardownCapture` lock/join race
+- [x] M2.16 B13: `teardownCapture` lock/join race
 - [ ] M2.17 B14: lift the speaker silencer while an alarm, ringtone or emergency sound plays
 - [ ] M2.18 QoL: "Keep Control on between sessions" (opt-in)
 - [ ] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS

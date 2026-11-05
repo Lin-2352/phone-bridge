@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.audio.AudioReason
 import dev.phonebridge.app.audio.AudioSessions
+import dev.phonebridge.app.audio.CaptureLifecycle
 import dev.phonebridge.app.audio.VolumeJobs
 import dev.phonebridge.app.audio.AudioSource
 import dev.phonebridge.app.audio.EndCause
@@ -82,6 +83,10 @@ object AudioShare {
     /** Debug builds only, set over adb: send a test tone instead of asking and capturing. */
     @Volatile var debugTone = false
     private var captureSource: AudioSource? = null
+    /** The running capture's end, decided once (see [CaptureLifecycle]). */
+    private var lifecycle: CaptureLifecycle? = null
+    /** A capture's own end is acted on here, never on the capture thread (which a stop may be joining). */
+    private val ends = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pb-audio-end") }
 
     /** Set when our own source ended; read when the node reports the end. */
     @Volatile private var endOverride: EndCause? = null
@@ -135,12 +140,13 @@ object AudioShare {
                 Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
             }
         }
+        val lc = CaptureLifecycle().also { lifecycle = it }
         val s: AudioCapture = if (helper) {
-            HelperCapture(app, a.sampleRate, a.channels, onEnded = { reason -> sourceEnded(reason) }, onFrame = deliver)
+            HelperCapture(app, a.sampleRate, a.channels, onEnded = { reason -> sourceEnded(lc, reason) }, onFrame = deliver)
         } else {
             AudioStreamer(
                 app, a.source, projection, a.sampleRate, a.channels,
-                onEnded = { reason -> sourceEnded(reason) },
+                onEnded = { reason -> sourceEnded(lc, reason) },
                 onLevel = { silent ->
                     if (PhoneSpeaker.onFrame(app, silent)) {
                         notice(app, "This phone can't stay silent while sharing", "Muting it also silences what Relay captures, so the speaker stays on.")
@@ -260,11 +266,20 @@ object AudioShare {
         }
     }
 
-    /** The capture ended by itself (app blocks capture, projection closed, read error). Worker thread. */
-    private fun sourceEnded(reason: AudioReason?) {
-        endOverride = if (reason == AudioReason.APP_BLOCKS_CAPTURE) EndCause.APP_BLOCKS_CAPTURE else EndCause.SOURCE_ENDED
+    /**
+     * The capture ended by itself (app blocks capture, projection closed, read error). Worker thread:
+     * it must not wait for this object's lock, which a stop holds while it joins the worker.
+     */
+    private fun sourceEnded(lc: CaptureLifecycle, reason: AudioReason?) {
+        if (!lc.onSourceEnded()) return // a stop is already tearing this capture down
         Log.i(TAG, "AUDIO capture ended by itself: $reason")
-        stop(AudioDirection.PHONE_TO_PC)
+        ends.execute {
+            synchronized(this) {
+                if (lifecycle !== lc) return@execute // that capture is gone; never stop the next one
+                endOverride = if (reason == AudioReason.APP_BLOCKS_CAPTURE) EndCause.APP_BLOCKS_CAPTURE else EndCause.SOURCE_ENDED
+                stop(AudioDirection.PHONE_TO_PC)
+            }
+        }
     }
 
     @Synchronized
@@ -368,6 +383,8 @@ object AudioShare {
     }
 
     private fun teardownCapture() {
+        lifecycle?.beginTeardown()
+        lifecycle = null
         val src = captureSource
         tone?.interrupt()
         tone = null
