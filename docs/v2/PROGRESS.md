@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.4 + M0.8
-- **Next task:** M0.6 + M0.7 (plan Task 6: CI jobs)
+- **Last finished task:** M0.6 + M0.7 (CI run in progress; M0.R waits for it)
+- **Next task:** M0.R (CI green + review), then M1.1 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 1)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -51,8 +51,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M0.3 Try the Android SDK here (Android checks fall back to CI if it can't be installed)
 - [x] M0.4 `scripts/android-build.sh`, a bash twin of `android-build.ps1`
 - [x] M0.5 CI: pin every action by commit SHA (`checkout`, `rust-toolchain`, `setup-java`, `cargo-deny-action`, `setup-oras`)
-- [ ] M0.6 CI: Android unit tests, lint and the `qa` (R8) build
-- [ ] M0.7 CI: APK artifacts (arm64-v8a, armeabi-v7a, x86_64) and the portable zip artifact
+- [x] M0.6 CI: Android unit tests, lint and the `qa` (R8) build
+- [x] M0.7 CI: APK artifacts (arm64-v8a, armeabi-v7a, x86_64) and the portable zip artifact
 - [x] M0.8 `armeabi-v7a` ABI in Gradle and the build script; `armv7-linux-androideabi` in `deny.toml`
 - [x] M0.9 Fix the `files.rs:462` 32-bit truncation (a remaining size that's a multiple of 4 GiB fails the send), with a test
 - [ ] M0.R Milestone review and CI green
