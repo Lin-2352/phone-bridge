@@ -105,13 +105,20 @@ object ClipImages {
 
     private fun toPng(bytes: ByteArray): ByteArray? {
         if (isPngBytes(bytes)) return bytes
+        // Size first: a 40 MB photo can be over 100 megapixels, far more memory than a decode may take.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds) }
+        val opts = BitmapFactory.Options().apply { inSampleSize = decodeSampleSize(bounds.outWidth, bounds.outHeight) }
         val bmp = try {
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
         } catch (t: Throwable) {
             null
         } ?: return null
         return try {
             ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        } catch (t: Throwable) {
+            Log.e(TAG, "CLIPIMG convert failed: $t")
+            null
         } finally {
             bmp.recycle()
         }
@@ -131,4 +138,15 @@ fun java.io.InputStream.readCapped(limit: Long): ByteArray? {
         out.write(buf, 0, n)
     }
     return out.toByteArray()
+}
+
+/** Pixels a picture may decode to before it is sent: 16 MP, 64 MB in memory. */
+const val MAX_DECODE_PIXELS = 16L * 1024 * 1024
+
+/** The smallest power-of-two downsampling that keeps a [w] x [h] picture within [maxPixels]. */
+fun decodeSampleSize(w: Int, h: Int, maxPixels: Long = MAX_DECODE_PIXELS): Int {
+    if (w <= 0 || h <= 0) return 1
+    var s = 1
+    while ((w / s).toLong() * (h / s) > maxPixels) s *= 2
+    return s
 }
