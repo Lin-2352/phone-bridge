@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M3.4 (plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md))
-- **Next task:** M3.5 (Android settings versioned, stepwise migrations)
+- **Last finished task:** M3.5 (plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md))
+- **Next task:** M3.6 (new installs use Relay folder names)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -101,7 +101,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M3.2 Capabilities defined for every M7–M9 feature
 - [x] M3.3 Peer IDs in every event and allow-list (drop the name→ID mapping)
 - [x] M3.4 PC settings versioning and a per-device key=value file, with migrations
-- [ ] M3.5 Android prefs versioning with stepwise migrations
+- [x] M3.5 Android prefs versioning with stepwise migrations
 - [ ] M3.6 "Relay" folder names for new installs (existing paths kept)
 - [ ] M3.7 B5: Keystore-reset recovery ("Reset and pair again")
 - [ ] M3.8 Transport test: a 0.2.0-style peer and the new build still talk

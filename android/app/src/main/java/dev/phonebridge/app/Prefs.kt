@@ -9,6 +9,42 @@ private const val NL = "\n"
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
+    init {
+        migrateOnce()
+    }
+
+    /** Once per process, before anything reads a setting: older stored settings are brought to [PREFS_VERSION]. */
+    private fun migrateOnce() {
+        if (migrated) return
+        synchronized(Prefs::class.java) {
+            if (migrated) return
+            val before = sp.all
+            val from = prefsVersion(before)
+            val (to, after) = migratePrefs(from, before)
+            val edit = prefsDiff(before, after + (PREFS_VERSION_KEY to to))
+            if (edit.put.isNotEmpty() || edit.remove.isNotEmpty()) {
+                val e = sp.edit()
+                edit.remove.forEach { e.remove(it) }
+                for ((k, v) in edit.put) {
+                    when (v) {
+                        is Boolean -> e.putBoolean(k, v)
+                        is Int -> e.putInt(k, v)
+                        is Long -> e.putLong(k, v)
+                        is Float -> e.putFloat(k, v)
+                        is String -> e.putString(k, v)
+                        is Set<*> -> e.putStringSet(k, v.filterIsInstance<String>().toSet())
+                    }
+                }
+                e.commit() // all of it at once, with the version
+            }
+            migrated = true
+        }
+    }
+
+    private companion object {
+        @Volatile var migrated = false
+    }
+
     /** Keep the day-by-day log (metadata only). On by default. */
     var keepLogs: Boolean
         get() = sp.getBoolean("keep_logs", true)
@@ -48,11 +84,6 @@ class Prefs(context: Context) {
     var lastClipMac: String?
         get() = sp.getString("last_clip_mac", null)
         set(v) = sp.edit().putString("last_clip_mac", v).apply()
-
-    /** Removes the old unkeyed `String.hashCode()` fingerprint, which gave short codes away. */
-    fun dropLegacyClip() {
-        if (sp.contains("last_clip")) sp.edit().remove("last_clip").apply()
-    }
 
     /**
      * PCs (by peer id) whose control requests start without asking. "Always allow" in the question adds
@@ -249,10 +280,7 @@ class Prefs(context: Context) {
      * is dropped, not turned into "every PC": nobody is allowed by it.
      */
     var allowedCameraPcs: Set<String>
-        get() {
-            if (sp.contains("allow_camera")) sp.edit().remove("allow_camera").apply()
-            return sp.getStringSet("allow_camera_pcs", emptySet()).orEmpty().toSet()
-        }
+        get() = sp.getStringSet("allow_camera_pcs", emptySet()).orEmpty().toSet()
         set(v) = sp.edit().putStringSet("allow_camera_pcs", v).apply()
 
     /** Keep screen capture ready between shares (Android shows its cast icon). */

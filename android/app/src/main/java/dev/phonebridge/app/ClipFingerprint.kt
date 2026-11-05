@@ -89,7 +89,6 @@ object ClipFingerprints {
     fun unchanged(ctx: Context, text: String): Boolean {
         key()
         val prefs = Prefs(ctx)
-        prefs.dropLegacyClip()
         return clipUnchanged(text, if (stored) prefs.lastClipMac else inMemory, mac)
     }
 
