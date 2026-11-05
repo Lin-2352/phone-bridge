@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.2
-- **Next task:** M0.3 (plan: [plans/2026-11-05-m0-baseline.md](plans/2026-11-05-m0-baseline.md), Task 2)
+- **Last finished task:** M0.3
+- **Next task:** M0.5 (plan: [plans/2026-11-05-m0-baseline.md](plans/2026-11-05-m0-baseline.md), Task 3)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -33,7 +33,13 @@ The single place that says what is done, what is in progress and what is left in
   - skip or disable a test to get a green build;
   - put model names, e-mail addresses or session links in repository files.
 - **This container:**
-  - No Android SDK unless M0.3 installed it, and no KVM, so no emulator.
+  - **Android checks here** (M0.3, about 5 minutes per fresh container):
+    1. Install the Linux command-line tools from `dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip` into `~/android-sdk/cmdline-tools/latest`.
+    2. Accept the licences, then run `sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"`.
+    3. Maven Central answers this proxy with HTTP 429, so add a Gradle init script `~/.gradle/init.d/central-mirror.init.gradle.kts` that swaps `repo.maven.apache.org` for `https://maven-central.storage-download.googleapis.com/maven2/`. It's container-only and never committed.
+    4. `cargo build -p pb-ffi`, then generate the Kotlin bindings from `target/debug/libpb_ffi.so`.
+    5. In `android/`: `ANDROID_HOME=~/android-sdk bash gradlew :app:testDebugUnitTest :app:lintRelease --no-daemon`.
+  - No KVM, so no emulator; the NDK isn't installed here, so APKs come from CI.
   - CI has windows-latest and ubuntu-latest.
   - Device-only checks go into `docs/DEVICE-TEST-CHECKLIST.md` (M11.5), which Claude on the owner's desktop runs later.
 
@@ -42,7 +48,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 ## M0 Baseline (no change in behaviour)
 - [x] M0.1 Branch `cloud/v2-upgrade` from `main`; cherry-pick the review doc; commit the spec and this list (in `docs/v2/`, because `.gitignore` excludes `docs/superpowers/`)
 - [x] M0.2 Rust 1.99.1 here, matching CI
-- [ ] M0.3 Try the Android SDK here (Android checks fall back to CI if it can't be installed)
+- [x] M0.3 Try the Android SDK here (Android checks fall back to CI if it can't be installed)
 - [ ] M0.4 `scripts/android-build.sh`, a bash twin of `android-build.ps1`
 - [ ] M0.5 CI: pin every action by commit SHA (`checkout`, `rust-toolchain`, `setup-java`, `cargo-deny-action`, `setup-oras`)
 - [ ] M0.6 CI: Android unit tests, lint and the `qa` (R8) build
