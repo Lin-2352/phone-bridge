@@ -9,6 +9,7 @@ import android.media.audiofx.AudioEffect
 import android.media.audiofx.DynamicsProcessing
 import android.util.Log
 import androidx.core.content.ContextCompat
+import dev.phonebridge.app.audio.mustLiftSilencer
 import dev.phonebridge.app.audio.shareStartIndex
 import dev.phonebridge.app.audio.stepForIndex
 import dev.phonebridge.app.audio.stepsBack
@@ -31,8 +32,23 @@ private const val SETTLE_MS = 100L
  * can come back at the share's level until the service restarts. Nothing can prevent that gap.
  */
 object SpeakerSilencer {
-    private var effect: DynamicsProcessing? = null
+    @Volatile private var effect: DynamicsProcessing? = null
     private var listening = false
+    @Volatile private var lifted = false
+
+    /** An alarm, ringtone or emergency alert plays: let it through, then silence again (gain only,
+     *  so the effect stays enabled and nothing reads as "taken over by another app"). */
+    private val playback = object : AudioManager.AudioPlaybackCallback() {
+        override fun onPlaybackConfigChanged(configs: MutableList<android.media.AudioPlaybackConfiguration>) {
+            // Main thread: no lock here (start() holds it through a settle), just the current effect.
+            val lift = mustLiftSilencer(configs.map { it.audioAttributes.usage })
+            val fx = effect ?: return
+            if (lift == lifted) return
+            lifted = lift
+            runCatching { fx.setInputGainAllChannelsTo(if (lift) 0f else SILENCE_DB) }
+            Log.i(TAG, "AUDIO silencer ${if (lift) "lifted for an alarm or ringtone" else "back on"}")
+        }
+    }
 
     private val volume = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) = followVolume(c)
@@ -74,8 +90,10 @@ object SpeakerSilencer {
             return false
         }
         effect = fx
+        lifted = false
         val app = ctx.applicationContext
         val am = app.getSystemService(AudioManager::class.java)
+        am.registerAudioPlaybackCallback(playback, null)
         val p = Prefs(app)
         val own = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         // Saved before anything moves: a crash from here on still gets it back.
@@ -108,6 +126,7 @@ object SpeakerSilencer {
             Log.i(TAG, "AUDIO phone's own volume back to $saved, reads ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}")
         }
         effect?.let { fx ->
+            runCatching { app.getSystemService(AudioManager::class.java).unregisterAudioPlaybackCallback(playback) }
             Thread.sleep(SETTLE_MS)
             runCatching {
                 fx.enabled = false
