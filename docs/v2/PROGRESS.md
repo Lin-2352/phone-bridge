@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.13 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.14 (pairing puts the real LAN address first)
+- **Last finished task:** M2.14 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.15 (taken ports do not stop Relay, and the status says so)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -87,7 +87,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.11 B8: downsampled bitmap decode in `ClipImages.toPng`
 - [x] M2.12 B9: keep only what Relay uses from each notification
 - [x] M2.13 B10: audio focus and `AUDIO_BECOMING_NOISY` in `AudioPlayer`
-- [ ] M2.14 B11: rank pairing addresses (real LAN first)
+- [x] M2.14 B11: rank pairing addresses (real LAN first)
 - [ ] M2.15 B12: ephemeral QUIC port fallback; status when the discovery port is taken
 - [ ] M2.16 B13: `teardownCapture` lock/join race
 - [ ] M2.17 B14: lift the speaker silencer while an alarm, ringtone or emergency sound plays

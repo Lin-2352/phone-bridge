@@ -5,6 +5,7 @@
 //! so nothing leaves the local network unless a relay is configured later.
 //! GSO is disabled on Android (see docs/DECISIONS.md, finding 1).
 
+pub mod addr_rank;
 pub mod audio;
 pub mod camera;
 pub mod discovery;
@@ -363,11 +364,12 @@ impl Node {
     }
 
     /// Direct addresses other devices can dial (`ip:port`).
+    /// Best first (the real LAN before virtual adapters): pairing keeps only the first few.
     pub fn addrs(&self) -> Vec<String> {
-        self.inner
-            .endpoint
-            .addr()
-            .ip_addrs()
+        let addrs: Vec<std::net::SocketAddr> =
+            self.inner.endpoint.addr().ip_addrs().copied().collect();
+        addr_rank::rank_addrs(addrs, &addr_rank::local_ifaces())
+            .into_iter()
             .map(|a| a.to_string())
             .collect()
     }
