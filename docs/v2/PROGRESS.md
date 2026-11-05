@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.1
-- **Next task:** M0.2. The M0 plan is not written yet, so write it first with superpowers:writing-plans, save it to `docs/v2/plans/`, then run it.
+- **Last finished task:** M0.2
+- **Next task:** M0.3 (plan: [plans/2026-11-05-m0-baseline.md](plans/2026-11-05-m0-baseline.md), Task 2)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -41,7 +41,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## M0 Baseline (no change in behaviour)
 - [x] M0.1 Branch `cloud/v2-upgrade` from `main`; cherry-pick the review doc; commit the spec and this list (in `docs/v2/`, because `.gitignore` excludes `docs/superpowers/`)
-- [ ] M0.2 Rust 1.99.1 here, matching CI
+- [x] M0.2 Rust 1.99.1 here, matching CI
 - [ ] M0.3 Try the Android SDK here (Android checks fall back to CI if it can't be installed)
 - [ ] M0.4 `scripts/android-build.sh`, a bash twin of `android-build.ps1`
 - [ ] M0.5 CI: pin every action by commit SHA (`checkout`, `rust-toolchain`, `setup-java`, `cargo-deny-action`, `setup-oras`)
