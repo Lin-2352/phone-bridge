@@ -83,7 +83,7 @@ jobs:
           cargo build --release -p pb-tray
       - name: No test-only switches in the release exe
         shell: pwsh
-        run: if (Select-String -Path target/release/pb-tray.exe -Pattern 'test-auto-accept' -SimpleMatch -Quiet) { throw 'pb-tray.exe contains a test-only switch' }
+        run: if (Select-String -Path target/release/pb-tray.exe -Pattern 'test-auto-accept','test-audio-synth' -SimpleMatch -Quiet) { throw 'pb-tray.exe contains a test-only switch' }
       - name: DLL planting check (Relay starts next to fake DLLs)
         shell: pwsh
         timeout-minutes: 2

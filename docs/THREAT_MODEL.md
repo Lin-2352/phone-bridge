@@ -87,3 +87,26 @@ Both of these remove a protection Android normally gives, so both are the user's
 - Android: allowBackup=false did not cover Android 12+ device-to-device transfer; data extraction rules now exclude everything.
 - Tray pipe used the default DACL (other local accounts could connect): now this user (by SID, so an elevated tray still admits the user's unelevated "Send to") + SYSTEM only.
 - Clipboard text no longer written to logs (tray.log, logcat).
+
+## Mitigations added in v2, milestone M1 (2026-11-05)
+
+Branch `cloud/v2-upgrade`; the rows above get their full update in milestone M11.
+
+- **Share target:** nothing leaves the phone before the user confirms on a sheet naming the PC. On the PC, shared text waits for a Copy button unless "Copy shared text automatically" is on.
+- **Consent prompts:**
+  - Consent windows, the pairing-code comparison and the quick panel hide other apps' overlays and drop obscured touches.
+  - The PC's remote input, including taps from its screen window, pauses while any prompt of Relay's is on screen.
+- **Locked phone:**
+  - No "always allow" path accepts on a locked phone: control, Instant screen, camera, audio, and the consent windows themselves.
+  - Remote input pauses while the phone is locked.
+- **Received files:**
+  - Every received file is marked as from the internet (Zone.Identifier, ZoneId=3).
+  - Risky types always ask, and shortcut types are refused by default.
+- **Portable folder:**
+  - `data\` is limited to the user, SYSTEM and Administrators.
+  - The camera install refuses folders other accounts can change, and the camera DLL is embedded in Relay.exe.
+  - DLLs load from System32 only; a CI check starts Relay.exe next to planted DLLs.
+- **Release builds:**
+  - Test-only switches (`--test-auto-accept`, `--test-audio-synth`, `relay-cli --auto-accept`) exist only with the `test-hooks` feature, and CI scans the exe for them.
+  - Release APKs require the release key.
+- **Fuzzing** (row 11, "planned"): ten cargo-fuzz targets for the parsers that read another device's or a stranger's input run on every push (`fuzz/`). The PC binary's settings and pipe parsers get randomized tests.

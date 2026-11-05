@@ -262,6 +262,8 @@ class ControlService : AccessibilityService(), InputListener {
      * wheel scrolls there). Main thread.
      */
     fun touchAt(phase: Int, ax: Int, ay: Int) {
+        // Taps from the PC's screen window: the same pause as onInput (locked phone, Relay's prompts).
+        if (!inputAllowed(lockedNow(), ConsentGuard.active(SystemClock.elapsedRealtime()))) return
         sessionSeen = true
         x = ax / 65535f * (w - 1)
         y = ay / 65535f * (h - 1)
@@ -281,6 +283,7 @@ class ControlService : AccessibilityService(), InputListener {
 
     /** Two fingers pinching out (zoom in) or in, around (x, y). Main thread. */
     fun pinchAt(out: Boolean, ax: Int, ay: Int) {
+        if (!inputAllowed(lockedNow(), ConsentGuard.active(SystemClock.elapsedRealtime()))) return
         val cx = ax / 65535f * (w - 1)
         val cy = ay / 65535f * (h - 1)
         val near = 60f * resources.displayMetrics.density / 2.75f

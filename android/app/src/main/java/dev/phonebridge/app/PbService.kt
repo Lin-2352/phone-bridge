@@ -394,6 +394,8 @@ class PbService : Service() {
                     // Called on a Rust runtime thread: hand off and return at once.
                     override fun onEvent(event: PbEvent) {
                         try {
+                            // Progress clears in order with later transfers; the copy runs on its own thread.
+                            if (event is PbEvent.FileReceived) events.execute { cancelProgress(true) }
                             router.route(event) { e ->
                                 try {
                                     handle(e)
@@ -509,10 +511,7 @@ class PbService : Service() {
                 Log.i(TAG, "CLIPIMG received from ${e.peerName}")
                 Timeline.add(clipImageEntry(e.peerName, TlDir.ToPhone, size, dims))
             }
-            is PbEvent.FileReceived -> {
-                cancelProgress(true)
-                saveReceived(e)
-            }
+            is PbEvent.FileReceived -> saveReceived(e)
             is PbEvent.SharedText -> {
                 if (e.isLink) notifyLink(e.peerName, e.text) else {
                     writeClipboard(e.text, false)

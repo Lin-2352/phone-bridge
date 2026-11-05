@@ -241,7 +241,7 @@ fn main() {
             "--stop-camera" => ui_request = Some(ipc::Request::StopCamera),
             "--audio-phone" => ui_request = Some(ipc::Request::AudioPhone),
             "--audio-pc" => ui_request = Some(ipc::Request::AudioPc),
-            "--test-audio-synth" => {
+            a if is_test_audio_synth(a) => {
                 audio::TEST_SYNTH.store(true, std::sync::atomic::Ordering::Relaxed)
             }
             // Everything after --send is a file (Explorer "Send to" passes paths).
@@ -472,9 +472,29 @@ fn is_test_auto_accept(_: &str) -> bool {
     false
 }
 
+/// `--test-audio-synth` plays test audio and skips the PC's audio question:
+/// `test-hooks` builds only.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(feature = "test-hooks")]
+fn is_test_audio_synth(arg: &str) -> bool {
+    arg == "--test-audio-synth"
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(not(feature = "test-hooks"))]
+fn is_test_audio_synth(_: &str) -> bool {
+    false
+}
+
 #[cfg(all(test, not(feature = "test-hooks")))]
 mod test_hooks_absent {
     /// A release Relay must never confirm a pairing by itself.
+    /// Test audio skips the PC's audio question: never in a release.
+    #[test]
+    fn test_audio_synth_flag_is_ignored_without_test_hooks() {
+        assert!(!super::is_test_audio_synth("--test-audio-synth"));
+    }
+
     #[test]
     fn test_auto_accept_flag_is_ignored_without_test_hooks() {
         assert!(!super::is_test_auto_accept("--test-auto-accept"));

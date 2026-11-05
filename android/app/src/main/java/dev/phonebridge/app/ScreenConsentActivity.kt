@@ -80,7 +80,7 @@ class ScreenConsentActivity : ComponentActivity() {
             decline()
             return
         }
-        if (allowedFor(peerId, Prefs(this).allowedScreenPcs)) {
+        if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedScreenPcs), keyguardLocked())) {
             capturePrompt()
             return
         }

@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.13
-- **Next task:** M1.R (milestone review: CI green, one reviewer over the M1 diff against the M1 plan's Review Focus, fixes test-first), then write the M2 plan
+- **Last finished task:** M1.R (M1 is done)
+- **Next task:** write the M2 plan (Review sweep) with superpowers:writing-plans into `docs/v2/plans/`, then run it from M2.1
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -71,7 +71,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.11 Local network permission (A9): declare it; a helper for target 37
 - [x] M1.12 Release hygiene (S6): `test-hooks` feature and an exe scan in CI; `relay-cli.exe` out of the zip; the release APK fails without its key
 - [x] M1.13 Fuzzing: `fuzz/` (nightly-2026-11-01, cargo-fuzz 0.13.2) with 10 targets (control frames, input datagrams, pairing, discovery packets, file names, notification text, video config, audio packets, camera frames file, peers.txt) and the fuzz-smoke CI job; the PC binary's settings and pipe parsers get randomized in-crate tests instead (cargo-fuzz can't link a binary); no DIB target (Windows decodes clipboard images, not our code)
-- [ ] M1.R Milestone review and CI green
+- [x] M1.R Milestone review and CI green — reviewer found 2 critical (screen-window taps skipped the lock/prompt pause; the screen and audio consent windows still auto-accepted while locked) and 1 important (`--test-audio-synth` in release): all fixed. Deferred minors: the folder check reads neither the folder's owner nor its parent folder's ACL; the DLL planting check covers start-up imports only
 
 ## M2 Review sweep (every remaining finding)
 - [ ] M2.1 S5: audio helper to the debug source set with a no-op release stub; its libraries `debugImplementation`; one-time cleanup (`AdbBridge.forget`)
@@ -208,3 +208,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - Rulings and deviations are listed per task in the plan's ledger style in the commit messages; the most important: the screen lock reason travels in the existing screen notice (no wire change), the redacted-code text is replaced on the phone (no wire change), allow_shortcut_files has no settings row yet (M5 adds it).
 - 2026-11-05 (end of session): M1.8 is down to part c-2. Before going on, check the latest CI run of cloud/v2-upgrade (the Windows jobs run tests that can't run in a Linux container). The ledger for M1 lives in the git-ignored .superpowers/ folder of the old container; everything that matters is in this file and in the commit messages.
 - 2026-11-05 (wrap-up): CI run 41956488616 green on every job, fuzz-smoke included. The DLL planting check passed with /DEPENDENTLOADFLAG:0x800 and SetDefaultDllDirectories alone: Relay.exe started next to 34 garbage DLLs named after the libraries it uses, so no delay-loading was needed (ruling). The check is now required. If Relay ever imports a new non-system DLL, add its name to the check's list in ci.yml. All six fuzz targets also ran here without a crash (0.3–4.9 million runs each).
+- 2026-11-05 (M1 closed): M1.13 has 10 fuzz targets plus randomized tests for the PC's settings and pipe parsers. The M1 review's critical findings are fixed (see M1.R). docs/THREAT_MODEL.md has a short list of what M1 added. Check the latest CI run first: the Windows-only tests (ipc random text, settings pages) run only there.

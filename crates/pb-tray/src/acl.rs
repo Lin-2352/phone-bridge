@@ -102,8 +102,14 @@ pub fn folder_aces(path: &std::path::Path) -> Option<Vec<Ace>> {
                         continue;
                     }
                     let kind = (*(p as *const ACE_HEADER)).AceType;
-                    // 0 allowed, 1 denied; other kinds (object, callback) don't occur on files.
+                    // 0 allowed, 1 denied. Other kinds (callback, object) are not
+                    // read here, so they count as someone else's write access.
                     if kind > 1 {
+                        aces.push(Ace {
+                            sid: "unknown".into(),
+                            allow: true,
+                            mask: 0x1000_0000,
+                        });
                         continue;
                     }
                     let a = &*(p as *const ACCESS_ALLOWED_ACE);

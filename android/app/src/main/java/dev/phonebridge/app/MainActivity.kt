@@ -188,6 +188,14 @@ class MainActivity : ComponentActivity() {
                     ConsentGuard.end("sas")
                 }
             }
+            // The guard lapses after 120 s (a lost prompt must not block input for good); the
+            // comparison can stay open longer, so it renews itself while shown.
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                while (true) {
+                    kotlinx.coroutines.delay(60_000)
+                    ConsentGuard.begin("sas", android.os.SystemClock.elapsedRealtime())
+                }
+            }
             val amber = if (isDark()) AmberDark else Amber
             RelayDialog(
                 // The PC's name is not known until pairing completes, so the heading stays generic.

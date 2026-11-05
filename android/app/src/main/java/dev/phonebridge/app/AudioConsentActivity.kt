@@ -74,7 +74,7 @@ class AudioConsentActivity : ComponentActivity() {
         val prefs = Prefs(this)
         useHelper = chooseCapture(source, prefs.audioSilencePhone, HelperAudio.alive(this)) == CaptureKind.HELPER
         // The helper needs neither Android's prompt nor the recording permission: only Relay's own question remains.
-        val all = consentSteps(source, prefs.audioSkipConfirmPhoneToPc, has || useHelper)
+        val all = consentSteps(source, shouldAutoAccept(prefs.audioSkipConfirmPhoneToPc, keyguardLocked()), has || useHelper)
         steps.addAll(if (useHelper) all.filter { it != ConsentStep.PROJECTION } else all)
         next()
         main.postDelayed({ if (!finished && asking) refuse(AudioReason.DECLINED) }, left)
