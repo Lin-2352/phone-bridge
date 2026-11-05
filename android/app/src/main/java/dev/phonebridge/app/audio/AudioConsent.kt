@@ -54,7 +54,7 @@ class AudioSessions {
 }
 
 /** Why a running session ended, as far as the user is concerned. */
-enum class EndCause { PEER_STOPPED, LOCAL_STOP, LINK_LOST, VIOLATION, WRITE_FAILED, APP_BLOCKS_CAPTURE, SOURCE_ENDED }
+enum class EndCause { PEER_STOPPED, LOCAL_STOP, LINK_LOST, VIOLATION, WRITE_FAILED, SOURCE_ENDED }
 
 /**
  * The cause to act on: what the node [reported] unless our own capture ended first ([override]). A stop the
@@ -71,7 +71,6 @@ fun endNotice(cause: EndCause, direction: AudioDirection): String? {
         EndCause.LINK_LOST -> "$what stopped because the connection to the PC was lost. Check that both are on the same network, then ask again."
         EndCause.VIOLATION -> "$what stopped because the PC sent audio Relay could not accept. Update Relay on both devices, then ask again."
         EndCause.WRITE_FAILED -> "$what stopped because sending to the PC failed. Check the connection, then ask again."
-        EndCause.APP_BLOCKS_CAPTURE -> "$what stopped: the app that is playing sound does not allow capture. Play it in another app, then ask again."
         EndCause.SOURCE_ENDED -> "$what stopped because Android ended the capture (the sharing was closed from the status bar, or the phone ran low on resources). Ask again to restart it."
     }
 }
@@ -101,4 +100,11 @@ fun sessionNoticeText(direction: AudioDirection, source: AudioSource): String = 
     source == AudioSource.MICROPHONE -> "Microphone is being shared"
     direction == AudioDirection.PHONE_TO_PC -> "Phone audio is playing on the PC"
     else -> "PC audio is playing on this phone"
+}
+
+/** The line under [sessionNoticeText]. [noSound]: see [NoSoundHint]. */
+fun sessionDetail(direction: AudioDirection, peer: String, noSound: Boolean): String = when {
+    noSound -> "Nothing to send to $peer right now. Some apps don't allow their sound to be shared."
+    direction == AudioDirection.PHONE_TO_PC -> "Sent to $peer"
+    else -> "From $peer"
 }

@@ -122,10 +122,12 @@ class ShareActivity : Activity() {
                 try {
                     node.sendText(peer.id, text, isLink)
                     Log.i(TAG, "SHARE sent ${if (isLink) "link" else "text"} to ${peer.name}")
+                    Bridge.attemptDone(app, reached = true)
                     AppLog.event("events", "share_sent", "kind" to if (isLink) "link" else "text", "chars" to text.length)
                     Timeline.add(if (isLink) linkEntry(peer.name, text) else clipTextEntry(peer.name, text))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
+                    Bridge.attemptDone(app, reached = false)
                     AppLog.event("events", "share_failed", "kind" to if (text.startsWith("http")) "link" else "text", "type" to t.javaClass.simpleName)
                     notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
                 }
@@ -173,6 +175,7 @@ object OutgoingShare {
         try {
             node.sendFileFd(peerId, f.fd, f.name, f.size.toULong(), f.mime)
             Log.i(TAG, "SHARE sent file ext=${LogFields.extOnly(f.name)} (${f.size} bytes)")
+            Bridge.attemptDone(app, reached = true)
             AppLog.event("events", "share_sent", "kind" to "file", "ext" to LogFields.extOnly(f.name), "bytes" to f.size)
             // No uri: the share grant ends with this send, so it could not be opened later.
             Timeline.add(fileEntry(peerName, TlDir.ToPc, f.name, f.size, null))
@@ -180,6 +183,7 @@ object OutgoingShare {
         } catch (t: Throwable) {
             val cancelled = isCancelled(t.message.orEmpty())
             Log.e(TAG, "SHARE failed: $t")
+            if (!cancelled) Bridge.attemptDone(app, reached = false)
             AppLog.event("events", "share_failed", "kind" to "file", "ext" to LogFields.extOnly(f.name), "type" to t.javaClass.simpleName, "cancelled" to cancelled)
             PbService.cancelOutgoingProgress(app)
             offerRetry(app, peerId, peerName, f, cancelled)

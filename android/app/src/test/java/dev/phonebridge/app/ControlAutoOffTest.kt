@@ -26,4 +26,14 @@ class ControlAutoOffTest {
         // The phone-screen window taps through the same service.
         assertFalse(shouldSwitchOff(sessionSeen = true, controlledBy = null, sharingWith = "DeskTray"))
     }
+
+    @Test
+    fun stays_on_while_a_share_holds_the_volume_keys() {
+        assertFalse(shouldSwitchOff(sessionSeen = true, controlledBy = null, sharingWith = null, holdingVolumeKeys = true))
+    }
+
+    @Test
+    fun a_share_that_held_the_keys_counts_as_a_session_once_it_ends() {
+        assertTrue(shouldSwitchOff(sessionSeen = true, controlledBy = null, sharingWith = null, holdingVolumeKeys = false))
+    }
 }

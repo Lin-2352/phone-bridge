@@ -70,6 +70,7 @@ import dev.phonebridge.app.notifyInfo
 import dev.phonebridge.app.CameraShare
 import dev.phonebridge.app.ClipImages
 import dev.phonebridge.app.ControlService
+import dev.phonebridge.app.controlSettingsIntent
 import dev.phonebridge.app.Group
 import dev.phonebridge.app.LogFields
 import dev.phonebridge.app.NotifyListener
@@ -157,20 +158,21 @@ private fun ControlFromPc() {
     val allow = Bridge.allowControl.value
     val controller = Bridge.controlledBy.value
     if (controller != null) LiveBanner("$controller is controlling this phone") { Bridge.node?.stopControl() }
+    val opener = rememberAccessOpener()
     RelayRow(
         title = "Let my PC control this phone",
         supporting = when {
             serviceStuck -> "Android stopped “$APP_NAME control”. Tap, then turn it off and on again"
             !serviceOn -> "Needs “$APP_NAME control” in Accessibility settings. Tap to turn it on"
-            allow -> "On. Ctrl+Alt+P on your PC uses its mouse and keyboard here, and again to return"
+            allow -> "On, without asking. Ctrl+Alt+P on your PC uses its mouse and keyboard here, and again to return"
             else -> "Off. When your PC asks, this phone asks you first"
         },
         checked = allow,
         onChecked = { on ->
-            Bridge.setAllowControl(ctx, on)
-            if (on && !serviceOn) openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            // Relay control not running: the switch can't be on yet, so this only leads there and grants nothing.
+            if (on && !serviceOn) opener(SpecialAccess.Control) else Bridge.setAllowControl(ctx, on)
         },
-        onClick = if (!serviceOn) ({ openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) else null,
+        onClick = if (!serviceOn) ({ opener(SpecialAccess.Control) }) else null,
     )
 }
 
@@ -185,6 +187,7 @@ private fun AudioToPc() {
     val prefs = remember { Prefs(ctx) }
     var skip by remember { mutableStateOf(prefs.audioSkipConfirmPhoneToPc) }
     var silence by remember { mutableStateOf(prefs.audioSilencePhone) }
+    var silenceEarphones by remember { mutableStateOf(prefs.audioSilenceEarphones) }
     val listener = AudioShare.sharingWith.value
     if (listener != null) LiveBanner("$listener can hear this phone") { AudioShare.stop(AudioDirection.PHONE_TO_PC) }
     val from = AudioShare.playingFrom.value
@@ -238,6 +241,47 @@ private fun AudioToPc() {
             PhoneSpeaker.settingChanged(ctx)
         },
     )
+    if (silence) {
+        var keysEverywhere by remember { mutableStateOf(prefs.audioKeysViaControl) }
+        // Read again when the user comes back from Android's Accessibility page.
+        val back = LocalResumeCount.current
+        val controlOn = remember(back) { ControlService.enabledInSettings(ctx) }
+        RelayRow(
+            title = "Volume keys in every app",
+            supporting = when {
+                !keysEverywhere -> "Off. In YouTube and Instagram the keys move the phone's own bar. Turn on to set the PC's level there too, through $APP_NAME control"
+                controlOn -> "On. $APP_NAME control holds the keys while a share runs, then switches itself off so banking apps work again"
+                else -> "On, but $APP_NAME control is off. Tap here to turn it on before sharing; it switches itself off after the share"
+            },
+            checked = keysEverywhere,
+            onChecked = { v ->
+                keysEverywhere = v
+                prefs.audioKeysViaControl = v
+                if (v && !ControlService.enabledInSettings(ctx)) ctx.startActivity(controlSettingsIntent(ctx))
+            },
+        )
+        if (keysEverywhere && !controlOn) {
+            RelayRow(
+                title = "Open $APP_NAME control settings",
+                supporting = "Android's Accessibility page, at $APP_NAME control",
+                onClick = { ctx.startActivity(controlSettingsIntent(ctx)) },
+            )
+        }
+        RelayRow(
+            title = "Silence earphones too",
+            supporting = if (silenceEarphones) {
+                "On. Earphones, wired or wireless, stay silent as well"
+            } else {
+                "Off. Connected earphones keep playing, and the audio also goes to the PC. The speaker stays silent"
+            },
+            checked = silenceEarphones,
+            onChecked = { v ->
+                silenceEarphones = v
+                prefs.audioSilenceEarphones = v
+                PhoneSpeaker.settingChanged(ctx)
+            },
+        )
+    }
 }
 
 /**
@@ -383,7 +427,8 @@ private fun NotificationsOnPc() {
     val prefs = remember { Prefs(ctx) }
     var on by remember { mutableStateOf(prefs.notifyToPc) }
     val access = remember(resumed) { hasNotifyAccess(ctx) }
-    val openAccess = { openNotifyAccess(ctx) }
+    val opener = rememberAccessOpener()
+    val openAccess = { opener(SpecialAccess.Notifications) }
     RelayRow(
         title = "Notifications on PC",
         supporting = when {

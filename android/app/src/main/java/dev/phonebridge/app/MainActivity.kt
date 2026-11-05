@@ -94,6 +94,9 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         honourUserStop(this)
+        // A stop from the system's active-apps list can land mid-share, and with Relay now off no service
+        // starts to put the volume back. A live share is left alone.
+        if (!AudioShare.sessions.isActive(dev.phonebridge.app.audio.AudioDirection.PHONE_TO_PC)) PhoneSpeaker.restore(this)
         if (prefs.enabled) startForegroundService(Intent(this, PbService::class.java))
         setContent {
             RelayTheme {

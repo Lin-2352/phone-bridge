@@ -6,5 +6,5 @@ package dev.phonebridge.app
  * Never right after the user turned it on (no session yet), and never while
  * the PC still controls the phone or shares its screen.
  */
-fun shouldSwitchOff(sessionSeen: Boolean, controlledBy: String?, sharingWith: String?): Boolean =
-    sessionSeen && controlledBy == null && sharingWith == null
+fun shouldSwitchOff(sessionSeen: Boolean, controlledBy: String?, sharingWith: String?, holdingVolumeKeys: Boolean = false): Boolean =
+    sessionSeen && controlledBy == null && sharingWith == null && !holdingVolumeKeys

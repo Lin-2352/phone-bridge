@@ -13,8 +13,8 @@ class AudioConsentTest {
         assertEquals(EndCause.PEER_STOPPED, resolveEnd(EndCause.PEER_STOPPED, EndCause.SOURCE_ENDED))
         assertEquals(EndCause.PEER_STOPPED, resolveEnd(EndCause.PEER_STOPPED, null))
         assertEquals(null, endNotice(resolveEnd(EndCause.PEER_STOPPED, EndCause.SOURCE_ENDED), AudioDirection.PHONE_TO_PC))
-        // Our own capture ended (app blocks capture): the stop we then sent is not the user's, the reason stays.
-        assertEquals(EndCause.APP_BLOCKS_CAPTURE, resolveEnd(EndCause.LOCAL_STOP, EndCause.APP_BLOCKS_CAPTURE))
+        // Our own capture ended: the stop we then sent is not the user's, the reason stays.
+        assertEquals(EndCause.SOURCE_ENDED, resolveEnd(EndCause.LOCAL_STOP, EndCause.SOURCE_ENDED))
         assertEquals(EndCause.LOCAL_STOP, resolveEnd(EndCause.LOCAL_STOP, null))
         assertEquals(EndCause.LINK_LOST, resolveEnd(EndCause.LINK_LOST, null))
     }
@@ -82,13 +82,12 @@ class AudioConsentTest {
     }
 
     @Test fun failuresTellTheUserWhatHappenedAndWhatToDo() {
-        for (c in listOf(EndCause.LINK_LOST, EndCause.VIOLATION, EndCause.WRITE_FAILED, EndCause.APP_BLOCKS_CAPTURE, EndCause.SOURCE_ENDED)) {
+        for (c in listOf(EndCause.LINK_LOST, EndCause.VIOLATION, EndCause.WRITE_FAILED, EndCause.SOURCE_ENDED)) {
             for (d in AudioDirection.entries) {
                 val t = endNotice(c, d)
                 assertTrue("$c $d", t != null && t.length > 20)
             }
         }
-        assertTrue(endNotice(EndCause.APP_BLOCKS_CAPTURE, AudioDirection.PHONE_TO_PC)!!.contains("another app"))
         assertTrue(endNotice(EndCause.LINK_LOST, AudioDirection.PHONE_TO_PC)!!.contains("ask again"))
     }
 

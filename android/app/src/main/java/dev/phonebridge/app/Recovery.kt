@@ -96,6 +96,26 @@ fun notifyStopped(ctx: Context) {
  * the tile, the app and recovery agree with the user. Package updates also
  * report "user requested" and are ignored. Returns true if it was stopped.
  */
+/** Android's Accessibility list, scrolled to and highlighting Relay control where the phone supports that. */
+fun controlSettingsIntent(ctx: Context): Intent {
+    val service = android.content.ComponentName(ctx, ControlService::class.java).flattenToString()
+    return Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        .putExtra(":settings:fragment_args_key", service)
+        .putExtra(":settings:show_fragment_args", android.os.Bundle().apply { putString(":settings:fragment_args_key", service) })
+}
+
+/** How long to wait before try [attempt] of a failed start is repeated, or null to give up. */
+fun nodeRetryDelayMs(attempt: Int): Long? = when (attempt) {
+    1 -> 1_000L
+    2 -> 2_000L
+    3 -> 4_000L
+    else -> null
+}
+
+/** Why a start failed, for the day log (the core's error text: no user content). */
+fun nodeFailureReason(message: String?): String = message?.take(120) ?: "unknown"
+
 fun honourUserStop(ctx: Context): Boolean {
     if (android.os.Build.VERSION.SDK_INT < 30) return false
     val prefs = Prefs(ctx)
