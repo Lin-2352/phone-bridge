@@ -535,13 +535,30 @@ fn the_quit_warning_counts_the_transfers() {
 }
 
 #[test]
-fn a_version_mismatch_says_to_update_both_devices() {
+fn a_version_mismatch_names_the_device_to_update() {
+    use pb_transport::UpdateSide;
     for dir in [Dir::Send, Dir::Receive] {
-        let f = describe(dir, &Error::VersionMismatch, &ctx(None));
+        let f = describe(
+            dir,
+            &Error::VersionMismatch(UpdateSide::OtherDevice),
+            &ctx(None),
+        );
         assert!(f.title.contains("Pixel"), "{f:?}");
+        assert!(f.hint.contains("Update Relay on Pixel"), "{f:?}");
+        let f = describe(
+            dir,
+            &Error::VersionMismatch(UpdateSide::ThisDevice),
+            &ctx(None),
+        );
+        assert!(f.hint.contains("Update Relay on this PC"), "{f:?}");
+        let f = describe(dir, &Error::VersionMismatch(UpdateSide::Both), &ctx(None));
         assert!(f.hint.contains("Update Relay on both devices"), "{f:?}");
     }
-    let s = session_failure(&Error::VersionMismatch, "Pixel").unwrap();
+    let s = session_failure(&Error::VersionMismatch(UpdateSide::OtherDevice), "Pixel").unwrap();
+    assert!(s.contains("Update Relay on Pixel"), "{s}");
+    let s = session_failure(&Error::VersionMismatch(UpdateSide::ThisDevice), "Pixel").unwrap();
+    assert!(s.contains("Update Relay on this PC"), "{s}");
+    let s = session_failure(&Error::VersionMismatch(UpdateSide::Both), "Pixel").unwrap();
     assert!(s.contains("Update Relay on both devices"), "{s}");
 }
 

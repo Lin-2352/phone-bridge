@@ -50,4 +50,10 @@ class RemoteLinkTest {
         assertFalse(pressAndRelease { s2 += it; false })
         assertEquals(listOf(true), s2)
     }
+
+    @Test
+    fun an_outdated_relay_says_which_device_to_update() {
+        val t = startFailureText("DESK", "reason=the other device runs an older version of Relay: update Relay there")
+        org.junit.Assert.assertEquals("DESK runs an older version of Relay. Update Relay on DESK", t)
+    }
 }

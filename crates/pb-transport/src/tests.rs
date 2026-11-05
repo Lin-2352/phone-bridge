@@ -312,14 +312,15 @@ async fn a_version_mismatch_is_reported_as_one_not_as_a_refused_pairing() {
     let (phone, _pev, _) = node(2, "Phone").await;
     let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
     assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
-    // The phone runs a newer build.
+    // The phone runs a newer build that no longer talks to this PC's version.
     let conn = phone
         .dial(pc.peer_id(), &loopback(&pc), SESSION_ALPN)
         .await
         .unwrap();
     let (mut send, recv) = conn.open_bi().await.unwrap();
     let mut hello = Hello::new("Phone", vec![]);
-    hello.protocol_version += 1;
+    hello.protocol_version += 2;
+    hello.min_compatible = hello.protocol_version;
     write_frame(&mut send, &Control::from(ControlMsg::Hello(hello)))
         .await
         .unwrap();
@@ -335,8 +336,48 @@ async fn a_version_mismatch_is_reported_as_one_not_as_a_refused_pairing() {
     })
     .await
     .unwrap();
-    assert!(matches!(got, Error::VersionMismatch), "{got:?}");
-    assert!(got.to_string().contains("update"), "{got}");
+    // The PC is too old: it closes saying so, and the phone reads "the other device".
+    assert!(
+        matches!(got, Error::VersionMismatch(UpdateSide::OtherDevice)),
+        "{got:?}"
+    );
+    assert!(got.to_string().contains("update Relay there"), "{got}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_newer_peer_that_still_accepts_this_version_gets_a_session() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let conn = phone
+        .dial(pc.peer_id(), &loopback(&pc), SESSION_ALPN)
+        .await
+        .unwrap();
+    let (mut send, _recv) = conn.open_bi().await.unwrap();
+    let mut hello = Hello::new("Phone", vec![]);
+    hello.protocol_version += 1; // newer, but its minimum is still this build's version
+    write_frame(&mut send, &Control::from(ControlMsg::Hello(hello)))
+        .await
+        .unwrap();
+    let s = tokio::time::timeout(Duration::from_secs(5), pc_ev.sessions.recv())
+        .await
+        .expect("the PC accepts the newer peer")
+        .unwrap();
+    assert_eq!(s.remote_hello.protocol_version, 1);
+}
+
+#[test]
+fn version_texts_name_the_device_to_update() {
+    assert!(Error::VersionMismatch(UpdateSide::ThisDevice)
+        .to_string()
+        .contains("update Relay here"));
+    assert!(Error::VersionMismatch(UpdateSide::OtherDevice)
+        .to_string()
+        .contains("update Relay there"));
+    assert!(Error::VersionMismatch(UpdateSide::Both)
+        .to_string()
+        .contains("update both"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

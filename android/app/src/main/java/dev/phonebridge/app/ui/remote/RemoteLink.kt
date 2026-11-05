@@ -1,6 +1,7 @@
 package dev.phonebridge.app.ui.remote
 
 import dev.phonebridge.app.APP_NAME
+import dev.phonebridge.app.outdatedText
 
 /** The touchpad's link to the PC: what the status line says and whether Retry shows. */
 enum class LinkPhase { Connecting, Connected, Lost, Failed, Off }
@@ -24,7 +25,7 @@ fun linkText(phase: LinkPhase, peer: String): String = when (phase) {
 
 /** Why the input session could not start, with what to do. */
 fun startFailureText(peer: String, reason: String?): String =
-    if (reason?.contains("declined") == true) {
+    outdatedText(reason, peer) ?: if (reason?.contains("declined") == true) {
         "$peer did not allow control. Turn on \u201cLet my phone control this PC\u201d in $APP_NAME settings on the PC."
     } else {
         "Could not reach $peer. Is $APP_NAME running there?"

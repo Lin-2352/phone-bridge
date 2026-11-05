@@ -1,6 +1,6 @@
 # Relay: wire protocol (draft v0)
 
-Status: draft. Matches the `pb-protocol` crate at protocol version 0. Versions must match exactly until 1.0; there is no compatibility promise yet.
+Status: draft. Matches the `pb-protocol` crate at protocol version 0. Two devices talk when each side's `min_compatible` is at most the other's `protocol_version`. The version is still 0, so every build talks to every other.
 
 ## Layers
 1. **QUIC** (iroh 1.3.0 / noq) provides encryption, authentication of the peer's Ed25519 key, streams and unreliable datagrams.
@@ -22,9 +22,13 @@ body   = protobuf message (prost), at most 65536 bytes
 ### `Hello` (both sides send it first)
 | Field | Tag | Type | Notes |
 |---|---|---|---|
-| `protocol_version` | 1 | uint32 | Must equal the receiver's version, else close with code 426 (reported as "update both devices") |
+| `protocol_version` | 1 | uint32 | This build's wire version (0) |
 | `device_name` | 2 | string | User-visible; only sent after authentication, never in discovery. Receivers show the name saved at pairing, not this field |
 | `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera`, `audio` (the audio messages, tags 25 to 27; a requester that does not see it fails at once instead of waiting for a reply an older peer never sends) |
+| `min_compatible` | 4 | uint32 | The oldest peer `protocol_version` the sender talks to. Absent (0) from Relay 0.2.0 |
+| `app_version` | 5 | string | The sender's Relay version, for people. Absent from Relay 0.2.0 |
+
+Compatibility: a device whose `protocol_version` is below the peer's `min_compatible` must update. The device that finds this closes with code 426 and reason `update:you` (the receiver must update) or `update:me` (the closer must). A close with any other reason (Relay 0.2.0's) reads as "update both".
 
 ### `Control` envelope (session stream)
 `oneof msg { Hello = 1; Heartbeat = 2; ClipboardText = 3; Offer = 4; OfferReply = 5; TransferDone = 6; Cancel = 7; ClipboardUpdate = 8; }`

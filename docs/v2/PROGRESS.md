@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M3 plan written ([plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md))
-- **Next task:** M3.1 (peers check compatibility by rule and name the device to update)
+- **Last finished task:** M3.1 (plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md))
+- **Next task:** M3.2 (every M7-M9 feature has a capability name)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -97,7 +97,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.R Milestone review and CI green — reviewer found 2 important (a queued speaker-silence job could run after the service's final restore, leaving the phone silenced with Relay off; a Keystore key that loads but fails in use crashed the app on focus) and 4 cheap minors (an alarm already ringing at share start stayed silenced; link toasts hid the site too; a bound-but-idle Control service let the PC open apps without a tap; a visible Relay screen didn't count): all fixed. Deferred minor: the fallback QUIC port changes on each start (discovery and the PC dialling the phone still recover); device check whether `activePlaybackConfigurations` lists idle alarm players
 
 ## M3 Foundations
-- [ ] M3.1 `Hello.min_compatible` and `app_version`; compatibility rule; "update ‹device›" message
+- [x] M3.1 `Hello.min_compatible` and `app_version`; compatibility rule; "update ‹device›" message
 - [ ] M3.2 Capabilities defined for every M7–M9 feature
 - [ ] M3.3 Peer IDs in every event and allow-list (drop the name→ID mapping)
 - [ ] M3.4 PC settings versioning and a per-device key=value file, with migrations

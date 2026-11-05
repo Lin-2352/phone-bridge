@@ -225,13 +225,25 @@ pub struct Ctx<'a> {
     pub refusal: Option<pb_transport::files::Refusal>,
 }
 
+/// What to update when two devices can't talk, naming the device.
+pub fn update_hint(side: pb_transport::UpdateSide, name: &str) -> String {
+    use pb_transport::UpdateSide;
+    match side {
+        UpdateSide::OtherDevice => {
+            format!("{name} runs an older version of Relay. Update Relay on {name}")
+        }
+        UpdateSide::ThisDevice => format!("Update Relay on this PC: {name} needs a newer version"),
+        UpdateSide::Both => {
+            format!("{name} runs a different version of Relay. Update Relay on both devices")
+        }
+    }
+}
+
 /// Wording for a session that failed to open when the cause is known and
 /// the generic "couldn't reach" would mislead. `None` keeps the caller's own text.
 pub fn session_failure(e: &Error, name: &str) -> Option<String> {
     match e {
-        Error::VersionMismatch => Some(format!(
-            "{name} runs a different version of Relay. Update Relay on both devices"
-        )),
+        Error::VersionMismatch(side) => Some(update_hint(*side, name)),
         Error::Storage(_) => Some("Relay couldn't save its list of devices. Try again".into()),
         _ => None,
     }
@@ -246,9 +258,9 @@ pub fn describe(dir: Dir, e: &Error, c: &Ctx) -> Failure {
         hint: h.to_owned(),
     };
     match (dir, e) {
-        (_, Error::VersionMismatch) => f(
-            format!("{peer} runs a different version of Relay"),
-            "Update Relay on both devices, then try again.",
+        (_, Error::VersionMismatch(side)) => f(
+            format!("{peer} and this PC can't talk: their versions of Relay differ"),
+            &format!("{}, then try again.", update_hint(*side, peer)),
         ),
         (_, Error::Storage(_)) => f(
             format!("Relay couldn't save its list of devices for {file}"),

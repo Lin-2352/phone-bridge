@@ -15,6 +15,15 @@ use prost::Message;
 /// Wire protocol version. Bumped on any incompatible change.
 pub const PROTOCOL_VERSION: u16 = 0;
 
+/// The oldest peer protocol version this build still talks to. Relay 0.2.0
+/// required an exact match and sends no minimum (read as 0).
+pub const MIN_COMPATIBLE: u16 = 0;
+
+/// Close reason (code 426) when the receiver of the close must update.
+pub const CLOSE_REASON_UPDATE_YOU: &[u8] = b"update:you";
+/// Close reason (code 426) when the device closing must update.
+pub const CLOSE_REASON_UPDATE_ME: &[u8] = b"update:me";
+
 /// Largest control frame body we will encode or accept (64 KiB).
 pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 
@@ -41,6 +50,51 @@ pub struct Hello {
     /// Feature names the sender supports (e.g. "clipboard", "files").
     #[prost(string, repeated, tag = "3")]
     pub capabilities: Vec<String>,
+    /// The oldest peer `protocol_version` the sender talks to (0 from Relay 0.2.0).
+    #[prost(uint32, tag = "4")]
+    pub min_compatible: u32,
+    /// The sender's Relay version, e.g. "0.3.0" (empty from Relay 0.2.0). For people, not for decisions.
+    #[prost(string, tag = "5")]
+    pub app_version: String,
+}
+
+/// Which device needs a newer Relay when two cannot talk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateSide {
+    ThisDevice,
+    OtherDevice,
+    /// Unknown which (a Relay 0.2.0 peer says only "incompatible").
+    Both,
+}
+
+/// `None` when the two devices can talk: each one's minimum is at most the other's version.
+/// Otherwise the device whose version is below the other's minimum must update.
+pub fn update_side(local: &Hello, remote: &Hello) -> Option<UpdateSide> {
+    if remote.protocol_version < local.min_compatible {
+        Some(UpdateSide::OtherDevice)
+    } else if local.protocol_version < remote.min_compatible {
+        Some(UpdateSide::ThisDevice)
+    } else {
+        None
+    }
+}
+
+/// The close reason this device sends when [update_side] gave `side`.
+pub fn close_reason_for(side: UpdateSide) -> &'static [u8] {
+    match side {
+        UpdateSide::OtherDevice => CLOSE_REASON_UPDATE_YOU,
+        UpdateSide::ThisDevice => CLOSE_REASON_UPDATE_ME,
+        UpdateSide::Both => b"incompatible protocol version",
+    }
+}
+
+/// Reads a 426 close reason from the receiving device's side.
+pub fn side_from_close_reason(reason: &[u8]) -> UpdateSide {
+    match reason {
+        CLOSE_REASON_UPDATE_YOU => UpdateSide::ThisDevice,
+        CLOSE_REASON_UPDATE_ME => UpdateSide::OtherDevice,
+        _ => UpdateSide::Both,
+    }
 }
 
 impl Hello {
@@ -49,17 +103,14 @@ impl Hello {
             protocol_version: u32::from(PROTOCOL_VERSION),
             device_name: device_name.into(),
             capabilities,
+            min_compatible: u32::from(MIN_COMPATIBLE),
+            app_version: env!("CARGO_PKG_VERSION").into(),
         }
     }
 
     /// Whether the sender listed `capability`.
     pub fn supports(&self, capability: &str) -> bool {
         self.capabilities.iter().any(|c| c == capability)
-    }
-
-    /// Pre-1.0 policy: versions must match exactly.
-    pub fn is_compatible(&self) -> bool {
-        self.protocol_version == u32::from(PROTOCOL_VERSION)
     }
 }
 
@@ -323,14 +374,69 @@ mod tests {
         let (got, used): (Hello, usize) = decode_frame(&bytes).unwrap().unwrap();
         assert_eq!(got, hello());
         assert_eq!(used, bytes.len());
-        assert!(got.is_compatible());
+        assert_eq!(update_side(&hello(), &got), None);
+    }
+
+    fn hello_at(version: u32, min: u32) -> Hello {
+        let mut h = hello();
+        h.protocol_version = version;
+        h.min_compatible = min;
+        h
     }
 
     #[test]
-    fn incompatible_version_is_detected() {
-        let mut h = hello();
-        h.protocol_version = 99;
-        assert!(!h.is_compatible());
+    fn same_versions_are_compatible() {
+        assert_eq!(update_side(&hello(), &hello()), None);
+        // A newer peer that still accepts this version: no update needed.
+        assert_eq!(update_side(&hello_at(0, 0), &hello_at(3, 0)), None);
+    }
+
+    #[test]
+    fn a_peer_below_my_minimum_must_update() {
+        assert_eq!(
+            update_side(&hello_at(2, 1), &hello_at(0, 0)),
+            Some(UpdateSide::OtherDevice)
+        );
+    }
+
+    #[test]
+    fn this_device_below_the_peers_minimum_must_update() {
+        assert_eq!(
+            update_side(&hello_at(0, 0), &hello_at(2, 1)),
+            Some(UpdateSide::ThisDevice)
+        );
+    }
+
+    #[test]
+    fn hello_carries_the_build_version() {
+        let h = hello();
+        assert_eq!(h.app_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(h.min_compatible, u32::from(MIN_COMPATIBLE));
+    }
+
+    #[test]
+    fn close_reasons_name_the_side() {
+        // The closer says who must update; the receiver reads it from its own side.
+        assert_eq!(
+            side_from_close_reason(CLOSE_REASON_UPDATE_YOU),
+            UpdateSide::ThisDevice
+        );
+        assert_eq!(
+            side_from_close_reason(CLOSE_REASON_UPDATE_ME),
+            UpdateSide::OtherDevice
+        );
+        assert_eq!(
+            side_from_close_reason(b"incompatible protocol version"),
+            UpdateSide::Both
+        ); // Relay 0.2.0
+        assert_eq!(
+            close_reason_for(UpdateSide::OtherDevice),
+            CLOSE_REASON_UPDATE_YOU
+        );
+        assert_eq!(
+            close_reason_for(UpdateSide::ThisDevice),
+            CLOSE_REASON_UPDATE_ME
+        );
     }
 
     #[test]

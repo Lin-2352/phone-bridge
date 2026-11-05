@@ -166,7 +166,10 @@ class ShareActivity : Activity() {
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
                     AppLog.event("events", "share_failed", "kind" to if (isLink) "link" else "text", "type" to t.javaClass.simpleName)
-                    notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
+                    notifyInfo(
+                        app, if (isLink) "Could not send the link" else "Could not send the text",
+                        outdatedText(t.message, peer.name) ?: "${peer.name} did not receive it",
+                    )
                 }
             }
         }
@@ -221,7 +224,10 @@ object OutgoingShare {
             Log.e(TAG, "SHARE failed: $t")
             AppLog.event("events", "share_failed", "kind" to "file", "ext" to LogFields.extOnly(f.name), "type" to t.javaClass.simpleName, "cancelled" to cancelled)
             PbService.cancelOutgoingProgress(app)
-            offerRetry(app, peerId, peerName, f, cancelled)
+            // A retry can't help until one side is updated: say which, and offer none.
+            val outdated = outdatedText(t.message, peerName)
+            if (outdated != null) notifyInfo(app, failureTitle(f.name, false, outgoing = true), outdated)
+            else offerRetry(app, peerId, peerName, f, cancelled)
         }
     }
 

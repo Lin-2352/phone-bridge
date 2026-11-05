@@ -30,6 +30,7 @@ use iroh::{
 };
 use pairing::{HostPairing, JoinPairing, PairError, Ticket};
 use pb_identity::{Identity, PairedPeer, PeerId, PeerStore};
+pub use pb_protocol::UpdateSide;
 use pb_protocol::{
     control::{Control, ControlMsg, Heartbeat, Pair, PairConfirm, PairMsg, PairingCode},
     decode_frame, encode_frame, Hello,
@@ -96,9 +97,8 @@ pub enum Error {
     /// The list of paired devices could not be saved, so the change the user
     /// asked for (pair, remove) did not happen.
     Storage(String),
-    /// The two devices speak different protocol versions (pre-1.0 they must
-    /// match exactly): one of them needs updating.
-    VersionMismatch,
+    /// The two devices can't talk: the named side needs a newer Relay.
+    VersionMismatch(UpdateSide),
 }
 
 impl fmt::Display for Error {
@@ -121,7 +121,9 @@ impl fmt::Display for Error {
             Self::Io(e) => write!(f, "file error: {e}"),
             Self::Unsupported => f.write_str("the other device does not support this yet: update it"),
             Self::AudioRefused(r) => write!(f, "audio refused: {r:?}"),
-            Self::VersionMismatch => f.write_str("the other device runs a different version of Relay: update both to the latest version"),
+            Self::VersionMismatch(UpdateSide::ThisDevice) => f.write_str("this device runs an older version of Relay than the other device: update Relay here"),
+            Self::VersionMismatch(UpdateSide::OtherDevice) => f.write_str("the other device runs an older version of Relay: update Relay there"),
+            Self::VersionMismatch(UpdateSide::Both) => f.write_str("the other device runs a different version of Relay: update both to the latest version"),
             Self::Storage(e) => write!(f, "could not save the list of paired devices ({e}): nothing changed, try again"),
         }
     }
@@ -1013,7 +1015,7 @@ fn closed_by_peer(conn: &Connection, fallback: Error) -> Error {
         Some(ConnectionError::ApplicationClosed(c))
             if c.error_code == CLOSE_INCOMPATIBLE.into() =>
         {
-            Error::VersionMismatch
+            Error::VersionMismatch(pb_protocol::side_from_close_reason(&c.reason))
         }
         _ => fallback,
     }
@@ -1096,10 +1098,15 @@ impl Session {
             Err(_) => return Err(Error::Timeout),
             _ => return Err(Error::Protocol("expected Hello".into())),
         };
-        if !remote_hello.is_compatible() {
-            // Its own code: 400 reads as "pairing refused" on the other side.
-            conn.close(CLOSE_INCOMPATIBLE.into(), b"incompatible protocol version");
-            return Err(Error::VersionMismatch);
+        let local = Hello::new(my_name, Vec::new());
+        if let Some(side) = pb_protocol::update_side(&local, &remote_hello) {
+            // Its own code: 400 reads as "pairing refused" on the other side. The reason says
+            // which device must update, so the other side can name it too.
+            conn.close(
+                CLOSE_INCOMPATIBLE.into(),
+                pb_protocol::close_reason_for(side),
+            );
+            return Err(Error::VersionMismatch(side));
         }
         let send = Arc::new(tokio::sync::Mutex::new(send));
         let hb_send = send.clone();

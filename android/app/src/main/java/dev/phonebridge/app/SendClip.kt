@@ -90,7 +90,7 @@ class SendClipboardActivity : Activity() {
             null
         } catch (t: Throwable) {
             Log.e(TAG, "SENDCLIP failed: $t")
-            "${peer.name} did not receive it"
+            outdatedText(t.message, peer.name) ?: "${peer.name} did not receive it"
         }
     }
 }

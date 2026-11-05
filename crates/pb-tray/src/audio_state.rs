@@ -171,6 +171,7 @@ pub fn refused_text(d: Dir, phone: &str, e: &Error) -> String {
         Error::Unsupported => {
             format!("Relay on {phone} is too old for audio. Update it, then try again.")
         }
+        Error::VersionMismatch(side) => crate::transfers::update_hint(*side, phone),
         Error::Timeout => format!("{phone} didn't answer the audio request"),
         Error::PeerChanged => {
             format!("The device answering is not {phone}. Check Devices in Relay.")
@@ -379,6 +380,12 @@ mod tests {
             &Error::AudioRefused(AudioReason::AppBlocksCapture),
         );
         assert!(t.contains("another app"));
+        let t = refused_text(
+            Dir::PhoneToPc,
+            "P",
+            &Error::VersionMismatch(pb_transport::UpdateSide::OtherDevice),
+        );
+        assert!(t.contains("Update Relay on P"), "{t}");
     }
 
     #[test]
