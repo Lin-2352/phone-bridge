@@ -26,6 +26,12 @@ pub const DEFAULT_MAX_FILE: u64 = 4 << 30;
 /// How long a sender waits for the receiver's accept/decline.
 pub const OFFER_TIMEOUT: Duration = Duration::from_secs(120);
 const CHUNK: usize = 256 * 1024;
+
+/// The next read size: what is left, at most `chunk`. Compared as `u64`, so
+/// a remainder of 4 GiB or more is never cut to its low 32 bits on 32-bit.
+fn chunk_len(remaining: u64, chunk: usize) -> usize {
+    usize::try_from(remaining.min(chunk as u64)).unwrap_or(chunk)
+}
 /// Received bytes are hashed and written in batches of this size.
 const BATCH: usize = 1024 * 1024;
 /// Bytes, not characters: file systems limit names to 255 bytes (ext4) and
@@ -459,7 +465,7 @@ async fn send_on<R: AsyncRead + Unpin>(
     let mut buf = vec![0u8; CHUNK];
     let mut done = 0u64;
     while done < size {
-        let want = ((size - done) as usize).min(CHUNK);
+        let want = chunk_len(size - done, CHUNK);
         let n = reader
             .read(&mut buf[..want])
             .await
@@ -819,6 +825,16 @@ async fn receive_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunk_len_never_truncates_large_remainders() {
+        // On 32-bit Android, `(remaining as usize)` keeps only the low 32
+        // bits: 4 GiB left read as 0 bytes, which failed the send.
+        assert_eq!(chunk_len(1 << 32, CHUNK), CHUNK);
+        assert_eq!(chunk_len((1 << 32) + 5, CHUNK), CHUNK);
+        assert_eq!(chunk_len(5, CHUNK), 5);
+        assert_eq!(chunk_len(0, CHUNK), 0);
+    }
 
     #[test]
     fn hidden_bidi_and_zero_width_characters_are_removed_from_names() {

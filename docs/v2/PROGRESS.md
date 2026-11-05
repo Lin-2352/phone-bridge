@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.5
-- **Next task:** M0.9 (plan Task 4)
+- **Last finished task:** M0.9
+- **Next task:** M0.4 + M0.8 (plan Task 5)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -54,7 +54,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M0.6 CI: Android unit tests, lint and the `qa` (R8) build
 - [ ] M0.7 CI: APK artifacts (arm64-v8a, armeabi-v7a, x86_64) and the portable zip artifact
 - [ ] M0.8 `armeabi-v7a` ABI in Gradle and the build script; `armv7-linux-androideabi` in `deny.toml`
-- [ ] M0.9 Fix the `files.rs:462` 32-bit truncation (a remaining size that's a multiple of 4 GiB fails the send), with a test
+- [x] M0.9 Fix the `files.rs:462` 32-bit truncation (a remaining size that's a multiple of 4 GiB fails the send), with a test
 - [ ] M0.R Milestone review and CI green
 
 ## M1 Harden: the Top 12
