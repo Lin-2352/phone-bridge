@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.11
-- **Next task:** M1.3 (then M1.4, M1.8, M1.13; plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md))
+- **Last finished task:** M1.4
+- **Next task:** M1.3 (then M1.8, M1.13, M1.R; plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md))
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -61,7 +61,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.1 Clipboard and file injection (S1, B4, S10): Android confirm sheet; PC toast with Copy/Open; auto-copy off by default; `keep_in_history` honoured
 - [x] M1.2 Lock-stop taken as a user Stop (A1, B2): `SystemStopped`; the PC shows "Phone locked" with Resume
 - [ ] M1.3 OTP redaction on Android 15+ (A2): detect the placeholder; PC "Code hidden by Android"; Settings explains; more `find_otp` languages
-- [ ] M1.4 Restricted settings and Advanced Protection (A3, A10): guided card from `packageSource`; explain Advanced Protection
+- [x] M1.4 Restricted settings and Advanced Protection (A3, A10): guided card from `packageSource`; explain Advanced Protection
 - [x] M1.5 Tapjacking and self-injection (S3, S8, I6): hide overlays; obscured-touch refusal; data-sensitive views; pause Relay's own remote input over every prompt; the quick panel shares only on tap
 - [x] M1.6 Locked phone (S4): no auto-accept while locked; input paused; on API 29–30, Allow opens the activity
 - [x] M1.7 Mark-of-the-Web (S2): `Zone.Identifier` ZoneId=3; risky types always prompt; shortcut types refused by default

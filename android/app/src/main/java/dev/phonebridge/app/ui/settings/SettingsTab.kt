@@ -62,6 +62,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.phonebridge.app.APP_NAME
+import dev.phonebridge.app.RESTRICTED_HELP
+import dev.phonebridge.app.advancedProtectionBlocksControl
+import dev.phonebridge.app.advancedProtectionOn
+import dev.phonebridge.app.needsRestrictedSettingsHelp
+import dev.phonebridge.app.openAppInfo
+import dev.phonebridge.app.packageSource
 import dev.phonebridge.app.AppLog
 import dev.phonebridge.app.AudioShare
 import dev.phonebridge.app.audio.AudioDirection
@@ -154,13 +160,17 @@ private fun ControlFromPc() {
     val resumed = LocalResumeCount.current
     val serviceOn = rememberControlServiceOn()
     val serviceStuck = remember(resumed, serviceOn) { !serviceOn && ControlService.enabledInSettings(ctx) }
+    val restricted = remember(resumed, serviceOn) { needsRestrictedSettingsHelp(Build.VERSION.SDK_INT, packageSource(ctx), serviceOn) }
+    val apBlocks = remember(resumed) { advancedProtectionBlocksControl(Build.VERSION.SDK_INT, advancedProtectionOn(ctx)) }
     val allow = Bridge.allowControl.value
     val controller = Bridge.controlledBy.value
     if (controller != null) LiveBanner("$controller is controlling this phone") { Bridge.node?.stopControl() }
     RelayRow(
         title = "Let my PC control this phone",
         supporting = when {
+            apBlocks -> "Advanced Protection is on: Android doesn't let apps like $APP_NAME control the phone"
             serviceStuck -> "Android stopped “$APP_NAME control”. Tap, then turn it off and on again"
+            !serviceOn && restricted -> RESTRICTED_HELP + ". Then turn this on"
             !serviceOn -> "Needs “$APP_NAME control” in Accessibility settings. Tap to turn it on"
             allow -> "On. Ctrl+Alt+P on your PC uses its mouse and keyboard here, and again to return"
             else -> "Off. When your PC asks, this phone asks you first"
@@ -170,7 +180,11 @@ private fun ControlFromPc() {
             Bridge.setAllowControl(ctx, on)
             if (on && !serviceOn) openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         },
-        onClick = if (!serviceOn) ({ openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) else null,
+        onClick = when {
+            !serviceOn && restricted && !serviceStuck -> ({ openAppInfo(ctx) })
+            !serviceOn -> ({ openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) })
+            else -> null
+        },
     )
 }
 
@@ -388,6 +402,8 @@ private fun NotificationsOnPc() {
         title = "Notifications on PC",
         supporting = when {
             !on -> "Off"
+            !access && needsRestrictedSettingsHelp(Build.VERSION.SDK_INT, packageSource(ctx), false) ->
+                "Not allowed yet. Tap Grant and turn on $APP_NAME. If Android says “Restricted setting”: App info › ⋮ › Allow restricted settings first"
             !access -> "Not allowed yet. Tap Grant, then turn on $APP_NAME"
             !NotifyListener.connected.value -> "Allowed, but Android hasn't connected it yet. Turn it off and on if this stays"
             else -> "Showing on your PC"
