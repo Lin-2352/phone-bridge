@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.1
-- **Next task:** M0.R fix pass (pin check: missing folder, CRLF), then M1.2 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 2)
+- **Last finished task:** M0.R (and M1.1)
+- **Next task:** M1.2 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 2)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -55,7 +55,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M0.7 CI: APK artifacts (arm64-v8a, armeabi-v7a, x86_64) and the portable zip artifact
 - [x] M0.8 `armeabi-v7a` ABI in Gradle and the build script; `armv7-linux-androideabi` in `deny.toml`
 - [x] M0.9 Fix the `files.rs:462` 32-bit truncation (a remaining size that's a multiple of 4 GiB fails the send), with a test
-- [ ] M0.R Milestone review and CI green
+- [x] M0.R Milestone review and CI green
 
 ## M1 Harden: the Top 12
 - [x] M1.1 Clipboard and file injection (S1, B4, S10): Android confirm sheet; PC toast with Copy/Open; auto-copy off by default; `keep_in_history` honoured
@@ -203,3 +203,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## Notes per session
 - 2026-11-05: spec approved. M0.1 done.
+- 2026-11-05: M0 done (CI run 41945588677 green on every job: Rust on Linux and Windows, Android tests and lint, qa APK for 3 ABIs, portable zip, deny). Windows code can be type-checked here: `apt-get install gcc-mingw-w64-x86-64`, `rustup target add x86_64-pc-windows-gnu`, `cargo check -p pb-tray --target x86_64-pc-windows-gnu`.
