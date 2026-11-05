@@ -187,6 +187,67 @@ pub enum Received {
 /// Make a sender-supplied name safe for any file system: no directories, no
 /// `..`, no control or reserved characters, no Windows device names, no
 /// trailing dots/spaces, bounded length. Never returns an empty name.
+/// How a received file's name could hurt on Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileRisk {
+    Normal,
+    /// Runs code or mounts something when opened: always asked about.
+    Risky,
+    /// A shortcut type Explorer reads by itself (its icon can point at a
+    /// remote share, which leaks the password hash): refused unless allowed.
+    Shortcut,
+}
+
+const SHORTCUT_EXTS: &[&str] = &["lnk", "url", "scf", "library-ms", "searchconnector-ms"];
+const RISKY_EXTS: &[&str] = &[
+    "exe",
+    "msi",
+    "msix",
+    "appx",
+    "com",
+    "bat",
+    "cmd",
+    "ps1",
+    "psm1",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "hta",
+    "jar",
+    "reg",
+    "cpl",
+    "scr",
+    "pif",
+    "msc",
+    "chm",
+    "appref-ms",
+    "settingcontent-ms",
+    "iso",
+    "img",
+    "vhd",
+    "vhdx",
+    "xll",
+];
+
+/// The class of `name` by the extension Windows acts on: case-insensitive,
+/// after the trailing dots and spaces Windows drops ("a.exe." runs as "a.exe").
+pub fn classify(name: &str) -> FileRisk {
+    let trimmed = name.trim_end_matches(['.', ' ']);
+    let Some((_, ext)) = trimmed.rsplit_once('.') else {
+        return FileRisk::Normal;
+    };
+    let ext = ext.to_ascii_lowercase();
+    if SHORTCUT_EXTS.contains(&ext.as_str()) {
+        FileRisk::Shortcut
+    } else if RISKY_EXTS.contains(&ext.as_str()) {
+        FileRisk::Risky
+    } else {
+        FileRisk::Normal
+    }
+}
+
 pub fn sanitize_file_name(raw: &str) -> String {
     // Keep only the last path component, whatever separator the sender used.
     let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
@@ -825,6 +886,37 @@ async fn receive_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disguised_executables_are_risky() {
+        for n in [
+            "photo.jpg.exe",
+            "A.EXE.",
+            "a.exe ",
+            "x.Ps1",
+            "setup.MSI",
+            "b.iso",
+        ] {
+            assert_eq!(classify(n), FileRisk::Risky, "{n}");
+        }
+        for n in ["photo.jpg", "notes.txt", "exe", "a.exe.txt", "report.pdf"] {
+            assert_eq!(classify(n), FileRisk::Normal, "{n}");
+        }
+    }
+
+    #[test]
+    fn shortcuts_are_shortcuts() {
+        for n in [
+            "a.lnk",
+            "B.URL",
+            "c.scf",
+            "d.library-ms",
+            "e.searchConnector-ms",
+            "f.LNK. ",
+        ] {
+            assert_eq!(classify(n), FileRisk::Shortcut, "{n}");
+        }
+    }
 
     #[test]
     fn chunk_len_never_truncates_large_remainders() {

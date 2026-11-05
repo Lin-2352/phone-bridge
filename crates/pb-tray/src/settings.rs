@@ -22,6 +22,9 @@ pub struct Settings {
     pub share_images: bool,
     /// Accept files from paired devices without asking.
     pub auto_accept: bool,
+    /// Accept shortcut files (.lnk, .url, .library-ms, ...). Off: they are
+    /// refused, because Explorer reads them by itself (settings.txt only).
+    pub allow_shortcut_files: bool,
     pub save_dir: PathBuf,
     /// 0 = follow Windows, 1 = light, 2 = dark.
     pub theme: u8,
@@ -84,6 +87,7 @@ impl Default for Settings {
             auto_copy_shared_text: false,
             share_images: false,
             auto_accept: true,
+            allow_shortcut_files: false,
             save_dir: downloads,
             theme: 0,
             allow_control: false,
@@ -157,6 +161,9 @@ impl Settings {
                 }
                 "share_images" => s.share_images = parse_bool(v).unwrap_or(s.share_images),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
+                "allow_shortcut_files" => {
+                    s.allow_shortcut_files = parse_bool(v).unwrap_or(s.allow_shortcut_files)
+                }
                 "save_dir" if !v.is_empty() => s.save_dir = PathBuf::from(v),
                 "notify_enabled" => s.notify_enabled = parse_bool(v).unwrap_or(s.notify_enabled),
                 "notify_content" => {
@@ -247,11 +254,12 @@ impl Settings {
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
         text += &format!(
-            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nauto_copy_shared_text={}\nlog_dir={}\n",
+            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nauto_copy_shared_text={}\nallow_shortcut_files={}\nlog_dir={}\n",
             self.keep_logs,
             self.audio_skip_confirm_pc_to_phone,
             self.paused,
             self.auto_copy_shared_text,
+            self.allow_shortcut_files,
             // Not written when it is the default, so a moved folder keeps its logs with it.
             if self.log_dir == default_log_dir(path) {
                 PathBuf::new()
@@ -293,6 +301,7 @@ mod tests {
         assert!(s.skip_private);
         assert!(!s.keep_in_history);
         assert!(!s.auto_copy_shared_text, "shared text waits for Copy");
+        assert!(!s.allow_shortcut_files, "shortcut files are refused");
         assert!(s.keep_history, "the timeline records by default");
         assert_eq!(s.main_window_rect, None);
         assert!(s.keep_logs, "logs are kept by default");
@@ -333,6 +342,7 @@ mod tests {
             skip_private: false,
             keep_in_history: true,
             auto_copy_shared_text: true,
+            allow_shortcut_files: true,
             share_images: true,
             auto_accept: false,
             save_dir: PathBuf::from(r"D:\Inbox"),

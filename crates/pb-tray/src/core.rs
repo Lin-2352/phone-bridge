@@ -1545,13 +1545,22 @@ async fn pump_session(
                 break;
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
-                let (auto, dir) = settings
+                let (auto, dir, allow_shortcuts) = settings
                     .lock()
-                    .map(|x| (x.auto_accept, x.save_dir.clone()))
-                    .unwrap_or((false, std::env::temp_dir()));
+                    .map(|x| (x.auto_accept, x.save_dir.clone(), x.allow_shortcut_files))
+                    .unwrap_or((false, std::env::temp_dir(), false));
                 let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
                 let is_file = offer.kind == pb_protocol::control::OfferKind::File as i32;
                 let file_label = pb_transport::files::sanitize_file_name(&offer.name);
+                let action = crate::motw::offer_action(
+                    auto,
+                    if is_file {
+                        crate::motw::risk(&file_label)
+                    } else {
+                        pb_transport::files::FileRisk::Normal
+                    },
+                    allow_shortcuts,
+                );
                 let refusal = is_file
                     .then(|| pb_transport::files::refusal(&dir, offer.size, DEFAULT_MAX_FILE))
                     .flatten();
@@ -1570,7 +1579,14 @@ async fn pump_session(
                 } else if refusal.is_some() {
                     // Too big or no room: say so now, never ask "Save it?".
                     false
-                } else if auto {
+                } else if action == crate::motw::OfferAction::Refuse {
+                    log.line(&format!("FILE refused a shortcut file \"{file_label}\""));
+                    ui(UiEvent::Info(format!(
+                        "Relay refused a shortcut file from {}: {file_label}",
+                        s.peer_name
+                    )));
+                    false
+                } else if action == crate::motw::OfferAction::Accept {
                     true
                 } else {
                     let (tx, mut rx) = oneshot::channel();
@@ -1626,6 +1642,10 @@ async fn pump_session(
                     receive_offer_with(&mut s, offer, accept, &dir, DEFAULT_MAX_FILE, opts).await;
                 match outcome {
                     Ok(Received::File { path, size }) => {
+                        // Downloaded-file treatment (SmartScreen, Protected View).
+                        if let Err(e) = crate::motw::mark(&path) {
+                            log.line(&format!("FILE not marked as from the internet: {e}"));
+                        }
                         let mbps = size as f64 / 1e6 / started.elapsed().as_secs_f64().max(1e-3);
                         log.line(&format!(
                             "FILE received {} ({size} bytes, {mbps:.1} MB/s) from \"{from}\"",

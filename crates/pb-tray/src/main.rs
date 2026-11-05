@@ -63,6 +63,8 @@ mod menu;
 #[cfg(windows)]
 mod menu_model;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod motw;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod netpath;
 #[cfg(windows)]
 mod netsample;
