@@ -23,6 +23,7 @@ pub const OPTIONS: &[&str] = &[
     "Share images",
     "Passwords and codes",
     "Keep received text in clipboard history",
+    "Copy shared text automatically",
     "Show phone notifications",
     "Content",
     "Show on the lock screen",
@@ -89,7 +90,8 @@ pub fn page_of(option: &str) -> Page {
         "Share clipboard"
         | "Share images"
         | "Passwords and codes"
-        | "Keep received text in clipboard history" => Page::Clipboard,
+        | "Keep received text in clipboard history"
+        | "Copy shared text automatically" => Page::Clipboard,
         "Show phone notifications"
         | "Content"
         | "Show on the lock screen"
