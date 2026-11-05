@@ -19,6 +19,7 @@ import dev.phonebridge.app.audio.endNotice
 import dev.phonebridge.app.audio.refusalNotice
 import dev.phonebridge.app.audio.resolveEnd
 import dev.phonebridge.app.audio.sessionNoticeText
+import dev.phonebridge.app.audio.PlayerAction
 import java.util.concurrent.atomic.AtomicReference
 import uniffi.pb_ffi.AudioSink
 import uniffi.pb_ffi.PbAudioEnd
@@ -66,6 +67,7 @@ object AudioShare {
 
     private val out = AtomicReference<PbAudioOut?>(null)
     @Volatile private var player: AudioPlayer? = null
+    private var focus: PlaybackFocus? = null
     private var streamer: AudioCapture? = null
     private var tone: Thread? = null
     private var encoder: OpusEncoder? = null
@@ -234,6 +236,20 @@ object AudioShare {
         if (node == null || !node.stopAudio(direction.wire.toUByte())) ended(direction, EndCause.LOCAL_STOP)
     }
 
+    /** Focus changed or headphones were unplugged while PC audio plays. */
+    private fun onFocus(action: PlayerAction) {
+        val p = player ?: return
+        when (action) {
+            PlayerAction.Play -> p.setGain(1f)
+            PlayerAction.Pause -> p.setGain(0f)
+            is PlayerAction.Duck -> p.setGain(action.gain)
+            PlayerAction.End -> {
+                Log.i(TAG, "AUDIO PC to phone ended by the phone: focus lost or headphones unplugged")
+                stop(AudioDirection.PC_TO_PHONE)
+            }
+        }
+    }
+
     @Synchronized
     fun stopAll() {
         for (d in AudioDirection.entries) {
@@ -283,6 +299,16 @@ object AudioShare {
             Bridge.node?.stopAudio(AudioDirection.PC_TO_PHONE.wire.toUByte())
             return
         }
+        val f = PlaybackFocus(ctx) { action -> onFocus(action) }
+        if (!f.start()) {
+            p.stop()
+            p.release()
+            sessions.end(AudioDirection.PC_TO_PHONE)
+            notice(ctx, "PC audio did not start", "Another app or a call is using this phone's audio. Try again when it ends.")
+            Bridge.node?.stopAudio(AudioDirection.PC_TO_PHONE.wire.toUByte())
+            return
+        }
+        focus = f
         player = p
         began(AudioDirection.PC_TO_PHONE, e.peerName)
         notifySession(ctx, AudioDirection.PC_TO_PHONE, AudioSource.PLAYBACK, e.peerName)
@@ -306,6 +332,8 @@ object AudioShare {
                     it.release()
                 }
                 player = null
+                focus?.stop()
+                focus = null
                 sessions.end(d)
                 ctx?.getSystemService(NotificationManager::class.java)?.cancel(AUDIO_PLAY_ID)
                 Log.i(TAG, "AUDIO PC to phone ended ($cause)")

@@ -84,6 +84,11 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
         }
     }
 
+    /** Output gain, 0 to 1 (focus: paused is 0, ducked is low). */
+    fun setGain(gain: Float) = synchronized(lock) {
+        track?.let { runCatching { it.setVolume(gain.coerceIn(0f, 1f)) } }
+    }
+
     /** Queues one PCM frame (as received). Never blocks; ignores frames that are too long or after stop. */
     fun push(frame: ByteArray, len: Int = frame.size) {
         if (!running || len <= 0) return
