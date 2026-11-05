@@ -18,12 +18,19 @@ pub use audio::{AudioSink, PbAudioEnd, PbAudioOut};
 
 #[derive(Debug, uniffi::Error)]
 pub enum PbError {
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
+    /// The sealed identity can't be read back (the Android keystore was reset, or the file is
+    /// damaged). Retrying never helps: the user must reset and pair again.
+    IdentityUnreadable {
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for PbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self::Failed { reason } = self;
+        let (Self::Failed { reason } | Self::IdentityUnreadable { reason }) = self;
         f.write_str(reason)
     }
 }
@@ -55,6 +62,24 @@ impl pb_identity::vault::SeedWrapper for ForeignWrapper {
             .unwrap(sealed.to_vec())
             .map_err(std::io::Error::other)
     }
+}
+
+/// A start-up failure as the app sees it: an unreadable identity is its own kind.
+fn start_error(e: std::io::Error) -> PbError {
+    if pb_identity::vault::is_unseal_error(&e) {
+        PbError::IdentityUnreadable {
+            reason: e.to_string(),
+        }
+    } else {
+        fail(e)
+    }
+}
+
+/// Starts over: removes this device's identity and pairings from `data_dir` (nothing else there).
+/// Call it with no node running; the next [start_node] makes a new identity.
+#[uniffi::export]
+pub fn reset_identity(data_dir: String) -> Result<(), PbError> {
+    pb_identity::vault::reset_identity(std::path::Path::new(&data_dir)).map_err(fail)
 }
 
 fn fail(e: impl std::fmt::Display) -> PbError {
@@ -1075,8 +1100,8 @@ pub async fn start_node(
 ) -> Result<Arc<PbNode>, PbError> {
     let dir = std::path::PathBuf::from(data_dir);
     std::fs::create_dir_all(&dir).map_err(fail)?;
-    let identity =
-        pb_identity::vault::open_identity(&dir, &ForeignWrapper(key_wrapper)).map_err(fail)?;
+    let identity = pb_identity::vault::open_identity(&dir, &ForeignWrapper(key_wrapper))
+        .map_err(start_error)?;
     let store: SharedStore = Arc::new(Mutex::new(
         FilePeerStore::open(dir.join("peers.txt")).map_err(fail)?,
     ));
@@ -2553,6 +2578,53 @@ mod android_init {
 
 #[cfg(test)]
 mod tests {
+    /// Seals fine; unsealing fails once `broken` is set (the keystore was reset).
+    struct BrokenKeystore(std::sync::atomic::AtomicBool);
+    impl pb_identity::vault::SeedWrapper for BrokenKeystore {
+        fn wrap(&self, plain: &[u8]) -> std::io::Result<Vec<u8>> {
+            Ok(plain.to_vec())
+        }
+        fn unwrap(&self, sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+            if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(std::io::Error::other(
+                    "keystore unwrap failed: AEADBadTagException",
+                ))
+            } else {
+                Ok(sealed.to_vec())
+            }
+        }
+    }
+
+    #[test]
+    fn start_error_maps_unseal_failures() {
+        let dir = std::env::temp_dir().join(format!("pb-ffi-unseal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let keystore = BrokenKeystore(Default::default());
+        pb_identity::vault::open_identity(&dir, &keystore).unwrap();
+        keystore.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        let e = pb_identity::vault::open_identity(&dir, &keystore).unwrap_err();
+        assert!(matches!(start_error(e), PbError::IdentityUnreadable { .. }));
+        // Anything else stays a plain failure the service retries.
+        assert!(matches!(
+            start_error(std::io::Error::other("disk full")),
+            PbError::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn reset_identity_removes_the_identity_and_pairings_only() {
+        let dir = std::env::temp_dir().join(format!("pb-ffi-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("incoming")).unwrap();
+        std::fs::write(dir.join("identity.sealed"), b"x").unwrap();
+        std::fs::write(dir.join("peers.txt"), b"x").unwrap();
+        std::fs::write(dir.join("incoming").join("f"), b"keep").unwrap();
+        reset_identity(dir.display().to_string()).unwrap();
+        assert!(!dir.join("identity.sealed").exists() && !dir.join("peers.txt").exists());
+        assert!(dir.join("incoming").join("f").exists());
+    }
+
     use super::*;
 
     #[test]

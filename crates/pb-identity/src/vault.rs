@@ -37,6 +37,38 @@ fn seed_from(bytes: &[u8], what: &str) -> io::Result<[u8; 32]> {
     })
 }
 
+/// The sealed identity can't be read back: the keystore was reset, or the file is damaged. Nothing
+/// retrying will fix it; the user has to start over (see [reset_identity]).
+#[derive(Debug)]
+struct UnsealError(String);
+
+impl std::fmt::Display for UnsealError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UnsealError {}
+
+/// Whether `e` (from [open_identity]) is the permanent "can't unseal" failure rather than a read error.
+pub fn is_unseal_error(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<UnsealError>())
+}
+
+/// Removes this device's identity and its pairings (`identity.sealed`, a legacy `identity.key`,
+/// `peers.txt` and its temp file) and nothing else: received files, the timeline and the logs stay.
+/// Missing files are fine. The next [open_identity] makes a new identity.
+pub fn reset_identity(dir: &Path) -> io::Result<()> {
+    for name in [SEALED_FILE, LEGACY_PLAIN_FILE, "peers.txt", "peers.tmp"] {
+        match std::fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// Load this device's identity from `dir`, creating it if absent.
 ///
 /// Order: sealed file -> legacy plain file (migrated, then removed) -> new identity.
@@ -51,10 +83,11 @@ pub fn open_identity(dir: &Path, wrapper: &dyn SeedWrapper) -> io::Result<Identi
             let plain = wrapper.unwrap(&bytes).map_err(|e| {
                 io::Error::new(
                     e.kind(),
-                    format!("this device's identity could not be unsealed ({e}); the keystore may have been reset or the file damaged"),
+                    UnsealError(format!("this device's identity could not be unsealed ({e}); the keystore may have been reset or the file damaged")),
                 )
             })?;
-            let seed = seed_from(&plain, "sealed identity")?;
+            let seed = seed_from(&plain, "sealed identity")
+                .map_err(|e| io::Error::new(e.kind(), UnsealError(e.to_string())))?;
             // A plain copy left behind by a crash (or a locked file) during
             // migration: drop it, but only when it is the same seed, so a
             // different identity is never deleted.
@@ -199,5 +232,57 @@ mod tests {
         assert!(open_identity(&d, &Xor::new(1)).is_err());
         std::fs::write(d.join(SEALED_FILE), b"SEALEDshort").unwrap();
         assert!(open_identity(&d, &Xor::new(1)).is_err());
+    }
+
+    #[test]
+    fn unseal_failure_is_typed() {
+        let d = dir("typed");
+        let w = Xor::new(1);
+        open_identity(&d, &w).unwrap();
+        w.1.store(true, Ordering::Relaxed);
+        let e = open_identity(&d, &w).unwrap_err();
+        assert!(is_unseal_error(&e), "{e}");
+        assert!(e.to_string().contains("could not be unsealed"), "{e}");
+        // A seed of the wrong length after a good unwrap is just as unreadable.
+        std::fs::write(d.join(SEALED_FILE), b"SEALEDshort").unwrap();
+        w.1.store(false, Ordering::Relaxed);
+        assert!(is_unseal_error(&open_identity(&d, &w).unwrap_err()));
+    }
+
+    #[test]
+    fn missing_file_is_not_an_unseal_error() {
+        let d = dir("typed-missing");
+        // No sealed file: a new identity is made, no error at all.
+        assert!(open_identity(&d, &Xor::new(1)).is_ok());
+        assert!(!is_unseal_error(&io::Error::other("disk full")));
+        assert!(!is_unseal_error(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+    }
+
+    #[test]
+    fn reset_keeps_everything_but_identity_and_pairings() {
+        let d = dir("reset");
+        let w = Xor::new(1);
+        let before = open_identity(&d, &w).unwrap().peer_id();
+        std::fs::write(d.join("peers.txt"), "x\ty\tz\n").unwrap();
+        std::fs::write(d.join("peers.tmp"), "x").unwrap();
+        std::fs::write(d.join(LEGACY_PLAIN_FILE), [3u8; 32]).unwrap();
+        std::fs::create_dir_all(d.join("incoming")).unwrap();
+        std::fs::write(d.join("incoming").join("a"), "file").unwrap();
+        std::fs::write(d.join("timeline.json"), "[]").unwrap();
+        std::fs::create_dir_all(d.join("logs")).unwrap();
+        std::fs::write(d.join("logs").join("l"), "log").unwrap();
+        reset_identity(&d).unwrap();
+        for gone in [SEALED_FILE, LEGACY_PLAIN_FILE, "peers.txt", "peers.tmp"] {
+            assert!(!d.join(gone).exists(), "{gone} should be gone");
+        }
+        assert!(d.join("incoming").join("a").exists());
+        assert!(d.join("timeline.json").exists());
+        assert!(d.join("logs").join("l").exists());
+        // A fresh start makes a different identity.
+        assert_ne!(open_identity(&d, &w).unwrap().peer_id(), before);
+        // Nothing to reset is fine.
+        reset_identity(&dir("reset-empty")).unwrap();
     }
 }
