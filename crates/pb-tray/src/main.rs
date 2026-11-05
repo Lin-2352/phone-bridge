@@ -11,6 +11,8 @@
 #[cfg(windows)]
 mod a11y;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod acl;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod app_name;
 #[cfg(windows)]
 mod applog;

@@ -1977,6 +1977,13 @@ async fn install_camera(log: &Log, ui: &(dyn Fn(UiEvent) + Send + Sync)) -> bool
         Ok(Err(RegisterError::Declined)) => {
             "The camera needs a one-time permission to install".to_string()
         }
+        Ok(Err(RegisterError::Failed(c))) if c == crate::camera_register::EXIT_UNSAFE_FOLDER => {
+            log.line("CAMERA install refused: other accounts can change Relay's folder");
+            "Other accounts on this PC can change Relay's folder, so the camera can't be \
+             installed from it. Move the Relay folder into your own user folder (for \
+             example Downloads) and try again"
+                .to_string()
+        }
         Ok(Err(RegisterError::Failed(c))) => {
             log.line(&format!("CAMERA install failed: code {c}"));
             format!("Couldn't set up the camera (code {c})")

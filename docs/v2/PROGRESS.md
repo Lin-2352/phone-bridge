@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.8 part 1 (data folder ACL)
-- **Next task:** M1.8 rest: app-folder check and fix, camera install refuses unsafe folders + embedded DLL (8b), DLL planting (8c); then M1.13, M1.R (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 8)
+- **Last finished task:** M1.8 parts 1-2 (data folder ACL; camera install refuses unsafe folders)
+- **Next task:** M1.8 rest: embed the camera DLL (build.rs + PB_CAMERA_DLL, make-portable and CI), app-folder warning with 'Fix folder permissions', DLL planting (8c); then M1.13, M1.R
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);

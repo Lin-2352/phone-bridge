@@ -344,6 +344,11 @@ pub fn register_elevated(user_sid: &str) -> i32 {
     if !is_valid_user_sid(user_sid) {
         return EXIT_BAD_SID;
     }
+    // Checked again here, elevated: the folder Relay runs from must be one
+    // only this user and the machine can change (else the DLL could be swapped).
+    if !exe_folder_is_safe(user_sid) {
+        return EXIT_UNSAFE_FOLDER;
+    }
     // Both folders must be ours before anything goes in: ProgramData lets
     // any user create folders, and DLLs here are loaded by Frame Server.
     let dir = dll_dir();
@@ -502,8 +507,21 @@ fn run_elevated(args: &str) -> Result<(), RegisterError> {
     }
 }
 
-/// Install (one UAC prompt). `user_sid`: this account.
+/// The folder this exe runs from can be changed only by `user_sid` and the
+/// machine's own accounts.
+fn exe_folder_is_safe(user_sid: &str) -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| crate::acl::folder_is_safe(d, user_sid)))
+        .unwrap_or(false)
+}
+
+/// Install (one UAC prompt). `user_sid`: this account. Refused without a
+/// prompt when other accounts can change Relay's folder.
 pub fn request_register(user_sid: &str) -> Result<(), RegisterError> {
+    if !exe_folder_is_safe(user_sid) {
+        return Err(RegisterError::Failed(EXIT_UNSAFE_FOLDER));
+    }
     run_elevated(&format!("--register-camera --for-sid {user_sid}"))
 }
 
