@@ -1083,10 +1083,7 @@ impl Session {
         my_name: &str,
         peer_name: &str,
     ) -> Result<Self, Error> {
-        let hello = Hello::new(
-            my_name,
-            vec!["clipboard".into(), pb_protocol::CAP_AUDIO.into()],
-        );
+        let hello = Hello::new(my_name, pb_protocol::local_capabilities());
         write_frame(&mut send, &Control::from(ControlMsg::Hello(hello))).await?;
         let mut recv = FrameReader::new(recv);
         let first = tokio::time::timeout(HEARTBEAT * 3, recv.next::<Control>()).await;

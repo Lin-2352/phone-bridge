@@ -24,7 +24,7 @@ body   = protobuf message (prost), at most 65536 bytes
 |---|---|---|---|
 | `protocol_version` | 1 | uint32 | This build's wire version (0) |
 | `device_name` | 2 | string | User-visible; only sent after authentication, never in discovery. Receivers show the name saved at pairing, not this field |
-| `capabilities` | 3 | repeated string | e.g. `clipboard`, `files`, `input`, `camera`, `audio` (the audio messages, tags 25 to 27; a requester that does not see it fails at once instead of waiting for a reply an older peer never sends) |
+| `capabilities` | 3 | repeated string | `clipboard` and `audio` today; `discovery2` (keyed discovery) and `resume` (resumable transfers, queue pause/resume) are reserved and advertised only by a build that has them. The other planned features (unlock gate, Disconnect everything, pairing limits, quotas, several devices, history, drag-and-drop) change nothing on the wire. `audio` covers the audio messages (the audio messages, tags 25 to 27; a requester that does not see it fails at once instead of waiting for a reply an older peer never sends) |
 | `min_compatible` | 4 | uint32 | The oldest peer `protocol_version` the sender talks to. Absent (0) from Relay 0.2.0 |
 | `app_version` | 5 | string | The sender's Relay version, for people. Absent from Relay 0.2.0 |
 

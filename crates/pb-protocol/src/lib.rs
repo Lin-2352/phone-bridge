@@ -29,6 +29,25 @@ pub const MAX_CONTROL_FRAME: usize = 64 * 1024;
 
 const LEN_PREFIX: usize = 4;
 
+/// `Hello.capabilities` entry: the clipboard messages.
+pub const CAP_CLIPBOARD: &str = "clipboard";
+
+/// Reserved for keyed discovery (PBD2, milestone M7): advertised only by a build that has it.
+pub const CAP_DISCOVERY2: &str = "discovery2";
+
+/// Reserved for resumable transfers (offer resume token, queue pause and resume, milestone M9).
+pub const CAP_RESUME: &str = "resume";
+
+/// Names kept for features not built yet. A build advertises one only once it implements it.
+/// The other planned features (unlock gate, Disconnect everything, pairing limits, quotas,
+/// several devices, history, drag-and-drop) change nothing on the wire.
+pub const RESERVED_CAPS: &[&str] = &[CAP_DISCOVERY2, CAP_RESUME];
+
+/// What this build puts in `Hello.capabilities`.
+pub fn local_capabilities() -> Vec<String> {
+    vec![CAP_CLIPBOARD.into(), CAP_AUDIO.into()]
+}
+
 /// `Hello.capabilities` entry: this build understands the audio messages
 /// (tags 25 to 27). A peer without it never answers them.
 pub const CAP_AUDIO: &str = "audio";
@@ -382,6 +401,32 @@ mod tests {
         h.protocol_version = version;
         h.min_compatible = min;
         h
+    }
+
+    #[test]
+    fn capability_names_are_unique_and_lowercase() {
+        let mut all: Vec<&str> = vec![CAP_CLIPBOARD, CAP_AUDIO];
+        all.extend(RESERVED_CAPS);
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "duplicate capability name");
+        assert!(all.iter().all(|c| c
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())));
+    }
+
+    #[test]
+    fn reserved_capabilities_are_not_advertised_yet() {
+        let local = local_capabilities();
+        assert_eq!(local, vec!["clipboard".to_string(), "audio".to_string()]);
+        for r in RESERVED_CAPS {
+            assert!(
+                !local.iter().any(|c| c == r),
+                "{r} is advertised before it exists"
+            );
+        }
+        assert!(RESERVED_CAPS.contains(&CAP_DISCOVERY2) && RESERVED_CAPS.contains(&CAP_RESUME));
     }
 
     #[test]

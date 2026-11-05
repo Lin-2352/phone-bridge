@@ -456,3 +456,9 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **What changed.** Log sampling (perf every 10 s, network every 60 s) now runs only while a PC session is open or Relay is on screen; otherwise its loop waits for that state, with no timer. The status redraw ("last seen 5 min ago" in the notification, tile and widget) runs only while the screen is on, and turning the screen on redraws at once. Nobody sees the notification with the screen off, so that loop no longer wakes the phone.
 - **Kept on purpose.** The relative wording stays, matching Home and the PC app; an absolute "last seen at 14:05" was considered and dropped for that reason.
 - **What may still wake it.** The recovery job (JobScheduler, 15-minute minimum period, batched by Doze) and packets arriving on the node's sockets. Not measured on a device yet: the device checklist checks it with `adb shell dumpsys batterystats` after an hour idle.
+
+## Protocol compatibility and capabilities (2026-11-05, v2 M3.1-M3.2)
+
+- **No breaking bump.** The wire version stays 0. `Hello` gains optional `min_compatible` and `app_version`; two devices talk when each side's minimum is at most the other's version. A 0.2.0 peer sends neither (read as 0 and empty) and requires an exact match, which holds while every build is version 0.
+- **Naming the device to update.** The 426 close carries `update:you` or `update:me`; a plain close (0.2.0) reads as "update both".
+- **Capabilities.** One name per wire feature, advertised only by the build that implements it. `discovery2` and `resume` are reserved; the other M7-M9 features need none.

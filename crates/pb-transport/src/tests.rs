@@ -3341,3 +3341,16 @@ async fn discovery_reports_a_taken_port() {
     .unwrap();
     assert!(m.discovery_active());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_announces_the_local_capabilities() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let s = phone.connect(&pc.peer_id()).await.unwrap();
+    assert_eq!(
+        s.remote_hello.capabilities,
+        pb_protocol::local_capabilities()
+    );
+}
