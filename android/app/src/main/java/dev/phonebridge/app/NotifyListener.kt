@@ -1,6 +1,5 @@
 package dev.phonebridge.app
 
-import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -373,7 +372,8 @@ object NotifyActions : NotifyHandler {
         try {
             when (kind) {
                 PbNotifyActionKind.DISMISS -> svc.cancelNotification(key)
-                PbNotifyActionKind.BUTTON -> (action(sbn, index).actionIntent ?: fail(GONE)).send()
+                PbNotifyActionKind.BUTTON ->
+                    (action(sbn, index).actionIntent ?: fail(GONE)).send(svc, 0, null, null, null, null, ActionSend.options())
                 PbNotifyActionKind.REPLY -> {
                     val a = action(sbn, index)
                     val inputs = a.remoteInputs ?: fail(GONE)
@@ -384,14 +384,13 @@ object NotifyActions : NotifyHandler {
                 }
                 PbNotifyActionKind.OPEN -> {
                     val pi = sbn?.notification?.contentIntent ?: fail(GONE)
-                    val options = if (Build.VERSION.SDK_INT >= 34) {
-                        ActivityOptions.makeBasic()
-                            .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                            .toBundle()
-                    } else {
-                        null
+                    when (openOutcome(ActionSend.canStartActivity(svc))) {
+                        OpenOutcome.SEND -> pi.send(svc, 0, null, null, null, null, ActionSend.options())
+                        OpenOutcome.TAP_ON_PHONE -> {
+                            ActionSend.postTap(svc, pi, sbn?.notification?.extras?.getCharSequence(Notification.EXTRA_TITLE))
+                            fail(TAP_ON_PHONE_TEXT)
+                        }
                     }
-                    pi.send(svc, 0, null, null, null, null, options)
                 }
                 PbNotifyActionKind.SILENCE -> silence(svc)
             }
