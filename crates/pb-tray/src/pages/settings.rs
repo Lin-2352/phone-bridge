@@ -1282,7 +1282,7 @@ mod tests {
             };
             assert_eq!(click(&h, &m), Some(set(SAction::Toggle(*k))));
         }
-        assert_eq!(KEYS.len(), 18);
+        assert_eq!(KEYS.len(), 19);
         for r in rows(&model()) {
             if let Row::Toggle(k, ..) = r {
                 assert!(KEYS.contains(&k), "{k:?} missing from KEYS");

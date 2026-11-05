@@ -24,6 +24,7 @@ pub const OPTIONS: &[&str] = &[
     "Passwords and codes",
     "Keep received text in clipboard history",
     "Copy shared text automatically",
+    "Show shared text in notifications",
     "Show phone notifications",
     "Content",
     "Show on the lock screen",
@@ -91,7 +92,8 @@ pub fn page_of(option: &str) -> Page {
         | "Share images"
         | "Passwords and codes"
         | "Keep received text in clipboard history"
-        | "Copy shared text automatically" => Page::Clipboard,
+        | "Copy shared text automatically"
+        | "Show shared text in notifications" => Page::Clipboard,
         "Show phone notifications"
         | "Content"
         | "Show on the lock screen"
@@ -315,6 +317,10 @@ mod tests {
         assert_eq!(page_of("Pair device"), Page::Devices);
         assert_eq!(page_of("Share clipboard"), Page::Clipboard);
         assert_eq!(page_of("Share images"), Page::Clipboard);
+        assert_eq!(
+            page_of("Show shared text in notifications"),
+            Page::Clipboard
+        );
         assert_eq!(page_of("Content"), Page::Notifications);
         assert_eq!(
             page_of("Quiet while the phone screen is open"),
