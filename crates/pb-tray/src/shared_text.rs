@@ -84,13 +84,30 @@ pub fn clipboard_toast_body(sensitive: bool, show_text: bool, text: &str) -> Str
     }
 }
 
-/// The toast for a link from the phone: the address only when the user asked to see shared text.
+/// The toast for a link from the phone: the whole address when the user asked to see shared text,
+/// otherwise only its site (never the path or query, which can carry tokens), so it isn't opened blind.
 pub fn link_toast_body(show_link: bool, url: &str) -> String {
     if show_link {
         let shown: String = url.chars().take(120).collect();
-        format!("{shown}\nClick to open.")
+        return format!("{shown}\nClick to open.");
+    }
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or("");
+    let host = if host_port.starts_with('[') {
+        host_port
+            .split(']')
+            .next()
+            .map(|h| format!("{h}]"))
+            .unwrap_or_default()
     } else {
+        host_port.split(':').next().unwrap_or("").to_owned()
+    };
+    let host: String = host.chars().take(80).collect();
+    if host.is_empty() {
         "Click to open.".into()
+    } else {
+        format!("{host}\nClick to open.")
     }
 }
 
@@ -120,9 +137,16 @@ mod tests {
 
     #[test]
     fn link_toast_hides_url_by_default() {
+        // The site is shown so a link is never opened blind; the path and query stay hidden.
         let b = link_toast_body(false, "https://example.com/reset?token=abc");
-        assert!(!b.contains("example.com"));
+        assert!(b.contains("example.com"), "{b}");
+        assert!(!b.contains("token"), "{b}");
+        assert!(!b.contains("reset"), "{b}");
         assert!(b.contains("Click to open."));
+        assert!(
+            link_toast_body(false, "https://user:pw@evil.example:8443/x").contains("evil.example")
+        );
+        assert!(!link_toast_body(false, "https://user:pw@evil.example:8443/x").contains("pw"));
         assert!(link_toast_body(true, "https://example.com/a").contains("https://example.com/a"));
     }
 

@@ -17,3 +17,9 @@ fun audioShareCard(source: AudioSource, peer: String): Pair<String, String> =
     } else {
         "Sharing this phone's audio with $peer" to "What this phone plays goes to your PC"
     }
+
+/**
+ * Silencing starts from a queued job, so it may run late. Once the service is gone its final
+ * restore has run (or waits for this lock), and silencing now would outlast Relay.
+ */
+fun speakerMayBegin(serviceUp: Boolean): Boolean = serviceUp

@@ -27,4 +27,13 @@ class ActionSendTest {
         assertEquals(OpenOutcome.TAP_ON_PHONE, openOutcome(canStartActivity = false))
         assertEquals(OpenOutcome.SEND, openOutcome(canStartActivity = true))
     }
+
+    @Test
+    fun only_a_live_control_session_or_relays_screen_lets_the_pc_open_apps() {
+        // "Keep Control on" leaves the service bound between sessions: that alone must not count.
+        assertEquals(false, relayMayStartActivity(overlay = false, controlSession = false, uiVisible = false))
+        assertEquals(true, relayMayStartActivity(overlay = false, controlSession = true, uiVisible = false))
+        assertEquals(true, relayMayStartActivity(overlay = false, controlSession = false, uiVisible = true))
+        assertEquals(true, relayMayStartActivity(overlay = true, controlSession = false, uiVisible = false))
+    }
 }

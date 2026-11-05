@@ -90,6 +90,11 @@ object PhoneSpeaker {
     /** A share of this phone's audio started. */
     @Synchronized
     fun begin(ctx: Context, frameMs: Int) {
+        // PbService.onDestroy clears instance before its own restore takes this lock.
+        if (!dev.phonebridge.app.audio.speakerMayBegin(PbService.instance != null)) {
+            Log.i(TAG, "AUDIO silencing skipped: Relay is stopping")
+            return
+        }
         sharing = true
         this.frameMs = frameMs
         apply(ctx)

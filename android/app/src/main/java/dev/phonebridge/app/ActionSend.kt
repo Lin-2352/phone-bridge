@@ -25,6 +25,14 @@ fun bgStartMode(sdk: Int): Int? = when {
 enum class OpenOutcome { SEND, TAP_ON_PHONE }
 
 /**
+ * Whether a PC's "Open" may bring an app to the front without a tap on the phone: with the overlay
+ * permission (the user's own grant), during a live Control session, or while Relay is on screen.
+ * A Control service that merely stays bound between sessions does not count.
+ */
+fun relayMayStartActivity(overlay: Boolean, controlSession: Boolean, uiVisible: Boolean): Boolean =
+    overlay || controlSession || uiVisible
+
+/**
  * The opt-in only helps if Relay itself may start activities from the background: with the overlay
  * permission or while Control's accessibility service is bound. Otherwise Android blocks the
  * app's screen silently, so the user is asked to tap a notification instead, and the PC is told.
@@ -42,7 +50,11 @@ internal object ActionSend {
         if (Build.VERSION.SDK_INT >= 34) ActivityOptions.makeBasic().setPendingIntentBackgroundActivityStartMode(mode).toBundle() else null
     }
 
-    fun canStartActivity(ctx: Context): Boolean = Settings.canDrawOverlays(ctx) || ControlService.instance != null
+    fun canStartActivity(ctx: Context): Boolean = relayMayStartActivity(
+        overlay = Settings.canDrawOverlays(ctx),
+        controlSession = ControlService.instance != null && Bridge.controlledBy.value != null,
+        uiVisible = Bridge.uiVisible.get() > 0,
+    )
 
     /** A notification whose tap runs the app's own [open] intent: a tap is always allowed to start it. */
     fun postTap(ctx: Context, open: PendingIntent, what: CharSequence?) {

@@ -20,6 +20,29 @@ fun clipUnchanged(text: String, stored: String?, mac: (ByteArray) -> ByteArray):
     stored != null && stored.length == 64 && stored == clipFingerprint(text, mac)
 
 /**
+ * A MAC that survives a Keystore key which loads but fails in use (seen after some OEM updates as
+ * "invalid key blob"): the first failure switches to [makeFallback] for good and calls [onFallback].
+ */
+class FallbackMac(
+    private val primary: (ByteArray) -> ByteArray,
+    private val makeFallback: () -> (ByteArray) -> ByteArray,
+    private val onFallback: () -> Unit,
+) {
+    @Volatile private var fallback: ((ByteArray) -> ByteArray)? = null
+
+    fun mac(data: ByteArray): ByteArray {
+        fallback?.let { return it(data) }
+        return try {
+            primary(data)
+        } catch (e: Exception) {
+            synchronized(this) {
+                fallback ?: makeFallback().also { fallback = it; onFallback() }
+            }(data)
+        }
+    }
+}
+
+/**
  * The last clipboard text synced either way, kept as an HMAC-SHA256 under a key that never leaves the
  * Keystore. If the Keystore fails, a key made for this process is used and nothing is stored, so a
  * restart may re-send one unchanged clip at most.
@@ -46,7 +69,22 @@ object ClipFingerprints {
         }.also { key = it }
     }
 
-    private val mac: (ByteArray) -> ByteArray = { data -> Mac.getInstance(ALG).apply { init(key()) }.doFinal(data) }
+    private fun memoryMac(): (ByteArray) -> ByteArray {
+        val k = SecretKeySpec(ByteArray(32).also { SecureRandom().nextBytes(it) }, ALG)
+        return { data -> Mac.getInstance(ALG).apply { init(k) }.doFinal(data) }
+    }
+
+    private val safe = FallbackMac(
+        primary = { data -> Mac.getInstance(ALG).apply { init(key()) }.doFinal(data) },
+        makeFallback = ::memoryMac,
+        onFallback = {
+            Log.w(TAG, "CLIPSYNC Keystore key unusable, fingerprint kept in memory")
+            stored = false
+            runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) }
+        },
+    )
+
+    private val mac: (ByteArray) -> ByteArray = { data -> safe.mac(data) }
 
     fun unchanged(ctx: Context, text: String): Boolean {
         key()

@@ -94,6 +94,8 @@ object SpeakerSilencer {
         val app = ctx.applicationContext
         val am = app.getSystemService(AudioManager::class.java)
         am.registerAudioPlaybackCallback(playback, null)
+        // The callback reports changes only: an alarm already ringing must be let through now.
+        runCatching { playback.onPlaybackConfigChanged(am.activePlaybackConfigurations) }
         val p = Prefs(app)
         val own = am.getStreamVolume(AudioManager.STREAM_MUSIC)
         // Saved before anything moves: a crash from here on still gets it back.

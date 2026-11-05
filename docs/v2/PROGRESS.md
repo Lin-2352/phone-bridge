@@ -5,7 +5,7 @@ The single place that says what is done, what is in progress and what is left in
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M2.19 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.R (milestone review and CI green)
+- **Next task:** M2.R: confirm CI is green on the branch head, then tick M2.R; after that, write the M3 plan (Foundations)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -94,7 +94,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.18 QoL: "Keep Control on between sessions" (opt-in)
 - [x] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS
 - [-] M2.20 Screen encoder reuses its frame buffer — dropped: uniffi copies the whole `ByteArray` into Rust on every `sendFrame` and takes only exact-size arrays, so a reused larger array would copy more, not less. The device checklist measures memory churn while mirroring instead
-- [ ] M2.R Milestone review and CI green
+- [~] M2.R Milestone review and CI green — reviewer found 2 important (a queued speaker-silence job could run after the service's final restore, leaving the phone silenced with Relay off; a Keystore key that loads but fails in use crashed the app on focus) and 4 cheap minors (an alarm already ringing at share start stayed silenced; link toasts hid the site too; a bound-but-idle Control service let the PC open apps without a tap; a visible Relay screen didn't count): all fixed. Deferred minor: the fallback QUIC port changes on each start (discovery and the PC dialling the phone still recover); device check whether `activePlaybackConfigurations` lists idle alarm players
 
 ## M3 Foundations
 - [ ] M3.1 `Hello.min_compatible` and `app_version`; compatibility rule; "update ‹device›" message

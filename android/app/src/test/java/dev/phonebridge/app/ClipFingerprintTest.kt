@@ -45,3 +45,22 @@ class ClipFingerprintTest {
         assertFalse(clipUnchanged("123456", null, mac))
     }
 }
+
+class FallbackMacTest {
+    private val fallback: (ByteArray) -> ByteArray = { byteArrayOf(7) }
+
+    @Test
+    fun a_key_that_breaks_in_use_falls_back_once() {
+        var switched = 0
+        val m = FallbackMac({ throw java.security.InvalidKeyException("invalid key blob") }, { fallback }) { switched++ }
+        assertEquals(7, m.mac(byteArrayOf(1))[0].toInt())
+        assertEquals(7, m.mac(byteArrayOf(2))[0].toInt())
+        assertEquals(1, switched)
+    }
+
+    @Test
+    fun a_working_key_is_used() {
+        val m = FallbackMac({ byteArrayOf(3) }, { fallback }) { error("no fallback expected") }
+        assertEquals(3, m.mac(byteArrayOf(1))[0].toInt())
+    }
+}
