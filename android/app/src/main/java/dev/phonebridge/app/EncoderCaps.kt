@@ -14,6 +14,15 @@ const val CODEC_H265 = 2
 const val CODEC_H264 = 3
 
 /**
+ * Hardware encoders, as the app ships. A debuggable build on a device with none, such as an emulator,
+ * may use software ones so the screen and camera flows can be tested there.
+ */
+internal fun <T> usableEncoders(all: List<T>, isHardware: (T) -> Boolean, allowSoftware: Boolean): List<T> {
+    val hardware = all.filter(isHardware)
+    return if (hardware.isEmpty() && allowSoftware) all else hardware
+}
+
+/**
  * What this phone's hardware video encoders can do for screen sharing:
  * which codecs (best first), VBR, a QP ceiling, size alignment.
  */
@@ -29,13 +38,18 @@ data class EncoderCaps(
     companion object {
         @Volatile private var cached: EncoderCaps? = null
 
+        /** Set once by [PbService] from the app's own debuggable flag, before the first [get]. */
+        @Volatile var allowSoftware = false
+
         fun get(): EncoderCaps = cached ?: probe().also { cached = it }
 
-        /** Hardware encoders only; a surface input is required for screen capture. */
+        /** A surface input is required for screen capture. */
         fun probe(): EncoderCaps {
-            val encoders = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter {
-                it.isEncoder && (Build.VERSION.SDK_INT < 29 || it.isHardwareAccelerated)
-            }
+            val encoders = usableEncoders(
+                MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.filter { it.isEncoder },
+                { Build.VERSION.SDK_INT < 29 || it.isHardwareAccelerated },
+                allowSoftware,
+            )
             fun find(mime: String): Pair<MediaCodecInfo, CodecCapabilities>? = encoders.firstNotNullOfOrNull { info ->
                 if (info.supportedTypes.none { it.equals(mime, ignoreCase = true) }) return@firstNotNullOfOrNull null
                 val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: return@firstNotNullOfOrNull null

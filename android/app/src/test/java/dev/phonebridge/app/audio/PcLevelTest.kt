@@ -22,6 +22,24 @@ class PcLevelTest {
         org.junit.Assert.assertEquals(0, stepForIndex(-1, 16))
     }
 
+    @Test
+    fun the_real_volume_can_show_any_pc_level() {
+        assertEquals(9, indexForStep(9, 16))
+        assertEquals(0, indexForStep(0, 16))
+        assertEquals(15, indexForStep(PC_LEVEL_STEPS, 15))
+        assertEquals(13, indexForStep(8, 25))
+        assertEquals(0, indexForStep(8, 0))
+    }
+
+    @Test
+    fun level_stays_within_0_and_16() {
+        assertEquals(PC_LEVEL_STEPS, stepAfterKey(PC_LEVEL_STEPS, 1))
+        assertEquals(0, stepAfterKey(0, -1))
+        assertEquals(9, stepAfterKey(8, 1))
+        assertEquals(7, stepAfterKey(8, -1))
+        assertEquals(8, stepAfterKey(8, 0))
+    }
+
     private fun frame(vararg samples: Int): ByteArray {
         val b = ByteArray(samples.size * 2)
         samples.forEachIndexed { i, v ->
@@ -86,36 +104,6 @@ class PcLevelTest {
             last = left
         }
         assertEquals((20000 * gainForStep(PC_LEVEL_STEPS / 2)).toDouble(), last.toDouble(), 2.0)
-    }
-
-    @Test
-    fun a_press_moves_away_from_the_held_volume() {
-        assertEquals(1, keyStep(held = 1, prev = 1, index = 2))
-        assertEquals(-1, keyStep(held = 1, prev = 1, index = 0))
-    }
-
-    /** Stepping back is reported too: it must not count as a press the other way. */
-    @Test
-    fun coming_back_to_the_held_volume_is_not_a_press() {
-        assertEquals(0, keyStep(held = 1, prev = 2, index = 1))
-        assertEquals(0, keyStep(held = 1, prev = 0, index = 1))
-    }
-
-    @Test
-    fun a_second_press_before_the_first_was_undone_still_counts() {
-        assertEquals(1, keyStep(held = 1, prev = 2, index = 3))
-    }
-
-    @Test
-    fun a_jump_by_another_app_is_one_step() {
-        assertEquals(1, keyStep(held = 1, prev = 1, index = 9))
-    }
-
-    @Test
-    fun undoing_takes_one_step_toward_the_held_volume() {
-        assertEquals(-1, undoStep(held = 1, index = 2))
-        assertEquals(1, undoStep(held = 1, index = 0))
-        assertEquals(0, undoStep(held = 1, index = 1))
     }
 
     @Test

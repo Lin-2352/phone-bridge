@@ -1,46 +1,47 @@
 package dev.phonebridge.app
 
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.media.AudioManager
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.DynamicsProcessing
+import android.media.audiofx.Visualizer
 import android.util.Log
-import androidx.core.content.ContextCompat
+import dev.phonebridge.app.audio.mixIsAudible
 import dev.phonebridge.app.audio.mustLiftSilencer
-import dev.phonebridge.app.audio.shareStartIndex
-import dev.phonebridge.app.audio.stepForIndex
 import dev.phonebridge.app.audio.stepsBack
 
 private const val TAG = "PhoneBridgeAudio"
-private const val VOLUME_CHANGED = "android.media.VOLUME_CHANGED_ACTION"
 private const val EFFECT_PRIORITY = Int.MAX_VALUE
 private const val SILENCE_DB = -96f
 private const val STEREO = 2
 
-/** The effect takes hold before the volume moves, and the volume is down before it lets go. */
+/** The volume is back before the effect lets go. */
 private const val SETTLE_MS = 100L
 
 /**
- * Silences the speaker with an effect on the output mix instead of muting, so nothing fights the
- * volume keys: the phone's real bar moves as usual and sets the PC's level. Captured sound is taken
- * before the effect, and alarms, calls and notifications play on other outputs (both heard on a
- * realme RMX3561). During a share the bar is the PC's: the phone's own volume is saved first and put
- * back after, also on the next start after a crash. While Relay is dead the effect is gone, so sound
- * can come back at the share's level until the service restarts. Nothing can prevent that gap.
+ * A second layer under [PhoneSpeaker]'s mute: an effect on the output mix that silences media apps.
+ * It lets the real volume bar work in an app that keeps the keys, as the stream can be unmuted while
+ * that app's sound is covered. Captured sound is taken before the effect, and alarms, calls and
+ * notifications play on other outputs (both heard on a realme RMX3561).
+ *
+ * The effect reaches one output only, so a game on another isn't covered: that is why the mute is the
+ * main layer. A meter ahead of the effect tells them apart: a game's sound is captured while that
+ * output plays nothing. Best effort: Android may refuse either, and the mute still holds.
  */
 object SpeakerSilencer {
     @Volatile private var effect: DynamicsProcessing? = null
-    private var listening = false
+    private var mix: Visualizer? = null
     @Volatile private var lifted = false
+    private var audio: AudioManager? = null
 
-    /** An alarm, ringtone or emergency alert plays: let it through, then silence again (gain only,
-     *  so the effect stays enabled and nothing reads as "taken over by another app"). */
+    /**
+     * An alarm, ringtone or emergency alert plays: let it through, then silence again (gain only, so the
+     * effect stays enabled). A covered video on this output goes back under the mute meanwhile, because
+     * the route counts the alarm as a player ([dev.phonebridge.app.audio.countsAsPlayer]).
+     */
     private val playback = object : AudioManager.AudioPlaybackCallback() {
         override fun onPlaybackConfigChanged(configs: MutableList<android.media.AudioPlaybackConfiguration>) {
-            // Main thread: no lock here (start() holds it through a settle), just the current effect.
+            // Main thread: no lock here (start() may hold it), just the current effect.
             val lift = mustLiftSilencer(configs.map { it.audioAttributes.usage })
             val fx = effect ?: return
             if (lift == lifted) return
@@ -49,86 +50,95 @@ object SpeakerSilencer {
             Log.i(TAG, "AUDIO silencer ${if (lift) "lifted for an alarm or ringtone" else "back on"}")
         }
     }
+    private val reading = Visualizer.MeasurementPeakRms()
 
-    private val volume = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) = followVolume(c)
-    }
+    /** The meter's last reading in millibels, for the log. */
+    val lastPeakMb: Int get() = reading.mPeak
 
-    private fun followVolume(ctx: Context) {
-        val am = ctx.getSystemService(AudioManager::class.java)
-        val index = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val step = stepForIndex(index, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
-        PhoneSpeaker.setLevelStep(step)
-        Prefs(ctx).audioShareIndex = index
-        Log.i(TAG, "AUDIO silencer index=$index pc level step=$step")
-    }
-
-    private fun newEffect(onLost: () -> Unit): DynamicsProcessing {
+    private fun newEffect(): DynamicsProcessing {
         val config = DynamicsProcessing.Config.Builder(
             DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION, STEREO, false, 0, false, 0, false, 0, false,
         ).build()
         val fx = DynamicsProcessing(EFFECT_PRIORITY, 0, config)
         fx.setInputGainAllChannelsTo(SILENCE_DB)
         fx.enabled = true
-        fx.setControlStatusListener(AudioEffect.OnControlStatusChangeListener { _, granted -> if (!granted) onLost() })
-        fx.setEnableStatusListener(AudioEffect.OnEnableStatusChangeListener { _, enabled -> if (!enabled) onLost() })
+        val lost = { Log.i(TAG, "AUDIO another app took the silencing effect: the mute still holds") }
+        fx.setControlStatusListener(AudioEffect.OnControlStatusChangeListener { _, granted -> if (!granted) lost() })
+        fx.setEnableStatusListener(AudioEffect.OnEnableStatusChangeListener { _, enabled -> if (!enabled) lost() })
         return fx
     }
 
-    /** False when Android refuses the effect. [onLost]: another app took it over later. */
+    private fun openMixMeter(): Visualizer? = try {
+        Visualizer(0).apply {
+            measurementMode = Visualizer.MEASUREMENT_MODE_PEAK_RMS
+            enabled = true
+        }
+    } catch (e: Exception) {
+        Log.i(TAG, "AUDIO no meter on the output mix: $e")
+        null
+    }
+
     @Synchronized
-    fun start(ctx: Context, onLost: () -> Unit): Boolean {
-        val fx = try {
-            newEffect(onLost)
-        } catch (e: Exception) {
-            Log.i(TAG, "AUDIO silencer refused: $e")
-            return false
-        }
-        if (!fx.hasControl() || !fx.enabled) {
-            Log.i(TAG, "AUDIO silencer refused: control=${fx.hasControl()} enabled=${fx.enabled}")
+    fun start(ctx: Context) {
+        if (effect != null) return
+        // Made before the effect, so it sits ahead of it in the chain and hears what the effect removes.
+        val meter = openMixMeter()
+        try {
+            val fx = newEffect()
+            if (fx.hasControl() && fx.enabled) {
+                effect = fx
+                mix = meter
+                lifted = false
+                val am = ctx.applicationContext.getSystemService(AudioManager::class.java)
+                audio = am
+                am.registerAudioPlaybackCallback(playback, null)
+                // The callback reports changes only: an alarm already ringing must be let through now.
+                runCatching { playback.onPlaybackConfigChanged(am.activePlaybackConfigurations) }
+                Log.i(TAG, "AUDIO silencing effect on, under the mute, meter=${meter != null}")
+                return
+            }
+            Log.i(TAG, "AUDIO silencing effect refused: control=${fx.hasControl()} enabled=${fx.enabled}")
             runCatching { fx.release() }
-            return false
+        } catch (e: Exception) {
+            Log.i(TAG, "AUDIO silencing effect refused: $e")
         }
-        effect = fx
-        lifted = false
-        val app = ctx.applicationContext
-        val am = app.getSystemService(AudioManager::class.java)
-        am.registerAudioPlaybackCallback(playback, null)
-        // The callback reports changes only: an alarm already ringing must be let through now.
-        runCatching { playback.onPlaybackConfigChanged(am.activePlaybackConfigurations) }
-        val p = Prefs(app)
-        val own = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-        // Saved before anything moves: a crash from here on still gets it back.
-        p.audioSilencedFrom = own
-        Thread.sleep(SETTLE_MS)
-        val start = shareStartIndex(p.audioShareIndex, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))
-        PhoneSpeaker.stepIndex(app, start - own)
-        ContextCompat.registerReceiver(app, volume, IntentFilter(VOLUME_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
-        listening = true
-        followVolume(app)
-        Log.i(TAG, "AUDIO speaker silenced by an effect, phone's own volume $own, share starts at $start")
-        return true
+        runCatching { meter?.release() }
+    }
+
+    /**
+     * A new meter: it reports the peak of a long stretch behind it, and the last sound must not be
+     * taken for the next one. Android keeps a meter ahead of the effect whichever is made first.
+     */
+    @Synchronized
+    fun freshMeter() {
+        if (effect == null) return
+        runCatching { mix?.release() }
+        mix = openMixMeter()
+    }
+
+    /** Whether the mute can safely come off for sound the effect covers: it must be there, and be seen to work. */
+    @Synchronized
+    fun canCover(): Boolean = effect != null && mix != null
+
+    /** Whether the output the effect is on is playing anything. */
+    @Synchronized
+    fun mixIsAudible(): Boolean {
+        val meter = mix ?: return false
+        return runCatching {
+            meter.getMeasurementPeakRms(reading) == Visualizer.SUCCESS && mixIsAudible(reading.mPeak)
+        }.getOrDefault(false)
     }
 
     /** At session end, and at every service start for the crash case. Does nothing if no share was silenced. */
     @Synchronized
     fun stop(ctx: Context) {
-        val app = ctx.applicationContext
-        // First, so the walk back isn't taken for the user moving the PC's level.
-        if (listening) {
-            listening = false
-            runCatching { app.unregisterReceiver(volume) }
-        }
-        val p = Prefs(app)
-        val saved = p.audioSilencedFrom
-        if (saved >= 0) {
-            val am = app.getSystemService(AudioManager::class.java)
-            PhoneSpeaker.stepIndex(app, stepsBack(am.getStreamVolume(AudioManager.STREAM_MUSIC), saved))
-            p.audioSilencedFrom = -1
-            Log.i(TAG, "AUDIO phone's own volume back to $saved, reads ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}")
-        }
+        restoreOlderShare(ctx.applicationContext)
+        audio?.let { am -> runCatching { am.unregisterAudioPlaybackCallback(playback) } }
+        audio = null
+        lifted = false
+        runCatching { mix?.release() }
+        mix = null
         effect?.let { fx ->
-            runCatching { app.getSystemService(AudioManager::class.java).unregisterAudioPlaybackCallback(playback) }
             Thread.sleep(SETTLE_MS)
             runCatching {
                 fx.enabled = false
@@ -136,5 +146,21 @@ object SpeakerSilencer {
             }
         }
         effect = null
+    }
+
+    /** A version before this silenced differently: a share it left behind in a crash is put right once. */
+    private fun restoreOlderShare(app: Context) {
+        val p = Prefs(app)
+        if (p.audioBypassMuted) {
+            p.audioBypassMuted = false
+            PhoneSpeaker.setStreamMuted(app, false)
+        }
+        val saved = p.audioSilencedFrom
+        if (saved >= 0) {
+            val am = app.getSystemService(AudioManager::class.java)
+            PhoneSpeaker.stepIndex(app, stepsBack(am.getStreamVolume(AudioManager.STREAM_MUSIC), saved))
+            p.audioSilencedFrom = -1
+            Log.i(TAG, "AUDIO phone's own volume back to $saved, reads ${am.getStreamVolume(AudioManager.STREAM_MUSIC)}")
+        }
     }
 }

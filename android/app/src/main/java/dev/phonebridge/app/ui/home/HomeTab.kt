@@ -115,7 +115,6 @@ import dev.phonebridge.app.ui.components.RelayTopBar
 import dev.phonebridge.app.ui.components.cardColor
 import dev.phonebridge.app.ui.components.tintColor
 import dev.phonebridge.app.ui.components.LinkIndicator
-import dev.phonebridge.app.ui.settings.openNotifyAccess
 import dev.phonebridge.app.RelayDialog
 import dev.phonebridge.app.ui.timeline.RecentItem
 import dev.phonebridge.app.ui.timeline.isOpenable
@@ -207,6 +206,7 @@ fun HomeTab(onTimeline: () -> Unit) {
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var opening by remember { mutableStateOf(false) }
+    val accessOpener = dev.phonebridge.app.ui.settings.rememberAccessOpener()
     val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
         ScreenshotWatcher.sync(ctx)
         val access = ClipImages.imageAccess(ctx)
@@ -244,9 +244,9 @@ fun HomeTab(onTimeline: () -> Unit) {
                 item(key = "needs") {
                     NeedsCard(list, Modifier.animateItem()) { need ->
                         when (need) {
-                            Need.NotificationAccess -> openNotifyAccess(ctx)
+                            Need.NotificationAccess -> accessOpener(dev.phonebridge.app.ui.settings.SpecialAccess.Notifications)
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermissions)
-                            Need.ControlOff -> openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            Need.ControlOff -> accessOpener(dev.phonebridge.app.ui.settings.SpecialAccess.Control)
                             Need.PcForgotPhone -> forgetNames = forgottenPcNames()
                             Need.AppNotificationsOff -> openSettings(
                                 ctx,

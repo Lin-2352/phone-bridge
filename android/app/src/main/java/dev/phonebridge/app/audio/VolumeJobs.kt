@@ -10,6 +10,19 @@ import java.util.concurrent.Executors
 class VolumeJobs(private val executor: (Runnable) -> Unit, private val onError: (Throwable) -> Unit = {}) {
     fun submit(job: () -> Unit) = executor(Runnable { runCatching(job).onFailure(onError) })
 
+    /** Queues [job] like [submit] and waits up to [timeoutMs] for it. False: still pending (it will run, in order). */
+    fun runAndWait(timeoutMs: Long, job: () -> Unit): Boolean {
+        val done = java.util.concurrent.CountDownLatch(1)
+        submit {
+            try {
+                job()
+            } finally {
+                done.countDown()
+            }
+        }
+        return done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
     companion object {
         val shared: VolumeJobs by lazy {
             val pool = Executors.newSingleThreadExecutor { r -> Thread(r, "pb-audio-vol") }

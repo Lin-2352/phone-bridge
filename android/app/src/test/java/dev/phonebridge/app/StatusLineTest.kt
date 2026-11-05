@@ -8,8 +8,8 @@ class StatusLineTest {
     private val now = 10_000_000_000L
     private fun st(
         running: Boolean = true, ready: Boolean = true, pc: String? = "DESK", connected: Boolean = false,
-        seen: Long = 0L, controller: String? = null,
-    ) = relayStatus(running, ready, pc, connected, seen, now, controller)
+        seen: Long = 0L, controller: String? = null, failed: Boolean = false,
+    ) = relayStatus(running, ready, pc, connected, seen, now, controller, attemptFailed = failed)
 
     @Test fun a_taken_discovery_port_is_said_when_the_pc_is_away() {
         val s = relayStatus(true, true, "DESK", false, now - 3 * 3600_000L, now, null, discoveryOff = true)
@@ -30,11 +30,25 @@ class StatusLineTest {
         assertNull(st(connected = true).detail)
     }
 
-    @Test fun a_paired_pc_not_in_contact_is_not_called_healthy() {
+    // Relay connects only when there is something to do, so no open session says nothing about the PC.
+    @Test fun no_open_session_is_not_called_unreachable() {
         val s = st(seen = now - 3 * 3600_000L)
+        assertEquals("Paired with DESK", s.title)
+        assertEquals("Last seen 3 h ago", s.detail)
+        assertEquals("Paired with DESK \u00b7 last seen 3 h ago", s.line)
+    }
+
+    @Test fun only_a_failed_attempt_says_not_reachable() {
+        val s = st(seen = now - 3 * 3600_000L, failed = true)
         assertEquals("DESK not reachable", s.title)
         assertEquals("Last seen 3 h ago", s.detail)
-        assertEquals("DESK not reachable \u00b7 last seen 3 h ago", s.line)
+        val never = st(failed = true)
+        assertEquals("DESK not reachable", never.title)
+        assertNull(never.detail)
+    }
+
+    @Test fun a_live_session_outranks_an_old_failure() {
+        assertEquals("Connected to DESK", st(connected = true, seen = now, failed = true).title)
     }
 
     @Test fun paired_without_any_contact_stamp_is_only_the_paired_fact() {

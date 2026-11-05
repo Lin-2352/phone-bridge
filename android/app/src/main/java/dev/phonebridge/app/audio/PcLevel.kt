@@ -12,22 +12,19 @@ fun clampStep(step: Int): Int = step.coerceIn(0, PC_LEVEL_STEPS)
 fun stepForIndex(index: Int, max: Int): Int =
     if (max <= 0) PC_LEVEL_STEPS else clampStep((index.coerceAtLeast(0) * PC_LEVEL_STEPS + max - 1) / max)
 
+/** The phone's volume that shows the PC level [step]. */
+fun indexForStep(step: Int, max: Int): Int =
+    (clampStep(step) * max.coerceAtLeast(0) + PC_LEVEL_STEPS / 2) / PC_LEVEL_STEPS
+
+/** The level after a volume key. [direction]: 1 up, -1 down, 0 only shows the bar. */
+fun stepAfterKey(current: Int, direction: Int): Int = clampStep(current + direction)
+
 /** 3 dB a step, roughly what a phone's own volume keys do; step 0 is silence. */
 fun gainForStep(step: Int): Float = when (val s = clampStep(step)) {
     0 -> 0f
     PC_LEVEL_STEPS -> 1f
     else -> 10f.pow(-(PC_LEVEL_STEPS - s) * DB_PER_STEP / 20f)
 }
-
-/**
- * The PC level step in a report that the phone's volume moved from [prev] to [index] while it is held
- * at [held]. Only a move away is a press: a move back is Relay undoing one.
- */
-fun keyStep(held: Int, prev: Int, index: Int): Int =
-    if (kotlin.math.abs(index - held) > kotlin.math.abs(prev - held)) (index - prev).coerceIn(-1, 1) else 0
-
-/** The one step that brings the volume back toward [held]. */
-fun undoStep(held: Int, index: Int): Int = (held - index).coerceIn(-1, 1)
 
 /**
  * The level of what the PC hears, applied to captured sound before it is encoded. [step] is set by

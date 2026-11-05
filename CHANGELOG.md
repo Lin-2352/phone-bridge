@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- A PC asking for control while *Relay control* is off now sends you to Accessibility settings, or posts a notification that does if Android won't let Relay open them from the background. The request waits up to 40 seconds for you to turn it on, instead of being refused on the spot.
+
+- *Silence earphones too*, on by default. Turned off, connected earphones keep playing during a share, and the audio also goes to the PC.
+
+### Fixed
+- Notification access and PC control: on Android 13 and later, an APK from outside Google Play can find these switches locked. *Grant* and *Fix* now explain how to unlock them and open the right pages, instead of leaving you at a greyed-out switch.
+- Turning Relay off and on again could leave it unable to start until the phone killed it. A finished camera, screen, audio or touchpad session kept the network port busy. Those sessions now let go of it, a failed start is retried, and if it still fails you're told and the reason is logged.
+- The status said "<PC> not reachable" whenever no session was open, even right after a transfer worked. It now says that only after an attempt really failed.
+- Sound could be heard from the phone during an audio share: games stayed loud, because Android applies the silencing effect to only one audio output, and opening one played sound before the phone went quiet. The phone is now muted from the start of a share.
+- The volume keys now set the PC's level in every app. Apps that keep the keys for themselves, like YouTube and Instagram, get the normal volume bar, already at the PC's level. Games on the low-latency output get a cast-style bar.
+- Audio lag: the PC held 170 to 340 ms of sound, and now holds what the network needs, usually about 100 to 120 ms.
+- Audio crackling and skips: a bug in the audio library left playback at normal priority, so a busy PC could run the sound device dry. Small drifts are now played off by a change of speed too slight to hear, instead of a skip.
+- An audio share could end by itself with "the app does not allow capture" when nothing was playing but an app held a silent player open, as YouTube's home screen does. Silence never ends a share now. If an app seems to be playing and no sound arrives for 10 seconds, the share's notification says so.
+- A stray tap beside a screen, camera or control question no longer counts as Deny.
+- Turning on "Let my PC control this phone" while Relay control was off also gave every paired PC permission to skip the question. It now only leads to the Accessibility page.
+- The PC no longer says a phone "declined" control when Relay control was simply off.
+
+### Known issues
+- Play Protect can block installing the APK from a browser, messaging app or file manager in regions with enhanced fraud protection, including India, because Relay declares a notification listener and an accessibility service. No code change avoids this while both features stay in the APK. See [If Android blocks the app](README.md#if-android-blocks-the-app).
+
 ## 0.2.0 (2026-11-04, pre-release)
 
 ### Added

@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
+import dev.phonebridge.app.audio.encoderWaitUs
 
 private const val TAG = "PhoneBridgeAudio"
 
@@ -17,6 +18,10 @@ private const val TAG = "PhoneBridgeAudio"
 class OpusEncoder private constructor(private val codec: MediaCodec, private val bytesPerSecond: Long) {
     private val info = MediaCodec.BufferInfo()
     private var writtenBytes = 0L
+
+    /** PCM fed in that hasn't come out as a packet yet. */
+    private var pendingBytes = 0L
+    private val bytesPerPacket = bytesPerSecond * PACKET_MS / 1000
 
     /** PCM frames the encoder had no room for: each is an audible jump. */
     var droppedFrames = 0L
@@ -33,9 +38,10 @@ class OpusEncoder private constructor(private val codec: MediaCodec, private val
             b.put(pcm, 0, minOf(len, b.remaining()))
             codec.queueInputBuffer(i, 0, b.position(), writtenBytes * 1_000_000 / bytesPerSecond, 0)
             writtenBytes += len
+            pendingBytes += len
         }
         while (true) {
-            val o = codec.dequeueOutputBuffer(info, 0)
+            val o = codec.dequeueOutputBuffer(info, encoderWaitUs(pendingBytes, bytesPerPacket))
             if (o < 0) {
                 if (o == MediaCodec.INFO_TRY_AGAIN_LATER) return
                 continue // format or buffers changed
@@ -47,6 +53,7 @@ class OpusEncoder private constructor(private val codec: MediaCodec, private val
                     val packet = ByteArray(info.size)
                     out.position(info.offset)
                     out.get(packet)
+                    pendingBytes = (pendingBytes - bytesPerPacket).coerceAtLeast(0)
                     emit(packet)
                 }
             }
@@ -62,6 +69,7 @@ class OpusEncoder private constructor(private val codec: MediaCodec, private val
     companion object {
         private const val BIT_RATE = 160_000
         private const val INPUT_WAIT_US = 20_000L
+        private const val PACKET_MS = 20
 
         /** Null when this phone cannot encode Opus; the caller then sends PCM. */
         fun create(sampleRate: Int, channels: Int): OpusEncoder? {

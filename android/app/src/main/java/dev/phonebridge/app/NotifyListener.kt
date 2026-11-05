@@ -76,6 +76,7 @@ class NotifyListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         instance = this
+        Prefs(this).specialAccessConnected = true
         connected.value = true
         Log.i(TAG, "NOTIFY listener connected")
         seedAll()

@@ -93,10 +93,12 @@ object ClipImages {
             val fd = ParcelFileDescriptor.open(tmp, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
             node.sendClipboardImageFd(peer.id, fd)
             Log.i(TAG, "CLIPIMG sent ${png.size} bytes to ${peer.name}")
+            Bridge.attemptDone(ctx, reached = true)
             Timeline.add(clipImageEntry(peer.name, TlDir.ToPc, png.size.toLong(), pngDims(png)))
             null
         } catch (t: Throwable) {
             Log.e(TAG, "CLIPIMG send failed: $t")
+            Bridge.attemptDone(ctx, reached = false)
             imageSendNotice(t.message)
         } finally {
             tmp.delete()

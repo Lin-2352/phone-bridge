@@ -35,4 +35,32 @@ class VolumeJobsTest {
         queued.forEach { it.run() }
         assertEquals(listOf("begin"), ran)
     }
+
+    /**
+     * Merged 2026-11-06: silencing must be done before the PC is told "yes" (the first sound then finds the
+     * phone muted), and must never overtake a restore still queued from the share before.
+     */
+    @Test
+    fun run_and_wait_runs_after_queued_jobs_and_returns_once_done() {
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val real = VolumeJobs({ pool.execute(it) })
+        val ran = java.util.Collections.synchronizedList(ArrayList<String>())
+        real.submit { Thread.sleep(50); ran.add("restore") }
+        val done = real.runAndWait(2_000) { ran.add("begin") }
+        assertTrue(done)
+        assertEquals(listOf("restore", "begin"), ran.toList())
+        pool.shutdown()
+    }
+
+    @Test
+    fun run_and_wait_gives_up_after_its_timeout_but_the_job_still_runs_in_order() {
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val real = VolumeJobs({ pool.execute(it) })
+        val ran = java.util.Collections.synchronizedList(ArrayList<String>())
+        real.submit { Thread.sleep(300); ran.add("slow") }
+        assertEquals(false, real.runAndWait(50) { ran.add("begin") })
+        pool.shutdown()
+        pool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)
+        assertEquals(listOf("slow", "begin"), ran.toList())
+    }
 }

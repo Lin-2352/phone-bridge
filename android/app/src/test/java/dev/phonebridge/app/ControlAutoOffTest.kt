@@ -32,4 +32,14 @@ class ControlAutoOffTest {
         // The user chose to keep Control on between sessions (input still pauses while locked).
         assertFalse(shouldSwitchOff(keepOn = true, sessionSeen = true, controlledBy = null, sharingWith = null))
     }
+
+    @Test
+    fun stays_on_while_a_share_holds_the_volume_keys() {
+        assertFalse(shouldSwitchOff(keepOn = false, sessionSeen = true, controlledBy = null, sharingWith = null, holdingVolumeKeys = true))
+    }
+
+    @Test
+    fun a_share_that_held_the_keys_counts_as_a_session_once_it_ends() {
+        assertTrue(shouldSwitchOff(keepOn = false, sessionSeen = true, controlledBy = null, sharingWith = null, holdingVolumeKeys = false))
+    }
 }

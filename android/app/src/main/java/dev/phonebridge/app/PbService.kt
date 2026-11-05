@@ -99,11 +99,21 @@ object Bridge {
 
     /** When the PC was last in contact (wall-clock ms), 0 if never; persisted as [Prefs.lastSeenMs]. */
     val lastSeen = mutableLongStateOf(0L)
+    /** The last thing this phone tried to send to the PC failed; cleared by any later contact or a network change. */
+    val attemptFailed = mutableStateOf(false)
+
+    /** A send started on this phone finished: success is contact, failure is the one thing that means "not reachable". */
+    fun attemptDone(ctx: Context, reached: Boolean) {
+        if (reached) stampSeen(ctx)
+        attemptFailed.value = !reached
+        PbService.refresh(ctx)
+    }
 
     /** The PC opened or closed a session: count it and stamp the contact time. */
     fun pcContact(ctx: Context, opened: Boolean) {
         liveSessions.intValue = if (opened) liveSessions.intValue + 1 else (liveSessions.intValue - 1).coerceAtLeast(0)
         refreshActivity()
+        attemptFailed.value = false
         stampSeen(ctx)
         // Notification, tile and widget say "Connected" or "last seen" from this; redraw all three.
         val svc = PbService.instance
@@ -122,6 +132,7 @@ object Bridge {
         return relayStatus(
             up, nodeReady.value, linked.value, isConnected(), lastSeenAny(ctx), System.currentTimeMillis(), controlledBy.value,
             discoveryOff = node?.let { !it.discoveryActive() } ?: false,
+            attemptFailed = attemptFailed.value,
         )
     }
 
@@ -229,9 +240,12 @@ class PbService : Service() {
     /** New Wi-Fi or new address: find the paired PC again (debounced). */
     private fun rediscoverSoon() {
         rediscoverJob?.cancel()
+        // A failure on the old network says nothing about this one.
+        if (Bridge.attemptFailed.value) { Bridge.attemptFailed.value = false; updateStatus() }
         rediscoverJob = scope.launch {
             kotlinx.coroutines.delay(2000)
             val n = Bridge.node ?: return@launch
+            runCatching { n.networkChanged() }
             runCatching { n.rediscover() }
             Log.i(TAG, "DISCOVERY probe sent")
         }
@@ -242,6 +256,7 @@ class PbService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        EncoderCaps.allowSoftware = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
         // Foreground first: the start deadline is short, and the log, timeline and stale-notice work below is not needed for it.
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_STATUS, "Connection status", NotificationManager.IMPORTANCE_MIN))
@@ -413,84 +428,105 @@ class PbService : Service() {
         // A new node has no sessions yet (the old node's last events are handled by now).
         Bridge.liveSessions.intValue = 0
         Bridge.refreshActivity()
-        try {
-            NativeInit.initContext(applicationContext)
-            val n = startNode(
-                filesDir.absolutePath,
-                Build.MODEL ?: "Android",
-                PORT.toUShort(),
-                KeystoreWrapper(),
-                object : EventListener {
-                    // Called on a Rust runtime thread: hand off and return at once.
-                    override fun onEvent(event: PbEvent) {
-                        try {
-                            // Progress clears in order with later transfers; the copy runs on its own thread.
-                            if (event is PbEvent.FileReceived) events.execute { cancelProgress(true) }
-                            router.route(event) { e ->
-                                try {
-                                    handle(e)
-                                } catch (t: Throwable) {
-                                    Log.e(TAG, "EVENT handling failed: $t")
-                                }
-                            }
-                        } catch (_: Throwable) {
-                            // Executor shut down: the service is going away.
-                        }
-                    }
-                },
-            )
-            val prefs = Prefs(this)
-            n.setClipboardSync(prefs.clipboardSync)
-            n.setClipboardImages(prefs.clipboardImages)
-            n.setAutoAccept(prefs.autoAccept)
-            prefs.migrateAllowances(n.peers().map { it.id })
-            n.setAllowControl(false) // per-PC "Always allow" is applied in askControl
-            n.setNotifyEnabled(prefs.notifyToPc)
-            n.setNotifyHandler(NotifyActions)
-            n.setAudioSink(AudioShare.sink)
-            Bridge.allowControl.value = prefs.allowControl
-            ControlService.instance?.let { n.setInputListener(it) }
-            // Published under the same lock onDestroy takes, so a stop racing
-            // this start either sees the node or makes us drop it.
-            val orphan = synchronized(Bridge) {
-                if (destroyed) true else { Bridge.node = n; false }
-            }
-            if (orphan) {
-                // Our scope is being cancelled: close on the long-lived one, and
-                // let the next start wait for it (the ports must be free).
-                val previous = Bridge.stopping
-                Bridge.stopping = Bridge.scope.launch {
-                    previous?.join()
-                    withTimeoutOrNull(3000) { n.shutdown() }
-                    n.destroy()
-                }
+        var attempt = 1
+        while (true) {
+            try {
+                startNodeOnce()
                 return
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Keystore not ready, port busy...: try again briefly, then do not sit in
+                // the foreground pretending to work. RecoveryJob retries later.
+                val reason = nodeFailureReason((e as? uniffi.pb_ffi.PbException.Failed)?.reason ?: e.message)
+                Log.e(TAG, "SERVICE failed to start (try $attempt): $reason")
+                AppLog.event("events", "node_failed", "type" to e.javaClass.simpleName, "why" to reason, "try" to attempt)
+                val wait = nodeRetryDelayMs(attempt)
+                if (wait == null) {
+                    notifyInfo(this, "$APP_NAME could not start", "Open $APP_NAME to try again. If this keeps happening, restart your phone")
+                    android.os.Handler(mainLooper).post { stopSelf() }
+                    return
+                }
+                // Anything the last run left for the garbage collector may still be holding the port.
+                Runtime.getRuntime().gc()
+                kotlinx.coroutines.delay(wait)
+                attempt++
             }
-            // The accessibility service may have connected while we started.
-            ControlService.instance?.let { n.setInputListener(it) }
-            // So the node knows what is already on the phone (sync with PCs).
-            NotifyListener.instance?.seedAll()
-            // A call silenced from the PC ended while Phone Bridge was not running.
-            if (!NotifyListener.live.any { it.category == android.app.Notification.CATEGORY_CALL }) {
-                restoreRinger(this)
-            }
-            Bridge.linked.value = n.peers().firstOrNull()?.name
-            Bridge.nodeReady.value = true
-            AppLog.event("events", "node_ready", "paired" to n.peers().size)
-            ScreenshotWatcher.sync(this)
-            updateStatus()
-            Log.i(TAG, "SERVICE node started id=${n.peerId()}")
-            runCatching { EncoderCaps.get() }.onSuccess { c ->
-                Log.i(TAG, "SCREEN encoder caps ${c.encoderName} codecs=${c.codecs} vbr=${c.vbr} qpMax=${c.qpMax} align=${c.alignW}x${c.alignH}")
-            }
-            rediscoverSoon()
-        } catch (e: Throwable) {
-            // Keystore not ready, port busy...: do not sit in the foreground
-            // pretending to work. RecoveryJob retries later.
-            Log.e(TAG, "SERVICE failed to start: $e")
-            AppLog.event("events", "node_failed", "type" to e.javaClass.simpleName)
-            android.os.Handler(mainLooper).post { stopSelf() }
+
         }
+    }
+
+    private suspend fun startNodeOnce() {
+        NativeInit.initContext(applicationContext)
+        val n = startNode(
+            filesDir.absolutePath,
+            Build.MODEL ?: "Android",
+            PORT.toUShort(),
+            KeystoreWrapper(),
+            object : EventListener {
+                // Called on a Rust runtime thread: hand off and return at once.
+                override fun onEvent(event: PbEvent) {
+                    try {
+                        // Progress clears in order with later transfers; the copy runs on its own thread.
+                        if (event is PbEvent.FileReceived) events.execute { cancelProgress(true) }
+                        router.route(event) { e ->
+                            try {
+                                handle(e)
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "EVENT handling failed: $t")
+                            }
+                        }
+                    } catch (_: Throwable) {
+                        // Executor shut down: the service is going away.
+                    }
+                }
+            },
+        )
+        val prefs = Prefs(this)
+        n.setClipboardSync(prefs.clipboardSync)
+        n.setClipboardImages(prefs.clipboardImages)
+        n.setAutoAccept(prefs.autoAccept)
+        prefs.migrateAllowances(n.peers().map { it.id })
+        n.setAllowControl(false) // per-PC "Always allow" is applied in askControl
+        n.setNotifyEnabled(prefs.notifyToPc)
+        n.setNotifyHandler(NotifyActions)
+        n.setAudioSink(AudioShare.sink)
+        Bridge.allowControl.value = prefs.allowControl
+        ControlService.instance?.let { n.setInputListener(it) }
+        // Published under the same lock onDestroy takes, so a stop racing
+        // this start either sees the node or makes us drop it.
+        val orphan = synchronized(Bridge) {
+            if (destroyed) true else { Bridge.node = n; false }
+        }
+        if (orphan) {
+            // Our scope is being cancelled: close on the long-lived one, and
+            // let the next start wait for it (the ports must be free).
+            val previous = Bridge.stopping
+            Bridge.stopping = Bridge.scope.launch {
+                previous?.join()
+                withTimeoutOrNull(3000) { n.shutdown() }
+                n.destroy()
+            }
+            return
+        }
+        // The accessibility service may have connected while we started.
+        ControlService.instance?.let { n.setInputListener(it) }
+        // So the node knows what is already on the phone (sync with PCs).
+        NotifyListener.instance?.seedAll()
+        // A call silenced from the PC ended while Phone Bridge was not running.
+        if (!NotifyListener.live.any { it.category == android.app.Notification.CATEGORY_CALL }) {
+            restoreRinger(this)
+        }
+        Bridge.linked.value = n.peers().firstOrNull()?.name
+        Bridge.nodeReady.value = true
+        AppLog.event("events", "node_ready", "paired" to n.peers().size)
+        ScreenshotWatcher.sync(this)
+        updateStatus()
+        Log.i(TAG, "SERVICE node started id=${n.peerId()}")
+        runCatching { EncoderCaps.get() }.onSuccess { c ->
+            Log.i(TAG, "SCREEN encoder caps ${c.encoderName} codecs=${c.codecs} vbr=${c.vbr} qpMax=${c.qpMax} align=${c.alignW}x${c.alignH}")
+        }
+        rediscoverSoon()
     }
 
     /** Question id -> notification id still on screen for it (file offers get a new id each). */
@@ -552,6 +588,7 @@ class PbService : Service() {
             }
             is PbEvent.IncomingOffer -> notifyOffer(e)
             is PbEvent.ControlRequest -> askControl(e)
+            is PbEvent.ControlServiceNeeded -> sendToControlSettings(e.peerName)
             is PbEvent.TransferFailed -> {
                 cancelProgress(true)
                 if (isCancelled(e.reason)) notifySimple("Transfer cancelled", e.reason.replaceFirstChar { it.uppercase() })
@@ -922,6 +959,27 @@ class PbService : Service() {
         applyTypes()
     }
 
+    /**
+     * A PC asks for control and Relay control is off, as it is after every session (banking apps
+     * refuse to open while it is on). Opens its settings when Android allows that; from the
+     * background Android refuses without an error, so the notification is always posted too.
+     */
+    private fun sendToControlSettings(peer: String) {
+        Log.i(TAG, "CONTROL request from $peer: Relay control is off, sending the user to its settings")
+        val settings = controlSettingsIntent(this)
+        val n = Notification.Builder(this, CH_CONTROL)
+            .setSmallIcon(R.drawable.ic_stat_bridge)
+            .setContentTitle("$peer wants to control this phone")
+            .setContentText("Tap, then turn on \u201c$APP_NAME control\u201d")
+            .setContentIntent(PendingIntent.getActivity(this, 46, settings, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
+            .setCategory(Notification.CATEGORY_CALL)
+            .setTimeoutAfter(40_000)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(CONTROL_ASK_ID, n)
+        runCatching { startActivity(settings) }.onFailure { Log.i(TAG, "CONTROL settings not opened: $it") }
+    }
+
     private fun askControl(e: PbEvent.ControlRequest) {
         val peerId = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
         if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedControlPcs), keyguardLocked())) {
@@ -1023,8 +1081,8 @@ class PbService : Service() {
         val st = Bridge.status(this, serviceUp = true)
         return Notification.Builder(this, CH_STATUS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
+            // The title alone: "last seen" is on Home and the tile, and a notification that sits for hours isn't the place for it.
             .setContentTitle(st.title)
-            .setContentText(st.detail)
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(open)

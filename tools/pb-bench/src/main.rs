@@ -66,6 +66,7 @@ fn tuning(args: &[String]) -> Tuning {
             .unwrap_or(d.congestion),
         gso: flag(args, "--gso").map(|v| v == "on").unwrap_or(d.gso),
         mtu_max: flag(args, "--mtu-max").and_then(|v| v.parse().ok()),
+        datagram_send_buffer: d.datagram_send_buffer,
     }
 }
 

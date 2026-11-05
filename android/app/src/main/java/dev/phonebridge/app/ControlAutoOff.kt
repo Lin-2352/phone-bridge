@@ -7,5 +7,5 @@ package dev.phonebridge.app
  * the PC still controls the phone or shares its screen. The user may keep it on
  * ([Prefs.keepControlOn]); remote input still pauses while the phone is locked.
  */
-fun shouldSwitchOff(keepOn: Boolean, sessionSeen: Boolean, controlledBy: String?, sharingWith: String?): Boolean =
-    !keepOn && sessionSeen && controlledBy == null && sharingWith == null
+fun shouldSwitchOff(keepOn: Boolean, sessionSeen: Boolean, controlledBy: String?, sharingWith: String?, holdingVolumeKeys: Boolean = false): Boolean =
+    !keepOn && sessionSeen && controlledBy == null && sharingWith == null && !holdingVolumeKeys

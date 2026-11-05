@@ -13,11 +13,13 @@ data class RelayStatus(val title: String, val detail: String?) {
 
 /**
  * [running] the service runs; [ready] its node is up (until then the PC is unknown); [connected] is
- * `widgetConnected`. "Paired with X" is only said when nothing is known about contact, as a paired fact.
+ * `widgetConnected`. Relay connects only when there is something to do, so having no open session says
+ * nothing about the PC: "not reachable" is only for [attemptFailed], a real attempt that failed.
  */
 fun relayStatus(
     running: Boolean, ready: Boolean, pc: String?, connected: Boolean,
     lastSeenMs: Long, nowMs: Long, controller: String? = null, discoveryOff: Boolean = false,
+    attemptFailed: Boolean = false,
 ): RelayStatus = when {
     !running -> RelayStatus("$APP_NAME is off", null)
     !ready -> RelayStatus("Starting\u2026", null)
@@ -25,8 +27,9 @@ fun relayStatus(
     pc == null -> RelayStatus("Not paired yet", null)
     connected -> RelayStatus("Connected to $pc", null)
     discoveryOff -> RelayStatus("$pc not reachable", DISCOVERY_OFF_TEXT)
+    attemptFailed -> RelayStatus("$pc not reachable", if (lastSeenMs > 0L) pcStatus(false, lastSeenMs, nowMs, paired = true) else null)
     lastSeenMs <= 0L -> RelayStatus("Paired with $pc", null)
-    else -> RelayStatus("$pc not reachable", pcStatus(false, lastSeenMs, nowMs, paired = true))
+    else -> RelayStatus("Paired with $pc", pcStatus(false, lastSeenMs, nowMs, paired = true))
 }
 
 /** Said while the PC is away and another app holds the discovery port. */

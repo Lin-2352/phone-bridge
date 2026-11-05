@@ -189,4 +189,12 @@ class SettingsStatusTest {
     fun audio_status_says_relay_not_our() {
         assertEquals("Phone audio starts without $APP_NAME's question", statusLine(Group.Audio, base.copy(audioSkipAsk = true)))
     }
+
+    /** Found on the phone 2026-11-06: none of the audio silence rows could be found by search. */
+    @Test
+    fun every_audio_switch_can_be_found_by_search() {
+        for (q in listOf("Silence", "earphones", "Volume keys", "Relay control")) {
+            org.junit.Assert.assertTrue(q, searchSettings(q).any { it.group == Group.Audio })
+        }
+    }
 }

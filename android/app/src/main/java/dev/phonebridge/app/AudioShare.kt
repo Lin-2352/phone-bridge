@@ -6,7 +6,11 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.media.projection.MediaProjection
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import dev.phonebridge.app.audio.AudioDirection
@@ -16,11 +20,14 @@ import dev.phonebridge.app.audio.CaptureLifecycle
 import dev.phonebridge.app.audio.VolumeJobs
 import dev.phonebridge.app.audio.AudioSource
 import dev.phonebridge.app.audio.EndCause
+import dev.phonebridge.app.audio.NoSoundHint
 import dev.phonebridge.app.audio.endNotice
 import dev.phonebridge.app.audio.refusalNotice
 import dev.phonebridge.app.audio.resolveEnd
+import dev.phonebridge.app.audio.sessionDetail
 import dev.phonebridge.app.audio.sessionNoticeText
 import dev.phonebridge.app.audio.PlayerAction
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import uniffi.pb_ffi.AudioSink
 import uniffi.pb_ffi.PbAudioEnd
@@ -28,10 +35,15 @@ import uniffi.pb_ffi.PbAudioOut
 import uniffi.pb_ffi.PbEvent
 
 private const val TAG = "PhoneBridgeAudio"
+/** How long the share waits for the phone to go silent before it answers the PC anyway. */
+private const val SILENCE_WAIT_MS = 1_500L
+
 const val AUDIO_ASK_ID = 10
 const val AUDIO_SHARE_ID = 11
 const val AUDIO_PLAY_ID = 12
 const val AUDIO_NOTICE_ID = 13
+private const val NO_SOUND_HINT_MS = 10_000L
+private const val SOUND_WATCH_MS = 1000L
 
 /** A PC asks for this phone's audio (`PbEvent.AudioRequest`). */
 class AudioAsk(
@@ -91,6 +103,28 @@ object AudioShare {
     /** Set when our own source ended; read when the node reports the end. */
     @Volatile private var endOverride: EndCause? = null
 
+    private val main = Handler(Looper.getMainLooper())
+    private val heardSound = AtomicBoolean(false)
+    private var noSound: NoSoundHint? = null
+
+    /** Once a second, away from the capture thread: whether to say that nothing is reaching the PC. */
+    private val soundWatch = object : Runnable {
+        override fun run() {
+            synchronized(this@AudioShare) {
+                val hint = noSound ?: return
+                val ctx = PbService.instance ?: return
+                val playing = ctx.getSystemService(AudioManager::class.java).isMusicActive
+                val changed = hint.onTick(SystemClock.elapsedRealtime(), heardSound.getAndSet(false), playing)
+                val peer = sharingWith.value
+                if (changed && peer != null) {
+                    Log.i(TAG, "AUDIO nothing captured while a player is open: ${hint.showing}")
+                    notifySession(ctx, AudioDirection.PHONE_TO_PC, sharingSource.value, peer, hint.showing)
+                }
+                main.postDelayed(this, SOUND_WATCH_MS)
+            }
+        }
+    }
+
     /** Frames of a PC to phone session; dropped until the player exists. */
     val sink = object : AudioSink {
         private var seen = 0L
@@ -137,7 +171,7 @@ object AudioShare {
             val o = out.get()
             if (o != null) send(o, enc, buf, len, a.channels)
             if (++frames % (10_000 / AudioStreamer.FRAME_MS) == 0L) {
-                Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
+                Log.i(TAG, "AUDIO sharing captured_frames=$frames max_frame_gap_ms=${streamer?.takeMaxFrameGapMs()} loop=${streamer?.takeLoopWindow()} encoder_dropped=${enc?.droppedFrames} ${o?.statsLine()}")
             }
         }
         val lc = CaptureLifecycle().also { lifecycle = it }
@@ -148,6 +182,7 @@ object AudioShare {
                 app, a.source, projection, a.sampleRate, a.channels,
                 onEnded = { reason -> sourceEnded(lc, reason) },
                 onLevel = { silent ->
+                    if (!silent) heardSound.set(true)
                     if (PhoneSpeaker.onFrame(app, silent)) {
                         notice(app, "This phone can't stay silent while sharing", "Muting it also silences what Relay captures, so the speaker stays on.")
                     }
@@ -162,6 +197,15 @@ object AudioShare {
             return
         }
         streamer = s
+        // As early as it can be: the sound must not be heard here once the user has said yes.
+        // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
+        // Through the volume queue, so it never overtakes a restore still queued from the share before, and
+        // waited for, so the PC hears "yes" only once the phone is silent.
+        if (a.source == AudioSource.PLAYBACK && !helper) {
+            if (!VolumeJobs.shared.runAndWait(SILENCE_WAIT_MS) { PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS) }) {
+                Log.w(TAG, "AUDIO silencing still queued after $SILENCE_WAIT_MS ms; sharing goes on")
+            }
+        }
         val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt(), if (enc != null) 1u else 0u)
         if (o == null) {
             // The question timed out or the PC left meanwhile.
@@ -169,11 +213,15 @@ object AudioShare {
             return
         }
         out.set(o)
-        // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
         sharingSource.value = a.source
-        if (a.source == AudioSource.PLAYBACK && !helper) VolumeJobs.shared.submit { PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS) }
+
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
+        if (a.source == AudioSource.PLAYBACK) {
+            noSound = NoSoundHint(NO_SOUND_HINT_MS)
+            heardSound.set(false)
+            main.postDelayed(soundWatch, SOUND_WATCH_MS)
+        }
         Log.i(TAG, "AUDIO phone to PC started source=${a.source} helper=$helper")
     }
 
@@ -267,16 +315,17 @@ object AudioShare {
     }
 
     /**
-     * The capture ended by itself (app blocks capture, projection closed, read error). Worker thread:
-     * it must not wait for this object's lock, which a stop holds while it joins the worker.
+     * The capture ended by itself (projection closed, read error). Worker thread: it must not wait for this
+     * object's lock, which a stop holds while it joins the worker. A quiet player never ends a share.
      */
     private fun sourceEnded(lc: CaptureLifecycle, reason: AudioReason?) {
         if (!lc.onSourceEnded()) return // a stop is already tearing this capture down
         Log.i(TAG, "AUDIO capture ended by itself: $reason")
+        AppLog.event("events", "audio_capture_ended", "reason" to reason?.name)
         ends.execute {
             synchronized(this) {
                 if (lifecycle !== lc) return@execute // that capture is gone; never stop the next one
-                endOverride = if (reason == AudioReason.APP_BLOCKS_CAPTURE) EndCause.APP_BLOCKS_CAPTURE else EndCause.SOURCE_ENDED
+                endOverride = EndCause.SOURCE_ENDED
                 stop(AudioDirection.PHONE_TO_PC)
             }
         }
@@ -339,6 +388,8 @@ object AudioShare {
                 teardownCapture()
                 ctx?.getSystemService(NotificationManager::class.java)?.cancel(AUDIO_SHARE_ID)
                 Log.i(TAG, "AUDIO phone to PC ended ($cause, source=$src)")
+                // Kept in Relay's own log, which outlives the system log: a share that ends must say why.
+                AppLog.event("events", "audio_ended", "direction" to "phone_to_pc", "cause" to cause.name)
             }
             AudioDirection.PC_TO_PHONE -> {
                 player?.let {
@@ -386,6 +437,8 @@ object AudioShare {
         lifecycle?.beginTeardown()
         lifecycle = null
         val src = captureSource
+        main.removeCallbacks(soundWatch)
+        noSound = null
         tone?.interrupt()
         tone = null
         PbService.instance?.let { svc -> VolumeJobs.shared.submit { PhoneSpeaker.restore(svc) } }
@@ -421,15 +474,18 @@ object AudioShare {
     }
 
     /** The persistent indicator with Stop, for every active session. */
-    private fun notifySession(ctx: Context, d: AudioDirection, source: AudioSource, peer: String) {
+    private fun notifySession(ctx: Context, d: AudioDirection, source: AudioSource, peer: String, noSound: Boolean = false) {
         val stop = PendingIntent.getBroadcast(
             ctx, 60 + d.wire, Intent(ctx, AudioReceiver::class.java).putExtra("dir", d.wire),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val detail = sessionDetail(d, peer, noSound)
         val n = Notification.Builder(ctx, "control")
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle(sessionNoticeText(d, source))
-            .setContentText(if (d == AudioDirection.PHONE_TO_PC) "Sent to $peer" else "From $peer")
+            .setContentText(detail)
+            .setStyle(Notification.BigTextStyle().bigText(detail))
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .build()

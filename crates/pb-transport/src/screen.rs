@@ -192,7 +192,7 @@ impl Node {
             event: InputEvent::MouseMove { dx: 0, dy: 0 },
         };
         out.write_all(&hello.encode()).await.map_err(tx)?;
-        let input = sender_on(out, async {});
+        let input = sender_on(out, conn.clone(), async {});
         let mut video = tokio::time::timeout(STREAM_TIMEOUT, conn.accept_uni())
             .await
             .map_err(|_| Error::Io("the phone did not open the video stream".into()))?
@@ -422,6 +422,31 @@ impl ScreenSink {
     }
 }
 
+/// Video out, from a capped byte queue, until the sender goes or the connection ends. The sender
+/// can outlive the session (the app frees it only when its garbage collector runs), and waiting on
+/// it alone would keep the connection, and so the node's port, in use after the node stops.
+pub(crate) async fn write_video(
+    mut out: iroh::endpoint::SendStream,
+    mut video: mpsc::UnboundedReceiver<Vec<u8>>,
+    queue: ByteQueue,
+    conn: iroh::endpoint::Connection,
+) {
+    loop {
+        let next = tokio::select! {
+            bytes = video.recv() => bytes,
+            _ = conn.closed() => None,
+        };
+        let Some(bytes) = next else { break };
+        let len = bytes.len();
+        let ok = out.write_all(&bytes).await.is_ok();
+        queue.pop(len);
+        if !ok {
+            break;
+        }
+    }
+    let _ = out.finish();
+}
+
 /// Phone side: answer a `ScreenStart` (`None` declines) and run the session.
 pub async fn serve_screen(
     mut session: Session,
@@ -465,19 +490,8 @@ pub async fn serve_screen(
     });
     // Video out, from a capped byte queue.
     let queue = ByteQueue::default();
-    let (video, mut video_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let q = queue.clone();
-    tokio::spawn(async move {
-        while let Some(bytes) = video_rx.recv().await {
-            let len = bytes.len();
-            let ok = out.write_all(&bytes).await.is_ok();
-            q.pop(len);
-            if !ok {
-                break;
-            }
-        }
-        let _ = out.finish();
-    });
+    let (video, video_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(write_video(out, video_rx, queue.clone(), conn.clone()));
     // Control both ways.
     let closer = session.closer();
     let (ctl, mut ctl_rx) = mpsc::unbounded_channel::<ControlMsg>();

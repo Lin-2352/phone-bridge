@@ -110,7 +110,8 @@ impl Node {
             event: InputEvent::MouseMove { dx: 0, dy: 0 },
         };
         out.write_all(&hello.encode()).await.map_err(tx)?;
-        Ok(sender_on(out, async move {
+        let conn = s.conn.clone();
+        Ok(sender_on(out, conn, async move {
             crate::files::await_peer_close(&mut s).await;
         }))
     }
@@ -128,9 +129,13 @@ fn mergeable_touch(e: &InputEvent) -> bool {
 }
 
 /// The paced sender on an open input stream; `after` runs once the stream
-/// is finished (the input session waits there for the peer to close).
+/// is finished (the input session waits there for the peer to close). It also
+/// ends with `conn`: the sender can outlive the session (the app frees it only
+/// when its garbage collector runs), and waiting on it alone would keep the
+/// connection, and so the node's port, in use after the node stops.
 pub(crate) fn sender_on(
     mut out: SendStream,
+    conn: iroh::endpoint::Connection,
     after: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> InputSender {
     {
@@ -163,9 +168,13 @@ pub(crate) fn sender_on(
                     tokio::select! {
                         e = rx.recv(), if open => Some(e),
                         () = tokio::time::sleep(moves.wait()) => None,
+                        _ = conn.closed() => break 'run,
                     }
                 } else {
-                    Some(rx.recv().await)
+                    tokio::select! {
+                        e = rx.recv() => Some(e),
+                        _ = conn.closed() => break 'run,
+                    }
                 };
                 match first {
                     Some(Some(e)) => {

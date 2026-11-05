@@ -145,12 +145,27 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("audio_silence_phone", false)
         set(v) = sp.edit().putBoolean("audio_silence_phone", v).apply()
 
+    /** Whether "silence this phone" also covers earphones, wired or wireless. */
+    /** Volume keys set the PC's level in every app during a silenced share, through Relay control (opt-in). */
+    var audioKeysViaControl: Boolean
+        get() = sp.getBoolean("audio_keys_via_control", false)
+        set(v) = sp.edit().putBoolean("audio_keys_via_control", v).apply()
+
+    var audioSilenceEarphones: Boolean
+        get() = sp.getBoolean("audio_silence_earphones", true)
+        set(v) = sp.edit().putBoolean("audio_silence_earphones", v).apply()
+
+    /** Whether [audioHeldIndex] is the volume of the earphones rather than the speaker. */
+    var audioHeldOnEarphones: Boolean
+        get() = sp.getBoolean("audio_held_on_earphones", false)
+        set(v) = sp.edit().putBoolean("audio_held_on_earphones", v).commit().let {}
+
     /** Muting was tried here and silenced the capture too. */
     var audioSilenceUnsupported: Boolean
         get() = sp.getBoolean("audio_silence_unsupported", false)
         set(v) = sp.edit().putBoolean("audio_silence_unsupported", v).apply()
 
-    /** What the volume keys last set the PC's level to while the phone was silent. */
+    /** The PC's level the next silenced share starts at. */
     var audioPcLevel: Int
         get() = sp.getInt("audio_pc_level", dev.phonebridge.app.audio.PC_LEVEL_STEPS)
         set(v) = sp.edit().putInt("audio_pc_level", v).apply()
@@ -174,12 +189,12 @@ class Prefs(context: Context) {
         get() = sp.getLong("audio_helper_last_attempt", 0)
         set(v) = sp.edit().putLong("audio_helper_last_attempt", v).apply()
 
-    /** The phone's own volume while an effect silences it for a share, -1 when none does. Written at once: a crash must not lose it. */
+    /** Set by earlier versions only: the phone's own volume, for a crash they left behind to be put right. -1 when there is none. */
     var audioSilencedFrom: Int
         get() = sp.getInt("audio_silenced_from", -1)
         set(v) = sp.edit().putInt("audio_silenced_from", v).commit().let {}
 
-    /** Where the volume bar was left in the last silenced share: the next one starts there. */
+    /** Set by earlier versions only: where the volume bar, which set the PC's level then, was left. -1 once taken over. */
     var audioShareIndex: Int
         get() = sp.getInt("audio_share_index", -1)
         set(v) = sp.edit().putInt("audio_share_index", v).apply()
@@ -215,6 +230,11 @@ class Prefs(context: Context) {
     var audioMuteKeepsCapture: Boolean
         get() = sp.getBoolean("audio_mute_keeps_capture", false)
         set(v) = sp.edit().putBoolean("audio_mute_keeps_capture", v).apply()
+
+    /** Set by earlier versions only: muted on top of the effect and not unmuted yet, for a crash they left behind. */
+    var audioBypassMuted: Boolean
+        get() = sp.getBoolean("audio_bypass_muted", false)
+        set(v) = sp.edit().putBoolean("audio_bypass_muted", v).commit().let {}
 
     /** Relay muted the stream and has not given it back yet (survives a crash). */
     var audioMutedByRelay: Boolean
@@ -254,6 +274,11 @@ class Prefs(context: Context) {
     var notifySeen: List<String>
         get() = sp.getString("notify_seen", "").orEmpty().split(NL).filter { it.isNotEmpty() }
         set(v) = sp.edit().putString("notify_seen", v.joinToString(NL)).apply()
+
+    /** Android has connected Notification access or control at least once: its restricted-settings lock is off. */
+    var specialAccessConnected: Boolean
+        get() = sp.getBoolean("special_access_connected", false)
+        set(v) = sp.edit().putBoolean("special_access_connected", v).apply()
 
     /** Phone notifications are shown on paired PCs (once access is granted). */
     var notifyToPc: Boolean

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pb_protocol::control::{
@@ -46,7 +46,10 @@ pub trait AudioSink: Send + Sync {
 /// The phone's side of a phone to PC session: Kotlin feeds PCM in here.
 #[derive(uniffi::Object)]
 pub struct PbAudioOut {
-    session: OnceLock<Arc<AudioSession>>,
+    /// Only while the session runs: the app keeps this handle until its garbage collector frees it,
+    /// and a session kept here would keep the node's port in use after the node stops.
+    session: Mutex<Option<Arc<AudioSession>>>,
+    ended: AtomicBool,
     ctl: Arc<Ctl>,
 }
 
@@ -71,8 +74,10 @@ impl PbAudioOut {
     /// given before the PC has the stream are dropped. Fails once the session
     /// ended or when the frame breaks the format rules.
     pub fn send_frame(&self, frame: Vec<u8>) -> Result<(), PbError> {
-        match self.session.get() {
+        let session = lock(&self.session).clone();
+        match session {
             Some(s) => s.send_frame(frame).map_err(fail),
+            None if self.ended.load(Ordering::SeqCst) => Err(fail(pb_transport::Error::Closed)),
             None => Ok(()),
         }
     }
@@ -84,12 +89,13 @@ impl PbAudioOut {
 
     /// One log line about the sending side (counts only).
     pub fn stats_line(&self) -> String {
-        match self.session.get() {
+        let session = lock(&self.session).clone();
+        match session {
             Some(s) => {
                 let n = s.stats();
                 format!(
-                    "packets={} quic_lost={} paths={} rtt_ms={}",
-                    n.packets, n.quic_lost, n.paths, n.rtt_ms
+                    "packets={} quic_lost={} paths={} rtt_ms={} skipped_frames={} peak_backlog_bytes={}",
+                    n.packets, n.quic_lost, n.paths, n.rtt_ms, n.skipped_frames, n.peak_backlog_bytes
                 )
             }
             None => "no session yet".into(),
@@ -229,7 +235,8 @@ impl AudioHub {
     ) -> Option<Arc<PbAudioOut>> {
         let tx = lock(&self.pending).remove(&id)?;
         let out = Arc::new(PbAudioOut {
-            session: OnceLock::new(),
+            session: Mutex::new(None),
+            ended: AtomicBool::new(false),
             ctl: Arc::default(),
         });
         tx.send(Answer::Accept {
@@ -379,7 +386,7 @@ impl AudioHub {
         let mut events = take_events(&mut session);
         let cause = if let Some(o) = out {
             let session = Arc::new(session);
-            let _ = o.session.set(session.clone());
+            *lock(&o.session) = Some(session.clone());
             let ev = tokio::select! {
                 ev = events.recv() => ev,
                 () = ctl.notify.notified() => {
@@ -387,6 +394,8 @@ impl AudioHub {
                     drain(&mut events).await
                 }
             };
+            o.ended.store(true, Ordering::SeqCst);
+            *lock(&o.session) = None;
             end_cause(ev, ctl.local.load(Ordering::SeqCst))
         } else {
             let ev;
@@ -704,6 +713,53 @@ mod tests {
     /// Fits one datagram, so it arrives as it was sent.
     fn frame(i: u8) -> Vec<u8> {
         vec![i; 960]
+    }
+
+    /// The app keeps its handle until its garbage collector frees it: a stopped
+    /// node must still let go of its port, or the next start fails.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_ended_share_does_not_hold_the_port_for_the_next_start() {
+        let mut r = rig().await;
+        let port = r.phone.port();
+        let pump = r.phone_pump();
+        let phone_id = r.phone.peer_id();
+        let pc = r.pc.clone();
+        let req = tokio::spawn(async move { pc.open_audio(&phone_id, start(0, 0), || {}).await });
+        let PbEvent::AudioRequest { id, .. } = r.rec.wait_for("request").await else {
+            unreachable!()
+        };
+        let out = r.hub.accept(id, 48000, 2, 0).expect("accepted");
+        let pc_session = req.await.unwrap().expect("pc side");
+        r.rec.wait_for("started").await;
+        out.send_frame(frame(1)).unwrap();
+        assert!(r.hub.stop(0));
+        r.rec.wait_for("ended").await;
+        pump.await.unwrap();
+        assert!(
+            out.send_frame(frame(2)).is_err(),
+            "an ended share refuses frames"
+        );
+        drop(pc_session);
+        r.phone.shutdown().await;
+        drop(r.phone);
+        let mut free = false;
+        for _ in 0..15 {
+            let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+            let config = NodeConfig {
+                device_name: "next start".into(),
+                port: Some(port),
+                discovery_port: None,
+                tuning: Default::default(),
+            };
+            if let Ok((n, _)) = Node::bind(&Identity::from_seed([98; 32]), store, config).await {
+                n.shutdown().await;
+                free = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(free, "the ended share still holds the port");
+        drop(out);
     }
 
     #[tokio::test(flavor = "multi_thread")]

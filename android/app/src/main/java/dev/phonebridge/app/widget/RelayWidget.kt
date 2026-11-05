@@ -74,7 +74,7 @@ class RelayWidget : GlanceAppWidget() {
             ScreenShare.sharingWith.value, CameraShare.usedBy.value, AudioShare.activePeer(),
         )
         val now = System.currentTimeMillis()
-        val label = relayStatus(Bridge.running.value, Bridge.nodeReady.value, pc, connected, Bridge.lastSeenAny(ctx), now).line
+        val label = relayStatus(Bridge.running.value, Bridge.nodeReady.value, pc, connected, Bridge.lastSeenAny(ctx), now, attemptFailed = Bridge.attemptFailed.value).line
         // "As of": a Connected drawn by a process that was killed later cannot be told from a live one otherwise.
         val asOf = if (connected) java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(now)) else null
         // Compact: 2 + 14 + 2 + 22 = 40 dp; roomy: 4 + 17 + 4 + 30 + 4 = 59 dp.

@@ -24,7 +24,7 @@
 //! [`QUEUE_MS`], each dropping the oldest, so neither end can fall behind.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -177,6 +177,48 @@ pub fn fill_bytes(missing: u32, packet_len: usize, sample_rate: u32, channels: u
     }
 }
 
+/// Upper limits of the packet delay bins in the log, in ms. One more bin holds
+/// everything later.
+pub const AGE_BIN_LIMITS_MS: [u32; 8] = [20, 40, 60, 80, 100, 150, 200, 300];
+/// Number of packet delay bins.
+pub const AGE_BINS: usize = AGE_BIN_LIMITS_MS.len() + 1;
+
+/// The bin for a packet `age_ms` later than the path's best lately.
+pub fn age_bin(age_ms: u32) -> usize {
+    AGE_BIN_LIMITS_MS
+        .iter()
+        .position(|&limit| age_ms <= limit)
+        .unwrap_or(AGE_BIN_LIMITS_MS.len())
+}
+
+/// How long a stretch of [`AgeTracker`] lasts, in ms. It remembers two.
+const AGE_WINDOW_MS: u64 = 15_000;
+
+/// A packet's age: its delay above the lowest the path has shown lately. The
+/// two ends' clocks differ and drift, so only the difference means anything, and
+/// the lowest delay ever would make every packet look later as the clocks part.
+#[derive(Debug, Default)]
+pub struct AgeTracker {
+    low: Option<i64>,
+    earlier: Option<i64>,
+    window_start_ms: u64,
+}
+
+impl AgeTracker {
+    /// A packet with this `delay` (arrival minus the sender's clock) arrived
+    /// at `now_ms`. Returns its age in ms.
+    pub fn observe(&mut self, now_ms: u64, delay: i64) -> u32 {
+        if now_ms.saturating_sub(self.window_start_ms) >= AGE_WINDOW_MS {
+            self.window_start_ms = now_ms;
+            self.earlier = self.low.take();
+        }
+        let low = self.low.map_or(delay, |l| l.min(delay));
+        self.low = Some(low);
+        let best = self.earlier.map_or(low, |e| e.min(low));
+        (delay - best) as u32
+    }
+}
+
 /// How the audio is doing, for the log. Metadata only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioStats {
@@ -196,6 +238,15 @@ pub struct AudioStats {
     pub rtt_ms: u64,
     /// Receiver: frames dropped because the consumer fell behind.
     pub queue_dropped: u64,
+    /// Receiver: the longest wait between two packets at the sender since the
+    /// last read: a stall there, before the network.
+    pub max_sent_gap_ms: u32,
+    /// Receiver: packets so far in each age bin ([`AGE_BIN_LIMITS_MS`]).
+    pub age_bins: [u64; AGE_BINS],
+    /// Sender: frames not sent because too much was waiting in QUIC.
+    pub skipped_frames: u64,
+    /// Sender: the most bytes that waited in QUIC since the last read.
+    pub peak_backlog_bytes: u32,
 }
 
 /// One chunk of raw PCM (i16 LE samples, interleaved channels).
@@ -285,6 +336,64 @@ struct RxCounters {
     lost: AtomicU64,
     late: AtomicU64,
     max_age_ms: AtomicU32,
+    age_bins: [AtomicU64; AGE_BINS],
+    last_sent_ms: AtomicU32,
+    max_sent_gap_ms: AtomicU32,
+}
+
+impl RxCounters {
+    fn note_age(&self, age: u32) {
+        self.max_age_ms.fetch_max(age, Ordering::Relaxed);
+        self.age_bins[age_bin(age)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The sender's clock on a packet. A long wait between two means the sending
+    /// end stalled before it got to the network.
+    fn note_sent(&self, sent_ms: u32) {
+        let last = self.last_sent_ms.fetch_max(sent_ms, Ordering::Relaxed);
+        if last != 0 {
+            self.max_sent_gap_ms
+                .fetch_max(sent_ms.saturating_sub(last), Ordering::Relaxed);
+        }
+    }
+
+    fn take_max_sent_gap_ms(&self) -> u32 {
+        self.max_sent_gap_ms.swap(0, Ordering::Relaxed)
+    }
+}
+
+/// What the sending end did with its frames (counts only).
+#[derive(Default)]
+pub struct TxCounters {
+    skipped: AtomicU64,
+    peak_backlog: AtomicUsize,
+}
+
+impl TxCounters {
+    /// Bytes waiting in QUIC's send buffer when a frame was handed over.
+    pub fn note_backlog(&self, bytes: usize) {
+        self.peak_backlog.fetch_max(bytes, Ordering::Relaxed);
+    }
+
+    /// A frame the guard did not send because too much was waiting.
+    pub fn note_skipped(&self) {
+        self.skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The most that waited since the last read.
+    pub fn take_peak_backlog(&self) -> usize {
+        self.peak_backlog.swap(0, Ordering::Relaxed)
+    }
+
+    pub fn skipped(&self) -> u64 {
+        self.skipped.load(Ordering::Relaxed)
+    }
+}
+
+/// Bytes waiting to be sent. QUIC reports free space, so the size of its buffer is the most free
+/// space ever seen: the buffer is empty at the start of a session, and after any quiet moment.
+pub(crate) fn send_backlog(capacity: &AtomicUsize, free: usize) -> usize {
+    capacity.fetch_max(free, Ordering::Relaxed).max(free) - free
 }
 
 #[derive(Default)]
@@ -368,6 +477,7 @@ struct Shared {
     closer: SessionCloser,
     slot: AudioSlot,
     counters: RxCounters,
+    tx: TxCounters,
 }
 
 impl Shared {
@@ -417,6 +527,8 @@ pub struct AudioSession {
     conn: Connection,
     began: Instant,
     next_seq: AtomicU32,
+    /// The most free space QUIC's send buffer has shown: its size.
+    send_capacity: AtomicUsize,
 }
 
 impl AudioSession {
@@ -448,7 +560,16 @@ impl AudioSession {
                 .and_then(|p| self.conn.rtt(p.id()))
                 .map_or(0, |d| d.as_millis() as u64),
             queue_dropped: self.shared.queue.dropped.load(Ordering::Relaxed),
+            max_sent_gap_ms: c.take_max_sent_gap_ms(),
+            age_bins: std::array::from_fn(|i| c.age_bins[i].load(Ordering::Relaxed)),
+            skipped_frames: self.shared.tx.skipped(),
+            peak_backlog_bytes: self.shared.tx.take_peak_backlog() as u32,
         }
+    }
+
+    /// The address the audio is using now, for the log.
+    pub fn path_addr(&self) -> Option<std::net::SocketAddr> {
+        crate::used_addr(&self.conn)
     }
 
     /// Sending end: send one PCM frame, split into datagrams that fit the
@@ -474,9 +595,12 @@ impl AudioSession {
         };
         let per_packet = if opus {
             // Never split: half a packet decodes to nothing.
-            let backlog = crate::tuning::DATAGRAM_SEND_BUFFER
-                .saturating_sub(self.conn.datagram_send_buffer_space());
+            let backlog = send_backlog(&self.send_capacity, self.conn.datagram_send_buffer_space());
+            self.shared.tx.note_backlog(backlog);
+            // With the phone's small buffer this never fires: QUIC drops the oldest audio itself.
+            // It is for a larger buffer, where keeping the oldest would send stale sound.
             if backlog > OPUS_SEND_BACKLOG {
+                self.shared.tx.note_skipped();
                 return Ok(()); // skipped: the receiver conceals the gap
             }
             pcm.len()
@@ -740,6 +864,7 @@ fn start_session(
         closer: session.closer(),
         slot,
         counters: RxCounters::default(),
+        tx: TxCounters::default(),
     });
     let conn = session.conn.clone();
     if !sender {
@@ -756,6 +881,7 @@ fn start_session(
     let id = start.id;
     let ctl_shared = shared.clone();
     let mut session = session;
+    session.set_watchdog(crate::AUDIO_WATCHDOG);
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -779,7 +905,10 @@ fn start_session(
                     Ok(Some(_)) => {}
                     other => {
                         ctl_shared.why(match other {
-                            Err(Error::Timeout) => "control channel silent for 15 s (heartbeat timeout)".to_owned(),
+                            Err(Error::Timeout) => format!(
+                                "control channel silent for {} s (heartbeat timeout)",
+                                crate::AUDIO_WATCHDOG.as_secs()
+                            ),
                             Err(e) => format!("control channel error: {e}"),
                             _ => "control channel closed by the peer".to_owned(),
                         });
@@ -802,6 +931,7 @@ fn start_session(
         conn,
         began: Instant::now(),
         next_seq: AtomicU32::new(0),
+        send_capacity: AtomicUsize::new(0),
     }
 }
 
@@ -823,9 +953,7 @@ async fn read_loop(
     let mut order = Reorder::default();
     let mut waiting_since: Option<Instant> = None;
     let mut packet_len = 0usize;
-    // Lowest (arrival - sent) seen: the clocks differ, so age is measured
-    // above the best the path has done.
-    let mut best: Option<i64> = None;
+    let mut ages = AgeTracker::default();
     loop {
         let read = match waiting_since {
             Some(t) => {
@@ -864,11 +992,10 @@ async fn read_loop(
         };
         let c = &shared.counters;
         c.packets.fetch_add(1, Ordering::Relaxed);
-        let delay = began.elapsed().as_millis() as i64 - i64::from(sent_ms);
-        let low = best.map_or(delay, |b| b.min(delay));
-        best = Some(low);
-        c.max_age_ms
-            .fetch_max((delay - low) as u32, Ordering::Relaxed);
+        let now_ms = began.elapsed().as_millis() as u64;
+        let age = ages.observe(now_ms, now_ms as i64 - i64::from(sent_ms));
+        c.note_age(age);
+        c.note_sent(sent_ms);
         packet_len = pcm.len();
         let outs = order.push(seq, pcm.to_vec());
         waiting_since = match (order.waiting(), waiting_since) {
@@ -975,6 +1102,77 @@ mod queue_tests {
         assert_eq!(opus_frames_to_conceal(2), 2, "40 ms");
         assert_eq!(opus_frames_to_conceal(3), 0, "a stall adds no delay");
         assert_eq!(opus_frames_to_conceal(u32::MAX), 0);
+    }
+
+    #[test]
+    fn age_is_the_delay_above_the_best_the_path_did_lately() {
+        let mut t = AgeTracker::default();
+        assert_eq!(t.observe(0, 100), 0, "the first packet is the best so far");
+        assert_eq!(t.observe(20, 130), 30);
+        assert_eq!(t.observe(40, 90), 0, "a new best");
+        assert_eq!(t.observe(60, 110), 20);
+    }
+
+    #[test]
+    fn the_rolling_minimum_forgets_clock_drift() {
+        // The phone's clock slips 1 ms a second against the PC's. Measured
+        // against the lowest delay ever, every packet would look ever later.
+        let mut t = AgeTracker::default();
+        let mut worst = 0;
+        for s in 0..600u64 {
+            let age = t.observe(s * 1000, 50 + s as i64);
+            if s > 60 {
+                worst = worst.max(age);
+            }
+        }
+        assert!(worst <= 30, "aged {worst} ms from drift alone");
+    }
+
+    #[test]
+    fn a_late_packet_still_stands_out_from_the_rolling_minimum() {
+        let mut t = AgeTracker::default();
+        for s in 0..300u64 {
+            t.observe(s * 20, 50);
+        }
+        assert_eq!(t.observe(300 * 20, 150), 100);
+    }
+
+    #[test]
+    fn each_noted_age_lands_in_its_bin_and_the_worst_is_kept() {
+        let c = RxCounters::default();
+        c.note_age(30);
+        c.note_age(90);
+        c.note_age(20);
+        assert_eq!(c.max_age_ms.load(Ordering::Relaxed), 90);
+        assert_eq!(c.age_bins[age_bin(90)].load(Ordering::Relaxed), 1);
+        assert_eq!(c.age_bins[age_bin(20)].load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn the_longest_wait_between_sends_is_noted_and_restarts_when_read() {
+        let c = RxCounters::default();
+        c.note_sent(100);
+        c.note_sent(120);
+        c.note_sent(300);
+        c.note_sent(280); // swapped with its neighbour on the way
+        c.note_sent(320);
+        assert_eq!(c.take_max_sent_gap_ms(), 180);
+        assert_eq!(c.take_max_sent_gap_ms(), 0);
+    }
+
+    #[test]
+    fn each_age_falls_in_the_bin_for_its_range() {
+        assert_eq!(age_bin(0), 0);
+        assert_eq!(age_bin(20), 0);
+        assert_eq!(age_bin(21), 1);
+        assert_eq!(age_bin(100), 4);
+        assert_eq!(age_bin(101), 5);
+        assert_eq!(age_bin(300), AGE_BIN_LIMITS_MS.len() - 1);
+        assert_eq!(
+            age_bin(301),
+            AGE_BIN_LIMITS_MS.len(),
+            "the last bin is open"
+        );
     }
 
     #[test]

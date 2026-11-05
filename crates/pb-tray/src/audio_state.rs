@@ -176,8 +176,22 @@ pub fn refused_text(d: Dir, phone: &str, e: &Error) -> String {
         Error::PeerChanged => {
             format!("The device answering is not {phone}. Check Devices in Relay.")
         }
-        _ => format!("Couldn't reach {phone} for audio. Check that both are on the same network."),
+        _ => unreachable_text(phone),
     }
+}
+
+/// What the user is told when asking failed. `sent` says whether the request
+/// ever left: a timeout before that means the phone was never reached, so it
+/// must not be blamed for not answering.
+pub fn request_failed_text(d: Dir, phone: &str, e: &Error, sent: bool) -> String {
+    if !sent && matches!(e, Error::Timeout) {
+        return unreachable_text(phone);
+    }
+    refused_text(d, phone, e)
+}
+
+fn unreachable_text(phone: &str) -> String {
+    format!("Couldn't reach {phone} for audio. Check that both are on the same Wi-Fi and that no VPN is on.")
 }
 
 /// How a running session ended, for the user.
@@ -241,13 +255,16 @@ pub struct Arrivals {
     /// Loudest sample in this window, 0..=32767. A level, never the audio.
     pub peak: u16,
     last_ms: Option<u64>,
+    recent_gap_ms: u64,
 }
 
 impl Arrivals {
     /// A frame of `len` bytes arrived `now_ms` after the session began.
     pub fn frame(&mut self, now_ms: u64, len: usize) {
         if let Some(last) = self.last_ms {
-            self.max_gap_ms = self.max_gap_ms.max(now_ms.saturating_sub(last));
+            let gap = now_ms.saturating_sub(last);
+            self.max_gap_ms = self.max_gap_ms.max(gap);
+            self.recent_gap_ms = self.recent_gap_ms.max(gap);
         }
         self.last_ms = Some(now_ms);
         self.frames += 1;
@@ -268,6 +285,11 @@ impl Arrivals {
             "frames={} bytes={} max_gap_ms={} peak={} dropped_ms={} underruns={}",
             self.frames, self.bytes, self.max_gap_ms, self.peak, dropped_ms, underruns
         )
+    }
+
+    /// The longest gap since the last call, in ms: how much the queue must hold.
+    pub fn take_recent_gap_ms(&mut self) -> u32 {
+        std::mem::take(&mut self.recent_gap_ms) as u32
     }
 
     /// Start a new reporting window, keeping the last arrival time.
@@ -371,6 +393,20 @@ mod tests {
     }
 
     #[test]
+    fn a_request_that_never_left_says_the_phone_could_not_be_reached() {
+        let t = request_failed_text(Dir::PhoneToPc, "P", &Error::Timeout, false);
+        assert!(t.contains("Couldn't reach P"), "{t}");
+        assert!(t.contains("VPN"), "{t}");
+        assert!(!t.contains("didn't answer"), "{t}");
+    }
+
+    #[test]
+    fn a_request_the_phone_got_and_left_unanswered_says_so() {
+        let t = request_failed_text(Dir::PhoneToPc, "P", &Error::Timeout, true);
+        assert!(t.contains("didn't answer"), "{t}");
+    }
+
+    #[test]
     fn an_old_phone_and_a_blocking_app_say_what_to_do() {
         let t = refused_text(Dir::PcToPhone, "P", &Error::Unsupported);
         assert!(t.contains("Update"));
@@ -446,6 +482,19 @@ mod tests {
             a.max_gap_ms, 20,
             "the gap across the window edge still counts"
         );
+    }
+
+    #[test]
+    fn the_recent_gap_restarts_when_read_and_leaves_the_window_alone() {
+        let mut a = Arrivals::default();
+        a.frame(0, 400);
+        a.frame(20, 400);
+        a.frame(120, 400);
+        assert_eq!(a.take_recent_gap_ms(), 100);
+        a.frame(140, 400);
+        assert_eq!(a.take_recent_gap_ms(), 20);
+        assert_eq!(a.take_recent_gap_ms(), 0);
+        assert_eq!(a.max_gap_ms, 100, "the log's own number");
     }
 
     #[test]

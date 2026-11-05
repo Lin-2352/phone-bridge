@@ -17,7 +17,7 @@ Relay connects an Android phone and a Windows PC directly over your local networ
 | **Phone screen** | View the phone in a window on the PC and control it with your mouse and keyboard. |
 | **Control** | Use the phone from the PC, after the phone asks you. It can also work as a touchpad for the PC. |
 | **Camera** | Use the phone as a Windows 11 webcam, seen by any app as a normal camera. |
-| **Audio** | Hear the phone on the PC, or the PC on the phone. While sharing, the phone's speaker stays silent and its volume bar is meant to set the level on the PC. |
+| **Audio** | Hear the phone on the PC, or the PC on the phone. While sharing, the phone stays silent and its volume keys set the level on the PC. |
 
 ## Install
 
@@ -26,6 +26,21 @@ Download both parts from the [latest release](https://github.com/Lin-2352/phone-
 1. **PC:** unzip `Relay-<version>-windows-x64-portable.zip` on a local drive and run `Relay.exe`. Allow it through the firewall on private networks. Everything it keeps stays in the `data` folder beside it.
 2. **Phone:** install `Relay-<version>.apk`. It isn't on an app store, so Android asks you to allow the install.
 3. **Pair:** choose *Pair a phone* from the tray icon, scan the QR code with the phone, and check that both screens show the same six digits.
+
+### If Android blocks the app
+
+Relay isn't on Google Play, and it declares a notification listener and an accessibility service. Android treats that combination as high risk when it comes from outside a store, so you may see one or both of these:
+
+- **Play Protect: "App blocked to protect your device."** In regions with Google's enhanced fraud protection, including India, Play Protect blocks installs of such apps from browsers, messaging apps and file managers. Pausing Play Protect lets the install through. That's your decision to make; turn it back on afterwards.
+- **"Controlled by restricted setting" or "App was denied access."** From Android 13, the Notification access, Accessibility and Display over other apps switches can be locked for an APK you downloaded. Try the switch once and close the message. Then open Relay's App info, tap the ⋮ menu, choose *Allow restricted settings* and confirm. Menus vary by phone, and installing a later version from a file can lock them again.
+
+These are protections, so only lift them for a build you trust, and check its SHA-256 against the release notes.
+
+### If it doesn't connect
+
+- **Windows firewall:** allow Relay on the network type you're on. Many shared Wi-Fi networks count as *Public*, and allowing only private networks blocks the phone there.
+- **VPN:** a VPN on the phone or PC can block the local network unless its LAN access option is on.
+- **Device isolation:** some shared Wi-Fi networks stop devices reaching each other at all. USB tethering or a phone hotspot avoids that.
 
 Requires Android 10 or later and Windows 10 2004 or later. The webcam needs Windows 11, and icons look best there too.
 
@@ -97,11 +112,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## Known issues
 
-- **One PC at a time.** You can pair several, but status and sends use the first one, and there's no picker yet.
-- **A share starts at half volume the first time.** If the speaker effect doesn't reach an app, that app plays at that level.
-- **Silencing the speaker has been tested on one phone, with one app.** Android decides where the effect that silences it applies, so an app using a different audio output, such as a game, may still be heard. If the effect is refused or taken away, Relay falls back to muting, where volume keys work less smoothly.
-- **Headphones during a share.** Plugging them in or removing them mid-share can leave the phone's volume at a different level afterwards.
-- **If Relay is killed mid-share**, the phone can play at the share's volume until Relay restarts and puts it back.
+- **One PC at a time.** You can pair several, but status and sends use just one of them, chosen by internal ID rather than by when you paired it, and there's no picker yet. Pairing another PC can change which one that is.
+- **Control needs turning on each time.** *Relay control* switches its accessibility service off after each session, because many banking apps refuse to open while one is on. The switch is in Android's Accessibility settings.
+- **Locking the phone ends a screen share.** Android stops the capture, and starting again needs a new yes on the phone.
+- **Games and the volume bar.** In most apps the phone's normal volume bar sets the PC's level. A game on Android's low-latency audio output gets a cast-style bar instead, because raising the real volume would unmute the phone. When a new sound starts, Relay unmutes for up to a third of a second at the lowest volume to tell which kind it is. In a game that both uses that output and keeps the volume keys for itself, a press can be heard very faintly for an instant. Tested on one phone.
+- **Earphones during a share.** They're silenced too, unless you turn off *Silence earphones too*. Android keeps a separate volume for each output, so the phone's own volume comes back only once the output it belongs to is in use again.
+- **If Relay is killed mid-share**, the phone stays muted until Relay restarts and puts its volume back.
+- **Phone calls don't reach the PC.** Android lets only its own system apps capture call audio, so a call plays on the earpiece or speaker as usual.
+- **Audio is not instant.** Android's capture, the encoder and Wi-Fi all add delay, so a game's sounds can feel a little behind. How much depends on your Wi-Fi. Short gaps can still happen when Wi-Fi stalls, since Relay keeps the delay low rather than buffering for them.
 - **PC audio plays on the phone without a question on the phone.** The request comes from a PC you paired, and it shows on the phone with a Stop button.
 
 The [changelog](CHANGELOG.md) lists more for each release.

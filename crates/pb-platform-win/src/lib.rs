@@ -15,6 +15,8 @@ pub mod input;
 pub mod opus;
 #[cfg(windows)]
 pub mod power;
+#[cfg(windows)]
+mod thread_priority;
 
 #[cfg(windows)]
 pub use dpapi::Dpapi;

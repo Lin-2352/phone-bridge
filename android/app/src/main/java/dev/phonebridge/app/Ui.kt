@@ -84,6 +84,8 @@ fun ConsentDialog(
 ) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDeny,
+        // These windows open on their own, sometimes under a finger: a stray tap beside one must not answer it.
+        properties = androidx.compose.ui.window.DialogProperties(dismissOnClickOutside = false),
         shape = RoundedCornerShape(Radius.hero),
         title = { Text(title, style = MaterialTheme.typography.headlineSmall) },
         text = {

@@ -11,7 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pb_identity::PeerId;
-use pb_platform_win::{audio_capture::AudioCapture, audio_out::AudioOut, opus::OpusDec};
+use pb_platform_win::{
+    audio_capture::AudioCapture,
+    audio_out::{AudioOut, PlayoutTarget, TARGET_WINDOW_S},
+    opus::OpusDec,
+};
 use pb_protocol::control::{AudioStart, AUDIO_SOURCE_PLAYBACK};
 use pb_transport::{audio::AudioEvent, Node};
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -152,9 +156,11 @@ async fn run(
         direction: d.wire(),
         source: AUDIO_SOURCE_PLAYBACK,
     };
+    let sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let asked = {
-        let (ui, name) = (ui.clone(), name.clone());
+        let (ui, name, sent) = (ui.clone(), name.clone(), sent.clone());
         move || {
+            sent.store(true, std::sync::atomic::Ordering::Relaxed);
             if d == Dir::PhoneToPc {
                 ui(UiEvent::AudioAsking(st::asking_text(d, &name)));
             }
@@ -174,9 +180,10 @@ async fn run(
     let mut sess = match opened {
         Ok(s) => s,
         Err(e) => {
-            log.line(&format!("AUDIO {word} refused: {e}"));
+            let sent = sent.load(std::sync::atomic::Ordering::Relaxed);
+            log.line(&format!("AUDIO {word} refused: {e} (request sent: {sent})"));
             crate::applog::emit(crate::applog::audio("refused", word, 0, &e.to_string()));
-            ui(UiEvent::Info(st::refused_text(d, &name, &e)));
+            ui(UiEvent::Info(st::request_failed_text(d, &name, &e, sent)));
             return;
         }
     };
@@ -296,6 +303,10 @@ async fn play_phone_audio(
     let mut arrivals = st::Arrivals::default();
     let mut window = Instant::now();
     let (mut decode_us_total, mut decode_us_max) = (0u64, 0u64);
+    let mut ages_before = [0u64; pb_transport::audio::AGE_BINS];
+    let mut path_before = None;
+    let mut playout = PlayoutTarget::default();
+    let mut steered = Instant::now();
     let end = loop {
         tokio::select! {
             f = sess.recv_frame() => match f {
@@ -315,6 +326,13 @@ async fn play_phone_audio(
                     if !pcm.is_empty() {
                         let _ = tx.try_send(pcm);
                     }
+                    if steered.elapsed() >= Duration::from_secs(TARGET_WINDOW_S) {
+                        steered = Instant::now();
+                        let want = playout.note(arrivals.take_recent_gap_ms());
+                        if let Some(o) = out.as_ref() {
+                            o.set_target_ms(want);
+                        }
+                    }
                     if window.elapsed() >= Duration::from_secs(10) {
                         let n = sess.stats();
                         log.line(&format!(
@@ -325,6 +343,30 @@ async fn play_phone_audio(
                             out.as_ref().map_or(0, AudioOut::target_ms),
                             n.max_age_ms, n.quic_lost, n.paths, n.rtt_ms
                         ));
+                        if let Some(o) = out.as_ref() {
+                            let w = o.take_window();
+                            let ages: [u64; pb_transport::audio::AGE_BINS] =
+                                std::array::from_fn(|i| n.age_bins[i] - ages_before[i]);
+                            ages_before = n.age_bins;
+                            log.line(&format!(
+                                "AUDIO playout window_ms={} consumed_ms={} starved={} max_callback_gap_ms={} queue_low_ms={} queue_peak_ms={} trim_ppm={} device_buffer_ms={} thread_priority={} max_sent_gap_ms={} ages_20_40_60_80_100_150_200_300_more={ages:?}",
+                                window.elapsed().as_millis(),
+                                w.consumed_ms,
+                                w.starved,
+                                w.max_callback_gap_ms,
+                                w.queue_low_ms,
+                                w.queue_peak_ms,
+                                w.trim_ppm,
+                                w.device_buffer_ms,
+                                o.thread_priority(),
+                                n.max_sent_gap_ms,
+                            ));
+                        }
+                        let path = sess.path_addr().map(|a| a.ip());
+                        if path != path_before {
+                            log.line(&format!("AUDIO path {path:?}"));
+                            path_before = path;
+                        }
                         arrivals.reset_window();
                         decode_us_total = 0;
                         decode_us_max = 0;

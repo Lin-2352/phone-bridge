@@ -73,6 +73,9 @@ class ControlService : AccessibilityService(), InputListener {
         instance = this
         // A prompt of Relay's opened: nothing stays held (a finger down, Ctrl) while it shows.
         ConsentGuard.onFirstBegin = { resetKeys() }
+        // The "turn it on" notice from a waiting request has done its job.
+        getSystemService(android.app.NotificationManager::class.java).cancel(CONTROL_ASK_ID)
+        Prefs(this).specialAccessConnected = true
         // A share that started while control was off now really can be used (notification wording).
         ScreenShare.refreshNotification()
         Bridge.node?.setInputListener(this)
@@ -127,6 +130,14 @@ class ControlService : AccessibilityService(), InputListener {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+    /** The opt-in volume key filter: during a silenced share the keys set the PC's level in every app. */
+    override fun onKeyEvent(event: android.view.KeyEvent): Boolean {
+        val holding = dev.phonebridge.app.audio.holdsVolumeKeys(Prefs(this).audioKeysViaControl, PcVolumeKeys.running)
+        val step = dev.phonebridge.app.audio.volumeKeyStep(holding, event.keyCode, event.action) ?: return false
+        if (step != 0) PcVolumeKeys.press(this, step)
+        return true
+    }
     override fun onInterrupt() {}
 
     // InputListener: called on a Rust thread; all work happens on the main thread.
@@ -190,7 +201,7 @@ class ControlService : AccessibilityService(), InputListener {
     fun maybeSwitchOff() {
         main.postDelayed({
             if (instance !== this) return@postDelayed
-            if (!shouldSwitchOff(Prefs(this).keepControlOn, sessionSeen, Bridge.controlledBy.value, ScreenShare.sharingWith.value)) return@postDelayed
+            if (!shouldSwitchOff(Prefs(this).keepControlOn, sessionSeen, Bridge.controlledBy.value, ScreenShare.sharingWith.value, PcVolumeKeys.running)) return@postDelayed
             Log.i(TAG, "CONTROL switching the accessibility service off after the session")
             Toast.makeText(this, "$APP_NAME control switched off. Turn it on in Accessibility settings for the next session", Toast.LENGTH_LONG).show()
             disableSelf()
