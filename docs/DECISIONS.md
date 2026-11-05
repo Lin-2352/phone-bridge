@@ -462,3 +462,11 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **No breaking bump.** The wire version stays 0. `Hello` gains optional `min_compatible` and `app_version`; two devices talk when each side's minimum is at most the other's version. A 0.2.0 peer sends neither (read as 0 and empty) and requires an exact match, which holds while every build is version 0.
 - **Naming the device to update.** The 426 close carries `update:you` or `update:me`; a plain close (0.2.0) reads as "update both".
 - **Capabilities.** One name per wire feature, advertised only by the build that implements it. `discovery2` and `resume` are reserved; the other M7-M9 features need none.
+
+## Foundations: ids, settings versions, folder names (2026-11-05, v2 M3.3-M3.7)
+
+- **Peer ids.** Phone events carry the PC's id next to its name; the three ask paths (control, screen, camera) use the id, never the name, so two PCs with the same name are told apart. The PC keeps name-keyed events until M8 (per-device permissions).
+- **Settings versions.** PC `settings.txt` starts with `version=1`; Android prefs carry `prefs_version`. Migrations are pure functions that run once at start and are saved back. Newer files are left alone; unknown keys are kept. A fresh install is stamped without other writes. PC per-device facts live in `devices.txt`, not in `peers.txt` (an older Relay drops lines with extra columns there).
+- **Folder names.** New PC installs use `%LOCALAPPDATA%\Relay\tray` and `Downloads\Relay`; existing installs keep `PhoneBridge\tray` and have `Downloads\Phone Bridge` pinned. Never renamed: the Run value, the toast app id, the pipe, the camera folder, notification channel ids, the Android application id and Keystore alias.
+- **Unreadable identity.** An identity that can't be unsealed is a typed error, not a retry loop; the user is offered "Reset and pair again", which removes only the identity and the pairings.
+
