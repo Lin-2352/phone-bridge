@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.19 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.R: confirm CI is green on the branch head, then tick M2.R; after that, write the M3 plan (Foundations)
+- **Last finished task:** M2.R (M2 is done; plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** write the M3 plan (Foundations) with superpowers:writing-plans into `docs/v2/plans/`, then run it from M3.1
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -94,7 +94,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.18 QoL: "Keep Control on between sessions" (opt-in)
 - [x] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS
 - [-] M2.20 Screen encoder reuses its frame buffer — dropped: uniffi copies the whole `ByteArray` into Rust on every `sendFrame` and takes only exact-size arrays, so a reused larger array would copy more, not less. The device checklist measures memory churn while mirroring instead
-- [~] M2.R Milestone review and CI green — reviewer found 2 important (a queued speaker-silence job could run after the service's final restore, leaving the phone silenced with Relay off; a Keystore key that loads but fails in use crashed the app on focus) and 4 cheap minors (an alarm already ringing at share start stayed silenced; link toasts hid the site too; a bound-but-idle Control service let the PC open apps without a tap; a visible Relay screen didn't count): all fixed. Deferred minor: the fallback QUIC port changes on each start (discovery and the PC dialling the phone still recover); device check whether `activePlaybackConfigurations` lists idle alarm players
+- [x] M2.R Milestone review and CI green — reviewer found 2 important (a queued speaker-silence job could run after the service's final restore, leaving the phone silenced with Relay off; a Keystore key that loads but fails in use crashed the app on focus) and 4 cheap minors (an alarm already ringing at share start stayed silenced; link toasts hid the site too; a bound-but-idle Control service let the PC open apps without a tap; a visible Relay screen didn't count): all fixed. Deferred minor: the fallback QUIC port changes on each start (discovery and the PC dialling the phone still recover); device check whether `activePlaybackConfigurations` lists idle alarm players
 
 ## M3 Foundations
 - [ ] M3.1 `Hello.min_compatible` and `app_version`; compatibility rule; "update ‹device›" message
@@ -212,3 +212,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-05 (M2 start): CI run 41969323722 on e4f5f12 green on every job. M2 plan written. No wire change in M2. Rulings in the plan: PC toasts hide text by default (`toast_show_text`); the PC-away status shows an absolute time so it needs no timed redraw; M2.20 dropped (reason above).
 - Device checklist items collected for M11.5: (M2.1) on a phone that once ran the audio helper's setup, the device-idle allow-list entry stays until removed over adb (`adb shell cmd deviceidle whitelist -dev.phonebridge.app`); (M2.20) measure memory churn while mirroring; (M2.17) set an alarm during a phone-audio share with the speaker silenced: the alarm must be heard, and silence must return after it; (M2.19) an hour idle with no PC and the screen off, then `adb shell dumpsys batterystats`: Relay's wakeups stay within one per 15 min.
 - 2026-11-05 (M2, mid-milestone): a new PC settings toggle must also go into `settings_groups.rs` (OPTIONS and `page_of`; at most 9 rows a page) and the KEYS count in `pages/settings.rs`. `settings_groups` now builds and tests on Linux; `pages/settings.rs` tests still run only on CI's Windows job.
+- 2026-11-05 (M2 closed): CI run 41983048190 on 6096cb4 green on every job (Rust on Linux and Windows, Android, APKs, fuzz smoke, zip, deny). Rulings in M2 commit messages: M2.10 keeps onDestroy's restore on its own thread; M2.16 keeps the join under the lock but the capture thread never takes it; M2.19 keeps the relative "5 min ago" wording (Home and the PC use it) and gates redraws on the screen being on.
