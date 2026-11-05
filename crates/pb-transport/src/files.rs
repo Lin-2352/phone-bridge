@@ -674,10 +674,12 @@ pub async fn receive_offer_with(
         OfferKind::Text | OfferKind::Link => {
             wait_for_close(session).await;
             // Only a web address gets a one-tap "open": a peer's upi: or tel: stays plain text.
-            return Ok(if kind == OfferKind::Link && is_web_link(&offer.text) {
-                Received::Link(offer.text)
-            } else {
-                Received::Text(offer.text)
+            let link = (kind == OfferKind::Link)
+                .then(|| normalize_web_link(&offer.text))
+                .flatten();
+            return Ok(match link {
+                Some(l) => Received::Link(l),
+                None => Received::Text(offer.text),
             });
         }
         OfferKind::ClipboardImage => {
@@ -1014,21 +1016,65 @@ mod tests {
     }
 }
 
-/// Whether a shared link may be opened with one tap on the other device.
-pub(crate) fn is_web_link(text: &str) -> bool {
-    let t = text.trim_start().to_ascii_lowercase();
-    t.starts_with("https://") || t.starts_with("http://")
+/// The web address a shared link stands for, in the form both devices open: trimmed, with the
+/// scheme in lower case (Android matches schemes case-sensitively). `None` when it is not an
+/// `http(s)` address, has no host, or has whitespace or control characters inside.
+pub fn normalize_web_link(text: &str) -> Option<String> {
+    let t = text.trim();
+    let (scheme, rest) = t.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        return None;
+    }
+    if rest.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{rest}"))
 }
 
 #[cfg(test)]
 mod link_tests {
-    use super::is_web_link;
+    use super::normalize_web_link;
+
+    fn is_web_link(t: &str) -> bool {
+        normalize_web_link(t).is_some()
+    }
 
     #[test]
     fn web_addresses_are_links() {
         assert!(is_web_link("https://example.com/a?b=c"));
         assert!(is_web_link("http://example.com"));
         assert!(is_web_link("  HTTPS://EXAMPLE.COM"));
+    }
+
+    /// The phone opens exactly what was checked: Android matches schemes case-sensitively.
+    #[test]
+    fn the_checked_link_is_normalized() {
+        assert_eq!(
+            normalize_web_link("  HTTPS://Example.com/A \n").as_deref(),
+            Some("https://Example.com/A")
+        );
+        assert_eq!(
+            normalize_web_link("Http://x.y").as_deref(),
+            Some("http://x.y")
+        );
+    }
+
+    #[test]
+    fn broken_links_are_only_text() {
+        for t in [
+            "https://a b",
+            "https://",
+            "http:///path",
+            "https://a\u{7}b",
+            "https://a\tb",
+        ] {
+            assert_eq!(normalize_web_link(t), None, "{t:?}");
+        }
     }
 
     /// One tap on a "link" must not pay, call or open local files.

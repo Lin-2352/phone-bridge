@@ -244,11 +244,10 @@ static LAST_LINK: Mutex<Option<String>> = Mutex::new(None);
 /// Open a received link in the default browser. Web links only: anything else
 /// (file:, ms-settings:, custom schemes) could launch arbitrary handlers.
 fn open_link(url: &str) {
-    let lower = url.to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+    let Some(url) = pb_transport::files::normalize_web_link(url) else {
         return;
-    }
-    let wide_url = wide(url);
+    };
+    let wide_url = wide(&url);
     // SAFETY: valid NUL-terminated strings for the duration of the call.
     unsafe {
         windows::Win32::UI::Shell::ShellExecuteW(
