@@ -423,12 +423,19 @@ fun SettingsTab(onDone: () -> Unit) {
     var images by remember(resumed) { mutableStateOf(prefs.clipboardImages) }
     var shots by remember(resumed) { mutableStateOf(prefs.shareScreenshots && ClipImages.hasImageAccess(ctx)) }
     // Android's own picture-access prompt: the user answers it, the switch follows the answer.
-    val askPictures = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    val askPictures = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+        val access = ClipImages.imageAccess(ctx)
+        val granted = access == dev.phonebridge.app.ImageAccess.FULL
         shots = granted
         prefs.shareScreenshots = granted
         ScreenshotWatcher.sync(ctx)
         // The switch snapped back off: say why, and once Android will not ask again, open its settings page.
         val act = ctx as? android.app.Activity
+        if (access == dev.phonebridge.app.ImageAccess.PARTIAL) {
+            say(dev.phonebridge.app.PARTIAL_PHOTOS_TEXT, null) {}
+            dev.phonebridge.app.ui.home.openAppDetails(ctx)
+            return@rememberLauncherForActivityResult
+        }
         when (photoDenial(granted, act?.shouldShowRequestPermissionRationale(ClipImages.imagePermission) ?: false)) {
             PhotoDenial.None -> {}
             PhotoDenial.Explain -> say("Screenshots need access to photos. Try again and choose Allow.", null) {}
@@ -673,7 +680,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                             prefs.shareScreenshots = true
                                             ScreenshotWatcher.sync(ctx)
                                         } else {
-                                            askPictures.launch(ClipImages.imagePermission)
+                                            askPictures.launch(ClipImages.imagePermissions)
                                         }
                                     },
                                 )

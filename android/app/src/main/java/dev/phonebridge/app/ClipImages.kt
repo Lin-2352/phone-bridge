@@ -51,8 +51,20 @@ object ClipImages {
     val imagePermission: String
         get() = if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_IMAGES else android.Manifest.permission.READ_EXTERNAL_STORAGE
 
-    fun hasImageAccess(ctx: Context): Boolean =
-        ctx.checkSelfPermission(imagePermission) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    /** Everything to request at once (adds the partial-access permission from Android 14). */
+    val imagePermissions: Array<String> get() = imagePermissions(android.os.Build.VERSION.SDK_INT)
+
+    fun imageAccess(ctx: Context): ImageAccess {
+        fun granted(p: String) = ctx.checkSelfPermission(p) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        return imageAccess(
+            android.os.Build.VERSION.SDK_INT,
+            full = granted(imagePermission),
+            partial = granted("android.permission.READ_MEDIA_VISUAL_USER_SELECTED"),
+        )
+    }
+
+    /** Full access only: picked photos never include new screenshots. */
+    fun hasImageAccess(ctx: Context): Boolean = imageAccess(ctx) == ImageAccess.FULL
 
     /** Send the picture at [uri] (any format Android can decode). Returns null when sent, else a sentence for the user. */
     suspend fun send(ctx: Context, uri: Uri): String? {

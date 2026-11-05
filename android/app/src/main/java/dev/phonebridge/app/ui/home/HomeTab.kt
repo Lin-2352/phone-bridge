@@ -207,8 +207,16 @@ fun HomeTab(onTimeline: () -> Unit) {
     val snack = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var opening by remember { mutableStateOf(false) }
-    val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    val askPhotos = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
         ScreenshotWatcher.sync(ctx)
+        val access = ClipImages.imageAccess(ctx)
+        val granted = access == dev.phonebridge.app.ImageAccess.FULL
+        // Picked photos only: Android's settings page has "Allow all".
+        if (access == dev.phonebridge.app.ImageAccess.PARTIAL) {
+            android.widget.Toast.makeText(ctx, dev.phonebridge.app.PARTIAL_PHOTOS_TEXT, android.widget.Toast.LENGTH_LONG).show()
+            openAppDetails(ctx)
+            return@rememberLauncherForActivityResult
+        }
         // Android no longer shows its prompt once the user said "don't ask again": the app's settings page.
         val act = ctx as? Activity
         if (!granted && act != null && !act.shouldShowRequestPermissionRationale(ClipImages.imagePermission)) openAppDetails(ctx)
@@ -237,7 +245,7 @@ fun HomeTab(onTimeline: () -> Unit) {
                     NeedsCard(list, Modifier.animateItem()) { need ->
                         when (need) {
                             Need.NotificationAccess -> openNotifyAccess(ctx)
-                            Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermission)
+                            Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermissions)
                             Need.ControlOff -> openSettings(ctx, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                             Need.PcForgotPhone -> forgetNames = forgottenPcNames()
                             Need.AppNotificationsOff -> openSettings(

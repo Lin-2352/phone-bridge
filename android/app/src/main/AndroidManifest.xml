@@ -20,6 +20,8 @@
     <uses-permission android:name="android.permission.QUERY_ADVANCED_PROTECTION_MODE" />
     <!-- Send each new screenshot to the PC (only when the user turns that on). -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Android 14+: "Select photos" keeps the user's choice instead of a grant that ends in the background. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- An effect on the output mix silences the speaker while sharing. -->
