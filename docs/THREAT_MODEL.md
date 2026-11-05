@@ -59,7 +59,7 @@ Both of these remove a protection Android normally gives, so both are the user's
 
 **The hands-free grant.** If the user allows `PROJECT_MEDIA` for Relay outside the app, Android approves its capture prompt automatically, for audio and for screen sharing alike, with the capture icon still shown. Only a paired PC can request a capture, subject to Relay's own settings. Undone with `appops set ... PROJECT_MEDIA default`.
 
-**The audio helper (switched off, see `HELPER_OFFERED`; kept here for if it returns).** After its one-time setup:
+**The audio helper (debug builds only since v2 M2.1; release and qa builds carry none of its code or libraries, and remove an old install's adb identity and key once).** After its one-time setup:
 - Relay holds a paired adb identity, which amounts to shell access to this phone. It is kept outside backups, encrypted under a key in Android's keystore, and used only for fixed commands. Anything that takes over Relay's process can use it: that is the main cost of this feature, and why it is off until the user sets it up after being told this.
 - Relay holds `WRITE_SECURE_SETTINGS`, which covers far more than Wireless debugging. Same reasoning.
 - While starting the helper, Wireless debugging is on for a few seconds, listening on the network and open to paired keys only. It goes back to how the user had it.
@@ -110,3 +110,12 @@ Branch `cloud/v2-upgrade`; the rows above get their full update in milestone M11
   - Test-only switches (`--test-auto-accept`, `--test-audio-synth`, `relay-cli --auto-accept`) exist only with the `test-hooks` feature, and CI scans the exe for them.
   - Release APKs require the release key.
 - **Fuzzing** (row 11, "planned"): ten cargo-fuzz targets for the parsers that read another device's or a stranger's input run on every push (`fuzz/`). The PC binary's settings and pipe parsers get randomized tests.
+
+## Mitigations added in v2, milestone M2 (2026-11-05)
+
+- **Audio helper (S5):** debug builds only. Release and qa builds carry no helper code, no libadb, Conscrypt or Bouncy Castle (CI checks the release graph), and delete an old install's adb identity, its Keystore key and the helper's settings once. The device-idle allow-list entry an old setup added can only be removed over adb.
+- **Clipboard fingerprint (S9):** the last synced clip is stored as an HMAC-SHA256 under a Keystore key, not `String.hashCode()`, so a stored value no longer gives a short code away.
+- **Single-instance pipe (S11):** named after the account's SID, so accounts with names in another script no longer share one pipe.
+- **Privacy (S12):** PC toasts about text and links from the phone show only who sent them unless the user turns "Show shared text in notifications" on (Windows keeps toasts on disk); sensitive text is never shown. `tray.log` and Android's logcat lines about notifications carry no package names, and Android's logs moved from app-specific external storage to private storage.
+- **"Open on phone" (A5):** when Android would block the app's screen, the phone shows a "Tap to open" notification and the PC is told so, instead of a false "ok".
+- **Shared links (B3):** the address both devices open is exactly the one that was checked (trimmed, scheme in lower case, no spaces or control characters).
