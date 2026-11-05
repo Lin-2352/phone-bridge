@@ -77,6 +77,8 @@ mod pages;
 #[cfg(windows)]
 mod pause;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod pipe;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod portable;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod qr;

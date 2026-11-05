@@ -16,12 +16,8 @@ use tokio::{
 use crate::core::Cmd;
 
 fn pipe_name() -> String {
-    let user: String = std::env::var("USERNAME")
-        .unwrap_or_else(|_| "user".into())
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    format!(r"\\.\pipe\PhoneBridgeTray-{user}")
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
+    crate::pipe::pipe_name_for(user_sid().as_deref(), &user)
 }
 
 /// The window request a second launch forwards: what its flags asked for,

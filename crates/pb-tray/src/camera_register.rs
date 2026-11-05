@@ -97,14 +97,7 @@ pub fn is_trusted_owner(sid: &str) -> bool {
     matches!(sid, "S-1-5-18" | "S-1-5-32-544") || sid.starts_with("S-1-5-80-")
 }
 
-/// A user SID in string form: `S-1-` and digits and dashes, nothing that
-/// could change the meaning of the SDDL it is put into.
-pub fn is_valid_user_sid(sid: &str) -> bool {
-    sid.starts_with("S-1-")
-        && sid.len() <= 80
-        && sid.len() > 4
-        && sid[2..].bytes().all(|b| b.is_ascii_digit() || b == b'-')
-}
+pub use crate::pipe::is_valid_user_sid;
 
 fn owner_sid_string(path: &std::path::Path) -> Option<String> {
     // SAFETY: a security descriptor query; both allocations are freed.
@@ -597,16 +590,6 @@ mod tests {
         assert!(!is_trusted_owner("S-1-5-21-1-2-3-1001"), "an ordinary user");
         assert!(!is_trusted_owner("S-1-5-32-545"), "the Users group");
         assert!(!is_trusted_owner(""));
-    }
-
-    #[test]
-    fn user_sids_cannot_carry_sddl() {
-        assert!(is_valid_user_sid("S-1-5-21-1-2-3-1001"));
-        assert!(!is_valid_user_sid(""));
-        assert!(!is_valid_user_sid("S-1-"));
-        assert!(!is_valid_user_sid("S-1-5-21)(A;;GA;;;WD"), "SDDL injection");
-        assert!(!is_valid_user_sid("Administrators"));
-        assert!(!is_valid_user_sid(&format!("S-1-{}", "1".repeat(90))));
     }
 
     #[test]
