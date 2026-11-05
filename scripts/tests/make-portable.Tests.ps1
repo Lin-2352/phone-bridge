@@ -7,7 +7,7 @@ try {
     & "$PSScriptRoot\..\make-portable.ps1" -OutDir $out -Zip
     $dir = Join-Path $out "Relay"
     $fail = @()
-    foreach ($f in "Relay.exe", "relay-cli.exe", "pb_camera_source.dll", "README.txt", "Relay.cmd") {
+    foreach ($f in "Relay.exe", "pb_camera_source.dll", "README.txt", "Relay.cmd") {
         if (-not (Test-Path (Join-Path $dir $f))) { $fail += "missing $f" }
     }
     if (-not (Test-Path (Join-Path $dir "data") -PathType Container)) { $fail += "missing data folder" }

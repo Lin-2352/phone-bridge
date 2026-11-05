@@ -44,3 +44,7 @@ windows-numerics = "0.3"
 
 [build-dependencies]
 embed-resource = "3"
+
+[features]
+# Switches for automated tests only (SAS auto-accept); never in a release.
+test-hooks = []

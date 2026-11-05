@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.2
-- **Next task:** M1.3 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 3)
+- **Last finished task:** M1.12
+- **Next task:** M1.7 (security items first: M1.7, M1.6, M1.5, M1.8, then M1.3, M1.4, M1.9, M1.10, M1.11, M1.13; plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md))
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -69,7 +69,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M1.9 Saving received files on its own executor (B1)
 - [ ] M1.10 Android 17 audio hardening (A8): restore volume only under a foreground service, otherwise defer
 - [ ] M1.11 Local network permission (A9): declare it; a helper for target 37
-- [ ] M1.12 Release hygiene (S6): `test-hooks` feature and an exe scan in CI; `relay-cli.exe` out of the zip; the release APK fails without its key
+- [x] M1.12 Release hygiene (S6): `test-hooks` feature and an exe scan in CI; `relay-cli.exe` out of the zip; the release APK fails without its key
 - [ ] M1.13 Fuzz crate (`fuzz/`, pinned nightly) with targets for every existing parser; smoke run in CI
 - [ ] M1.R Milestone review and CI green
 

@@ -1,6 +1,6 @@
 //! Phone Bridge tray app for Windows.
 //!
-//! pb-tray [--dir DIR] [--port N] [--name NAME] [--pair] [--test-auto-accept]
+//! pb-tray [--dir DIR] [--port N] [--name NAME] [--pair] [--test-auto-accept (test-hooks builds)]
 //!
 //! If the tray is already running, `--pair` and `--send-clipboard` are
 //! forwarded to it (for keyboard shortcuts) and this process exits.
@@ -211,7 +211,7 @@ fn main() {
             }
             "--name" => opts.name = args.next().unwrap_or(opts.name),
             "--pair" => opts.pair_on_start = true,
-            "--test-auto-accept" => auto_accept = true,
+            a if is_test_auto_accept(a) => auto_accept = true,
             "--send-clipboard" => send_clipboard = true,
             "--settings" => ui_request = Some(ipc::Request::Settings),
             "--open" => ui_request = Some(ipc::Request::Open),
@@ -412,4 +412,28 @@ fn main() {
     ui::message_loop();
     log.line("tray exiting");
     applog::flush();
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+/// `--test-auto-accept` confirms pairing by itself, for automated tests. It
+/// exists only in builds with the `test-hooks` feature: a release Relay must
+/// never skip that question.
+#[cfg(feature = "test-hooks")]
+fn is_test_auto_accept(arg: &str) -> bool {
+    arg == "--test-auto-accept"
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(not(feature = "test-hooks"))]
+fn is_test_auto_accept(_: &str) -> bool {
+    false
+}
+
+#[cfg(all(test, not(feature = "test-hooks")))]
+mod test_hooks_absent {
+    /// A release Relay must never confirm a pairing by itself.
+    #[test]
+    fn test_auto_accept_flag_is_ignored_without_test_hooks() {
+        assert!(!super::is_test_auto_accept("--test-auto-accept"));
+    }
 }

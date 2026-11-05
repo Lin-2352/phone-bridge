@@ -13,7 +13,8 @@
 //!   set-addr <id-prefix> <addr> where to reach a peer (e.g. an emulator port forward)
 //!   control <secs> [drag] [--to <id>]  take control and draw circles (drag: button held, then a wheel burst)
 //!
-//! `--auto-accept` skips the SAS question and exists only for automated tests.
+//! `--auto-accept` skips the SAS question; it exists only in `test-hooks`
+//! builds, for automated tests.
 
 use std::{
     io::Write,
@@ -63,7 +64,7 @@ fn parse() -> Res<Opts> {
             "--port" => o.port = val()?.parse()?,
             "--name" => o.name = val()?,
             "--to" => o.to = Some(val()?),
-            "--auto-accept" => o.auto_accept = true,
+            f if is_test_auto_accept(f) => o.auto_accept = true,
             "--sensitive" => o.sensitive = true,
             f if f.starts_with("--") => return Err(format!("unknown flag {f}").into()),
             _ => o.cmd.push(a),
@@ -394,5 +395,25 @@ mod tests {
             ..u
         };
         assert!(clipsync_line("Phone", &u).contains("hunter2"));
+    }
+}
+
+/// `--auto-accept` confirms pairing by itself, for automated tests. It exists
+/// only in builds with the `test-hooks` feature; elsewhere it is unknown.
+#[cfg(feature = "test-hooks")]
+fn is_test_auto_accept(flag: &str) -> bool {
+    flag == "--auto-accept"
+}
+
+#[cfg(not(feature = "test-hooks"))]
+fn is_test_auto_accept(_: &str) -> bool {
+    false
+}
+
+#[cfg(all(test, not(feature = "test-hooks")))]
+mod test_hooks_absent {
+    #[test]
+    fn auto_accept_flag_is_rejected_without_test_hooks() {
+        assert!(!super::is_test_auto_accept("--auto-accept"));
     }
 }

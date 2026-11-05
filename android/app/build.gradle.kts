@@ -5,8 +5,9 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// The release key lives outside the repo (never committed). Without it (CI,
-// a fresh checkout) the release build is signed with the debug key.
+// The release key lives outside the repo (never committed). Without it a
+// release build stops: signed with the debug key it could not update an
+// installed release. qa is the release build signed with the debug key.
 val releaseKeys = Properties().apply {
     val f = file(System.getenv("PB_KEYSTORE_PROPERTIES") ?: "${System.getProperty("user.home")}/.phonebridge-release/keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
@@ -42,7 +43,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
         }
         // The release build, signed so it installs over a debug-signed app: how to try R8's output on a real phone.
         create("qa") {
@@ -90,4 +91,16 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     // android.jar's org.json is a stub in JVM tests; the real one for Timeline encode/decode.
     testImplementation("org.json:json:20240303")
+}
+
+// Configuration and the debug and qa builds stay green without the key; only a
+// real release refuses, when it runs.
+tasks.configureEach {
+    if (name == "assembleRelease" || name == "bundleRelease" || name == "packageRelease") {
+        doFirst {
+            if (!releaseKeys.containsKey("storeFile")) {
+                throw GradleException("Release builds need the release key (see README, Build from source)")
+            }
+        }
+    }
 }
