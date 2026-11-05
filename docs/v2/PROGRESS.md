@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.8 parts 1-2 (data folder ACL; camera install refuses unsafe folders)
-- **Next task:** M1.8 rest: embed the camera DLL (build.rs + PB_CAMERA_DLL, make-portable and CI), app-folder warning with 'Fix folder permissions', DLL planting (8c); then M1.13, M1.R
+- **Last finished task:** M1.8 a, b and c-1 (data folder ACL; start-up folder warning; camera install refuses unsafe folders; camera DLL inside Relay.exe; System32-only DLL search)
+- **Next task:** M1.8c-2: delay-load the imports of Relay.exe that aren't KnownDLLs (build.rs /DELAYLOAD + delayimp.lib) and add the CI planting test (copy Relay.exe to a temp folder with garbage DLLs named after its imports; it must start). Then M1.13 (fuzzing), then M1.R (milestone review). Plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Tasks 8, 13, 14
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -206,3 +206,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-05: M0 done (CI run 41945588677 green on every job: Rust on Linux and Windows, Android tests and lint, qa APK for 3 ABIs, portable zip, deny). Windows code can be type-checked here: `apt-get install gcc-mingw-w64-x86-64`, `rustup target add x86_64-pc-windows-gnu`, `cargo check -p pb-tray --target x86_64-pc-windows-gnu`.
 - 2026-11-05 (same session, later): M1 security items done and pushed: M1.1, M1.2, M1.3, M1.4, M1.5, M1.6, M1.7, M1.9, M1.10, M1.11, M1.12, and part 1 of M1.8 (data folder ACL). CI was green on every job at b0b8528; later commits were checked here (Linux tests, Windows type-check and clippy through x86_64-pc-windows-gnu, Android unit tests and lint). Some PC behaviour is Windows-only and is covered by CI's windows job; check the latest run before going on.
 - Rulings and deviations are listed per task in the plan's ledger style in the commit messages; the most important: the screen lock reason travels in the existing screen notice (no wire change), the redacted-code text is replaced on the phone (no wire change), allow_shortcut_files has no settings row yet (M5 adds it).
+- 2026-11-05 (end of session): M1.8 is down to part c-2. Before going on, check the latest CI run of cloud/v2-upgrade (the Windows jobs run tests that can't run in a Linux container). The ledger for M1 lives in the git-ignored .superpowers/ folder of the old container; everything that matters is in this file and in the commit messages.

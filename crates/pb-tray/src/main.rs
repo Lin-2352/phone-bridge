@@ -164,6 +164,15 @@ fn single_instance() -> bool {
 
 #[cfg(windows)]
 fn main() {
+    // DLLs Relay loads by name come from System32 only, never from its own
+    // folder, where another account could have put one (M1.8).
+    #[allow(unsafe_code)]
+    // SAFETY: a process-wide setting, made before anything else runs.
+    unsafe {
+        let _ = windows::Win32::System::LibraryLoader::SetDefaultDllDirectories(
+            windows::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
+    }
     use std::{
         path::PathBuf,
         sync::{Arc, Mutex},
@@ -375,6 +384,23 @@ fn main() {
             return;
         }
     };
+    // Unpacked where other accounts can change it (say C:\Relay): say so once.
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
+    if let (Some(sid), Some(dir)) = (ipc::user_sid(), exe_dir) {
+        if !acl::folder_is_safe(&dir, &sid) {
+            log.line("FOLDER other accounts can change Relay's folder");
+            ui::post_event(
+                hwnd,
+                core::UiEvent::Info(
+                    "Other accounts on this PC can change Relay's folder. Move the Relay folder \
+                     into your own user folder (for example Downloads)"
+                        .into(),
+                ),
+            );
+        }
+    }
 
     // Started by Explorer "Send to" (or with --send) while no tray ran:
     // queue the files; the core sends them once it is up.
