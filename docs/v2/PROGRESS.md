@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2 plan written ([plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.1 (audio helper only in debug builds)
+- **Last finished task:** M2.1 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.2 (clip fingerprint as a keyed hash)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -74,7 +74,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.R Milestone review and CI green — reviewer found 2 critical (screen-window taps skipped the lock/prompt pause; the screen and audio consent windows still auto-accepted while locked) and 1 important (`--test-audio-synth` in release): all fixed. Deferred minors: the folder check reads neither the folder's owner nor its parent folder's ACL; the DLL planting check covers start-up imports only
 
 ## M2 Review sweep (every remaining finding)
-- [ ] M2.1 S5: audio helper to the debug source set with a no-op release stub; its libraries `debugImplementation`; one-time cleanup (`AdbBridge.forget`)
+- [x] M2.1 S5: audio helper to the debug source set with a no-op release stub; its libraries `debugImplementation`; one-time cleanup (`AdbBridge.forget`)
 - [ ] M2.2 S9: clip fingerprint as HMAC under a Keystore key
 - [ ] M2.3 S11: pipe name from the user SID
 - [ ] M2.4 S12: hide toast and balloon text by default; no package names in `tray.log` or logcat; Android logs in internal storage
@@ -210,3 +210,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-05 (wrap-up): CI run 41956488616 green on every job, fuzz-smoke included. The DLL planting check passed with /DEPENDENTLOADFLAG:0x800 and SetDefaultDllDirectories alone: Relay.exe started next to 34 garbage DLLs named after the libraries it uses, so no delay-loading was needed (ruling). The check is now required. If Relay ever imports a new non-system DLL, add its name to the check's list in ci.yml. All six fuzz targets also ran here without a crash (0.3–4.9 million runs each).
 - 2026-11-05 (M1 closed): M1.13 has 10 fuzz targets plus randomized tests for the PC's settings and pipe parsers. The M1 review's critical findings are fixed (see M1.R). docs/THREAT_MODEL.md has a short list of what M1 added. Check the latest CI run first: the Windows-only tests (ipc random text, settings pages) run only there.
 - 2026-11-05 (M2 start): CI run 41969323722 on e4f5f12 green on every job. M2 plan written. No wire change in M2. Rulings in the plan: PC toasts hide text by default (`toast_show_text`); the PC-away status shows an absolute time so it needs no timed redraw; M2.20 dropped (reason above).
+- Device checklist items collected for M11.5: (M2.1) on a phone that once ran the audio helper's setup, the device-idle allow-list entry stays until removed over adb (`adb shell cmd deviceidle whitelist -dev.phonebridge.app`); (M2.20) measure memory churn while mirroring.

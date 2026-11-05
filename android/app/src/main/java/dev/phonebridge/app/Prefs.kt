@@ -152,13 +152,23 @@ class Prefs(context: Context) {
         get() = sp.getLong("audio_helper_last_connect", 0)
         set(v) = sp.edit().putLong("audio_helper_last_connect", v).apply()
 
-    /** Shared with the helper Relay starts, and with nothing else. Made once, on first need. */
-    fun audioHelperSecret(): ByteArray {
-        dev.phonebridge.helper.HelperProtocol.secretFromHex(sp.getString("audio_helper_secret", null))?.let { return it }
-        val made = ByteArray(dev.phonebridge.helper.HelperProtocol.SECRET_BYTES).also { java.security.SecureRandom().nextBytes(it) }
-        sp.edit().putString("audio_helper_secret", dev.phonebridge.helper.HelperProtocol.secretToHex(made)).commit()
-        return made
+    /** The audio helper's shared secret, as hex (debug builds only; see HelperSecret.kt). */
+    var audioHelperSecretHex: String?
+        get() = sp.getString("audio_helper_secret", null)
+        set(v) = sp.edit().putString("audio_helper_secret", v).commit().let {}
+
+    /** Every stored key, for the one-time helper cleanup. */
+    val allKeys: Set<String> get() = sp.all.keys
+
+    /** Removes [keys] from the settings file. */
+    fun removeKeys(keys: Collection<String>) {
+        sp.edit().apply { keys.forEach { remove(it) } }.commit()
     }
+
+    /** The helper's leftovers were removed from a build without the helper. */
+    var helperCleaned: Boolean
+        get() = sp.getBoolean("helper_cleaned", false)
+        set(v) = sp.edit().putBoolean("helper_cleaned", v).apply()
 
     /** Sound was captured while muted on this phone, so muting never needs checking again. */
     var audioMuteKeepsCapture: Boolean

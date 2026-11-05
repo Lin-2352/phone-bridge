@@ -38,8 +38,16 @@ jobs:
           java-version: "21"
       - run: cargo build -p pb-ffi
       - run: cargo run -q -p uniffi-bindgen -- generate --library target/debug/libpb_ffi.so --language kotlin --out-dir android/app/src/main/java
-      - run: bash gradlew :app:compileReleaseKotlin :app:lintRelease :app:testDebugUnitTest --no-daemon --console=plain
+      - run: bash gradlew :app:compileReleaseKotlin :app:compileQaKotlin :app:lintRelease :app:testDebugUnitTest --no-daemon --console=plain
         working-directory: android
+      - name: The audio helper's libraries stay out of release and qa
+        working-directory: android
+        run: |
+          for c in releaseRuntimeClasspath qaRuntimeClasspath; do
+            if bash gradlew -q :app:dependencies --configuration "$c" --no-daemon | grep -iE 'libadb|conscrypt|bcpkix'; then
+              echo "::error::$c includes a library only the debug-only audio helper may use"; exit 1
+            fi
+          done
 
   android-apk:
     # The installable test build: qa (release settings and R8, debug-signed),

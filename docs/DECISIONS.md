@@ -439,6 +439,7 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Library.** `libadb-android` 3.1.1 (Apache-2.0 option), which states it has never had a security audit. It comes from JitPack, which builds on demand, so its artifacts are pinned by hash in `android/gradle/verification-metadata.xml`. With Conscrypt and Bouncy Castle it takes the release APK from 16 MB to 23 MB.
 - **Bluetooth was considered.** Windows can act as a Bluetooth speaker for the phone (`AudioPlaybackConnection`), with no helper and no stored access. The user chose the helper for its Wi-Fi range and since it matches the behaviour they showed. Delay and quality of the Bluetooth route were not measured.
 - **The mute path stays** as the fallback for phones without the helper.
+- **Debug builds only (2026-11-05, v2 M2.1).** The helper, its adb setup and its libraries live in `src/debug`; release and qa builds compile no-op stand-ins from `src/release`, so libadb, Conscrypt, Bouncy Castle and JitPack leave the release graph (CI checks it). A release build removes an old install's stored adb identity, its Keystore key and the helper's settings once.
 
 ## Silencing the speaker with an effect (2026-11-04)
 

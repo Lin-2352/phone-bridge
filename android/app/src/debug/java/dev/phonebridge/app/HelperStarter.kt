@@ -81,6 +81,7 @@ object HelperStarter {
 
     /** From the recovery job: bring the helper back, and keep the adb key from expiring. */
     fun maintain(ctx: Context) {
+        Prefs(ctx).audioHelperSecret()
         if (!HELPER_OFFERED) return
         Thread({
             synchronized(startLock) {

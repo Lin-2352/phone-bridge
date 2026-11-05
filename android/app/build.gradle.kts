@@ -55,6 +55,11 @@ android {
 
     buildFeatures { compose = true }
 
+    // qa is the release build signed with the debug key: same code, so the same helper-less stand-ins.
+    sourceSets.getByName("qa") {
+        kotlin.srcDir("src/release/java")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -82,11 +87,12 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
     implementation("com.google.zxing:core:3.5.3")
-    // The audio helper's one-time setup: talks to this phone's own adb daemon. Versions pinned, and
+    // The audio helper's one-time setup: talks to this phone's own adb daemon. Debug builds only
+    // (src/debug); release and qa use the no-op stand-ins in src/release. Versions pinned, and
     // the JitPack artifacts' hashes are checked in gradle/verification-metadata.xml.
-    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
-    implementation("org.conscrypt:conscrypt-android:2.5.3")
-    implementation("org.bouncycastle:bcpkix-jdk15to18:1.81")
+    debugImplementation("com.github.MuntashirAkon:libadb-android:3.1.1")
+    debugImplementation("org.conscrypt:conscrypt-android:2.5.3")
+    debugImplementation("org.bouncycastle:bcpkix-jdk15to18:1.81")
 
     testImplementation("junit:junit:4.13.2")
     // android.jar's org.json is a stub in JVM tests; the real one for Timeline encode/decode.

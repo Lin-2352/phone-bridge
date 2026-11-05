@@ -15,14 +15,6 @@
 # for every Room database.
 -keep class * extends androidx.room.RoomDatabase { <init>(); }
 
-# The audio helper is started by name with app_process; nothing in the app calls its entry point.
--keep class dev.phonebridge.helper.Main { public static void main(java.lang.String[]); }
-
-# The adb library finds Conscrypt and SPAKE2 by name and through JNI.
--keep class org.conscrypt.** { *; }
--dontwarn org.conscrypt.**
--keep class io.github.muntashirakon.crypto.** { *; }
--keep class io.github.muntashirakon.adb.** { *; }
--dontwarn org.bouncycastle.**
--dontwarn com.android.org.conscrypt.**
+# The audio helper and its adb, Conscrypt and Bouncy Castle libraries ship only in debug builds,
+# which R8 never shrinks, so they need no rules here.
 -dontwarn org.apache.harmony.xnet.provider.jsse.**

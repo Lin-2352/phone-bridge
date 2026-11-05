@@ -250,8 +250,9 @@ class PbService : Service() {
         Timeline.init(this)
         PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
         Prefs(this).pendingVolumeRestore = false // done here: the service is in the foreground
-        Prefs(this).audioHelperSecret()
-        HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do        // A new process shares nothing yet: drop the old process's ongoing notifications.
+        HelperCleanup.runOnce(this) // builds without the helper: remove an old install's leftovers
+        HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do
+        // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
         // Bars from a process that was killed mid-transfer never end by themselves.
         nm.cancel(PROGRESS_IN_ID)
@@ -775,7 +776,8 @@ class PbService : Service() {
     private fun askAudio(e: PbEvent.AudioRequest) {
         val mic = e.source.toInt() == 1
         // Starting the helper takes seconds and the PC waits for up to 40: never on the events thread.
-        if (!mic && Prefs(this).audioHelperPaired && Prefs(this).audioSilencePhone) {
+        val prefs = Prefs(this)
+        if (helperAskWaits(dev.phonebridge.app.audio.HELPER_OFFERED, mic, prefs.audioHelperPaired, prefs.audioSilencePhone)) {
             Thread({
                 HelperStarter.ensure(this, asked = true)
                 answerAudio(e, mic)
