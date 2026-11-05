@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.R (M2 is done; plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** write the M3 plan (Foundations) with superpowers:writing-plans into `docs/v2/plans/`, then run it from M3.1
+- **Last finished task:** M3 plan written ([plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md))
+- **Next task:** M3.1 (peers check compatibility by rule and name the device to update)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -213,3 +213,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - Device checklist items collected for M11.5: (M2.1) on a phone that once ran the audio helper's setup, the device-idle allow-list entry stays until removed over adb (`adb shell cmd deviceidle whitelist -dev.phonebridge.app`); (M2.20) measure memory churn while mirroring; (M2.17) set an alarm during a phone-audio share with the speaker silenced: the alarm must be heard, and silence must return after it; (M2.19) an hour idle with no PC and the screen off, then `adb shell dumpsys batterystats`: Relay's wakeups stay within one per 15 min.
 - 2026-11-05 (M2, mid-milestone): a new PC settings toggle must also go into `settings_groups.rs` (OPTIONS and `page_of`; at most 9 rows a page) and the KEYS count in `pages/settings.rs`. `settings_groups` now builds and tests on Linux; `pages/settings.rs` tests still run only on CI's Windows job.
 - 2026-11-05 (M2 closed): CI run 41983048190 on 6096cb4 green on every job (Rust on Linux and Windows, Android, APKs, fuzz smoke, zip, deny). Rulings in M2 commit messages: M2.10 keeps onDestroy's restore on its own thread; M2.16 keeps the join under the lock but the capture thread never takes it; M2.19 keeps the relative "5 min ago" wording (Home and the PC use it) and gates redraws on the screen being on.
+- 2026-11-05 (M3 start): M3 plan written. Rulings in the plan: the protocol version stays 0 and `Hello` gains optional fields 4 and 5; reserved capabilities (`discovery2`, `resume`) are advertised only by the build that implements them; the PC gets peer ids in its request events with M8's per-device permissions, not now; an old global "allow" switch no longer covers PCs paired later (M3.5).
