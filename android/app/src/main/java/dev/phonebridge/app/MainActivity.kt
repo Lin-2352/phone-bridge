@@ -115,6 +115,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // A visible window may set the volume: finish a restore Android 17 refused in the background.
+        if (Prefs(this).pendingVolumeRestore) {
+            PhoneSpeaker.restore(this)
+            Prefs(this).pendingVolumeRestore = false
+        }
         AppLog.permissionsChanged(this)
         resumed.intValue++
         // Picture access may have been granted or taken away in Android's settings.

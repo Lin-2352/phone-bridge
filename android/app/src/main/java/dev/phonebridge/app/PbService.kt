@@ -249,6 +249,7 @@ class PbService : Service() {
         AppLog.event("events", "service_start")
         Timeline.init(this)
         PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
+        Prefs(this).pendingVolumeRestore = false // done here: the service is in the foreground
         Prefs(this).audioHelperSecret()
         HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do        // A new process shares nothing yet: drop the old process's ongoing notifications.
         clearStaleSharing()
@@ -323,6 +324,10 @@ class PbService : Service() {
         AudioShare.stopAll()
         // The speaker comes back even if the stop path above could not reach it (instance is already null).
         PhoneSpeaker.restore(this)
+        // Leaving the foreground, Android 17 may have ignored that: the next start or app open does it again.
+        if (volumeRestoreAction(Build.VERSION.SDK_INT, inForegroundService = false, pending = true) == VolumeAction.Defer) {
+            Prefs(this).pendingVolumeRestore = true
+        }
         // Those paths skip their notices for the same reason: none may claim a share with Relay off.
         getSystemService(NotificationManager::class.java).run {
             cancel(AUDIO_SHARE_ID)

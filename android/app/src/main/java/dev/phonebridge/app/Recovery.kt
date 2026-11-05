@@ -47,7 +47,11 @@ fun ensureRunning(ctx: Context, why: String) {
     if (!Bridge.running.value) RelayWidget.update(ctx)
     if (honourUserStop(ctx)) {
         // A forced stop can land mid-share, and no service will run to put the volume back.
-        PhoneSpeaker.restore(ctx)
+        when (volumeRestoreAction(android.os.Build.VERSION.SDK_INT, inForegroundService = false, pending = true)) {
+            VolumeAction.RestoreNow -> PhoneSpeaker.restore(ctx)
+            VolumeAction.Defer -> Prefs(ctx).pendingVolumeRestore = true
+            VolumeAction.Nothing -> {}
+        }
         return
     }
     if (!Prefs(ctx).enabled || Bridge.running.value) return

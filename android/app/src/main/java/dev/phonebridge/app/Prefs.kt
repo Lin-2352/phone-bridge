@@ -115,6 +115,11 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putInt("audio_pc_level", v).apply()
 
     /** The volume to give back when the share ends, -1 when none is held (survives a crash). */
+    /** A held volume could not be restored (Android 17 refuses outside a service): do it at the next start or open. */
+    var pendingVolumeRestore: Boolean
+        get() = sp.getBoolean("pending_volume_restore", false)
+        set(v) = sp.edit().putBoolean("pending_volume_restore", v).commit().let {}
+
     var audioHeldIndex: Int
         get() = sp.getInt("audio_held_index", -1)
         set(v) = sp.edit().putInt("audio_held_index", v).commit().let {}
