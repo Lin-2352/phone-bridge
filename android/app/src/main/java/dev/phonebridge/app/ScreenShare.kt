@@ -116,8 +116,10 @@ class ScreenCapture(
                 val me = this@ScreenCapture
                 when {
                     ScreenShare.capture === me -> {
-                        Log.i(TAG, "SCREEN projection stopped by the system")
-                        ScreenShare.stop(userStopped = true)
+                        val reason = PbService.instance?.let { projectionStopReason(it) } ?: StopReason.User
+                        Log.i(TAG, "SCREEN projection stopped by the system ($reason)")
+                        // A lock is not the user's Stop: that PC must not be declined (B2).
+                        if (reason == StopReason.Locked) ScreenShare.stopLocked() else ScreenShare.stop(userStopped = true)
                     }
                     ScreenShare.armed === me -> {
                         Log.i(TAG, "SCREEN kept projection stopped by the system")
@@ -573,14 +575,20 @@ object ScreenShare : ScreenListener {
      * End sharing. With Instant screen on and not stopped by the user, the
      * capture is kept (idle) for the next share; otherwise everything goes.
      */
-    fun stop(userStopped: Boolean) {
+    /** Android ended the projection because the phone locked: the PC is told, nothing is kept. */
+    fun stopLocked() {
+        runCatching { screen?.stopLocked() }
+        stop(userStopped = false, projectionAlive = false)
+    }
+
+    fun stop(userStopped: Boolean, projectionAlive: Boolean = true) {
         main.removeCallbacks(graceEnd)
         if (userStopped) {
             runCatching { screen?.stop() }
             // Stop during the grace (no live session): that PC's retries are declined.
             runCatching { Bridge.node?.screenUserStopped() }
         }
-        val keep = !userStopped && PbService.instance?.let { Prefs(it).instantScreen } == true
+        val keep = !userStopped && projectionAlive && PbService.instance?.let { Prefs(it).instantScreen } == true
         val c = capture
         capture = null
         screen = null

@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.R (and M1.1)
-- **Next task:** M1.2 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 2)
+- **Last finished task:** M1.2
+- **Next task:** M1.3 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 3)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -59,7 +59,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## M1 Harden: the Top 12
 - [x] M1.1 Clipboard and file injection (S1, B4, S10): Android confirm sheet; PC toast with Copy/Open; auto-copy off by default; `keep_in_history` honoured
-- [ ] M1.2 Lock-stop taken as a user Stop (A1, B2): `SystemStopped`; the PC shows "Phone locked" with Resume
+- [x] M1.2 Lock-stop taken as a user Stop (A1, B2): `SystemStopped`; the PC shows "Phone locked" with Resume
 - [ ] M1.3 OTP redaction on Android 15+ (A2): detect the placeholder; PC "Code hidden by Android"; Settings explains; more `find_otp` languages
 - [ ] M1.4 Restricted settings and Advanced Protection (A3, A10): guided card from `packageSource`; explain Advanced Protection
 - [ ] M1.5 Tapjacking and self-injection (S3, S8, I6): hide overlays; obscured-touch refusal; data-sensitive views; pause Relay's own remote input over every prompt; the quick panel shares only on tap

@@ -527,6 +527,28 @@ fn flush_pending(
     false
 }
 
+/// What a phone-screen session leaves for its PC when it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndSlot {
+    /// The user stopped it: that PC's requests are declined for a while.
+    UserStop,
+    /// The link dropped: that PC's next request resumes without asking.
+    Grace,
+}
+
+/// `by_user`: Stop on the phone. `locked`: Android ended the projection as
+/// the phone locked. `closed_by_pc`: the PC closed its window on purpose, so
+/// its next request is a new share.
+fn screen_end_record(by_user: bool, locked: bool, closed_by_pc: bool) -> Option<EndSlot> {
+    if by_user {
+        Some(EndSlot::UserStop)
+    } else if locked || closed_by_pc {
+        None
+    } else {
+        Some(EndSlot::Grace)
+    }
+}
+
 /// One screen session, phone side: encoded frames go in here.
 #[derive(uniffi::Object)]
 pub struct PbScreen {
@@ -534,6 +556,8 @@ pub struct PbScreen {
     pending: Mutex<Vec<pb_video::Record>>,
     pacer: Mutex<pb_video::Pacer>,
     stopped: std::sync::atomic::AtomicBool,
+    /// Android ended the projection because the phone locked.
+    locked: std::sync::atomic::AtomicBool,
     /// A waiting frame was refused when the streams opened: the next
     /// advice asks the encoder for a key frame.
     want_key: std::sync::atomic::AtomicBool,
@@ -551,6 +575,7 @@ impl PbScreen {
             pending: Mutex::new(Vec::new()),
             pacer: Mutex::new(pb_video::Pacer::new(target)),
             stopped: std::sync::atomic::AtomicBool::new(false),
+            locked: std::sync::atomic::AtomicBool::new(false),
             want_key: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -662,6 +687,18 @@ impl PbScreen {
     pub fn send_lens(&self, lens: u8) {
         if let Some(s) = self.sink.get() {
             s.send_lens(lens);
+        }
+    }
+
+    /// Android stopped the projection because the phone locked: not the
+    /// user's Stop, so that PC is not declined, and not a dropped link to
+    /// resume; the PC is told why.
+    pub fn stop_locked(&self) {
+        self.locked
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(s) = self.sink.get() {
+            s.notice(pb_protocol::SCREEN_LOCKED_NOTICE);
+            s.close();
         }
     }
 
@@ -1728,13 +1765,11 @@ async fn screen_session(
         }
     }
     let by_user = screen.stopped.load(Ordering::Acquire);
-    // The PC closed its window on purpose: nothing to resume, and its next
-    // request is a new share (not declined).
-    if !closed_by_pc || by_user {
-        let slot = if by_user {
-            &sh.screen_user_stop
-        } else {
-            &sh.screen_grace
+    let record = screen_end_record(by_user, screen.locked.load(Ordering::Acquire), closed_by_pc);
+    if let Some(r) = record {
+        let slot = match r {
+            EndSlot::UserStop => &sh.screen_user_stop,
+            EndSlot::Grace => &sh.screen_grace,
         };
         *slot.lock().unwrap_or_else(|p| p.into_inner()) =
             Some(Grace::new(peer, std::time::Instant::now()));
@@ -1742,7 +1777,7 @@ async fn screen_session(
     // Kotlin hears the end before another request can start (it checks
     // which session ended, so a quick resume is never paused by it).
     if let Some(l) = sh.screen_listener.lock().ok().and_then(|g| g.clone()) {
-        let _ = l.on_stopped(!by_user && !closed_by_pc);
+        let _ = l.on_stopped(record == Some(EndSlot::Grace));
     }
     release_screen(&sh);
     "screen ended".into()
@@ -2473,6 +2508,23 @@ mod android_init {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_locked_stop_records_no_user_stop_and_no_grace() {
+        // Android 15 QPR1+ stops the projection when the phone locks: that
+        // PC is neither declined (user stop) nor auto-resumed (grace).
+        assert_eq!(screen_end_record(false, true, false), None);
+        assert_eq!(
+            screen_end_record(true, false, false),
+            Some(EndSlot::UserStop)
+        );
+        assert_eq!(
+            screen_end_record(true, false, true),
+            Some(EndSlot::UserStop)
+        );
+        assert_eq!(screen_end_record(false, false, false), Some(EndSlot::Grace));
+        assert_eq!(screen_end_record(false, false, true), None, "PC closed it");
+    }
 
     #[derive(Default)]
     struct Seen(Mutex<Vec<u64>>);

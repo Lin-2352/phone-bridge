@@ -24,6 +24,11 @@ const LEN_PREFIX: usize = 4;
 /// (tags 25 to 27). A peer without it never answers them.
 pub const CAP_AUDIO: &str = "audio";
 
+/// Screen-session notice the phone sends before ending a share that Android
+/// stopped because the phone locked (Android 15 QPR1 and later). The PC says
+/// so instead of retrying; an older PC just shows it as the status line.
+pub const SCREEN_LOCKED_NOTICE: &str = "Phone locked: screen sharing stopped";
+
 /// First message on every connection, sent by both sides.
 #[derive(Clone, PartialEq, Message)]
 pub struct Hello {

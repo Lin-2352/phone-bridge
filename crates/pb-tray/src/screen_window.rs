@@ -149,6 +149,8 @@ pub fn is_streaming() -> bool {
     is_open() && STREAMING.load(Ordering::Relaxed)
 }
 
+/// The last notice of the current session (its end reason, when the phone gave one).
+static LAST_NOTICE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 fn with<R>(f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
     SHARED.lock().ok()?.as_mut().map(f)
 }
@@ -188,19 +190,29 @@ pub fn open(view: ScreenView, opts: WindowOpts, rt: &tokio::runtime::Handle) {
     let remote = Arc::new(remote);
     let (tx, rx) = mpsc::channel::<Msg>();
     let fwd = tx.clone();
+    if let Ok(mut n) = LAST_NOTICE.lock() {
+        n.clear();
+    }
+    let (state_done, state_done_rx) = tokio::sync::oneshot::channel::<()>();
     rt.spawn(async move {
         while let Some(r) = records.recv().await {
             if fwd.send(Msg::Record(r)).is_err() {
                 return;
             }
         }
+        // The phone's last notice says why it ended (a lock): let it land.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), state_done_rx).await;
         let _ = fwd.send(Msg::Ended);
     });
     rt.spawn(async move {
         while let Some(st) = state.recv().await {
+            if let Ok(mut n) = LAST_NOTICE.lock() {
+                n.clone_from(&st.notice);
+            }
             // An empty notice clears it (back to full quality).
             set_status(&st.notice);
         }
+        let _ = state_done.send(());
     });
     std::thread::spawn(move || ui_thread(remote, tx, rx, Arc::new(opts)));
 }
@@ -969,9 +981,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_ENDED => {
-                set_status("Reconnecting\u{2026}");
+                let last = LAST_NOTICE.lock().map(|n| n.clone()).unwrap_or_default();
+                let why = crate::screen_end::reason(&last);
+                set_status(if crate::screen_end::retries(why) {
+                    "Reconnecting\u{2026}"
+                } else {
+                    "Phone locked"
+                });
                 if let Some(opts) = with(|s| s.opts.clone()) {
-                    (opts.on_ended)("Phone stopped sharing its screen".into());
+                    (opts.on_ended)(why.into());
                 }
                 LRESULT(0)
             }

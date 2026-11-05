@@ -1828,7 +1828,7 @@ fn show_screen(
                         move |why: String| {
                             touch(&id);
                             log.line(&format!("SCREEN ended: {why}"));
-                            if why.starts_with("Phone stopped") {
+                            if crate::screen_end::retries(&why) {
                                 // Maybe only the link: try again for 30 s.
                                 rt.spawn(show_screen(
                                     node.clone(),

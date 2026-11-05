@@ -83,6 +83,8 @@ mod relaunch;
 #[cfg(windows)]
 mod screen_decode;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod screen_end;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod screen_geom;
 #[cfg(windows)]
 mod screen_render;
