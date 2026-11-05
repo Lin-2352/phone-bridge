@@ -96,6 +96,15 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        // Relay only talks to your own devices on this network; Android 17 asks first once Relay targets it.
+        if (savedInstanceState == null && needsLocalNetworkRequest(
+                Build.VERSION.SDK_INT,
+                applicationInfo.targetSdkVersion,
+                checkSelfPermission(ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED,
+            )
+        ) {
+            requestPermissions(arrayOf(ACCESS_LOCAL_NETWORK), 2)
+        }
         honourUserStop(this)
         if (prefs.enabled) startForegroundService(Intent(this, PbService::class.java))
         setContent {
