@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.4 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.5 (capture always covers the whole display)
+- **Last finished task:** M2.5 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.6 (Open on phone: background-start opt-in, honest result)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -78,7 +78,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.2 S9: clip fingerprint as HMAC under a Keystore key
 - [x] M2.3 S11: pipe name from the user SID
 - [x] M2.4 S12: hide toast and balloon text by default; no package names in `tray.log` or logcat; Android logs in internal storage
-- [ ] M2.5 A4: full-display capture config (API 34+)
+- [x] M2.5 A4: full-display capture config (API 34+)
 - [ ] M2.6 A5: background-activity-start opt-in for PendingIntents; honest result to the PC
 - [ ] M2.7 A6: `READ_MEDIA_VISUAL_USER_SELECTED` and partial-access guidance
 - [ ] M2.8 B3: link check matches what the phone opens

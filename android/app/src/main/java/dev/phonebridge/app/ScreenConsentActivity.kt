@@ -124,7 +124,7 @@ class ScreenConsentActivity : ComponentActivity() {
         promptAt = SystemClock.elapsedRealtime()
         Log.i(TAG, "SCREEN capture prompt after ${promptAt - askedAt} ms")
         val mpm = getSystemService(MediaProjectionManager::class.java)
-        runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQ_CAPTURE) }
+        runCatching { startActivityForResult(captureIntent(mpm), REQ_CAPTURE) }
             .onFailure {
                 Log.e(TAG, "SCREEN capture prompt failed: $it")
                 decline()

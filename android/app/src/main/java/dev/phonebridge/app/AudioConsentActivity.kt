@@ -87,7 +87,7 @@ class AudioConsentActivity : ComponentActivity() {
             ConsentStep.RECORD_AUDIO -> requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
             ConsentStep.PROJECTION -> {
                 val mpm = getSystemService(MediaProjectionManager::class.java)
-                runCatching { startActivityForResult(mpm.createScreenCaptureIntent(), REQ_CAPTURE) }
+                runCatching { startActivityForResult(captureIntent(mpm), REQ_CAPTURE) }
                     .onFailure {
                         Log.e(TAG, "AUDIO capture prompt failed: $it")
                         refuse(AudioReason.UNAVAILABLE)
