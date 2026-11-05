@@ -204,6 +204,8 @@ class PbService : Service() {
     private val nextId = AtomicInteger(0)
     /** Network events are handled here, one at a time, never on Rust's runtime threads. */
     private val events = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pb-events") }
+    private val saves = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pb-saves") }
+    private val router = EventRouter(events, saves)
     @Volatile private var destroyed = false
     private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var rediscoverJob: kotlinx.coroutines.Job? = null
@@ -344,7 +346,14 @@ class PbService : Service() {
             // Events still queued (a file that just arrived) are handled; the
             // next start (which empties incoming/) waits for this.
             events.shutdown()
-            runCatching { kotlinx.coroutines.runInterruptible { events.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS) } }
+            saves.shutdown()
+            runCatching {
+                kotlinx.coroutines.runInterruptible {
+                    events.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS)
+                    // A copy out of incoming/ must finish before the next start empties it.
+                    saves.awaitTermination(60, java.util.concurrent.TimeUnit.SECONDS)
+                }
+            }
         }
         Bridge.nodeReady.value = false
         Bridge.liveSessions.intValue = 0
@@ -380,9 +389,9 @@ class PbService : Service() {
                     // Called on a Rust runtime thread: hand off and return at once.
                     override fun onEvent(event: PbEvent) {
                         try {
-                            events.execute {
+                            router.route(event) { e ->
                                 try {
-                                    handle(event)
+                                    handle(e)
                                 } catch (t: Throwable) {
                                     Log.e(TAG, "EVENT handling failed: $t")
                                 }
