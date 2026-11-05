@@ -85,6 +85,12 @@ fn parse(buf: &[u8]) -> Option<(u8, u16, [u8; 16])> {
     Some((buf[4], port, t))
 }
 
+/// The packet parser, for the fuzz targets in `fuzz/`.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_parse(buf: &[u8]) -> Option<(u8, u16, [u8; 16])> {
+    parse(buf)
+}
+
 /// Directed broadcast address (`ip | !mask`) of each usable local IPv4
 /// network, using the interface's real prefix length.
 pub(crate) fn directed_broadcasts(ifaces: &[(Ipv4Addr, u8)]) -> Vec<Ipv4Addr> {

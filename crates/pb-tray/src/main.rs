@@ -173,6 +173,11 @@ fn main() {
             windows::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
         );
     }
+    // `Relay.exe --version` exits at once: CI starts it next to planted DLLs
+    // to prove none of them is loaded from Relay's folder.
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        return;
+    }
     use std::{
         path::PathBuf,
         sync::{Arc, Mutex},

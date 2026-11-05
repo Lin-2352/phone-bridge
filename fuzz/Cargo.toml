@@ -1,0 +1,64 @@
+# Fuzzing for the parsers that read what another device or a stranger on the
+# network sends (M1.13). Outside the main workspace: it needs a nightly
+# toolchain and cargo-fuzz (see README.md).
+[package]
+name = "pb-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+prost = "0.14"
+pb-protocol = { path = "../crates/pb-protocol" }
+pb-identity = { path = "../crates/pb-identity" }
+pb-transport = { path = "../crates/pb-transport", features = ["fuzzing"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "control_frame"
+path = "fuzz_targets/control_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "input_datagram"
+path = "fuzz_targets/input_datagram.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairing"
+path = "fuzz_targets/pairing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "discovery_packet"
+path = "fuzz_targets/discovery_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_names"
+path = "fuzz_targets/file_names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "notify_text"
+path = "fuzz_targets/notify_text.rs"
+test = false
+doc = false
+bench = false

@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Fuzzing has its own workspace (nightly only).
+exclude = ["fuzz"]
 members = [
     "crates/pb-identity",
     "crates/pb-protocol",

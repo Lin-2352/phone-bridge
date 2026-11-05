@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.8 a, b and c-1 (data folder ACL; start-up folder warning; camera install refuses unsafe folders; camera DLL inside Relay.exe; System32-only DLL search)
-- **Next task:** M1.8c-2: delay-load the imports of Relay.exe that aren't KnownDLLs (build.rs /DELAYLOAD + delayimp.lib) and add the CI planting test (copy Relay.exe to a temp folder with garbage DLLs named after its imports; it must start). Then M1.13 (fuzzing), then M1.R (milestone review). Plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Tasks 8, 13, 14
+- **Last finished task:** M1.8c-2 part 1 (planting check, report-only) and M1.13 part 1 (fuzz crate, 6 targets, CI job)
+- **Next task:** Check the CI run: (1) the windows-zip step 'DLL planting check' — if it failed, delay-load the imports it found (build.rs /DELAYLOAD + delayimp.lib), then drop continue-on-error; if it passed, drop continue-on-error and tick M1.8. (2) fuzz-smoke must be green; then add the remaining fuzz targets (video records, camera frames header, notify messages, audio datagrams, peers file; pb-tray's ipc/DIB/settings parsers need moving into a library first) and tick M1.13. Then M1.R.
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -70,7 +70,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.10 Android 17 audio hardening (A8): restore volume only under a foreground service, otherwise defer
 - [x] M1.11 Local network permission (A9): declare it; a helper for target 37
 - [x] M1.12 Release hygiene (S6): `test-hooks` feature and an exe scan in CI; `relay-cli.exe` out of the zip; the release APK fails without its key
-- [ ] M1.13 Fuzz crate (`fuzz/`, pinned nightly) with targets for every existing parser; smoke run in CI
+- [~] M1.13 Fuzz crate (`fuzz/`, pinned nightly) with targets for every existing parser; smoke run in CI
 - [ ] M1.R Milestone review and CI green
 
 ## M2 Review sweep (every remaining finding)

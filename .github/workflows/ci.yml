@@ -84,12 +84,43 @@ jobs:
       - name: No test-only switches in the release exe
         shell: pwsh
         run: if (Select-String -Path target/release/pb-tray.exe -Pattern 'test-auto-accept' -SimpleMatch -Quiet) { throw 'pb-tray.exe contains a test-only switch' }
+      - name: DLL planting check (Relay starts next to fake DLLs)
+        shell: pwsh
+        timeout-minutes: 2
+        # Reports until M1.8c-2 delay-loads the remaining imports (then it must pass).
+        continue-on-error: true
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP 'plant'
+          New-Item -ItemType Directory -Force $t | Out-Null
+          Copy-Item target/release/pb-tray.exe (Join-Path $t 'Relay.exe')
+          $names = 'dwmapi','uxtheme','d2d1','dwrite','d3d11','dxgi','dcomp','propsys','mfplat','mf',
+            'mfreadwrite','iphlpapi','windowscodecs','bcrypt','crypt32','version','winmm','userenv',
+            'secur32','ncrypt','wtsapi32','uiautomationcore','oleacc','dbghelp','winhttp','powrprof',
+            'cfgmgr32','hid','avrt','dnsapi','netapi32','wintrust','ksuser','mfsensorgroup'
+          foreach ($n in $names) { Set-Content -Path (Join-Path $t "$n.dll") -Value 'not a DLL' }
+          $p = Start-Process -FilePath (Join-Path $t 'Relay.exe') -ArgumentList '--version' -PassThru
+          if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Relay.exe hung (a loader error box?)' }
+          "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "Relay.exe loaded a DLL from its own folder (exit $($p.ExitCode))" }
       - run: pwsh scripts/make-portable.ps1 -Zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: relay-windows-portable
           path: dist/*.zip
           if-no-files-found: error
+
+  fuzz-smoke:
+    # Every fuzz target for 20 s on each push (fuzz/README.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master on 2026-11-05
+        with:
+          toolchain: nightly-2026-11-01
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Run each target
+        working-directory: fuzz
+        run: for t in $(cargo fuzz list); do cargo fuzz run "$t" -- -max_total_time=20; done
 
   deny:
     runs-on: ubuntu-latest
