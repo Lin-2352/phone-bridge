@@ -24,7 +24,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REGISTRY_TOKEN: ${{ github.token }}
     steps:
-      - uses: oras-project/setup-oras@v1
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
       - run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
       - name: Push to ghcr.io
         working-directory: assets

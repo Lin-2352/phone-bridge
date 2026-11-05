@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.3
-- **Next task:** M0.5 (plan: [plans/2026-11-05-m0-baseline.md](plans/2026-11-05-m0-baseline.md), Task 3)
+- **Last finished task:** M0.5
+- **Next task:** M0.9 (plan Task 4)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -50,7 +50,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M0.2 Rust 1.99.1 here, matching CI
 - [x] M0.3 Try the Android SDK here (Android checks fall back to CI if it can't be installed)
 - [ ] M0.4 `scripts/android-build.sh`, a bash twin of `android-build.ps1`
-- [ ] M0.5 CI: pin every action by commit SHA (`checkout`, `rust-toolchain`, `setup-java`, `cargo-deny-action`, `setup-oras`)
+- [x] M0.5 CI: pin every action by commit SHA (`checkout`, `rust-toolchain`, `setup-java`, `cargo-deny-action`, `setup-oras`)
 - [ ] M0.6 CI: Android unit tests, lint and the `qa` (R8) build
 - [ ] M0.7 CI: APK artifacts (arm64-v8a, armeabi-v7a, x86_64) and the portable zip artifact
 - [ ] M0.8 `armeabi-v7a` ABI in Gradle and the build script; `armv7-linux-androideabi` in `deny.toml`
