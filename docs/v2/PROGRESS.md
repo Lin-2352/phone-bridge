@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.8 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.9 (a refused armed share puts the encoder back to idle)
+- **Last finished task:** M2.9 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.10 (volume work never sleeps on the main thread)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -82,7 +82,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.6 A5: background-activity-start opt-in for PendingIntents; honest result to the PC
 - [x] M2.7 A6: `READ_MEDIA_VISUAL_USER_SELECTED` and partial-access guidance
 - [x] M2.8 B3: link check matches what the phone opens
-- [ ] M2.9 B6: `startArmed` encoder left running
+- [x] M2.9 B6: `startArmed` encoder left running
 - [ ] M2.10 B7: main-thread sleeps in `SpeakerSilencer` and `PhoneSpeaker`
 - [ ] M2.11 B8: downsampled bitmap decode in `ClipImages.toPng`
 - [ ] M2.12 B9: keep only what Relay uses from each notification

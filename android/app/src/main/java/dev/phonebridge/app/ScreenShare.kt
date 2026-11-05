@@ -509,12 +509,20 @@ object ScreenShare : ScreenListener {
         val c = armed ?: return false
         val node = Bridge.node ?: return false
         val accept = runCatching { c.restart(a) }.onFailure { Log.e(TAG, "SCREEN restart failed: $it") }.getOrNull()
-        if (accept == null) {
-            node.answerScreen(a.id, null)
-            disarm()
-            return false
+        val s = accept?.let { node.answerScreen(a.id, it) }
+        when (armedAfterAnswer(restartOk = accept != null, answered = s != null)) {
+            ArmedNext.DISARM -> {
+                node.answerScreen(a.id, null)
+                disarm()
+                return false
+            }
+            ArmedNext.BACK_TO_IDLE -> {
+                c.idle() // restarted for this request only: stop the encoder again, stay armed
+                return false
+            }
+            ArmedNext.SHARE -> {}
         }
-        val s = node.answerScreen(a.id, accept) ?: return false
+        s!!
         armed = null
         ready.value = false
         node.setScreenListener(this)
