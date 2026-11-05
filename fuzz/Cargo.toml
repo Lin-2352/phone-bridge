@@ -15,7 +15,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 prost = "0.14"
 pb-protocol = { path = "../crates/pb-protocol" }
-pb-identity = { path = "../crates/pb-identity" }
+pb-identity = { path = "../crates/pb-identity", features = ["fuzzing"] }
+pb-video = { path = "../crates/pb-video" }
+pb-camera-frames = { path = "../crates/pb-camera-frames" }
 pb-transport = { path = "../crates/pb-transport", features = ["fuzzing"] }
 
 [workspace]
@@ -59,6 +61,34 @@ bench = false
 [[bin]]
 name = "notify_text"
 path = "fuzz_targets/notify_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "video_config"
+path = "fuzz_targets/video_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_packet"
+path = "fuzz_targets/audio_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "camera_frames"
+path = "fuzz_targets/camera_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peers_file"
+path = "fuzz_targets/peers_file.rs"
 test = false
 doc = false
 bench = false

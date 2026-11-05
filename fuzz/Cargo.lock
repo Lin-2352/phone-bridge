@@ -2085,13 +2085,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pb-camera-frames"
+version = "0.2.0"
+
+[[package]]
 name = "pb-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "pb-camera-frames",
  "pb-identity",
  "pb-protocol",
  "pb-transport",
+ "pb-video",
  "prost",
 ]
 

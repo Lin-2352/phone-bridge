@@ -14,3 +14,7 @@ workspace = true
 ed25519-dalek = "2"
 sha2 = "0.10"
 getrandom = "0.3"
+
+[features]
+# Exposes private parsers to the fuzz targets in fuzz/; never in a build users get.
+fuzzing = []
