@@ -9,6 +9,19 @@ pub fn data_dir(exe_dir: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// The data folder when Relay isn't portable. An install that already uses
+/// `PhoneBridge\tray` keeps it (start-up entries, Send to and toasts all start
+/// the exe without `--dir` and must land in the same folder); a new install
+/// gets `Relay\tray`. `exists` says whether a folder is there.
+pub fn pick_default_dir(local_app_data: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let old = local_app_data.join("PhoneBridge").join("tray");
+    if exists(&old) {
+        old
+    } else {
+        local_app_data.join("Relay").join("tray")
+    }
+}
+
 /// The data folder holds the identity key and the trusted devices: this user,
 /// SYSTEM and Administrators only, nothing inherited. A folder unpacked where
 /// other accounts may write (say C:\Relay) would otherwise let them add a
@@ -20,6 +33,31 @@ pub fn data_dir_sddl(user_sid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_folder_is_kept() {
+        let base = Path::new("/local");
+        let old = base.join("PhoneBridge").join("tray");
+        let got = pick_default_dir(base, |p| p == old);
+        assert_eq!(got, old);
+    }
+
+    #[test]
+    fn new_install_uses_relay() {
+        let base = Path::new("/local");
+        assert_eq!(
+            pick_default_dir(base, |_| false),
+            base.join("Relay").join("tray")
+        );
+    }
+
+    #[test]
+    fn once_created_the_relay_folder_is_found_again() {
+        // Start-up entries pass no --dir: the second start must land in the same folder.
+        let base = Path::new("/local");
+        let new = base.join("Relay").join("tray");
+        assert_eq!(pick_default_dir(base, |p| p == new), new);
+    }
 
     #[test]
     fn data_dir_sddl_has_no_inheritance_and_three_principals() {

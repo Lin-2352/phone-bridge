@@ -29,7 +29,7 @@ Download both parts from the [latest release](https://github.com/Lin-2352/phone-
 
 Requires Android 10 or later and Windows 10 2004 or later. The webcam needs Windows 11, and icons look best there too.
 
-The release also has `Relay-<version>-windows-x64.exe`, the app as a single file with nothing to unzip. It keeps its data in `%LOCALAPPDATA%\PhoneBridge` rather than beside it, and it can't set up the webcam, so use the zip if you want either of those.
+The release also has `Relay-<version>-windows-x64.exe`, the app as a single file with nothing to unzip. It keeps its data in `%LOCALAPPDATA%\Relay` (an install made by an older version keeps `%LOCALAPPDATA%\PhoneBridge`) rather than beside it, and it can't set up the webcam, so use the zip if you want either of those.
 
 Each release is also on the [Packages page](https://github.com/Lin-2352/phone-bridge/pkgs/container/relay), for pulling with `oras pull ghcr.io/lin-2352/relay:<version>`.
 

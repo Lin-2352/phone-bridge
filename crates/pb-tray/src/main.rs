@@ -203,11 +203,12 @@ fn main() {
             std::process::exit(camera_register::unregister_elevated());
         }
     }
-    let default_dir = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("PhoneBridge")
-        .join("tray");
+    let default_dir = portable::pick_default_dir(
+        &std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir),
+        |p| p.is_dir(),
+    );
     let portable_dir = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().and_then(portable::data_dir));

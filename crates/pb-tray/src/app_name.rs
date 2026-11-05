@@ -25,8 +25,8 @@ mod tests {
     #[test]
     fn no_user_visible_string_still_says_phone_bridge() {
         let allowed = [
-            ".join(\"Phone Bridge\")",   // data folder
-            "Downloads\\\\Phone Bridge", // folder received files go to
+            ".join(\"Phone Bridge\")",   // the old save folder in migration tests
+            "Downloads\\\\Phone Bridge", // a test string for the old save folder
             "LEGACY_",                   // migration of old names
             "RUN_KEY",                   // registry value name
             "an older build",            // the test of the legacy camera name

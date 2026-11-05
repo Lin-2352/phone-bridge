@@ -88,7 +88,7 @@ $downOk = [bool]$path -and ((((A shell "md5sum '$path'") -split ' ')[0]) -eq $md
 # Phone -> PC, 2 x 100 MB (a file Phone Bridge owns in Downloads).
 $q = A shell "content query --uri content://media/external/downloads --projection _id:_display_name --where `"_display_name='pbm3_100MB.bin'`""
 $id = ([regex]::Match(($q -join " "), "_id=(\d+)")).Groups[1].Value
-$md5up = ((A shell "md5sum '/sdcard/Download/Phone Bridge/pbm3_100MB.bin'") -split ' ')[0]
+$md5up = ((A shell "md5sum '/sdcard/Download/Relay/pbm3_100MB.bin'") -split ' ')[0]
 if (-not $id -or -not $md5up -or $md5up -match "No such") {
     "phone -> PC skipped: Download/Phone Bridge/pbm3_100MB.bin is not on the phone (send it there once first)"
     Row @((Get-Date).ToString('s'), $Scenario, $phoneLink, $pcLink, "ok", $down, $downOk, "", "skipped", "") | Add-Content $csv

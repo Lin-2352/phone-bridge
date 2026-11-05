@@ -85,7 +85,7 @@ impl Default for Settings {
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
             .join("Downloads")
-            .join("Phone Bridge");
+            .join("Relay");
         Self {
             universal_clipboard: false,
             skip_private: true,
@@ -554,6 +554,12 @@ mod tests {
             assert_eq!(format!("{once:?}"), format!("{twice:?}"), "{text:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_installs_save_to_relay() {
+        let s = Settings::default();
+        assert!(s.save_dir.ends_with("Relay"), "{:?}", s.save_dir);
     }
 
     #[test]
