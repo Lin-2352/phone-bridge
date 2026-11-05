@@ -11,9 +11,8 @@ fun withAllowed(allowed: Set<String>, peerId: String, on: Boolean): Set<String> 
     else -> allowed - peerId
 }
 
-/** The id of the one peer called [name]; empty when none or several have it (never auto-allowed then). */
-fun uniquePeerId(peers: List<Pair<String, String>>, name: String): String =
-    peers.filter { it.first == name }.singleOrNull()?.second.orEmpty()
+/** The asking PC's id from the event, if it is still paired; otherwise empty (never auto-allowed). Names are not used. */
+fun askPeerId(eventId: String, pairedIds: List<String>): String = if (eventId in pairedIds) eventId else ""
 
 /** The list without PCs that are no longer paired (a removed PC must not keep "Always allow"). */
 fun pruneAllowed(allowed: Set<String>, pairedIds: List<String>): Set<String> =

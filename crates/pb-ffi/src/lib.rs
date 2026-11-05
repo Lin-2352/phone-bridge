@@ -68,19 +68,23 @@ fn fail(e: impl std::fmt::Display) -> PbError {
 pub enum PbEvent {
     Connected {
         peer_name: String,
+        peer_id: String,
     },
     Disconnected {
         peer_name: String,
+        peer_id: String,
         reason: String,
     },
     Clipboard {
         peer_name: String,
+        peer_id: String,
         text: String,
         sensitive: bool,
     },
     /// Universal Clipboard: text copied on the PC (only when sync is on).
     RemoteClipboard {
         peer_name: String,
+        peer_id: String,
         text: String,
         /// Marked private on the PC: keep it out of history, hide previews.
         sensitive: bool,
@@ -90,11 +94,13 @@ pub enum PbEvent {
     /// Kotlin puts it on the clipboard and owns the file from here.
     RemoteImage {
         peer_name: String,
+        peer_id: String,
         path: String,
     },
     /// A file finished arriving; Kotlin moves it into Downloads/Phone Bridge.
     FileReceived {
         peer_name: String,
+        peer_id: String,
         path: String,
         name: String,
         size: u64,
@@ -102,6 +108,7 @@ pub enum PbEvent {
     /// A link or text shared from the PC.
     SharedText {
         peer_name: String,
+        peer_id: String,
         text: String,
         is_link: bool,
     },
@@ -110,11 +117,13 @@ pub enum PbEvent {
     IncomingOffer {
         id: u64,
         peer_name: String,
+        peer_id: String,
         name: String,
         size: u64,
     },
     TransferFailed {
         peer_name: String,
+        peer_id: String,
         reason: String,
     },
     /// A paired PC asks to control this phone and "allow control" is off:
@@ -122,6 +131,7 @@ pub enum PbEvent {
     ControlRequest {
         id: u64,
         peer_name: String,
+        peer_id: String,
     },
     /// A paired PC asks to see this screen. Ask the user (unless `resume`:
     /// the capture from the same PC is still alive, answer at once), run
@@ -129,6 +139,7 @@ pub enum PbEvent {
     ScreenRequest {
         id: u64,
         peer_name: String,
+        peer_id: String,
         /// Long side of the video; 0 = native.
         max_long_side: u32,
         sharp: bool,
@@ -143,6 +154,7 @@ pub enum PbEvent {
     CameraRequest {
         id: u64,
         peer_name: String,
+        peer_id: String,
         /// 0 back, 1 front.
         lens: u32,
         /// The 16:9 size wanted (1920x1080 or 1280x720).
@@ -160,6 +172,7 @@ pub enum PbEvent {
     AudioRequest {
         id: u64,
         peer_name: String,
+        peer_id: String,
         /// 0 playback (system audio), 1 microphone.
         source: u8,
         sample_rate: u32,
@@ -174,6 +187,7 @@ pub enum PbEvent {
     /// 1 PC to phone (frames arrive on the `AudioSink`; start the player).
     AudioStarted {
         peer_name: String,
+        peer_id: String,
         direction: u8,
         source: u8,
         sample_rate: u32,
@@ -188,6 +202,7 @@ pub enum PbEvent {
     /// code (2 unavailable, 3 busy, 4 bad parameters).
     AudioRefused {
         peer_name: String,
+        peer_id: String,
         direction: u8,
         source: u8,
         reason: u8,
@@ -195,6 +210,7 @@ pub enum PbEvent {
     /// A file transfer is under way (at most every 0.7 s, and once at the end).
     TransferProgress {
         peer_name: String,
+        peer_id: String,
         name: String,
         done: u64,
         total: u64,
@@ -245,6 +261,7 @@ impl Drop for CancelGuard {
 fn progress_events(
     events: Events,
     peer_name: String,
+    peer_id: String,
     name: String,
     incoming: bool,
 ) -> pb_transport::files::Progress {
@@ -265,6 +282,7 @@ fn progress_events(
                 &events,
                 PbEvent::TransferProgress {
                     peer_name: peer_name.clone(),
+                    peer_id: peer_id.clone(),
                     name: name.clone(),
                     done,
                     total,
@@ -1077,9 +1095,9 @@ pub async fn start_node(
         .map_err(fail)?;
     // The sender was told "saved": hand each whole file to the app again
     // (it moves it to the save folder). The sender's name was not kept.
-    let sender = match node.paired_peers().as_slice() {
-        [only] => only.name.clone(),
-        _ => "A paired device".to_owned(),
+    let (sender, sender_id) = match node.paired_peers().as_slice() {
+        [only] => (only.name.clone(), only.id.to_string()),
+        _ => ("A paired device".to_owned(), String::new()),
     };
     for (path, size) in recovered {
         let name = path
@@ -1090,6 +1108,7 @@ pub async fn start_node(
             &listener,
             PbEvent::FileReceived {
                 peer_name: sender.clone(),
+                peer_id: sender_id.clone(),
                 path: path.display().to_string(),
                 name,
                 size,
@@ -1161,11 +1180,13 @@ fn fd_to_file(_fd: i32) -> Result<std::fs::File, PbError> {
 async fn pump(mut s: Session, sh: Arc<Shared>) {
     use pb_transport::files::{receive_offer_with, Received, DEFAULT_MAX_FILE};
     let name = s.peer_name.clone();
+    let pid = s.peer.to_string();
     applog::session_open();
     push(
         &sh.events,
         PbEvent::Connected {
             peer_name: name.clone(),
+            peer_id: pid.clone(),
         },
     );
     let mut actions =
@@ -1214,6 +1235,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 &sh.events,
                 PbEvent::Clipboard {
                     peer_name: name.clone(),
+                    peer_id: pid.clone(),
                     text: c.text,
                     sensitive: c.sensitive,
                 },
@@ -1227,6 +1249,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         &sh.events,
                         PbEvent::RemoteClipboard {
                             peer_name: name.clone(),
+                            peer_id: pid.clone(),
                             text: u.text,
                             sensitive: u.sensitive,
                         },
@@ -1264,6 +1287,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             PbEvent::ControlRequest {
                                 id: ask,
                                 peer_name: name.clone(),
+                                peer_id: pid.clone(),
                             },
                         );
                         // No answer in time, or the PC gave up: no.
@@ -1345,6 +1369,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         PbEvent::IncomingOffer {
                             id: ask,
                             peer_name: name.clone(),
+                            peer_id: pid.clone(),
                             name: shown_name(&offer.name),
                             size: offer.size,
                         },
@@ -1371,6 +1396,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         Some(progress_events(
                             sh.events.clone(),
                             name.clone(),
+                            pid.clone(),
                             file_name.clone(),
                             true,
                         )),
@@ -1391,6 +1417,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             &sh.events,
                             PbEvent::FileReceived {
                                 peer_name: name.clone(),
+                                peer_id: pid.clone(),
                                 path: path.display().to_string(),
                                 name: path
                                     .file_name()
@@ -1404,6 +1431,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         &sh.events,
                         PbEvent::SharedText {
                             peer_name: name.clone(),
+                            peer_id: pid.clone(),
                             text: t,
                             is_link: false,
                         },
@@ -1412,6 +1440,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                         &sh.events,
                         PbEvent::SharedText {
                             peer_name: name.clone(),
+                            peer_id: pid.clone(),
                             text: l,
                             is_link: true,
                         },
@@ -1433,10 +1462,12 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             match saved {
                                 Ok(()) => PbEvent::RemoteImage {
                                     peer_name: name.clone(),
+                                    peer_id: pid.clone(),
                                     path: path.display().to_string(),
                                 },
                                 Err(e) => PbEvent::TransferFailed {
                                     peer_name: name.clone(),
+                                    peer_id: pid.clone(),
                                     reason: e.to_string(),
                                 },
                             },
@@ -1449,6 +1480,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             &sh.events,
                             PbEvent::TransferFailed {
                                 peer_name: name.clone(),
+                                peer_id: pid.clone(),
                                 reason: e.to_string(),
                             },
                         );
@@ -1466,6 +1498,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
         &sh.events,
         PbEvent::Disconnected {
             peer_name: name,
+            peer_id: pid.clone(),
             reason,
         },
     );
@@ -1487,6 +1520,7 @@ async fn camera_session(
 ) -> String {
     use std::sync::atomic::Ordering;
     let peer = s.peer;
+    let pid = peer.to_string();
     if sh.camera_busy.swap(true, Ordering::AcqRel) {
         // The same PC asking again: its old session is stale (it restarted
         // before the phone noticed the lost link).
@@ -1546,6 +1580,7 @@ async fn camera_session(
         PbEvent::CameraRequest {
             id: ask,
             peer_name: name,
+            peer_id: pid.clone(),
             lens: start.lens.min(1),
             width: camera_size(start.width, start.height).0,
             height: camera_size(start.width, start.height).1,
@@ -1639,6 +1674,7 @@ async fn screen_session(
 ) -> String {
     use std::sync::atomic::Ordering;
     let peer = s.peer;
+    let pid = peer.to_string();
     if sh.screen_busy.swap(true, Ordering::AcqRel) {
         // The same PC asking again: end its stale session as a lost link
         // (the capture waits), so this request resumes it.
@@ -1698,6 +1734,7 @@ async fn screen_session(
         PbEvent::ScreenRequest {
             id: ask,
             peer_name: name,
+            peer_id: pid.clone(),
             max_long_side: start.max_long_side,
             sharp: start.sharp,
             dim: start.dim,
@@ -2002,6 +2039,7 @@ impl PbNode {
                             .find(|p| p.id == peer)
                             .map(|p| p.name)
                             .unwrap_or_default(),
+                        peer.to_string(),
                         name.clone(),
                         false,
                     )),

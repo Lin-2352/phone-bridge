@@ -17,8 +17,8 @@ class EventRouterTest {
         val saves = Recording()
         val router = EventRouter(events, saves)
         val handled = mutableListOf<String>()
-        router.route(PbEvent.FileReceived("PC", "/tmp/a", "a.mkv", 4_000_000_000uL)) { handled += "file" }
-        router.route(PbEvent.ControlRequest(7uL, "PC")) { handled += "control" }
+        router.route(PbEvent.FileReceived("PC", "id-pc", "/tmp/a", "a.mkv", 4_000_000_000uL)) { handled += "file" }
+        router.route(PbEvent.ControlRequest(7uL, "PC", "id-pc")) { handled += "control" }
         assertEquals(1, saves.tasks.size)
         assertEquals(1, events.tasks.size)
         events.tasks.single().run() // the save is still queued on its own thread

@@ -256,6 +256,7 @@ impl AudioHub {
 
     /// A PC sent `AudioStart`: gate, ask if needed, serve, run to the end.
     pub(crate) async fn serve(&self, s: Session, start: AudioStart, name: String) -> String {
+        let pid = s.peer.to_string();
         let direction = start.direction;
         let valid = start.validate().is_ok();
         let has_sink = lock(&self.sink).is_some();
@@ -272,6 +273,7 @@ impl AudioHub {
                 &self.events,
                 PbEvent::AudioRefused {
                     peer_name: name,
+                    peer_id: pid.clone(),
                     direction: direction.min(255) as u8,
                     source: start.source.min(255) as u8,
                     reason: reason.code() as u8,
@@ -294,6 +296,7 @@ impl AudioHub {
                 PbEvent::AudioRequest {
                     id,
                     peer_name: name.clone(),
+                    peer_id: pid.clone(),
                     source: start.source as u8,
                     sample_rate: start.sample_rate,
                     channels: start.channels,
@@ -366,6 +369,7 @@ impl AudioHub {
             &self.events,
             PbEvent::AudioStarted {
                 peer_name: name,
+                peer_id: pid.clone(),
                 direction: direction as u8,
                 source,
                 sample_rate: session.accept.sample_rate,
@@ -556,24 +560,28 @@ mod tests {
             PbEvent::AudioRequest {
                 id,
                 peer_name,
+                peer_id,
                 source,
                 sample_rate,
                 channels,
             } => PbEvent::AudioRequest {
                 id: *id,
                 peer_name: peer_name.clone(),
+                peer_id: peer_id.clone(),
                 source: *source,
                 sample_rate: *sample_rate,
                 channels: *channels,
             },
             PbEvent::AudioStarted {
                 peer_name,
+                peer_id,
                 direction,
                 source,
                 sample_rate,
                 channels,
             } => PbEvent::AudioStarted {
                 peer_name: peer_name.clone(),
+                peer_id: peer_id.clone(),
                 direction: *direction,
                 source: *source,
                 sample_rate: *sample_rate,
@@ -585,11 +593,13 @@ mod tests {
             },
             PbEvent::AudioRefused {
                 peer_name,
+                peer_id,
                 direction,
                 source,
                 reason,
             } => PbEvent::AudioRefused {
                 peer_name: peer_name.clone(),
+                peer_id: peer_id.clone(),
                 direction: *direction,
                 source: *source,
                 reason: *reason,
@@ -705,6 +715,7 @@ mod tests {
         let req = tokio::spawn(async move { pc.open_audio(&pcs, start(0, 0), || {}).await });
         let PbEvent::AudioRequest {
             id,
+            peer_id,
             source,
             sample_rate,
             channels,
@@ -713,6 +724,8 @@ mod tests {
         else {
             unreachable!()
         };
+        // The phone's event names the PC by id, not only by name.
+        assert_eq!(peer_id, r.pc.peer_id().to_string());
         assert_eq!((source, sample_rate, channels), (0, 48000, 2));
         let out = r.hub.accept(id, 48000, 2, 0).expect("accepted");
         let mut pc_session = req.await.unwrap().expect("pc side");

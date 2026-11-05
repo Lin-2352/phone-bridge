@@ -727,7 +727,7 @@ class PbService : Service() {
     /** A PC asks to see this screen: resume within the grace, else ask. */
     private fun askScreen(e: PbEvent.ScreenRequest) {
         if (e.resume && ScreenShare.resume(e.id)) return
-        val peerId = uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName)
+        val peerId = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
         if (ScreenShare.armed != null && shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedScreenPcs), keyguardLocked())) {
             val a = ScreenAsk(
                 e.id, e.peerName, e.maxLongSide.toInt(), e.sharp, e.dim,
@@ -774,7 +774,7 @@ class PbService : Service() {
         val ask = Intent(this, CameraConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
-            .putExtra("peerId", uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName))
+            .putExtra("peerId", askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty()))
             .putExtra("at", android.os.SystemClock.elapsedRealtime())
             .putExtra("lens", e.lens.toInt())
             .putExtra("width", e.width.toInt())
@@ -923,7 +923,7 @@ class PbService : Service() {
     }
 
     private fun askControl(e: PbEvent.ControlRequest) {
-        val peerId = uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName)
+        val peerId = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
         if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedControlPcs), keyguardLocked())) {
             Bridge.node?.answerOffer(e.id, true)
             Log.i(TAG, "CONTROL request from ${e.peerName}: always allowed")

@@ -33,22 +33,26 @@ class AllowListTest {
     }
 }
 
-class UniquePeerIdTest {
-    private val peers = listOf("My PC" to "id-a", "Office" to "id-b", "My PC" to "id-c")
+class AskPeerIdTest {
+    private val paired = listOf("id-a", "id-b")
 
     @Test
-    fun a_name_used_once_gives_its_id() {
-        assertEquals("id-b", uniquePeerId(peers, "Office"))
+    fun a_paired_id_is_kept() {
+        assertEquals("id-b", askPeerId("id-b", paired))
     }
 
     @Test
-    fun a_name_shared_by_two_pcs_gives_no_id_so_it_is_never_auto_allowed() {
-        assertEquals("", uniquePeerId(peers, "My PC"))
+    fun an_unpaired_or_empty_id_gives_none() {
+        assertEquals("", askPeerId("id-z", paired))
+        assertEquals("", askPeerId("", paired))
     }
 
     @Test
-    fun an_unknown_name_gives_no_id() {
-        assertEquals("", uniquePeerId(peers, "Nope"))
+    fun same_name_other_id_is_not_allowed() {
+        // Two PCs both called "DESK": only the one in the list starts without asking.
+        val allowed = setOf("id-a")
+        assertEquals(true, allowedFor(askPeerId("id-a", paired), allowed))
+        assertEquals(false, allowedFor(askPeerId("id-b", paired), allowed))
     }
 }
 
