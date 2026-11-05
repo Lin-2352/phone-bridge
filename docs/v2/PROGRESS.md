@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.3
-- **Next task:** M1.8 (then M1.13, M1.R; plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 8)
+- **Last finished task:** M1.8 part 1 (data folder ACL)
+- **Next task:** M1.8 rest: app-folder check and fix, camera install refuses unsafe folders + embedded DLL (8b), DLL planting (8c); then M1.13, M1.R (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 8)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -65,7 +65,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.5 Tapjacking and self-injection (S3, S8, I6): hide overlays; obscured-touch refusal; data-sensitive views; pause Relay's own remote input over every prompt; the quick panel shares only on tap
 - [x] M1.6 Locked phone (S4): no auto-accept while locked; input paused; on API 29–30, Allow opens the activity
 - [x] M1.7 Mark-of-the-Web (S2): `Zone.Identifier` ZoneId=3; risky types always prompt; shortcut types refused by default
-- [ ] M1.8 Portable folder trust (S7): `data\` DACL; app-folder check and fix; no elevation from unsafe folders; embedded camera DLL; DLL-planting fix and CI planting test
+- [~] M1.8 Portable folder trust (S7): `data\` DACL; app-folder check and fix; no elevation from unsafe folders; embedded camera DLL; DLL-planting fix and CI planting test
 - [x] M1.9 Saving received files on its own executor (B1)
 - [x] M1.10 Android 17 audio hardening (A8): restore volume only under a foreground service, otherwise defer
 - [x] M1.11 Local network permission (A9): declare it; a helper for target 37

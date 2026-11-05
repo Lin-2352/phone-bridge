@@ -312,7 +312,15 @@ fn main() {
         std::process::exit(if ok { 0 } else { 1 });
     }
     let _ = std::fs::create_dir_all(&opts.dir);
+    // Only this user, SYSTEM and Administrators may read or change the data
+    // (the identity key and the trusted devices), wherever it was unpacked.
+    let protected = ipc::user_sid().is_some_and(|sid| {
+        camera_register::set_dacl(&opts.dir, &portable::data_dir_sddl(&sid)).is_ok()
+    });
     let log = core::Log::open(opts.dir.join("tray.log"));
+    if !protected {
+        log.line("DATA folder permissions could not be restricted");
+    }
     // Idle almost always: run on efficient cores at low clock.
     if let Err(e) = pb_platform_win::power::set_eco_qos(true) {
         log.line(&format!("EcoQoS unavailable: {e}"));

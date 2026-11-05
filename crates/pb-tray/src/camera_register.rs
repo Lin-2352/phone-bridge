@@ -291,7 +291,7 @@ pub fn is_registered() -> bool {
     registered_dll().is_some_and(|p| p.is_file()) && frames_path().is_file()
 }
 
-fn set_dacl(path: &std::path::Path, sddl: &str) -> Result<(), ()> {
+pub(crate) fn set_dacl(path: &std::path::Path, sddl: &str) -> Result<(), ()> {
     let mut sd = PSECURITY_DESCRIPTOR::default();
     // SAFETY: a valid SDDL string; the DACL pointer stays valid with `sd`,
     // which lives until the end of this function.

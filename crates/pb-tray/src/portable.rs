@@ -9,9 +9,28 @@ pub fn data_dir(exe_dir: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// The data folder holds the identity key and the trusted devices: this user,
+/// SYSTEM and Administrators only, nothing inherited. A folder unpacked where
+/// other accounts may write (say C:\Relay) would otherwise let them add a
+/// trusted device or swap settings.
+pub fn data_dir_sddl(user_sid: &str) -> String {
+    format!("D:PAI(A;OICI;FA;;;{user_sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_dir_sddl_has_no_inheritance_and_three_principals() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        let sddl = data_dir_sddl(sid);
+        // Protected ("P"): nothing comes from a parent other users can write.
+        assert!(sddl.starts_with("D:PAI"), "{sddl}");
+        assert_eq!(sddl.matches("(A;").count(), 3, "{sddl}");
+        assert!(sddl.contains(&format!(";;;{sid})")));
+        assert!(sddl.contains(";;;SY)") && sddl.contains(";;;BA)"));
+    }
 
     #[test]
     fn a_data_folder_beside_the_exe_makes_it_portable() {
