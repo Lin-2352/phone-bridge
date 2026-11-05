@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.8c-2 part 1 (planting check, report-only) and M1.13 part 1 (fuzz crate, 6 targets, CI job)
-- **Next task:** Check the CI run: (1) the windows-zip step 'DLL planting check' — if it failed, delay-load the imports it found (build.rs /DELAYLOAD + delayimp.lib), then drop continue-on-error; if it passed, drop continue-on-error and tick M1.8. (2) fuzz-smoke must be green; then add the remaining fuzz targets (video records, camera frames header, notify messages, audio datagrams, peers file; pb-tray's ipc/DIB/settings parsers need moving into a library first) and tick M1.13. Then M1.R.
+- **Last finished task:** M1.8 (all parts) and M1.13 part 1
+- **Next task:** the rest of M1.13 (see its line), then M1.R (milestone review), then the M2 plan ([plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Tasks 13 and 14)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -65,12 +65,12 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M1.5 Tapjacking and self-injection (S3, S8, I6): hide overlays; obscured-touch refusal; data-sensitive views; pause Relay's own remote input over every prompt; the quick panel shares only on tap
 - [x] M1.6 Locked phone (S4): no auto-accept while locked; input paused; on API 29–30, Allow opens the activity
 - [x] M1.7 Mark-of-the-Web (S2): `Zone.Identifier` ZoneId=3; risky types always prompt; shortcut types refused by default
-- [~] M1.8 Portable folder trust (S7): `data\` DACL; app-folder check and fix; no elevation from unsafe folders; embedded camera DLL; DLL-planting fix and CI planting test
+- [x] M1.8 Portable folder trust (S7): `data\` DACL; app-folder check and fix; no elevation from unsafe folders; embedded camera DLL; DLL-planting fix and CI planting test
 - [x] M1.9 Saving received files on its own executor (B1)
 - [x] M1.10 Android 17 audio hardening (A8): restore volume only under a foreground service, otherwise defer
 - [x] M1.11 Local network permission (A9): declare it; a helper for target 37
 - [x] M1.12 Release hygiene (S6): `test-hooks` feature and an exe scan in CI; `relay-cli.exe` out of the zip; the release APK fails without its key
-- [~] M1.13 Fuzz crate (`fuzz/`, pinned nightly) with targets for every existing parser; smoke run in CI
+- [~] M1.13 Fuzz crate (`fuzz/`, pinned nightly) with targets for every existing parser; smoke run in CI — done: crate, CI job, 6 targets (control frames, input datagrams, pairing, discovery packets, file names, notification text). Left: video records, camera frames-file header, audio datagrams, `peers.txt`, and pb-tray's `ipc::decode`, clipboard DIB and settings parsers (these live in the binary crate: move them into a library first)
 - [ ] M1.R Milestone review and CI green
 
 ## M2 Review sweep (every remaining finding)
@@ -207,3 +207,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-05 (same session, later): M1 security items done and pushed: M1.1, M1.2, M1.3, M1.4, M1.5, M1.6, M1.7, M1.9, M1.10, M1.11, M1.12, and part 1 of M1.8 (data folder ACL). CI was green on every job at b0b8528; later commits were checked here (Linux tests, Windows type-check and clippy through x86_64-pc-windows-gnu, Android unit tests and lint). Some PC behaviour is Windows-only and is covered by CI's windows job; check the latest run before going on.
 - Rulings and deviations are listed per task in the plan's ledger style in the commit messages; the most important: the screen lock reason travels in the existing screen notice (no wire change), the redacted-code text is replaced on the phone (no wire change), allow_shortcut_files has no settings row yet (M5 adds it).
 - 2026-11-05 (end of session): M1.8 is down to part c-2. Before going on, check the latest CI run of cloud/v2-upgrade (the Windows jobs run tests that can't run in a Linux container). The ledger for M1 lives in the git-ignored .superpowers/ folder of the old container; everything that matters is in this file and in the commit messages.
+- 2026-11-05 (wrap-up): CI run 41956488616 green on every job, fuzz-smoke included. The DLL planting check passed with /DEPENDENTLOADFLAG:0x800 and SetDefaultDllDirectories alone: Relay.exe started next to 34 garbage DLLs named after the libraries it uses, so no delay-loading was needed (ruling). The check is now required. If Relay ever imports a new non-system DLL, add its name to the check's list in ci.yml. All six fuzz targets also ran here without a crash (0.3–4.9 million runs each).

@@ -87,8 +87,6 @@ jobs:
       - name: DLL planting check (Relay starts next to fake DLLs)
         shell: pwsh
         timeout-minutes: 2
-        # Reports until M1.8c-2 delay-loads the remaining imports (then it must pass).
-        continue-on-error: true
         run: |
           $t = Join-Path $env:RUNNER_TEMP 'plant'
           New-Item -ItemType Directory -Force $t | Out-Null
