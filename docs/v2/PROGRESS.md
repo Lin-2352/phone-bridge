@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M1.R (M1 is done)
-- **Next task:** write the M2 plan (Review sweep) with superpowers:writing-plans into `docs/v2/plans/`, then run it from M2.1
+- **Last finished task:** M2 plan written ([plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.1 (audio helper only in debug builds)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -93,7 +93,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M2.17 B14: lift the speaker silencer while an alarm, ringtone or emergency sound plays
 - [ ] M2.18 QoL: "Keep Control on between sessions" (opt-in)
 - [ ] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS
-- [ ] M2.20 Screen encoder reuses its frame buffer
+- [-] M2.20 Screen encoder reuses its frame buffer — dropped: uniffi copies the whole `ByteArray` into Rust on every `sendFrame` and takes only exact-size arrays, so a reused larger array would copy more, not less. The device checklist measures memory churn while mirroring instead
 - [ ] M2.R Milestone review and CI green
 
 ## M3 Foundations
@@ -209,3 +209,4 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-05 (end of session): M1.8 is down to part c-2. Before going on, check the latest CI run of cloud/v2-upgrade (the Windows jobs run tests that can't run in a Linux container). The ledger for M1 lives in the git-ignored .superpowers/ folder of the old container; everything that matters is in this file and in the commit messages.
 - 2026-11-05 (wrap-up): CI run 41956488616 green on every job, fuzz-smoke included. The DLL planting check passed with /DEPENDENTLOADFLAG:0x800 and SetDefaultDllDirectories alone: Relay.exe started next to 34 garbage DLLs named after the libraries it uses, so no delay-loading was needed (ruling). The check is now required. If Relay ever imports a new non-system DLL, add its name to the check's list in ci.yml. All six fuzz targets also ran here without a crash (0.3–4.9 million runs each).
 - 2026-11-05 (M1 closed): M1.13 has 10 fuzz targets plus randomized tests for the PC's settings and pipe parsers. The M1 review's critical findings are fixed (see M1.R). docs/THREAT_MODEL.md has a short list of what M1 added. Check the latest CI run first: the Windows-only tests (ipc random text, settings pages) run only there.
+- 2026-11-05 (M2 start): CI run 41969323722 on e4f5f12 green on every job. M2 plan written. No wire change in M2. Rulings in the plan: PC toasts hide text by default (`toast_show_text`); the PC-away status shows an absolute time so it needs no timed redraw; M2.20 dropped (reason above).
