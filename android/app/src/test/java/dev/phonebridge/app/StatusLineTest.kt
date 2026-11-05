@@ -11,6 +11,14 @@ class StatusLineTest {
         seen: Long = 0L, controller: String? = null,
     ) = relayStatus(running, ready, pc, connected, seen, now, controller)
 
+    @Test fun a_taken_discovery_port_is_said_when_the_pc_is_away() {
+        val s = relayStatus(true, true, "DESK", false, now - 3 * 3600_000L, now, null, discoveryOff = true)
+        assertEquals("DESK not reachable", s.title)
+        assertEquals("Can't look for it on a new network: another app uses port 47199", s.detail)
+        // Connected: nothing to say.
+        assertNull(relayStatus(true, true, "DESK", true, now, now, null, discoveryOff = true).detail)
+    }
+
     @Test fun off_starting_unpaired() {
         assertEquals("$APP_NAME is off", st(running = false).title)
         assertEquals("Starting\u2026", st(ready = false).title)

@@ -1115,9 +1115,12 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         }
     }
     match e {
-        UiEvent::Ready { fingerprint } => {
+        UiEvent::Ready { fingerprint, note } => {
             if let Ok(mut f) = MY_FINGERPRINT.lock() {
                 *f = fingerprint[..9].to_owned();
+            }
+            if let Some(n) = note {
+                balloon(hwnd, "Relay", n);
             }
             set_tip(hwnd, &current_tip(st));
             // Toasts restored from the notification centre whose phone is no

@@ -397,6 +397,8 @@ pub enum Cmd {
 pub enum UiEvent {
     Ready {
         fingerprint: String,
+        /// Something to tell the user once at start (a taken discovery port).
+        note: Option<&'static str>,
     },
     /// New QR code; `closes_in` is the time left for the whole pairing window.
     Code {
@@ -607,7 +609,8 @@ pub async fn run(
     let images = Arc::new(ToastImages::new(opts.dir.join("toast-images")));
     let identity = pb_identity::vault::open_identity(&opts.dir, &pb_platform_win_wrapper())?;
     let store: SharedStore = Arc::new(Mutex::new(FilePeerStore::open(opts.dir.join("peers.txt"))?));
-    let (node, mut ev) = Node::bind(
+    // A taken port (another app, or a Windows excluded range) falls back to one the system picks.
+    let (node, mut ev) = Node::bind_or_any(
         &identity,
         store,
         NodeConfig {
@@ -623,7 +626,12 @@ pub async fn run(
         let node = node.clone();
         async move { node.rediscover().await }
     });
-    log.line(&format!("READY id={} port={}", node.peer_id(), node.port()));
+    log.line(&format!(
+        "READY id={} port={} discovery={}",
+        node.peer_id(),
+        node.port(),
+        node.discovery_active()
+    ));
     refresh(&node, &peers);
     // Retry in the transfer window restarts a failed or cancelled send.
     {
@@ -665,6 +673,7 @@ pub async fn run(
     }
     ui(UiEvent::Ready {
         fingerprint: node.peer_id().fingerprint(),
+        note: crate::strings::discovery_note(node.discovery_active()),
     });
     let clip: Arc<Mutex<ClipSync>> = Arc::default();
     // Ask each phone once what notifications it has (quiet copies and the

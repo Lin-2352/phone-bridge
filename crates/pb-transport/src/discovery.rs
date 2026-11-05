@@ -196,11 +196,11 @@ pub(crate) type Candidates = std::sync::Mutex<HashMap<PeerId, Vec<SocketAddr>>>;
 
 impl Node {
     /// Bind the probe socket and answer probes from paired peers. Failure to
-    /// bind (port in use) only disables rediscovery.
-    pub(crate) async fn start_discovery(&self, port: u16) {
-        let Ok(sock) = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))).await
-        else {
-            return;
+    /// bind (port in use) only disables rediscovery; [Node::discovery_active] reports it.
+    pub(crate) async fn start_discovery(&self, port: u16) -> bool {
+        let sock = match UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port))).await {
+            Ok(s) => s,
+            Err(_) => return false,
         };
         let _ = sock.set_broadcast(true);
         let sock = Arc::new(sock);
@@ -244,6 +244,7 @@ impl Node {
             }
         });
         *lock(&self.inner.discovery) = Some(Discovery { sock, port, task });
+        true
     }
 
     /// Stop answering probes and release the port (called from shutdown).

@@ -17,13 +17,17 @@ data class RelayStatus(val title: String, val detail: String?) {
  */
 fun relayStatus(
     running: Boolean, ready: Boolean, pc: String?, connected: Boolean,
-    lastSeenMs: Long, nowMs: Long, controller: String? = null,
+    lastSeenMs: Long, nowMs: Long, controller: String? = null, discoveryOff: Boolean = false,
 ): RelayStatus = when {
     !running -> RelayStatus("$APP_NAME is off", null)
     !ready -> RelayStatus("Starting\u2026", null)
     controller != null -> RelayStatus("$controller is controlling this phone", null)
     pc == null -> RelayStatus("Not paired yet", null)
     connected -> RelayStatus("Connected to $pc", null)
+    discoveryOff -> RelayStatus("$pc not reachable", DISCOVERY_OFF_TEXT)
     lastSeenMs <= 0L -> RelayStatus("Paired with $pc", null)
     else -> RelayStatus("$pc not reachable", pcStatus(false, lastSeenMs, nowMs, paired = true))
 }
+
+/** Said while the PC is away and another app holds the discovery port. */
+const val DISCOVERY_OFF_TEXT = "Can't look for it on a new network: another app uses port 47199"

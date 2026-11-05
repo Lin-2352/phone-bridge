@@ -309,7 +309,45 @@ pub struct NodeEvents {
     pub sessions: mpsc::Receiver<Session>,
 }
 
+/// Ports to try in turn: the fixed one, then any port the system picks.
+pub(crate) fn bind_attempts(fixed: Option<u16>) -> Vec<Option<u16>> {
+    match fixed {
+        Some(p) => vec![Some(p), None],
+        None => vec![None],
+    }
+}
+
 impl Node {
+    /// [Node::bind], falling back to a port the system picks when the fixed one can't be bound
+    /// (another app, or a Windows excluded port range). Peers learn the port from discovery and
+    /// the pairing code, so only the first contact after a change may take longer.
+    pub async fn bind_or_any(
+        identity: &Identity,
+        store: SharedStore,
+        config: NodeConfig,
+    ) -> Result<(Self, NodeEvents), Error> {
+        let mut last = None;
+        for port in bind_attempts(config.port) {
+            let attempt = NodeConfig {
+                device_name: config.device_name.clone(),
+                port,
+                discovery_port: config.discovery_port,
+                tuning: config.tuning.clone(),
+            };
+            match Self::bind(identity, store.clone(), attempt).await {
+                Ok(bound) => return Ok(bound),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.expect("at least one attempt"))
+    }
+
+    /// Whether the discovery port could be bound: when it can't, other devices can't find this
+    /// one after it moves network until it is paired or its address is entered again.
+    pub fn discovery_active(&self) -> bool {
+        lock(&self.inner.discovery).is_some()
+    }
+
     pub async fn bind(
         identity: &Identity,
         store: SharedStore,

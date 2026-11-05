@@ -1071,7 +1071,10 @@ pub async fn start_node(
     // A process the system killed mid-transfer or mid-save left things in
     // incoming/: partial files go, whole files are offered again below.
     let recovered = recover_incoming(&dir.join("incoming"));
-    let (node, ev) = Node::bind(&identity, store, config).await.map_err(fail)?;
+    // A taken port falls back to one the system picks: peers learn it from discovery and pairing.
+    let (node, ev) = Node::bind_or_any(&identity, store, config)
+        .await
+        .map_err(fail)?;
     // The sender was told "saved": hand each whole file to the app again
     // (it moves it to the save folder). The sender's name was not kept.
     let sender = match node.paired_peers().as_slice() {
@@ -1846,6 +1849,11 @@ impl PbNode {
 
     pub fn fingerprint(&self) -> String {
         self.node.peer_id().fingerprint()
+    }
+
+    /// False when another app holds the discovery port: moved peers can't be found automatically.
+    pub fn discovery_active(&self) -> bool {
+        self.node.discovery_active()
     }
 
     pub fn addresses(&self) -> Vec<String> {

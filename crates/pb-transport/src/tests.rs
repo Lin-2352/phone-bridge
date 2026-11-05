@@ -3235,3 +3235,68 @@ mod identity_changed {
         }
     }
 }
+
+fn test_config(port: Option<u16>, discovery_port: Option<u16>) -> NodeConfig {
+    NodeConfig {
+        device_name: "PC".into(),
+        port,
+        discovery_port,
+        tuning: Default::default(),
+    }
+}
+
+#[test]
+fn bind_attempts_fall_back_to_any_port() {
+    assert_eq!(bind_attempts(Some(47200)), vec![Some(47200), None]);
+    assert_eq!(bind_attempts(None), vec![None]);
+}
+
+/// A Windows excluded port range (Hyper-V, WSL) or another app may hold Relay's fixed port.
+#[tokio::test]
+async fn node_starts_when_its_port_is_taken() {
+    let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+    let (n, _ev) = Node::bind_or_any(
+        &Identity::from_seed([61; 32]),
+        store,
+        test_config(Some(port), None),
+    )
+    .await
+    .expect("a taken port must not stop the node");
+    assert_ne!(n.port(), port);
+    assert_ne!(n.port(), 0);
+}
+
+#[tokio::test]
+async fn discovery_reports_a_taken_port() {
+    let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let taken = held.local_addr().unwrap().port();
+    let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+    let (n, _ev) = Node::bind_or_any(
+        &Identity::from_seed([62; 32]),
+        store,
+        test_config(None, Some(taken)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !n.discovery_active(),
+        "the discovery port is held by someone else"
+    );
+    drop(held);
+    let free = std::net::UdpSocket::bind("0.0.0.0:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+    let (m, _ev) = Node::bind_or_any(
+        &Identity::from_seed([63; 32]),
+        store,
+        test_config(None, Some(free)),
+    )
+    .await
+    .unwrap();
+    assert!(m.discovery_active());
+}

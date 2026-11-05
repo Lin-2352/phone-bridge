@@ -106,7 +106,10 @@ object Bridge {
      */
     fun status(ctx: Context, serviceUp: Boolean = false): RelayStatus {
         val up = running.value || serviceUp
-        return relayStatus(up, nodeReady.value, linked.value, isConnected(), lastSeenAny(ctx), System.currentTimeMillis(), controlledBy.value)
+        return relayStatus(
+            up, nodeReady.value, linked.value, isConnected(), lastSeenAny(ctx), System.currentTimeMillis(), controlledBy.value,
+            discoveryOff = node?.let { !it.discoveryActive() } ?: false,
+        )
     }
 
     /** A PC session is live right now (Home's "Connected"). */

@@ -40,3 +40,21 @@ mod tests {
         }
     }
 }
+
+/// Said once at start when the discovery port is taken, so finding a moved phone is off.
+pub fn discovery_note(active: bool) -> Option<&'static str> {
+    (!active).then_some(
+        "Relay can't look for your phone on a new network: another app uses UDP port 47199. Pairing and saved addresses still work.",
+    )
+}
+
+#[cfg(test)]
+mod discovery_note_tests {
+    use super::discovery_note;
+
+    #[test]
+    fn only_a_taken_port_gets_a_note() {
+        assert_eq!(discovery_note(true), None);
+        assert!(discovery_note(false).unwrap().contains("47199"));
+    }
+}
