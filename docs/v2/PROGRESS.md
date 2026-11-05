@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.17 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.18 (Control can stay on between sessions)
+- **Last finished task:** M2.18 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.19 (fewer idle wakeups; idle budget in DECISIONS)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -91,7 +91,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.15 B12: ephemeral QUIC port fallback; status when the discovery port is taken
 - [x] M2.16 B13: `teardownCapture` lock/join race
 - [x] M2.17 B14: lift the speaker silencer while an alarm, ringtone or emergency sound plays
-- [ ] M2.18 QoL: "Keep Control on between sessions" (opt-in)
+- [x] M2.18 QoL: "Keep Control on between sessions" (opt-in)
 - [ ] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS
 - [-] M2.20 Screen encoder reuses its frame buffer — dropped: uniffi copies the whole `ByteArray` into Rust on every `sendFrame` and takes only exact-size arrays, so a reused larger array would copy more, not less. The device checklist measures memory churn while mirroring instead
 - [ ] M2.R Milestone review and CI green

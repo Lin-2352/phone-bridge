@@ -186,6 +186,21 @@ private fun ControlFromPc() {
             else -> null
         },
     )
+    val prefs = remember { Prefs(ctx) }
+    var keepOn by remember(resumed) { mutableStateOf(prefs.keepControlOn) }
+    RelayRow(
+        title = "Keep Control on between sessions",
+        supporting = if (keepOn) {
+            "On. No trip to Accessibility settings each time. Your PC's input still pauses while this phone is locked. Some banking apps refuse to open while it's on"
+        } else {
+            "Off. $APP_NAME control switches itself off after each session, so banking apps open normally"
+        },
+        checked = keepOn,
+        onChecked = { v ->
+            keepOn = v
+            prefs.keepControlOn = v
+        },
+    )
 }
 
 /**

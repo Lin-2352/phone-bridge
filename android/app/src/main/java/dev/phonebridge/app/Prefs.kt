@@ -38,6 +38,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("share_screenshots", false)
         set(v) = sp.edit().putBoolean("share_screenshots", v).apply()
 
+    /** Keep "Relay control" (accessibility) on after a PC session instead of switching it off. */
+    var keepControlOn: Boolean
+        get() = sp.getBoolean("keep_control_on", false)
+        set(v) = sp.edit().putBoolean("keep_control_on", v).apply()
+
     /** Keyed fingerprint of the last clipboard text synced either way, so focus changes never
      *  re-send a clipboard that has not changed (survives restarts). See [ClipFingerprints]. */
     var lastClipMac: String?

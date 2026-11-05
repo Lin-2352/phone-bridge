@@ -190,7 +190,7 @@ class ControlService : AccessibilityService(), InputListener {
     fun maybeSwitchOff() {
         main.postDelayed({
             if (instance !== this) return@postDelayed
-            if (!shouldSwitchOff(sessionSeen, Bridge.controlledBy.value, ScreenShare.sharingWith.value)) return@postDelayed
+            if (!shouldSwitchOff(Prefs(this).keepControlOn, sessionSeen, Bridge.controlledBy.value, ScreenShare.sharingWith.value)) return@postDelayed
             Log.i(TAG, "CONTROL switching the accessibility service off after the session")
             Toast.makeText(this, "$APP_NAME control switched off. Turn it on in Accessibility settings for the next session", Toast.LENGTH_LONG).show()
             disableSelf()

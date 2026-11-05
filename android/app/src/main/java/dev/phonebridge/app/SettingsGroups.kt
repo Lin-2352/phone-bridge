@@ -26,6 +26,7 @@ val settingEntries: List<SettingEntry> = listOf(
     SettingEntry(Group.Connection, "Pair a new PC", "Scan the QR code shown on your PC"),
     SettingEntry(Group.Camera, "PCs always allowed to use the camera", "Skip the question; Android's camera indicator still shows"),
     SettingEntry(Group.Screen, "Let my PC control this phone", "Use the PC's mouse and keyboard here; needs Accessibility permission"),
+    SettingEntry(Group.Screen, "Keep Control on between sessions", "Don't switch Relay control off after each session"),
     SettingEntry(Group.Notifications, "Notifications on PC", "Show this phone's notifications on your PC"),
     SettingEntry(Group.Notifications, "Apps on your PC", "Choose which apps may show notifications on your PC; banking apps are blocked by default"),
     SettingEntry(Group.Screen, "Instant screen", "Skip Android's prompt after the first share"),
