@@ -76,7 +76,8 @@ You need Rust (the version pinned in `.github/workflows/ci.yml`) and, for Androi
 
 ```powershell
 # Windows app
-cargo build --release -p pb-tray -p pb-camera-source
+cargo build --release -p pb-camera-source
+$env:PB_CAMERA_DLL = "$PWD\target\release\pb_camera_source.dll"; cargo build --release -p pb-tray
 pwsh scripts/make-portable.ps1 -Zip      # dist\Relay and a zip
 
 # Android app (debug APK)

@@ -57,6 +57,7 @@ pub enum RegisterError {
     Failed(i32),
 }
 
+#[cfg_attr(embedded_camera_dll, allow(dead_code))]
 const DLL_SOURCE_NAME: &str = "pb_camera_source.dll";
 
 /// `C:\ProgramData` from Windows itself: the `ProgramData` environment
@@ -221,12 +222,24 @@ pub fn frames_sddl(user_sid: &str) -> String {
 
 /// Installed, but not the DLL that ships with this tray (an update): the
 /// next start of the camera installs the new one (one UAC prompt).
+/// The camera DLL this Relay ships: inside Relay.exe in release builds, the
+/// file beside the exe in development builds (whose folder is checked first).
+fn shipped_dll() -> Option<Vec<u8>> {
+    #[cfg(embedded_camera_dll)]
+    {
+        Some(include_bytes!(concat!(env!("OUT_DIR"), "/pb_camera_source.dll")).to_vec())
+    }
+    #[cfg(not(embedded_camera_dll))]
+    {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join(DLL_SOURCE_NAME)))
+            .and_then(|p| std::fs::read(p).ok())
+    }
+}
+
 pub fn needs_install() -> bool {
-    let shipped = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(DLL_SOURCE_NAME)))
-        .and_then(|p| std::fs::read(p).ok());
-    let Some(bytes) = shipped else {
+    let Some(bytes) = shipped_dll() else {
         return false; // nothing to install from
     };
     let want = dll_file_name(&bytes);
@@ -358,13 +371,7 @@ pub fn register_elevated(user_sid: &str) -> i32 {
     if set_dacl(&base_dir(), &dir_sddl()).is_err() || set_dacl(&dir, &dir_sddl()).is_err() {
         return EXIT_ACL_FAILED;
     }
-    let source = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(DLL_SOURCE_NAME)));
-    let Some(source) = source else {
-        return EXIT_COPY_FAILED;
-    };
-    let Ok(bytes) = std::fs::read(&source) else {
+    let Some(bytes) = shipped_dll() else {
         return EXIT_COPY_FAILED;
     };
     let installed = dir.join(dll_file_name(&bytes));

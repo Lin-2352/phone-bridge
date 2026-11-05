@@ -1,11 +1,13 @@
 # Builds the portable Relay folder and zip (no installer, no admin except the one
 # UAC prompt the camera setup raises on first use).
 #
-#   cargo build --release -p pb-tray -p pb-camera-source
+#   cargo build --release -p pb-camera-source
+#   $env:PB_CAMERA_DLL = "$PWD\target\release\pb_camera_source.dll"; cargo build --release -p pb-tray
+#   (Relay.exe carries the camera DLL inside; no DLL file ships beside it.)
 #   pwsh scripts/make-portable.ps1 -Zip              # -> dist\Relay, dist\Relay-<version>-windows-x64-portable.zip
 param([string]$OutDir = "$PSScriptRoot\..\dist", [string]$BinDir = "$PSScriptRoot\..\target\release", [switch]$Zip)
 $ErrorActionPreference = "Stop"
-foreach ($f in "pb-tray.exe", "pb_camera_source.dll") {
+foreach ($f in "pb-tray.exe") {
     if (-not (Test-Path "$BinDir\$f")) { throw "$f not found in $BinDir (build it first, see the top of this script)" }
 }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -15,8 +17,6 @@ if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 New-Item -ItemType Directory -Force "$dir\data" | Out-Null
 Copy-Item "$BinDir\pb-tray.exe" "$dir\Relay.exe"
 # No relay-cli.exe: the command-line tool is for development and tests, not users.
-# The tray looks for the camera source next to its own exe.
-Copy-Item "$BinDir\pb_camera_source.dll" "$dir\pb_camera_source.dll"
 Copy-Item "$PSScriptRoot\..\packaging\portable\README.txt" "$dir\README.txt"
 Copy-Item "$PSScriptRoot\..\LICENSE-APACHE", "$PSScriptRoot\..\LICENSE-MIT" $dir
 if ($Zip) {

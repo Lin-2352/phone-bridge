@@ -121,6 +121,18 @@ fn ico(sizes: &[u32]) -> Vec<u8> {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // Release builds carry the camera DLL inside Relay.exe, so the elevated
+    // installer never reads a file beside the exe (M1.8). Without
+    // PB_CAMERA_DLL (development) it reads that file, from a safe folder only.
+    println!("cargo::rustc-check-cfg=cfg(embedded_camera_dll)");
+    println!("cargo:rerun-if-env-changed=PB_CAMERA_DLL");
+    if let Some(dll) = env::var_os("PB_CAMERA_DLL") {
+        let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+        fs::copy(&dll, out.join("pb_camera_source.dll"))
+            .expect("PB_CAMERA_DLL must name the built pb_camera_source.dll");
+        println!("cargo:rerun-if-changed={}", PathBuf::from(&dll).display());
+        println!("cargo:rustc-cfg=embedded_camera_dll");
+    }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -139,4 +151,9 @@ fn main() {
     embed_resource::compile(&rc, embed_resource::NONE)
         .manifest_optional()
         .unwrap();
+    // DLLs Relay.exe imports load from System32 only, never from its folder
+    // (on top of SetDefaultDllDirectories at the start of main).
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
+    }
 }
