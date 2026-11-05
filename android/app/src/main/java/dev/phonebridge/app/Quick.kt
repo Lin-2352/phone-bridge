@@ -275,7 +275,7 @@ fun shareClipboardIfChanged(ctx: Context, prefs: Prefs) {
     val (text, sensitive) = readClipboard(ctx) ?: return
     if (sensitive && !prefs.sendSensitive) return
     // Only when it changed since the last sync in either direction.
-    if (text.hashCode() == prefs.lastClip) return
+    if (ClipFingerprints.unchanged(ctx, text)) return
     if (!Bridge.shownOn()) return
     Bridge.scope.launch {
         // Opened cold: the node may still be starting.
@@ -283,7 +283,7 @@ fun shareClipboardIfChanged(ctx: Context, prefs: Prefs) {
         runCatching { node.syncClipboard(text, sensitive) }
             .onSuccess {
                 // Only now: a copy made while the PC was away is sent next time.
-                prefs.lastClip = text.hashCode()
+                ClipFingerprints.remember(ctx, text)
                 Log.i(TAG, "CLIPSYNC sent ${text.length} chars")
             }
     }

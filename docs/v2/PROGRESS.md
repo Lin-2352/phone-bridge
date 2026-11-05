@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.1 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.2 (clip fingerprint as a keyed hash)
+- **Last finished task:** M2.2 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.3 (pipe name from the user SID)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -75,7 +75,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## M2 Review sweep (every remaining finding)
 - [x] M2.1 S5: audio helper to the debug source set with a no-op release stub; its libraries `debugImplementation`; one-time cleanup (`AdbBridge.forget`)
-- [ ] M2.2 S9: clip fingerprint as HMAC under a Keystore key
+- [x] M2.2 S9: clip fingerprint as HMAC under a Keystore key
 - [ ] M2.3 S11: pipe name from the user SID
 - [ ] M2.4 S12: hide toast and balloon text by default; no package names in `tray.log` or logcat; Android logs in internal storage
 - [ ] M2.5 A4: full-display capture config (API 34+)

@@ -496,7 +496,7 @@ class PbService : Service() {
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
             is PbEvent.RemoteClipboard -> {
                 // Share clipboard: writing the clipboard is allowed in the background.
-                Prefs(this).lastClip = e.text.hashCode()
+                ClipFingerprints.remember(this, e.text)
                 writeClipboard(e.text, e.sensitive)
                 Log.i(TAG, "CLIPSYNC received from ${e.peerName}${if (e.sensitive) " (sensitive)" else ""}")
                 Timeline.add(clipTextEntry(e.peerName, e.text, TlDir.ToPhone))

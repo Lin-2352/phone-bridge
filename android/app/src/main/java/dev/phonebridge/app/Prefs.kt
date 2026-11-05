@@ -38,11 +38,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("share_screenshots", false)
         set(v) = sp.edit().putBoolean("share_screenshots", v).apply()
 
-    /** Fingerprint of the last clipboard text synced either way, so focus
-     *  changes never re-send a clipboard that has not changed (survives restarts). */
-    var lastClip: Int
-        get() = sp.getInt("last_clip", 0)
-        set(v) = sp.edit().putInt("last_clip", v).apply()
+    /** Keyed fingerprint of the last clipboard text synced either way, so focus changes never
+     *  re-send a clipboard that has not changed (survives restarts). See [ClipFingerprints]. */
+    var lastClipMac: String?
+        get() = sp.getString("last_clip_mac", null)
+        set(v) = sp.edit().putString("last_clip_mac", v).apply()
+
+    /** Removes the old unkeyed `String.hashCode()` fingerprint, which gave short codes away. */
+    fun dropLegacyClip() {
+        if (sp.contains("last_clip")) sp.edit().remove("last_clip").apply()
+    }
 
     /**
      * PCs (by peer id) whose control requests start without asking. "Always allow" in the question adds
