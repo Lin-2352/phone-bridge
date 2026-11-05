@@ -1,5 +1,5 @@
 # Builds the Android app: Rust cdylib -> UniFFI Kotlin bindings -> debug APK.
-# Needs: rustup targets aarch64-linux-android, cargo-ndk, ANDROID_HOME, ANDROID_NDK_HOME, JAVA_HOME (17+).
+# Needs: rustup targets aarch64-linux-android, armv7-linux-androideabi and x86_64-linux-android; cargo-ndk; ANDROID_HOME, ANDROID_NDK_HOME, JAVA_HOME (17+).
 # Usage: pwsh scripts/android-build.ps1 [-Profile spike-abort] [-Debug]  (default: size-optimised library, minified release APK)
 param([string]$Profile = "android", [switch]$Debug)
 $ErrorActionPreference = "Stop"
@@ -21,7 +21,7 @@ try {
     # Keep the PC usable while building: half the cores, below-normal priority.
     $jobs = [int][Math]::Max(2, [Math]::Floor([Environment]::ProcessorCount / 2))
     $self.PriorityClass = "BelowNormal"
-    Run { cargo ndk -t arm64-v8a -t x86_64 --platform 29 -o $jni build --profile $Profile -p pb-ffi -j $jobs }
+    Run { cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 29 -o $jni build --profile $Profile -p pb-ffi -j $jobs }
     # cargo-ndk also copies stub cdylibs from iroh crates; keep only ours.
     Get-ChildItem $jni -Recurse -Filter "lib*.so" | Where-Object { $_.Name -ne "libpb_ffi.so" } | Remove-Item
 
