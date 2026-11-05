@@ -80,7 +80,7 @@ class CameraConsentActivity : ComponentActivity() {
             decline()
             return
         }
-        if (allowedFor(peerId, Prefs(this).allowedCameraPcs)) {
+        if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedCameraPcs), keyguardLocked())) {
             ensurePermission()
             return
         }

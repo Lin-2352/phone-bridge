@@ -685,7 +685,7 @@ class PbService : Service() {
     private fun askScreen(e: PbEvent.ScreenRequest) {
         if (e.resume && ScreenShare.resume(e.id)) return
         val peerId = uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName)
-        if (ScreenShare.armed != null && allowedFor(peerId, Prefs(this).allowedScreenPcs)) {
+        if (ScreenShare.armed != null && shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedScreenPcs), keyguardLocked())) {
             val a = ScreenAsk(
                 e.id, e.peerName, e.maxLongSide.toInt(), e.sharp, e.dim,
                 List(e.codecs.size) { e.codecs[it].toInt() and 0xff },
@@ -783,7 +783,7 @@ class PbService : Service() {
             val kind = dev.phonebridge.app.audio.chooseCapture(
                 dev.phonebridge.app.audio.AudioSource.PLAYBACK, prefs.audioSilencePhone, HelperAudio.alive(this),
             )
-            if (dev.phonebridge.app.audio.startsWithoutWindow(kind, prefs.audioSkipConfirmPhoneToPc)) {
+            if (dev.phonebridge.app.audio.startsWithoutWindow(kind, shouldAutoAccept(prefs.audioSkipConfirmPhoneToPc, keyguardLocked()))) {
                 val a = AudioAsk(e.id, e.peerName, dev.phonebridge.app.audio.AudioSource.PLAYBACK, e.sampleRate.toInt(), e.channels.toInt())
                 val reason = AudioShare.prepareHelper()
                 if (reason != null) AudioShare.abort(a, reason, teardown = false) else AudioShare.launch(this, a, null, helper = true)
@@ -880,7 +880,7 @@ class PbService : Service() {
 
     private fun askControl(e: PbEvent.ControlRequest) {
         val peerId = uniquePeerId(Bridge.node?.peers()?.map { it.name to it.id }.orEmpty(), e.peerName)
-        if (allowedFor(peerId, Prefs(this).allowedControlPcs)) {
+        if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedControlPcs), keyguardLocked())) {
             Bridge.node?.answerOffer(e.id, true)
             Log.i(TAG, "CONTROL request from ${e.peerName}: always allowed")
             return
@@ -904,10 +904,15 @@ class PbService : Service() {
             .setContentIntent(PendingIntent.getActivity(this, 42, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .addAction(Notification.Action.Builder(null, "Deny", answer(false)).build())
             .addAction(
-                Notification.Action.Builder(null, "Allow", answer(true)).apply {
-                    // Control of the phone must not be granted from a locked screen.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setAuthenticationRequired(true)
-                }.build(),
+                // Control of the phone must not be granted from a locked screen: from Android 12 the
+                // action asks for the unlock; before that, Allow opens the question (behind the unlock).
+                if (allowActionOpensActivity(Build.VERSION.SDK_INT)) {
+                    Notification.Action.Builder(null, "Allow", PendingIntent.getActivity(this, 43, ask, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build()
+                } else {
+                    Notification.Action.Builder(null, "Allow", answer(true)).apply {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setAuthenticationRequired(true)
+                    }.build()
+                },
             )
             .setCategory(Notification.CATEGORY_CALL)
             .setTimeoutAfter(30_000)

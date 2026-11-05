@@ -199,7 +199,31 @@ class ControlService : AccessibilityService(), InputListener {
     private var pendingDy = 0
     private var moveQueued = false
 
+    private var lockCheckedAt = 0L
+    @Volatile private var lockedCache = false
+    @Volatile private var pausedForLock = false
+
+    /** The keyguard state, asked at most every 250 ms: input arrives up to 1000 times a second. */
+    private fun lockedNow(): Boolean {
+        val t = SystemClock.uptimeMillis()
+        if (t - lockCheckedAt > 250) {
+            lockCheckedAt = t
+            lockedCache = keyguardLocked()
+        }
+        return lockedCache
+    }
+
     override fun onInput(kind: UByte, a: Int, b: Int, pressed: Boolean) {
+        // A PC must not type on the lock screen (PIN attempts, quick settings): input pauses while
+        // the phone is locked, and keys held at that moment are released.
+        if (!inputAllowed(lockedNow(), consentActive = false)) {
+            if (!pausedForLock) {
+                pausedForLock = true
+                resetKeys()
+            }
+            return
+        }
+        pausedForLock = false
         if (kind.toInt() == 0) {
             // Pointer moves arrive up to 1000/s; merge them and touch the
             // window manager at most once per main-loop turn.
