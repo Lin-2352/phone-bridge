@@ -24,6 +24,30 @@ async fn node(seed: u8, name: &str) -> (Node, NodeEvents, SharedStore) {
     (n, ev, store)
 }
 
+/// Whether a new node can take `port`, as restarting the app needs (the old socket may take a moment).
+async fn port_comes_free(port: u16) -> bool {
+    for _ in 0..15 {
+        let store: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+        let bound = Node::bind(
+            &Identity::from_seed([99; 32]),
+            store,
+            NodeConfig {
+                device_name: "next start".into(),
+                port: Some(port),
+                discovery_port: None,
+                tuning: Default::default(),
+            },
+        )
+        .await;
+        if let Ok((n, _)) = bound {
+            n.shutdown().await;
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    false
+}
+
 fn loopback(n: &Node) -> Vec<String> {
     vec![format!("127.0.0.1:{}", n.port())]
 }
@@ -997,6 +1021,24 @@ mod input {
         }
     }
 
+    /// The touchpad screen keeps its sender until the app frees it: a stopped
+    /// node must still let go of its port, or the next start fails.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_touchpad_sender_still_held_does_not_hold_the_port_for_the_next_start() {
+        let (pc, mut pc_ev, phone, phone_ev) = paired().await;
+        let port = phone.port();
+        let pc_task = tokio::spawn(async move { receive(&mut pc_ev, true).await });
+        let sender = phone.open_input(&pc.peer_id()).await.unwrap();
+        phone.shutdown().await;
+        drop((phone, phone_ev));
+        assert!(
+            port_comes_free(port).await,
+            "the touchpad session still holds the port"
+        );
+        drop(sender);
+        let _ = pc_task.await;
+    }
+
     #[tokio::test]
     async fn events_arrive_in_order_and_moves_merge() {
         let (pc, mut pc_ev, phone, _) = paired().await;
@@ -1490,6 +1532,42 @@ mod notify {
             .all(|m| !matches!(m, ControlMsg::NotifySync(s) if s.keys.iter().any(|k| k == "x"))));
     }
 
+    /// A notify session lingers for seconds after its last post; stopping in that
+    /// time must not hold the port for the next start.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lingering_notify_session_does_not_hold_the_port_for_the_next_start() {
+        let (_pc, mut pc_ev, _, phone, phone_ev, _) = paired().await;
+        let port = phone.port();
+        let out = NotifyOutbox::new(phone.clone());
+        out.post(note("a", "x"), None);
+        let mut s = pc_ev.sessions.recv().await.unwrap();
+        while !matches!(
+            s.recv().await,
+            Ok(Some(ControlMsg::Notification(_))) | Err(_) | Ok(None)
+        ) {}
+        phone.shutdown().await;
+        drop((phone, phone_ev, out));
+        assert!(
+            port_comes_free(port).await,
+            "the lingering session still holds the port"
+        );
+    }
+
+    /// Stopping while a post is still dialling a PC that is away.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dial_to_an_absent_pc_does_not_hold_the_port_for_the_next_start() {
+        let (pc, pc_ev, _, phone, phone_ev, _) = paired().await;
+        let port = phone.port();
+        pc.shutdown().await;
+        drop((pc, pc_ev));
+        let out = NotifyOutbox::new(phone.clone());
+        out.post(note("a", "x"), None);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        phone.shutdown().await;
+        drop((phone, phone_ev, out));
+        assert!(port_comes_free(port).await, "the dial still holds the port");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn missed_posts_are_resent_quietly() {
         let (pc, pc_ev, pc_store, phone, _, _) = paired().await;
@@ -1708,6 +1786,41 @@ mod screen {
             height: 1920,
             rotation: 0,
         }
+    }
+
+    /// The app keeps its sender until the garbage collector frees it; a stopped
+    /// node must still let go of its port, or the next start fails.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_ended_screen_session_does_not_hold_the_port_for_the_next_start() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let port = phone.port();
+        let phone_task = tokio::spawn(async move {
+            let server = phone_side(&mut phone_ev, Some(accept())).await.unwrap();
+            (server, phone_ev)
+        });
+        let view = pc
+            .open_screen(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let (server, phone_ev) = phone_task.await.unwrap();
+        let (sink, mut events) = server.into_parts();
+        view.close();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, ScreenEvent::Closed { .. }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the session should end");
+        phone.shutdown().await;
+        drop((phone, phone_ev, events));
+        assert!(
+            port_comes_free(port).await,
+            "the ended session still holds the port"
+        );
+        drop(sink);
     }
 
     /// Phone side: take the next session and serve (or decline) its ScreenStart.
@@ -1974,6 +2087,41 @@ mod camera {
             .await
             .expect("an event")
             .expect("events open")
+    }
+
+    /// The app keeps its sender until the garbage collector frees it; a stopped
+    /// node must still let go of its port, or the next start fails (seen on a real phone).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_ended_camera_session_does_not_hold_the_port_for_the_next_start() {
+        let (pc, _pc_ev, phone, mut phone_ev) = paired().await;
+        let port = phone.port();
+        let phone_task = tokio::spawn(async move {
+            let server = phone_side(&mut phone_ev, Some(accept())).await.unwrap();
+            (server, phone_ev)
+        });
+        let view = pc
+            .open_camera(&phone.peer_id(), start(), || {})
+            .await
+            .unwrap();
+        let (server, phone_ev) = phone_task.await.unwrap();
+        let (sink, mut events) = server.into_parts();
+        view.close();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, CameraEvent::Closed { .. }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the session should end");
+        phone.shutdown().await;
+        drop((phone, phone_ev, events));
+        assert!(
+            port_comes_free(port).await,
+            "the ended session still holds the port"
+        );
+        drop(sink);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3234,4 +3382,100 @@ mod identity_changed {
             ));
         }
     }
+}
+
+// ---- Keeping the audio listenable through a Wi-Fi stall (measured 2026-11-05) ----
+
+/// The phone sends Opus, about 408 bytes every 20 ms. A stall used to leave 20 KiB (a full second)
+/// of it queued, and the sender's guard then kept the oldest audio and skipped the newest. With a
+/// small buffer QUIC drops the oldest by itself, so what leaves after a stall is recent.
+#[test]
+fn the_phone_queues_a_short_stretch_of_opus_and_the_pc_keeps_room_for_pcm() {
+    use crate::tuning::*;
+    let packets = OPUS_DATAGRAM_BUFFER / OPUS_TYPICAL_PACKET;
+    assert!((4..=8).contains(&packets), "{packets} packets of 20 ms");
+    assert_eq!(datagram_send_buffer_for(true), OPUS_DATAGRAM_BUFFER);
+    assert_eq!(datagram_send_buffer_for(false), DATAGRAM_SEND_BUFFER);
+    assert_eq!(
+        Tuning::default().datagram_send_buffer,
+        datagram_send_buffer_for(cfg!(target_os = "android"))
+    );
+}
+
+#[test]
+fn a_small_buffer_never_reaches_the_guard_that_skips_the_newest_frame() {
+    const { assert!(crate::tuning::OPUS_DATAGRAM_BUFFER <= crate::audio::OPUS_SEND_BACKLOG) };
+}
+
+#[test]
+fn the_backlog_is_measured_against_the_largest_free_space_seen() {
+    let capacity = std::sync::atomic::AtomicUsize::new(0);
+    assert_eq!(crate::audio::send_backlog(&capacity, 3072), 0);
+    assert_eq!(crate::audio::send_backlog(&capacity, 1024), 2048);
+    assert_eq!(crate::audio::send_backlog(&capacity, 3072), 0);
+    assert_eq!(crate::audio::send_backlog(&capacity, 0), 3072);
+}
+
+#[test]
+fn the_sender_reports_its_peak_backlog_and_what_it_skipped_since_the_last_read() {
+    let c = crate::audio::TxCounters::default();
+    c.note_backlog(100);
+    c.note_backlog(900);
+    c.note_backlog(300);
+    c.note_skipped();
+    c.note_skipped();
+    assert_eq!(c.take_peak_backlog(), 900);
+    assert_eq!(c.skipped(), 2);
+    assert_eq!(c.take_peak_backlog(), 0, "each read starts over");
+}
+
+/// The share ended at 22:33:41 after a Wi-Fi outage of about 45 s: the control channel's 15 s
+/// watchdog and QUIC's 30 s idle timeout both gave up before the link came back.
+#[test]
+fn audio_waits_out_a_wi_fi_stall_and_the_connection_outlasts_that() {
+    assert_eq!(
+        DEFAULT_WATCHDOG,
+        HEARTBEAT * 3,
+        "other sessions keep their limit"
+    );
+    assert!(
+        AUDIO_WATCHDOG >= Duration::from_secs(40),
+        "{AUDIO_WATCHDOG:?}"
+    );
+    assert!(
+        crate::tuning::IDLE_TIMEOUT >= AUDIO_WATCHDOG + HEARTBEAT * 3,
+        "the connection must still be there when the watchdog gives up"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_waits_for_a_silent_peer_as_long_as_it_is_told_to() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let out = phone.connect(&pc.peer_id()).await.unwrap();
+    let mut held = pc_ev.sessions.recv().await.unwrap();
+    held.set_watchdog(Duration::from_secs(3));
+    out.heartbeat.abort();
+    let started = Instant::now();
+    let end = held.recv().await;
+    assert!(matches!(end, Err(Error::Timeout)), "{end:?}");
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_millis(2_500) && waited < Duration::from_secs(6),
+        "{waited:?}"
+    );
+    drop(out);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn telling_the_node_the_network_changed_leaves_it_working() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    phone.network_changed().await;
+    let s = tokio::time::timeout(Duration::from_secs(10), phone.connect(&pc.peer_id())).await;
+    assert!(matches!(s, Ok(Ok(_))), "{:?}", s.map(|r| r.map(|_| ())));
 }

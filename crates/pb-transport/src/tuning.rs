@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use iroh::endpoint::{MtuDiscoveryConfig, QuicTransportConfig, VarInt};
+use std::time::Duration;
+
+use iroh::endpoint::{IdleTimeout, MtuDiscoveryConfig, QuicTransportConfig, VarInt};
 
 use crate::HEARTBEAT;
 
@@ -43,6 +45,8 @@ pub struct Tuning {
     pub gso: bool,
     /// Upper bound for path MTU discovery (UDP payload bytes).
     pub mtu_max: Option<u16>,
+    /// Bytes of unsent datagrams QUIC keeps (oldest dropped first).
+    pub datagram_send_buffer: usize,
 }
 
 /// Per-stream receive window the apps use. One file is one stream, so a
@@ -57,6 +61,26 @@ pub const STREAM_WINDOW: u64 = 4 * 1024 * 1024;
 /// this is about 100 ms of 48 kHz stereo. The library default (1 MiB, about
 /// 5 s) would turn every Wi-Fi stall into seconds of late audio.
 pub const DATAGRAM_SEND_BUFFER: usize = 20 * 1024;
+/// What one Opus packet takes in the send buffer: about 400 bytes of audio at 160 kbit/s and
+/// 20 ms frames, and the 8-byte packet header.
+pub const OPUS_TYPICAL_PACKET: usize = 408;
+/// The phone sends Opus, and 20 KiB of it is a full second. A Wi-Fi stall left that queued and the
+/// sender then skipped the newest audio to keep the oldest, so what came after the stall was stale.
+/// With room for about 140 ms (7 packets) QUIC drops the oldest by itself and what leaves is recent.
+pub const OPUS_DATAGRAM_BUFFER: usize = 7 * OPUS_TYPICAL_PACKET;
+/// How long a silent connection is kept before QUIC gives up on it. The library's 30 s ended a
+/// share at 22:33:41 on 2026-11-05 during a Wi-Fi outage of about 45 s. Both ends send a keep-alive
+/// every [`HEARTBEAT`], so a live link never comes near it.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The send buffer for this platform: the phone sends Opus, the PC sends uncompressed audio.
+pub fn datagram_send_buffer_for(android: bool) -> usize {
+    if android {
+        OPUS_DATAGRAM_BUFFER
+    } else {
+        DATAGRAM_SEND_BUFFER
+    }
+}
 /// Received datagrams waiting to be read, oldest dropped first.
 pub const DATAGRAM_RECV_BUFFER: usize = 64 * 1024;
 
@@ -70,6 +94,7 @@ impl Default for Tuning {
             congestion: Congestion::Cubic,
             gso: !cfg!(target_os = "android"),
             mtu_max: None,
+            datagram_send_buffer: datagram_send_buffer_for(cfg!(target_os = "android")),
         }
     }
 }
@@ -87,7 +112,8 @@ impl Tuning {
             .keep_alive_interval(HEARTBEAT)
             .max_concurrent_bidi_streams(4u32.into())
             .max_concurrent_uni_streams(4u32.into())
-            .datagram_send_buffer_size(DATAGRAM_SEND_BUFFER)
+            .datagram_send_buffer_size(self.datagram_send_buffer)
+            .max_idle_timeout(IdleTimeout::try_from(IDLE_TIMEOUT).ok())
             .datagram_receive_buffer_size(Some(DATAGRAM_RECV_BUFFER));
         if let Some(w) = self.stream_window {
             b = b.stream_receive_window(varint(w));

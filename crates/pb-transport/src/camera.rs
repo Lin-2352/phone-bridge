@@ -258,19 +258,13 @@ pub async fn serve_camera(
     out.write_all(MAGIC).await.map_err(tx)?;
     let (ev_tx, events) = mpsc::unbounded_channel();
     let queue = ByteQueue::default();
-    let (video, mut video_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let q = queue.clone();
-    tokio::spawn(async move {
-        while let Some(bytes) = video_rx.recv().await {
-            let len = bytes.len();
-            let ok = out.write_all(&bytes).await.is_ok();
-            q.pop(len);
-            if !ok {
-                break;
-            }
-        }
-        let _ = out.finish();
-    });
+    let (video, video_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(crate::screen::write_video(
+        out,
+        video_rx,
+        queue.clone(),
+        conn.clone(),
+    ));
     let closer = session.closer();
     let (ctl, mut ctl_rx) = mpsc::unbounded_channel::<ControlMsg>();
     tokio::spawn(async move {

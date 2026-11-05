@@ -1037,7 +1037,7 @@ pub async fn run(
                                 log.line(&format!("CONTROL phone \"{name}\" refused: {e}"));
                                 let why = match e {
                                     pb_transport::Error::Declined => format!(
-                                        "{name} declined your request to control it"
+                                        "{name} didn't allow control. If it didn't ask you, turn on Relay control on the phone"
                                     ),
                                     pb_transport::Error::Timeout => {
                                         format!("{name} didn't answer your control request")

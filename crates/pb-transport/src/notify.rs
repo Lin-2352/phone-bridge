@@ -522,7 +522,12 @@ async fn run_peer(o: Arc<Outbox>, peer: PeerId, mut rx: mpsc::UnboundedReceiver<
                 return o.failed(peer, rest, &mut rx);
             }
         }
-        match tokio::time::timeout(o.linger, rx.recv()).await {
+        // Also ends with the connection: this task holds the node, and so its port, while it waits.
+        let next = tokio::select! {
+            next = tokio::time::timeout(o.linger, rx.recv()) => next,
+            () = s.closed() => return o.failed(peer, std::mem::take(&mut queue), &mut rx),
+        };
+        match next {
             Ok(Some(item)) => queue.push(item),
             Ok(None) => break,
             Err(_) => {

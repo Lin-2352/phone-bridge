@@ -123,6 +123,11 @@ pub enum PbEvent {
         id: u64,
         peer_name: String,
     },
+    /// A paired PC asks to control this phone and "Relay control" is off, as it is after every
+    /// session: send the user to Accessibility settings. The request waits for it to come on.
+    ControlServiceNeeded {
+        peer_name: String,
+    },
     /// A paired PC asks to see this screen. Ask the user (unless `resume`:
     /// the capture from the same PC is still alive, answer at once), run
     /// Android's capture prompt, then call `PbNode::answer_screen(id, ..)`.
@@ -770,6 +775,8 @@ type CameraAnswer = Option<(PbCameraAccept, Arc<PbScreen>)>;
 
 /// How long a control request waits for the user on the phone.
 const CONTROL_ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a control request waits while the user turns "Relay control" back on.
+const CONTROL_SETUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 
 fn push(events: &Events, e: PbEvent) {
     // A failing listener must never take the node down.
@@ -853,6 +860,26 @@ enum ControlGate {
     Allowed,
     /// Ask the user (they may decline, or not answer in time).
     Ask,
+}
+
+/// `current()` once it has a value; `None` if `closed` finishes or `limit` passes first.
+async fn wait_for_listener<T>(
+    current: impl Fn() -> Option<T>,
+    closed: impl std::future::Future<Output = ()>,
+    limit: std::time::Duration,
+) -> Option<T> {
+    let wait = async {
+        loop {
+            if let Some(found) = current() {
+                return found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    };
+    tokio::select! {
+        found = tokio::time::timeout(limit, wait) => found.ok(),
+        () = closed => None,
+    }
 }
 
 fn control_gate(busy: bool, has_listener: bool, allow_control: bool) -> ControlGate {
@@ -1196,17 +1223,36 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             Ok(Some(ControlMsg::InputStart(start))) => {
                 // Possible only while the accessibility service is running;
                 // then automatic if the user allows control, else ask.
-                let listener = sh.input.lock().ok().and_then(|g| g.clone());
+                let mut listener = sh.input.lock().ok().and_then(|g| g.clone());
                 let busy = sh
                     .control_busy
                     .swap(true, std::sync::atomic::Ordering::AcqRel);
-                let gate = control_gate(
+                let mut gate = control_gate(
                     busy,
                     listener.is_some(),
                     sh.allow_control.load(std::sync::atomic::Ordering::Relaxed),
                 );
-                // Still refused without an event; Home reads the time.
+                // Home reads the time, in case this request ends up refused.
                 sh.control_refused.gate(&gate, unix_ms());
+                if gate == ControlGate::NoService {
+                    push(
+                        &sh.events,
+                        PbEvent::ControlServiceNeeded {
+                            peer_name: name.clone(),
+                        },
+                    );
+                    listener = wait_for_listener(
+                        || sh.input.lock().ok().and_then(|g| g.clone()),
+                        s.closed(),
+                        CONTROL_SETUP_TIMEOUT,
+                    )
+                    .await;
+                    gate = control_gate(
+                        busy,
+                        listener.is_some(),
+                        sh.allow_control.load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                }
                 let accept = match gate {
                     ControlGate::Busy | ControlGate::NoService => false,
                     ControlGate::Allowed => true,
@@ -2328,6 +2374,11 @@ impl PbNode {
         self.node.rediscover().await;
     }
 
+    /// The phone's network changed (a roam, another band): iroh can't see this on Android.
+    pub async fn network_changed(&self) {
+        self.node.network_changed().await;
+    }
+
     /// Stop the node. (Never name a UniFFI method `close`.)
     pub async fn shutdown(&self) {
         if let Some(h) = self.spawner.lock().ok().and_then(|mut g| g.take()) {
@@ -2770,6 +2821,45 @@ mod attention_tests {
         assert!(!changed_peer(&phone, &old_pc.to_string()));
         assert!(phone.connect(&old_pc).await.is_err());
         assert!(changed_peer(&phone, &old_pc.to_string()));
+    }
+
+    /// Relay control switches itself off after each session: a new request waits
+    /// while the user turns it back on, instead of being refused on the spot.
+    #[tokio::test(start_paused = true)]
+    async fn a_control_request_waits_for_the_service_to_be_turned_on() {
+        let on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = on.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let got = wait_for_listener(
+            || on.load(std::sync::atomic::Ordering::SeqCst).then_some(7),
+            std::future::pending::<()>(),
+            CONTROL_SETUP_TIMEOUT,
+        )
+        .await;
+        assert_eq!(got, Some(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_control_request_gives_up_when_the_service_stays_off() {
+        let got: Option<u8> =
+            wait_for_listener(|| None, std::future::pending::<()>(), CONTROL_SETUP_TIMEOUT).await;
+        assert_eq!(got, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_control_request_stops_waiting_when_the_pc_gives_up() {
+        let began = tokio::time::Instant::now();
+        let got: Option<u8> = wait_for_listener(
+            || None,
+            tokio::time::sleep(std::time::Duration::from_secs(1)),
+            CONTROL_SETUP_TIMEOUT,
+        )
+        .await;
+        assert_eq!(got, None);
+        assert!(began.elapsed() < CONTROL_SETUP_TIMEOUT);
     }
 
     #[test]

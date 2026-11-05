@@ -41,6 +41,11 @@ pub const PAIR_ALPN: &[u8] = b"pb-pair/0";
 
 /// Heartbeat interval; a session with no traffic for 3 intervals is dead.
 pub const HEARTBEAT: Duration = Duration::from_secs(5);
+/// How long a session waits for anything from a peer before it is called dead.
+pub const DEFAULT_WATCHDOG: Duration = Duration::from_secs(15);
+/// The same for audio: a Wi-Fi outage of tens of seconds is waited out, as the sound comes back by
+/// itself when the link does. It must stay under [`tuning::IDLE_TIMEOUT`].
+pub const AUDIO_WATCHDOG: Duration = Duration::from_secs(45);
 /// Unauthenticated handshake steps must finish within this.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// An incoming QUIC handshake on a local link takes milliseconds; one that
@@ -641,6 +646,12 @@ impl Node {
         started.map_err(|e| closed_by_peer(&conn, e))
     }
 
+    /// Tell the node the device's network changed (a roam, another band, a new address). iroh can't
+    /// see this on Android, so the app says so; calling it when nothing changed does no harm.
+    pub async fn network_changed(&self) {
+        self.inner.endpoint.network_change().await;
+    }
+
     pub async fn shutdown(&self) {
         self.stop_discovery();
         self.inner.endpoint.close().await;
@@ -1026,6 +1037,8 @@ pub struct Session {
     send: Arc<tokio::sync::Mutex<SendStream>>,
     recv: FrameReader,
     heartbeat: tokio::task::JoinHandle<()>,
+    /// How long `recv` waits for the peer before [`Error::Timeout`].
+    watchdog: Duration,
     /// When the peer last sent anything: `recv`'s deadline counts from here,
     /// not from each call, so a `select!` that keeps cancelling `recv` still
     /// notices a silent peer.
@@ -1082,19 +1095,25 @@ impl Session {
             send,
             recv,
             heartbeat,
+            watchdog: DEFAULT_WATCHDOG,
             last_rx: Instant::now(),
         })
+    }
+
+    /// Waits this long for a silent peer instead of [`DEFAULT_WATCHDOG`].
+    pub fn set_watchdog(&mut self, watchdog: Duration) {
+        self.watchdog = watchdog;
     }
 
     pub async fn send(&self, msg: ControlMsg) -> Result<(), Error> {
         write_frame(&mut *self.send.lock().await, &Control::from(msg)).await
     }
 
-    /// Next application message. Heartbeats are consumed here; silence for
-    /// three heartbeat intervals ends the session with [`Error::Timeout`].
+    /// Next application message. Heartbeats are consumed here; silence for the
+    /// watchdog (three heartbeat intervals unless set) ends the session with [`Error::Timeout`].
     pub async fn recv(&mut self) -> Result<Option<ControlMsg>, Error> {
         loop {
-            let deadline = tokio::time::Instant::from_std(self.last_rx + HEARTBEAT * 3);
+            let deadline = tokio::time::Instant::from_std(self.last_rx + self.watchdog);
             let next = tokio::time::timeout_at(deadline, self.recv.next::<Control>())
                 .await
                 .map_err(|_| Error::Timeout)??;
