@@ -17,8 +17,9 @@ use tokio::sync::mpsc;
 
 use crate::{lock, Error, Node, Session};
 
-/// Words that mark a message as carrying a one-time code.
-const OTP_WORDS: [&str; 8] = [
+/// Words that mark a message as carrying a one-time code, matched as whole
+/// words (scripts that separate words with spaces).
+const OTP_WORDS: &[&str] = &[
     "otp",
     "code",
     "passcode",
@@ -27,6 +28,43 @@ const OTP_WORDS: [&str; 8] = [
     "one-time",
     "pin",
     "password",
+    // Spanish, Portuguese, French, Italian, Indonesian, Turkish, Polish, Russian.
+    "código",
+    "codigo",
+    "clave",
+    "contraseña",
+    "senha",
+    "verificación",
+    "verificação",
+    "vérification",
+    "codice",
+    "kode",
+    "kod",
+    "kodu",
+    "hasło",
+    "код",
+    "пароль",
+];
+
+/// Code words inside longer words (German and Dutch compounds) or in scripts
+/// written without spaces (Chinese, Japanese, Korean): matched anywhere.
+const OTP_STEMS: &[&str] = &[
+    "bestätigungscode",
+    "sicherheitscode",
+    "verifizierungscode",
+    "einmalpasswort",
+    "verificatiecode",
+    "验证码",
+    "校验码",
+    "驗證碼",
+    "認證碼",
+    "动态码",
+    "認証コード",
+    "確認コード",
+    "ワンタイム",
+    "인증번호",
+    "인증 번호",
+    "인증코드",
 ];
 
 /// The one-time code in a notification, if any: a 4–8 character token of
@@ -43,7 +81,7 @@ pub fn find_otp(text: &str) -> Option<String> {
             !before.is_some_and(char::is_alphabetic) && !after.is_some_and(char::is_alphabetic)
         })
     });
-    if !mentions_code {
+    if !mentions_code && !OTP_STEMS.iter().any(|w| lower.contains(w)) {
         return None;
     }
     let chars: Vec<char> = text.chars().collect();
@@ -581,6 +619,23 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_otp_reads_common_languages() {
+        for (text, code) in [
+            ("Tu código de verificación es 123456", "123456"),
+            ("Votre code de vérification : 482913", "482913"),
+            ("Ihr Bestätigungscode lautet 551203", "551203"),
+            ("您的验证码是123456，5分钟内有效", "123456"),
+            ("Ваш код подтверждения: 784512", "784512"),
+            ("[인증번호] 902341", "902341"),
+            ("Seu código de acesso: 640218", "640218"),
+            ("認証コード: 318274", "318274"),
+        ] {
+            assert_eq!(find_otp(text).as_deref(), Some(code), "{text}");
+        }
+        assert_eq!(find_otp("Pedido 123456 enviado"), None, "no code word");
+    }
 
     #[test]
     fn finds_codes_next_to_keywords() {

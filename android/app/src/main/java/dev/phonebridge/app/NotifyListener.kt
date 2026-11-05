@@ -205,6 +205,11 @@ class NotifyListener : NotificationListenerService() {
         }
     }
 
+    /** Android 15+'s placeholder for hidden one-time codes, read once from the system's resources. */
+    private val placeholders: Set<String> by lazy {
+        if (android.os.Build.VERSION.SDK_INT >= 35) systemPlaceholders(android.content.res.Resources.getSystem()) else emptySet()
+    }
+
     private fun appLabel(sbn: StatusBarNotification): String =
         runCatching { appInfo(sbn)?.loadLabel(packageManager)?.toString() }.getOrNull()
             ?.takeIf { it.isNotBlank() } ?: sbn.packageName
@@ -222,8 +227,10 @@ class NotifyListener : NotificationListenerService() {
             (nf.visibility == Notification.VISIBILITY_PRIVATE && nf.publicVersion != null)
         val ex = nf.extras
         val title = ex.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: app
-        val text = (ex.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex.getCharSequence(Notification.EXTRA_TEXT))
-            ?.toString() ?: ""
+        val text = textForPc(
+            (ex.getCharSequence(Notification.EXTRA_BIG_TEXT) ?: ex.getCharSequence(Notification.EXTRA_TEXT))?.toString() ?: "",
+            placeholders,
+        )
         val messages = messages(nf.extras)
         val chat = nf.extras.containsKey(Notification.EXTRA_MESSAGES)
         val conversation = if (!chat) {

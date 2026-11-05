@@ -406,6 +406,8 @@ private fun NotificationsOnPc() {
                 "Not allowed yet. Tap Grant and turn on $APP_NAME. If Android says “Restricted setting”: App info › ⋮ › Allow restricted settings first"
             !access -> "Not allowed yet. Tap Grant, then turn on $APP_NAME"
             !NotifyListener.connected.value -> "Allowed, but Android hasn't connected it yet. Turn it off and on if this stays"
+            // Android 15+ hides one-time codes from notification listeners (A2).
+            Build.VERSION.SDK_INT >= 35 -> "Showing on your PC. Android hides one-time codes from apps like this one"
             else -> "Showing on your PC"
         },
         checked = on,
