@@ -11,6 +11,8 @@ pub enum Key {
     Keep,
     /// Put text shared from the phone on the clipboard at once.
     AutoCopyText,
+    /// Show the text or link itself in toasts.
+    ToastShowText,
     Auto,
     SendTo,
     Startup,
@@ -47,6 +49,7 @@ pub struct Model {
     pub passwords: bool,
     pub keep: bool,
     pub auto_copy_text: bool,
+    pub toast_show_text: bool,
     pub auto: bool,
     pub save_dir: String,
     pub sendto: bool,
@@ -94,6 +97,7 @@ impl Model {
             Key::Passwords => self.passwords,
             Key::Keep => self.keep,
             Key::AutoCopyText => self.auto_copy_text,
+            Key::ToastShowText => self.toast_show_text,
             Key::Auto => self.auto,
             Key::SendTo => self.sendto,
             Key::Startup => self.startup,
@@ -201,6 +205,11 @@ pub fn rows(m: &Model) -> Vec<Row> {
             Key::AutoCopyText,
             "Copy shared text automatically",
             "Text you share from the phone goes straight to the clipboard",
+        ),
+        Row::Toggle(
+            Key::ToastShowText,
+            "Show shared text in notifications",
+            "Windows keeps notifications on disk; off shows only who sent it",
         ),
         Row::Header("Phone notifications"),
         Row::Toggle(

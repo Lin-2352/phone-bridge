@@ -38,8 +38,8 @@ object AppLog {
     @Volatile private var ready = false
     private var tzReceiver: BroadcastReceiver? = null
 
-    /** The log folder: app-specific external storage (readable over adb), else private storage. */
-    fun root(ctx: Context): File = ctx.getExternalFilesDir("logs") ?: File(ctx.filesDir, "logs")
+    /** The log folder, in private storage (exported with Settings > Export logs). */
+    fun root(ctx: Context): File = logDirs(ctx.filesDir, null).current
 
     /** Opens the log once per process; installs the crash hook and the time-zone watcher. */
     @Synchronized
@@ -48,6 +48,9 @@ object AppLog {
         val app = ctx.applicationContext
         try {
             NativeInit.ensureLoaded()
+            // Older builds logged to app-specific external storage: remove that copy.
+            logDirs(app.filesDir, app.getExternalFilesDir(null)?.let { File(it, "logs") }).legacy
+                ?.takeIf { it.exists() }?.let { runCatching { it.deleteRecursively() } }
             val dir = root(app).also { it.mkdirs() }
             if (!logInit(dir.absolutePath, CAP_BYTES.toULong())) return
             ready = true

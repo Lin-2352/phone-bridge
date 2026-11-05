@@ -17,6 +17,8 @@ pub struct Settings {
     /// once. Off by default: any app on the phone can share, so the user
     /// copies it from the toast instead.
     pub auto_copy_shared_text: bool,
+    /// Toasts about text and links from the phone show their content (off: only who sent it).
+    pub toast_show_text: bool,
     /// Also share copied pictures and screenshots (needs `universal_clipboard`).
     /// Off by default: pictures are as sensitive as text.
     pub share_images: bool,
@@ -85,6 +87,7 @@ impl Default for Settings {
             skip_private: true,
             keep_in_history: false,
             auto_copy_shared_text: false,
+            toast_show_text: false,
             share_images: false,
             auto_accept: true,
             allow_shortcut_files: false,
@@ -156,6 +159,7 @@ impl Settings {
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
+                "toast_show_text" => s.toast_show_text = parse_bool(v).unwrap_or(s.toast_show_text),
                 "auto_copy_shared_text" => {
                     s.auto_copy_shared_text = parse_bool(v).unwrap_or(s.auto_copy_shared_text)
                 }
@@ -254,11 +258,12 @@ impl Settings {
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
         text += &format!(
-            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nauto_copy_shared_text={}\nallow_shortcut_files={}\nlog_dir={}\n",
+            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nauto_copy_shared_text={}\ntoast_show_text={}\nallow_shortcut_files={}\nlog_dir={}\n",
             self.keep_logs,
             self.audio_skip_confirm_pc_to_phone,
             self.paused,
             self.auto_copy_shared_text,
+            self.toast_show_text,
             self.allow_shortcut_files,
             // Not written when it is the default, so a moved folder keeps its logs with it.
             if self.log_dir == default_log_dir(path) {
@@ -356,6 +361,10 @@ mod tests {
         assert!(s.skip_private);
         assert!(!s.keep_in_history);
         assert!(!s.auto_copy_shared_text, "shared text waits for Copy");
+        assert!(
+            !s.toast_show_text,
+            "toasts never show shared text by default"
+        );
         assert!(!s.allow_shortcut_files, "shortcut files are refused");
         assert!(s.keep_history, "the timeline records by default");
         assert_eq!(s.main_window_rect, None);
@@ -397,6 +406,7 @@ mod tests {
             skip_private: false,
             keep_in_history: true,
             auto_copy_shared_text: true,
+            toast_show_text: true,
             allow_shortcut_files: true,
             share_images: true,
             auto_accept: false,

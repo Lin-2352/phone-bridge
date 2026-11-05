@@ -91,6 +91,11 @@ pub fn present(n: &Notification, s: &Settings, ctx: &Ctx) -> Option<Presentation
 }
 
 /// The toast tag for one phone notification (Windows allows 64 characters).
+/// The `tray.log` line for a mirrored notification: the key's hash only, never the app's package.
+pub fn posted_log_line(_package: &str, key: &str) -> String {
+    format!("NOTIFY posted key={}", key_hash(key))
+}
+
 pub fn tag(peer: &PeerId, key: &str) -> String {
     key_hash(&format!("{peer}|{key}"))
 }
@@ -286,6 +291,14 @@ pub fn otp_should_clear(set_seq: u32, now_seq: u32, now_text: Option<&str>, code
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn posted_log_line_has_no_package() {
+        let line = posted_log_line("com.example.bank", "key-1");
+        assert!(!line.contains("com.example"), "{line}");
+        assert!(line.starts_with("NOTIFY posted key="));
+    }
+
     use pb_identity::Identity;
 
     use super::*;

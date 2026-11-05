@@ -1416,11 +1416,7 @@ async fn pump_session(
                 let picture = (!n.picture.is_empty())
                     .then(|| images.picture(&tag, &n.picture))
                     .flatten();
-                log.line(&format!(
-                    "NOTIFY posted pkg={} key={}",
-                    n.package,
-                    pb_transport::notify::key_hash(&n.key)
-                ));
+                log.line(&crate::notify::posted_log_line(&n.package, &n.key));
                 ui(UiEvent::Notify {
                     peer: s.peer,
                     from: s.peer_name.clone(),

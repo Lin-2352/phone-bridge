@@ -71,9 +71,60 @@ impl Pending {
     }
 }
 
+/// The toast for clipboard text from the phone. It shows the text only when the user turned
+/// "Show shared text in notifications" on, and never for sensitive text: Windows keeps toasts in
+/// its notification history on disk.
+pub fn clipboard_toast_body(sensitive: bool, show_text: bool, text: &str) -> String {
+    if sensitive {
+        "Sensitive text copied (hidden, not kept in history)".into()
+    } else if show_text {
+        text.chars().take(120).collect()
+    } else {
+        "Copied to the clipboard.".into()
+    }
+}
+
+/// The toast for a link from the phone: the address only when the user asked to see shared text.
+pub fn link_toast_body(show_link: bool, url: &str) -> String {
+    if show_link {
+        let shown: String = url.chars().take(120).collect();
+        format!("{shown}\nClick to open.")
+    } else {
+        "Click to open.".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_toast_hides_text_by_default() {
+        let b = clipboard_toast_body(false, false, "my secret plan");
+        assert!(!b.contains("secret"));
+    }
+
+    #[test]
+    fn clipboard_toast_shows_text_only_when_asked() {
+        let long = "x".repeat(300);
+        assert_eq!(
+            clipboard_toast_body(false, true, &long).chars().count(),
+            120
+        );
+    }
+
+    #[test]
+    fn clipboard_toast_never_shows_sensitive_text() {
+        assert!(!clipboard_toast_body(true, true, "hunter2").contains("hunter2"));
+    }
+
+    #[test]
+    fn link_toast_hides_url_by_default() {
+        let b = link_toast_body(false, "https://example.com/reset?token=abc");
+        assert!(!b.contains("example.com"));
+        assert!(b.contains("Click to open."));
+        assert!(link_toast_body(true, "https://example.com/a").contains("https://example.com/a"));
+    }
 
     #[test]
     fn shared_text_waits_for_copy_by_default() {

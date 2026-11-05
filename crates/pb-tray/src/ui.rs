@@ -1193,16 +1193,18 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             text,
             sensitive,
         } => match set_clipboard_own(hwnd, &text, sensitive) {
-            Ok(()) if sensitive => balloon(
-                hwnd,
-                &format!("Clipboard from {from}"),
-                "Sensitive text copied (hidden, not kept in history)",
-            ),
-            Ok(()) => balloon(
-                hwnd,
-                &format!("Clipboard from {from}"),
-                &text.chars().take(120).collect::<String>(),
-            ),
+            Ok(()) => {
+                let show = st
+                    .settings
+                    .lock()
+                    .map(|s| s.toast_show_text)
+                    .unwrap_or(false);
+                balloon(
+                    hwnd,
+                    &format!("Clipboard from {from}"),
+                    &crate::shared_text::clipboard_toast_body(sensitive, show, &text),
+                )
+            }
             Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
         },
         UiEvent::SharedText { from, text } => {
@@ -1291,11 +1293,15 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 *l = Some(url.clone());
             }
             note_activity(&format!("Last: link from {from}"));
-            let shown: String = url.chars().take(120).collect();
+            let show = st
+                .settings
+                .lock()
+                .map(|s| s.toast_show_text)
+                .unwrap_or(false);
             balloon(
                 hwnd,
                 &format!("Link from {from}"),
-                &format!("{shown}\nClick to open."),
+                &crate::shared_text::link_toast_body(show, &url),
             );
         }
         UiEvent::FileReceived { from, path, size } => {
@@ -2140,6 +2146,7 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         passwords,
         keep,
         auto_copy_text: n.auto_copy_shared_text,
+        toast_show_text: n.toast_show_text,
         auto,
         save_dir,
         sendto: sendto_enabled(),
@@ -2283,6 +2290,13 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                 .settings
                 .lock()
                 .map(|mut s| s.keep_in_history = !s.keep_in_history);
+            save_settings(st);
+        }
+        Action::Toggle(Key::ToastShowText) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.toast_show_text = !s.toast_show_text);
             save_settings(st);
         }
         Action::Toggle(Key::AutoCopyText) => {

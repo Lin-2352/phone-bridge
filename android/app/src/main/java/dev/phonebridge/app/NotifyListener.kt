@@ -132,9 +132,9 @@ class NotifyListener : NotificationListenerService() {
             try {
                 node.notifyPosted(toPb(sbn, quiet, withMedia = true))
                 if (!update) count(MirrorVerdict.Send)
-                Log.i(TAG, "NOTIFY posted pkg=${sbn.packageName} key=${keyHash(sbn.key)}")
+                Log.i(TAG, notifyLogLine("posted", keyHash(sbn.key)))
             } catch (t: Throwable) {
-                Log.e(TAG, "NOTIFY post failed pkg=${sbn.packageName}: $t")
+                Log.e(TAG, "${notifyLogLine("post failed", keyHash(sbn.key))}: $t")
             }
         }
     }
@@ -369,7 +369,7 @@ object NotifyActions : NotifyHandler {
     override fun onAction(key: String, kind: PbNotifyActionKind, index: UInt, text: String) {
         val svc = NotifyListener.instance ?: fail("Notification access is off on the phone")
         val sbn = NotifyListener.live[key]
-        Log.i(TAG, "NOTIFY action $kind pkg=${sbn?.packageName} key=${keyHash(key)}")
+        Log.i(TAG, notifyLogLine("action $kind", keyHash(key)))
         try {
             when (kind) {
                 PbNotifyActionKind.DISMISS -> svc.cancelNotification(key)
