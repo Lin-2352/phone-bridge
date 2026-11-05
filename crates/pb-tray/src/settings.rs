@@ -13,6 +13,10 @@ pub struct Settings {
     pub skip_private: bool,
     /// Keep received clipboard items in Win+V history / cloud clipboard.
     pub keep_in_history: bool,
+    /// Put text shared from the phone's share sheet on the clipboard at
+    /// once. Off by default: any app on the phone can share, so the user
+    /// copies it from the toast instead.
+    pub auto_copy_shared_text: bool,
     /// Also share copied pictures and screenshots (needs `universal_clipboard`).
     /// Off by default: pictures are as sensitive as text.
     pub share_images: bool,
@@ -77,6 +81,7 @@ impl Default for Settings {
             universal_clipboard: false,
             skip_private: true,
             keep_in_history: false,
+            auto_copy_shared_text: false,
             share_images: false,
             auto_accept: true,
             save_dir: downloads,
@@ -147,6 +152,9 @@ impl Settings {
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
+                "auto_copy_shared_text" => {
+                    s.auto_copy_shared_text = parse_bool(v).unwrap_or(s.auto_copy_shared_text)
+                }
                 "share_images" => s.share_images = parse_bool(v).unwrap_or(s.share_images),
                 "auto_accept" => s.auto_accept = parse_bool(v).unwrap_or(s.auto_accept),
                 "save_dir" if !v.is_empty() => s.save_dir = PathBuf::from(v),
@@ -239,10 +247,11 @@ impl Settings {
             self.screen_pinned, self.screen_dim, self.screen_sharp, self.keep_history
         );
         text += &format!(
-            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nlog_dir={}\n",
+            "keep_logs={}\naudio_skip_confirm_pc_to_phone={}\npaused={}\nauto_copy_shared_text={}\nlog_dir={}\n",
             self.keep_logs,
             self.audio_skip_confirm_pc_to_phone,
             self.paused,
+            self.auto_copy_shared_text,
             // Not written when it is the default, so a moved folder keeps its logs with it.
             if self.log_dir == default_log_dir(path) {
                 PathBuf::new()
@@ -283,6 +292,7 @@ mod tests {
         assert!(!s.share_images, "image sync must be opt-in");
         assert!(s.skip_private);
         assert!(!s.keep_in_history);
+        assert!(!s.auto_copy_shared_text, "shared text waits for Copy");
         assert!(s.keep_history, "the timeline records by default");
         assert_eq!(s.main_window_rect, None);
         assert!(s.keep_logs, "logs are kept by default");
@@ -322,6 +332,7 @@ mod tests {
             universal_clipboard: true,
             skip_private: false,
             keep_in_history: true,
+            auto_copy_shared_text: true,
             share_images: true,
             auto_accept: false,
             save_dir: PathBuf::from(r"D:\Inbox"),

@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M0.6 + M0.7 (CI run in progress; M0.R waits for it)
-- **Next task:** M0.R (CI green + review), then M1.1 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 1)
+- **Last finished task:** M1.1
+- **Next task:** M0.R fix pass (pin check: missing folder, CRLF), then M1.2 (plan: [plans/2026-11-05-m1-harden.md](plans/2026-11-05-m1-harden.md), Task 2)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -58,7 +58,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M0.R Milestone review and CI green
 
 ## M1 Harden: the Top 12
-- [ ] M1.1 Clipboard and file injection (S1, B4, S10): Android confirm sheet; PC toast with Copy/Open; auto-copy off by default; `keep_in_history` honoured
+- [x] M1.1 Clipboard and file injection (S1, B4, S10): Android confirm sheet; PC toast with Copy/Open; auto-copy off by default; `keep_in_history` honoured
 - [ ] M1.2 Lock-stop taken as a user Stop (A1, B2): `SystemStopped`; the PC shows "Phone locked" with Resume
 - [ ] M1.3 OTP redaction on Android 15+ (A2): detect the placeholder; PC "Code hidden by Android"; Settings explains; more `find_otp` languages
 - [ ] M1.4 Restricted settings and Advanced Protection (A3, A10): guided card from `packageSource`; explain Advanced Protection

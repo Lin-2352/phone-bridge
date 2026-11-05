@@ -1205,6 +1205,25 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             ),
             Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
         },
+        UiEvent::SharedText { from, text } => {
+            let (auto, keep) = st
+                .settings
+                .lock()
+                .map(|s| (s.auto_copy_shared_text, s.keep_in_history))
+                .unwrap_or((false, false));
+            let plan = crate::shared_text::plan(auto, keep);
+            if !plan.copy_now {
+                show_shared_text_toast(hwnd, &from, text);
+            } else if let Err(e) = set_clipboard_own(hwnd, &text, plan.exclude_from_history) {
+                balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}"));
+            } else {
+                balloon(
+                    hwnd,
+                    &crate::shared_text::title(&from),
+                    crate::shared_text::body(true),
+                );
+            }
+        }
         UiEvent::RemoteClipboard {
             from,
             text,
@@ -1517,6 +1536,60 @@ fn kill_timer(hwnd: HWND, id: usize) {
 
 /// Copy a one-time code, kept out of clipboard history; cleared after 60 s
 /// if nothing else was copied meanwhile.
+/// Texts shared from the phone, waiting for their toast's Copy button.
+static SHARED_TEXTS: Mutex<crate::shared_text::Pending> =
+    Mutex::new(crate::shared_text::Pending::new());
+
+/// A toast with Copy for text shared from the phone. The text itself stays
+/// in memory: toasts are kept in Windows' notification history.
+fn show_shared_text_toast(hwnd: HWND, from: &str, text: String) {
+    use crate::toast_xml::{args, ToastArgs, ToastSpec};
+    let title = crate::shared_text::title(from);
+    let tag = SHARED_TEXTS
+        .lock()
+        .map(|mut p| p.insert(text))
+        .unwrap_or_default();
+    if !tag.is_empty() && crate::toast::enabled() {
+        let copy = args(&ToastArgs::CopyText { tag: tag.clone() });
+        let spec = ToastSpec {
+            group: "pb".into(),
+            title: title.clone(),
+            lines: vec![crate::shared_text::body(false).into()],
+            when_ms: now_ms(),
+            launch: copy.clone(),
+            buttons: vec![("Copy".into(), copy)],
+            tag,
+            popup: true,
+            ..Default::default()
+        };
+        if crate::toast::show(&spec).is_ok() {
+            return;
+        }
+    }
+    // A balloon has no button: without toasts the text can't be offered.
+    balloon(
+        hwnd,
+        &title,
+        "Turn on notifications for Relay in Windows to copy shared text",
+    );
+}
+
+/// The toast's Copy: the text once, kept out of history unless allowed.
+fn copy_shared_text(hwnd: HWND, st: &State, tag: &str) {
+    let Some(text) = SHARED_TEXTS.lock().ok().and_then(|mut p| p.take(tag)) else {
+        return;
+    };
+    let keep = st
+        .settings
+        .lock()
+        .map(|s| s.keep_in_history)
+        .unwrap_or(false);
+    let plan = crate::shared_text::plan(false, keep);
+    if let Err(e) = set_clipboard_own(hwnd, &text, plan.exclude_from_history) {
+        balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}"));
+    }
+}
+
 fn copy_otp(hwnd: HWND, code: &str) {
     if code.is_empty() {
         return;
@@ -1769,9 +1842,14 @@ fn on_toast(hwnd: HWND, st: &State, ev: ToastEvent) {
                 | ToastArgs::Button { tag, .. }
                 | ToastArgs::Reply { tag }
                 | ToastArgs::CopyOtp { tag }
+                | ToastArgs::CopyText { tag }
                 | ToastArgs::Mute { tag }
                 | ToastArgs::Silence { tag } => tag.clone(),
             };
+            if matches!(a, ToastArgs::CopyText { .. }) {
+                copy_shared_text(hwnd, st, &tag);
+                return;
+            }
             if tag.starts_with("pb-") {
                 // Phone Bridge's own message: like a balloon click.
                 if notify_ui().last_own_tag == tag {
@@ -1832,6 +1910,7 @@ fn on_toast(hwnd: HWND, st: &State, ev: ToastEvent) {
                 }
                 ToastArgs::Silence { .. } => send(K::Silence, 0, String::new()),
                 ToastArgs::CopyOtp { .. } => copy_otp(hwnd, &e.otp),
+                ToastArgs::CopyText { .. } => {}
                 ToastArgs::Mute { .. } => {
                     let _ = st.settings.lock().map(|mut s| {
                         match s.notify_apps.iter_mut().find(|(p, _, _)| *p == e.package) {
@@ -2060,6 +2139,7 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         share_images,
         passwords,
         keep,
+        auto_copy_text: n.auto_copy_shared_text,
         auto,
         save_dir,
         sendto: sendto_enabled(),
@@ -2203,6 +2283,13 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                 .settings
                 .lock()
                 .map(|mut s| s.keep_in_history = !s.keep_in_history);
+            save_settings(st);
+        }
+        Action::Toggle(Key::AutoCopyText) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.auto_copy_shared_text = !s.auto_copy_shared_text);
             save_settings(st);
         }
         // Off stops recording and deletes the stored history: asked first.

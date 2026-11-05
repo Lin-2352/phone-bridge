@@ -183,11 +183,12 @@ const APP_BIT: u32 = 0x1000_0000;
 const DEVICE_BIT: u32 = 0x2000_0000;
 const KEY_MASK: u32 = 0x0FFF_FFFF;
 
-const KEYS: [Key; 17] = [
+const KEYS: [Key; 18] = [
     Key::Share,
     Key::ShareImages,
     Key::Passwords,
     Key::Keep,
+    Key::AutoCopyText,
     Key::Auto,
     Key::SendTo,
     Key::Startup,
@@ -1007,6 +1008,7 @@ mod tests {
             Key::ShareImages,
             Key::Passwords,
             Key::Keep,
+            Key::AutoCopyText,
             Key::Auto,
             Key::SendTo,
             Key::Startup,
@@ -1252,6 +1254,7 @@ mod tests {
             | Key::ShareImages
             | Key::Passwords
             | Key::Keep
+            | Key::AutoCopyText
             | Key::Auto
             | Key::SendTo
             | Key::Startup

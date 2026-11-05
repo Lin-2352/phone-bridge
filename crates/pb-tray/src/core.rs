@@ -420,6 +420,13 @@ pub enum UiEvent {
         text: String,
         sensitive: bool,
     },
+    /// Text shared from the phone's share sheet: offered on a toast with
+    /// Copy; on the clipboard at once only with "Copy shared text
+    /// automatically".
+    SharedText {
+        from: String,
+        text: String,
+    },
     /// A link shared from the other device: offered to open, clipboard untouched.
     Link {
         from: String,
@@ -1653,11 +1660,7 @@ async fn pump_session(
                                 false,
                             ),
                         );
-                        ui(UiEvent::Clipboard {
-                            from,
-                            text: t,
-                            sensitive: false,
-                        })
+                        ui(UiEvent::SharedText { from, text: t })
                     }
                     Ok(Received::Link(l)) => {
                         log.line(&format!("LINK from \"{from}\""));

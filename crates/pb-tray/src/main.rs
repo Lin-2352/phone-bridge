@@ -96,6 +96,8 @@ mod settings_groups;
 mod settings_rows;
 #[cfg(windows)]
 mod share;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod shared_text;
 #[cfg(windows)]
 mod status;
 #[cfg_attr(not(windows), allow(dead_code))]

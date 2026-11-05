@@ -151,21 +151,39 @@ fn iso8601(ms: i64) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToastArgs {
-    Open { tag: String },
-    Button { tag: String, index: u32 },
-    Reply { tag: String },
-    CopyOtp { tag: String },
-    Mute { tag: String },
-    Silence { tag: String },
+    Open {
+        tag: String,
+    },
+    Button {
+        tag: String,
+        index: u32,
+    },
+    Reply {
+        tag: String,
+    },
+    CopyOtp {
+        tag: String,
+    },
+    /// Copy text shared from the phone (kept in memory by the tray).
+    CopyText {
+        tag: String,
+    },
+    Mute {
+        tag: String,
+    },
+    Silence {
+        tag: String,
+    },
 }
 
-/// `a=<open|btn|reply|otp|mute|silence>&t=<tag>[&i=<n>]`, tag percent-encoded.
+/// `a=<open|btn|reply|otp|txt|mute|silence>&t=<tag>[&i=<n>]`, tag percent-encoded.
 pub fn args(a: &ToastArgs) -> String {
     let (kind, tag, index) = match a {
         ToastArgs::Open { tag } => ("open", tag, None),
         ToastArgs::Button { tag, index } => ("btn", tag, Some(*index)),
         ToastArgs::Reply { tag } => ("reply", tag, None),
         ToastArgs::CopyOtp { tag } => ("otp", tag, None),
+        ToastArgs::CopyText { tag } => ("txt", tag, None),
         ToastArgs::Mute { tag } => ("mute", tag, None),
         ToastArgs::Silence { tag } => ("silence", tag, None),
     };
@@ -194,6 +212,7 @@ pub fn parse_args(s: &str) -> Option<ToastArgs> {
         ("btn", Some(index)) => ToastArgs::Button { tag, index },
         ("reply", None) => ToastArgs::Reply { tag },
         ("otp", None) => ToastArgs::CopyOtp { tag },
+        ("txt", None) => ToastArgs::CopyText { tag },
         ("mute", None) => ToastArgs::Mute { tag },
         ("silence", None) => ToastArgs::Silence { tag },
         _ => return None,
@@ -278,6 +297,15 @@ fn unpct(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_text_args_round_trip() {
+        let a = ToastArgs::CopyText {
+            tag: "txt-1".into(),
+        };
+        assert_eq!(args(&a), "a=txt&t=txt-1");
+        assert_eq!(parse_args(&args(&a)), Some(a));
+    }
 
     fn spec() -> ToastSpec {
         ToastSpec {

@@ -16,12 +16,23 @@ internal fun isOwnAuthority(authority: String?, pkg: String): Boolean =
 private const val TAG = "PhoneBridge"
 
 /**
- * Share target: "Phone Bridge" in Android's share sheet. Files are streamed
- * straight from their content URI (detached file descriptor, no copy); text
- * and links travel inline. Finishes immediately; sending continues in the
- * background and reports through notifications.
+ * Share target: "Phone Bridge" in Android's share sheet. Any app in front can
+ * share, so nothing leaves the phone before the user confirms on a small sheet
+ * that names the PC and previews what goes. Files are then streamed straight
+ * from their content URI (detached file descriptor, no copy); text and links
+ * travel inline. Sending continues in the background and reports through
+ * notifications.
  */
 class ShareActivity : Activity() {
+    /** Files opened for the sheet and not sent yet: closed if the user cancels or leaves. */
+    private var unsent: List<OutgoingShare.Out> = emptyList()
+
+    override fun onDestroy() {
+        unsent.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() }; runCatching { it.keep?.close() } }
+        unsent = emptyList()
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.init(this)
@@ -55,7 +66,7 @@ class ShareActivity : Activity() {
             // Only content shared by another app: never our own files, raw
             // paths, or the save folder we hold access to.
             if (uri.scheme != "content" || isOwnAuthority(uri.authority, packageName) ||
-                contentResolver.persistedUriPermissions.any { uri.toString().startsWith(it.uri.toString()) }
+                contentResolver.persistedUriPermissions.any { isUnderTree(uri.toString(), it.uri.toString()) }
             ) {
                 Log.e(TAG, "SHARE refused scheme=${uri.scheme}")
                 return@mapNotNull null
@@ -88,12 +99,36 @@ class ShareActivity : Activity() {
             finish()
             return
         }
-        val sendsText = uris.isEmpty() && text != null
-        if (opened.isEmpty() && !sendsText) {
+        val toSend = textToSend(text)
+        if (opened.isEmpty() && toSend == null) {
             Toast.makeText(this, shareToast(known?.name, 0, false, 0), Toast.LENGTH_LONG).show()
             finish()
             return
         }
+        unsent = opened
+        val preview = sharePreview(
+            when (toSend) {
+                is SharedTextKind.Link -> toSend.url
+                is SharedTextKind.Text -> toSend.text
+                null -> null
+            },
+            opened.map { it.name },
+        )
+        val sheet = android.app.AlertDialog.Builder(this)
+            .setTitle("Send to ${known?.name ?: "your PC"}?")
+            .setMessage(preview)
+            .setPositiveButton("Send") { _, _ -> send(opened, toSend, known?.name, uris.size - opened.size) }
+            .setNegativeButton("Cancel") { _, _ -> finish() }
+            .setOnCancelListener { finish() }
+            .create()
+        // A tap that went through another app's overlay is not a decision.
+        sheet.setOnShowListener { sheet.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.filterTouchesWhenObscured = true }
+        window.decorView.filterTouchesWhenObscured = true
+        sheet.show()
+    }
+
+    private fun send(opened: List<OutgoingShare.Out>, toSend: SharedTextKind?, knownName: String?, dropped: Int) {
+        unsent = emptyList()
         val app = applicationContext
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
@@ -117,8 +152,12 @@ class ShareActivity : Activity() {
                 }
                 OutgoingShare.send(app, node, peer.id, peer.name, f)
             }
-            if (uris.isEmpty() && text != null) {
-                val isLink = text.startsWith("http://") || text.startsWith("https://")
+            if (toSend != null) {
+                val isLink = toSend is SharedTextKind.Link
+                val text = when (toSend) {
+                    is SharedTextKind.Link -> toSend.url
+                    is SharedTextKind.Text -> toSend.text
+                }
                 try {
                     node.sendText(peer.id, text, isLink)
                     Log.i(TAG, "SHARE sent ${if (isLink) "link" else "text"} to ${peer.name}")
@@ -126,12 +165,12 @@ class ShareActivity : Activity() {
                     Timeline.add(if (isLink) linkEntry(peer.name, text) else clipTextEntry(peer.name, text))
                 } catch (t: Throwable) {
                     Log.e(TAG, "SHARE text failed: $t")
-                    AppLog.event("events", "share_failed", "kind" to if (text.startsWith("http")) "link" else "text", "type" to t.javaClass.simpleName)
+                    AppLog.event("events", "share_failed", "kind" to if (isLink) "link" else "text", "type" to t.javaClass.simpleName)
                     notifyInfo(app, if (isLink) "Could not send the link" else "Could not send the text", "${peer.name} did not receive it")
                 }
             }
         }
-        Toast.makeText(this, shareToast(known?.name, opened.size, sendsText, uris.size - opened.size), Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, shareToast(knownName, opened.size, toSend != null, dropped), Toast.LENGTH_SHORT).show()
         finish()
     }
 }

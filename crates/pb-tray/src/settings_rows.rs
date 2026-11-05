@@ -9,6 +9,8 @@ pub enum Key {
     ShareImages,
     Passwords,
     Keep,
+    /// Put text shared from the phone on the clipboard at once.
+    AutoCopyText,
     Auto,
     SendTo,
     Startup,
@@ -44,6 +46,7 @@ pub struct Model {
     pub share_images: bool,
     pub passwords: bool,
     pub keep: bool,
+    pub auto_copy_text: bool,
     pub auto: bool,
     pub save_dir: String,
     pub sendto: bool,
@@ -90,6 +93,7 @@ impl Model {
             Key::ShareImages => self.share_images,
             Key::Passwords => self.passwords,
             Key::Keep => self.keep,
+            Key::AutoCopyText => self.auto_copy_text,
             Key::Auto => self.auto,
             Key::SendTo => self.sendto,
             Key::Startup => self.startup,
@@ -192,6 +196,11 @@ pub fn rows(m: &Model) -> Vec<Row> {
             Key::Keep,
             "Keep received text in clipboard history",
             "Show it in Win+V history (never for passwords)",
+        ),
+        Row::Toggle(
+            Key::AutoCopyText,
+            "Copy shared text automatically",
+            "Text you share from the phone goes straight to the clipboard",
         ),
         Row::Header("Phone notifications"),
         Row::Toggle(
