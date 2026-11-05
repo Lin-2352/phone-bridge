@@ -24,8 +24,8 @@ jobs:
       - run: cargo test --workspace
 
   android:
-    # Kotlin compile + lint against bindings generated from this commit (the
-    # native library itself is built locally with cargo-ndk).
+    # Kotlin compile, lint and unit tests against bindings generated from this
+    # commit (the native library is built in android-apk).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -38,8 +38,50 @@ jobs:
           java-version: "21"
       - run: cargo build -p pb-ffi
       - run: cargo run -q -p uniffi-bindgen -- generate --library target/debug/libpb_ffi.so --language kotlin --out-dir android/app/src/main/java
-      - run: bash gradlew :app:compileReleaseKotlin :app:lintRelease --no-daemon --console=plain
+      - run: bash gradlew :app:compileReleaseKotlin :app:lintRelease :app:testDebugUnitTest --no-daemon --console=plain
         working-directory: android
+
+  android-apk:
+    # The installable test build: qa (release settings and R8, debug-signed),
+    # with the native library for arm64-v8a, armeabi-v7a and x86_64.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master on 2026-11-05
+        with:
+          toolchain: "1.99.1"
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+          components: clippy
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: cargo install cargo-ndk --locked --version 4.1.2
+      - name: Build the qa APK
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" bash scripts/android-build.sh --variant qa
+      - name: Lint the 32-bit build
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" cargo ndk -t armeabi-v7a clippy -p pb-ffi -- -D warnings
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-android-qa
+          path: android/app/build/outputs/apk/qa/*.apk
+          if-no-files-found: error
+
+  windows-zip:
+    # The portable Relay folder, zipped the way users get it.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master on 2026-11-05
+        with:
+          toolchain: "1.99.1"
+      - run: cargo build --release -p pb-tray -p pb-cli -p pb-camera-source
+      - run: pwsh scripts/make-portable.ps1 -Zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-windows-portable
+          path: dist/*.zip
+          if-no-files-found: error
 
   deny:
     runs-on: ubuntu-latest
