@@ -126,7 +126,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // A visible window may set the volume: finish a restore Android 17 refused in the background.
         if (Prefs(this).pendingVolumeRestore) {
-            PhoneSpeaker.restore(this)
+            val app = applicationContext
+            dev.phonebridge.app.audio.VolumeJobs.shared.submit { PhoneSpeaker.restore(app) }
             Prefs(this).pendingVolumeRestore = false
         }
         AppLog.permissionsChanged(this)

@@ -249,7 +249,8 @@ private fun AudioToPc() {
             if (v) {
                 prefs.audioSilenceUnsupported = false
             }
-            PhoneSpeaker.settingChanged(ctx)
+            val app = ctx.applicationContext
+            dev.phonebridge.app.audio.VolumeJobs.shared.submit { PhoneSpeaker.settingChanged(app) }
         },
     )
 }

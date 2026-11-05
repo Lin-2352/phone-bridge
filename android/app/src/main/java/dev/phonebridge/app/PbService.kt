@@ -248,7 +248,8 @@ class PbService : Service() {
         AppLog.init(this)
         AppLog.event("events", "service_start")
         Timeline.init(this)
-        PhoneSpeaker.restore(this) // a crash while streaming must not leave the phone muted
+        // A crash while streaming must not leave the phone muted. Off the main thread, in order with shares.
+        dev.phonebridge.app.audio.VolumeJobs.shared.submit { PhoneSpeaker.restore(this) }
         Prefs(this).pendingVolumeRestore = false // done here: the service is in the foreground
         HelperCleanup.runOnce(this) // builds without the helper: remove an old install's leftovers
         HelperStarter.maintain(this) // after a reboot or an update: nothing for the user to do
@@ -324,6 +325,7 @@ class PbService : Service() {
         if (CameraShare.capture != null || CameraShare.usedBy.value != null) CameraShare.stop(userStopped = true)
         AudioShare.stopAll()
         // The speaker comes back even if the stop path above could not reach it (instance is already null).
+        // On this thread on purpose: it must finish while the service still holds the foreground.
         PhoneSpeaker.restore(this)
         // Leaving the foreground, Android 17 may have ignored that: the next start or app open does it again.
         if (volumeRestoreAction(Build.VERSION.SDK_INT, inForegroundService = false, pending = true) == VolumeAction.Defer) {

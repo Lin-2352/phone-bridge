@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.audio.AudioReason
 import dev.phonebridge.app.audio.AudioSessions
+import dev.phonebridge.app.audio.VolumeJobs
 import dev.phonebridge.app.audio.AudioSource
 import dev.phonebridge.app.audio.EndCause
 import dev.phonebridge.app.audio.endNotice
@@ -162,7 +163,7 @@ object AudioShare {
         out.set(o)
         // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
         sharingSource.value = a.source
-        if (a.source == AudioSource.PLAYBACK && !helper) PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
+        if (a.source == AudioSource.PLAYBACK && !helper) VolumeJobs.shared.submit { PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS) }
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
         Log.i(TAG, "AUDIO phone to PC started source=${a.source} helper=$helper")
@@ -180,7 +181,8 @@ object AudioShare {
             return
         }
         out.set(o)
-        PhoneSpeaker.begin(ctx.applicationContext, AudioStreamer.FRAME_MS)
+        val app = ctx.applicationContext
+        VolumeJobs.shared.submit { PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS) }
         began(AudioDirection.PHONE_TO_PC, a.peer)
         notifySession(ctx, AudioDirection.PHONE_TO_PC, a.source, a.peer)
         tone = Thread({
@@ -341,7 +343,7 @@ object AudioShare {
         val src = captureSource
         tone?.interrupt()
         tone = null
-        PbService.instance?.let { PhoneSpeaker.restore(it) }
+        PbService.instance?.let { svc -> VolumeJobs.shared.submit { PhoneSpeaker.restore(svc) } }
         streamer?.stop()
         streamer = null
         // After the capture thread stopped: it is the encoder's only user.
