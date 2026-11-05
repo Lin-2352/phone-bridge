@@ -14,6 +14,8 @@
     <!-- Explicit microphone mode only (never a fallback for playback capture). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Hides other apps' overlays while a consent window shows (tapjacking). -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <!-- Send each new screenshot to the PC (only when the user turns that on). -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />

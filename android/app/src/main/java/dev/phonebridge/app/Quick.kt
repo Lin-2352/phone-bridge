@@ -170,6 +170,7 @@ class QuickPanelActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SecureWindow.apply(this)
         prefs = Prefs(this)
         ThemeChoice.mode.intValue = prefs.theme
         if (Build.VERSION.SDK_INT >= 31) {
@@ -191,10 +192,8 @@ class QuickPanelActivity : ComponentActivity() {
         }
     }
 
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) shareClipboardIfChanged(this, prefs)
-    }
+    // Any app can open this panel, so it never reads the clipboard by itself on focus (S8):
+    // "Send clipboard now" below does, on a tap.
 
     @Composable
     private fun Panel() {
@@ -232,6 +231,11 @@ class QuickPanelActivity : ComponentActivity() {
                 headlineContent = { Text("Share clipboard") },
                 supportingContent = { Text("Copy on one device, paste on the other") },
                 trailingContent = { Switch(clip, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }, enabled = on) },
+            )
+            ListItem(
+                headlineContent = { Text("Send clipboard now") },
+                supportingContent = { Text("What you copied on this phone goes to your PC") },
+                modifier = Modifier.clickable(enabled = on && clip) { shareClipboardIfChanged(this@QuickPanelActivity, prefs) },
             )
             ListItem(
                 colors = itemColors,

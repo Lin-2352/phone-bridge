@@ -75,6 +75,9 @@ class MainActivity : ComponentActivity() {
     private val tabRequest = mutableIntStateOf(0)
     private val debuggable get() = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
 
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean =
+        if (sas.value != null && isObscured(ev.flags)) true else super.dispatchTouchEvent(ev)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.init(this)
@@ -162,6 +165,15 @@ class MainActivity : ComponentActivity() {
         val scope = rememberCoroutineScope()
         RelayNavHost(requestedTab.value, tabRequest.intValue)
         sas.value?.let { code ->
+            // The comparison is a consent prompt: no overlays, no remote taps while it shows.
+            androidx.compose.runtime.DisposableEffect(Unit) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) window.setHideOverlayWindows(true)
+                ConsentGuard.begin("sas", android.os.SystemClock.elapsedRealtime())
+                onDispose {
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) window.setHideOverlayWindows(false)
+                    ConsentGuard.end("sas")
+                }
+            }
             val amber = if (isDark()) AmberDark else Amber
             RelayDialog(
                 // The PC's name is not known until pairing completes, so the heading stays generic.

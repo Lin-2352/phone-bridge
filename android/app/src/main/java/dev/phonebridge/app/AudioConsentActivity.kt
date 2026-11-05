@@ -44,8 +44,13 @@ class AudioConsentActivity : ComponentActivity() {
     private var asking by mutableStateOf(false)
     private val main = Handler(Looper.getMainLooper())
 
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean =
+        if (isObscured(ev.flags)) true else super.dispatchTouchEvent(ev)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SecureWindow.apply(this)
+        lifecycle.addObserver(ConsentGuard.observer("AudioConsentActivity"))
         val i = intent
         val source = if (i.getIntExtra("source", 0) == 1) AudioSource.MICROPHONE else AudioSource.PLAYBACK
         val a = AudioAsk(

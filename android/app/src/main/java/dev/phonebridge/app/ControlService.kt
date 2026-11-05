@@ -71,6 +71,8 @@ class ControlService : AccessibilityService(), InputListener {
 
     override fun onServiceConnected() {
         instance = this
+        // A prompt of Relay's opened: nothing stays held (a finger down, Ctrl) while it shows.
+        ConsentGuard.onFirstBegin = { resetKeys() }
         // A share that started while control was off now really can be used (notification wording).
         ScreenShare.refreshNotification()
         Bridge.node?.setInputListener(this)
@@ -106,6 +108,7 @@ class ControlService : AccessibilityService(), InputListener {
     override fun onDestroy() {
         if (instance === this) {
             instance = null
+            ConsentGuard.onFirstBegin = null
             ScreenShare.refreshNotification()
             Bridge.node?.setInputListener(null)
             // Turned off mid-session: end it, or the PC keeps "controlling" nothing.
@@ -214,9 +217,9 @@ class ControlService : AccessibilityService(), InputListener {
     }
 
     override fun onInput(kind: UByte, a: Int, b: Int, pressed: Boolean) {
-        // A PC must not type on the lock screen (PIN attempts, quick settings): input pauses while
-        // the phone is locked, and keys held at that moment are released.
-        if (!inputAllowed(lockedNow(), consentActive = false)) {
+        // A PC must not type on the lock screen (PIN attempts, quick settings) or tap Relay's own
+        // prompts: input pauses meanwhile, and keys held at that moment are released.
+        if (!inputAllowed(lockedNow(), ConsentGuard.active(SystemClock.elapsedRealtime()))) {
             if (!pausedForLock) {
                 pausedForLock = true
                 resetKeys()

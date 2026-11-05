@@ -26,8 +26,13 @@ class ControlRequestActivity : ComponentActivity() {
     private var peerName by mutableStateOf<String?>(null)
     private val main = Handler(Looper.getMainLooper())
 
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean =
+        if (isObscured(ev.flags)) true else super.dispatchTouchEvent(ev)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SecureWindow.apply(this)
+        lifecycle.addObserver(ConsentGuard.observer("ControlRequestActivity"))
         current = this
         setContent {
             RelayTheme {
