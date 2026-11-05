@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.pb_ffi.EventListener
 import uniffi.pb_ffi.PbEvent
@@ -85,12 +86,24 @@ object Bridge {
     val allowControl = mutableStateOf(false)
     /** Sessions from the PC open right now (Connected minus Disconnected events); 0 when the node stops. */
     val liveSessions = mutableIntStateOf(0)
+    /** Relay's own screen is visible (started activities, counted by MainActivity). */
+    val uiVisible = java.util.concurrent.atomic.AtomicInteger(0)
+    /** A PC session is open or Relay is on screen: log sampling runs only then. */
+    val activity = kotlinx.coroutines.flow.MutableStateFlow(false)
+    /** The screen is on (from SCREEN_ON / SCREEN_OFF): status redraws run only then. */
+    val screenOn = kotlinx.coroutines.flow.MutableStateFlow(true)
+
+    fun refreshActivity() {
+        activity.value = liveSessions.intValue > 0 || uiVisible.get() > 0
+    }
+
     /** When the PC was last in contact (wall-clock ms), 0 if never; persisted as [Prefs.lastSeenMs]. */
     val lastSeen = mutableLongStateOf(0L)
 
     /** The PC opened or closed a session: count it and stamp the contact time. */
     fun pcContact(ctx: Context, opened: Boolean) {
         liveSessions.intValue = if (opened) liveSessions.intValue + 1 else (liveSessions.intValue - 1).coerceAtLeast(0)
+        refreshActivity()
         stampSeen(ctx)
         // Notification, tile and widget say "Connected" or "last seen" from this; redraw all three.
         val svc = PbService.instance
@@ -272,11 +285,19 @@ class PbService : Service() {
         scheduleRecovery(this)
         scope.launch { start() }
         scope.launch { AppLog.sampleLoop(this@PbService) }
-        // "<PC> not reachable, last seen 5 min ago" only moves when redrawn: do it while the PC is away.
+        // "<PC> not reachable, last seen 5 min ago" only moves when redrawn: do it while the PC is away
+        // and the screen is on. With the screen off nobody sees it, so this never wakes the phone.
+        Bridge.screenOn.value = getSystemService(android.os.PowerManager::class.java).isInteractive
+        androidx.core.content.ContextCompat.registerReceiver(
+            this, screenWatch,
+            android.content.IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) },
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         scope.launch {
             while (true) {
+                Bridge.screenOn.first { it }
                 kotlinx.coroutines.delay(STATUS_REDRAW_MS)
-                if (Bridge.nodeReady.value && !Bridge.isConnected()) updateStatus()
+                if (statusRedrawDue(Bridge.screenOn.value, Bridge.nodeReady.value, Bridge.isConnected())) updateStatus()
             }
         }
         AppLog.permissionsChanged(this)
@@ -319,6 +340,7 @@ class PbService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(screenWatch) }
         if (instance === this) instance = null
         AppLog.event("events", "service_stop")
         AppLog.flush()
@@ -368,6 +390,7 @@ class PbService : Service() {
         }
         Bridge.nodeReady.value = false
         Bridge.liveSessions.intValue = 0
+        Bridge.refreshActivity()
         cancelProgress(true)
         cancelProgress(false)
         netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
@@ -389,6 +412,7 @@ class PbService : Service() {
         Bridge.stopping?.join()
         // A new node has no sessions yet (the old node's last events are handled by now).
         Bridge.liveSessions.intValue = 0
+        Bridge.refreshActivity()
         try {
             NativeInit.initContext(applicationContext)
             val n = startNode(
@@ -1005,6 +1029,14 @@ class PbService : Service() {
             .setShowWhen(false)
             .setContentIntent(open)
             .build()
+    }
+
+    /** Screen on: redraw the status at once (it may say "5 min ago" from an hour ago). */
+    private val screenWatch = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            Bridge.screenOn.value = i.action == Intent.ACTION_SCREEN_ON
+            if (statusRedrawDue(Bridge.screenOn.value, Bridge.nodeReady.value, Bridge.isConnected())) updateStatus()
+        }
     }
 
     fun updateStatus() {

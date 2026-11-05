@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M2.18 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
-- **Next task:** M2.19 (fewer idle wakeups; idle budget in DECISIONS)
+- **Last finished task:** M2.19 (plan: [plans/2026-11-05-m2-review-sweep.md](plans/2026-11-05-m2-review-sweep.md))
+- **Next task:** M2.R (milestone review and CI green)
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -92,7 +92,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M2.16 B13: `teardownCapture` lock/join race
 - [x] M2.17 B14: lift the speaker silencer while an alarm, ringtone or emergency sound plays
 - [x] M2.18 QoL: "Keep Control on between sessions" (opt-in)
-- [ ] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS
+- [x] M2.19 Fewer idle wakeups; new wakeup budget recorded in DECISIONS
 - [-] M2.20 Screen encoder reuses its frame buffer — dropped: uniffi copies the whole `ByteArray` into Rust on every `sendFrame` and takes only exact-size arrays, so a reused larger array would copy more, not less. The device checklist measures memory churn while mirroring instead
 - [ ] M2.R Milestone review and CI green
 
@@ -210,5 +210,5 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-05 (wrap-up): CI run 41956488616 green on every job, fuzz-smoke included. The DLL planting check passed with /DEPENDENTLOADFLAG:0x800 and SetDefaultDllDirectories alone: Relay.exe started next to 34 garbage DLLs named after the libraries it uses, so no delay-loading was needed (ruling). The check is now required. If Relay ever imports a new non-system DLL, add its name to the check's list in ci.yml. All six fuzz targets also ran here without a crash (0.3–4.9 million runs each).
 - 2026-11-05 (M1 closed): M1.13 has 10 fuzz targets plus randomized tests for the PC's settings and pipe parsers. The M1 review's critical findings are fixed (see M1.R). docs/THREAT_MODEL.md has a short list of what M1 added. Check the latest CI run first: the Windows-only tests (ipc random text, settings pages) run only there.
 - 2026-11-05 (M2 start): CI run 41969323722 on e4f5f12 green on every job. M2 plan written. No wire change in M2. Rulings in the plan: PC toasts hide text by default (`toast_show_text`); the PC-away status shows an absolute time so it needs no timed redraw; M2.20 dropped (reason above).
-- Device checklist items collected for M11.5: (M2.1) on a phone that once ran the audio helper's setup, the device-idle allow-list entry stays until removed over adb (`adb shell cmd deviceidle whitelist -dev.phonebridge.app`); (M2.20) measure memory churn while mirroring; (M2.17) set an alarm during a phone-audio share with the speaker silenced: the alarm must be heard, and silence must return after it.
+- Device checklist items collected for M11.5: (M2.1) on a phone that once ran the audio helper's setup, the device-idle allow-list entry stays until removed over adb (`adb shell cmd deviceidle whitelist -dev.phonebridge.app`); (M2.20) measure memory churn while mirroring; (M2.17) set an alarm during a phone-audio share with the speaker silenced: the alarm must be heard, and silence must return after it; (M2.19) an hour idle with no PC and the screen off, then `adb shell dumpsys batterystats`: Relay's wakeups stay within one per 15 min.
 - 2026-11-05 (M2, mid-milestone): a new PC settings toggle must also go into `settings_groups.rs` (OPTIONS and `page_of`; at most 9 rows a page) and the KEYS count in `pages/settings.rs`. `settings_groups` now builds and tests on Linux; `pages/settings.rs` tests still run only on CI's Windows job.

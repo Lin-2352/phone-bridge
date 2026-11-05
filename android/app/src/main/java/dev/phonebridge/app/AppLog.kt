@@ -17,6 +17,7 @@ import java.util.TimeZone
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import uniffi.pb_ffi.logClearAll
 import uniffi.pb_ffi.logDays
 import uniffi.pb_ffi.logEvent
@@ -205,13 +206,21 @@ object AppLog {
         }
     }
 
-    /** Samples while the service runs: perf every 10 s with the screen on (60 s off), network every 60 s. Ends when the caller's scope is cancelled. */
+    /**
+     * Samples while a PC session is open or Relay is on screen: perf every 10 s with the screen on
+     * (60 s off), network every 60 s. Otherwise it waits without a timer ([sampleIntervalMs]).
+     * Ends when the caller's scope is cancelled.
+     */
     suspend fun sampleLoop(ctx: Context) {
         val pm = ctx.getSystemService(PowerManager::class.java)
         var since = 0L
         sampleNetwork(ctx, force = true)
         while (true) {
-            val step = if (pm.isInteractive) 10_000L else 60_000L
+            val step = sampleIntervalMs(Bridge.liveSessions.intValue > 0, Bridge.uiVisible.get() > 0, pm.isInteractive)
+            if (step == null) {
+                Bridge.activity.first { it }
+                continue
+            }
             delay(step)
             since += step
             samplePerf(ctx)

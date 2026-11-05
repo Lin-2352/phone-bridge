@@ -122,6 +122,18 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
     }
 
+    override fun onStart() {
+        super.onStart()
+        Bridge.uiVisible.incrementAndGet()
+        Bridge.refreshActivity()
+    }
+
+    override fun onStop() {
+        Bridge.uiVisible.updateAndGet { (it - 1).coerceAtLeast(0) }
+        Bridge.refreshActivity()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         // A visible window may set the volume: finish a restore Android 17 refused in the background.

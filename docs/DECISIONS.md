@@ -449,3 +449,10 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Measured on a realme RMX3561, Android 13, video in Google Photos.** With the bar at the maximum, the user heard nothing from the speaker and the video on the PC. Captured peak stayed at 22,000 to 27,000. Notifications, calls and alarms still played on the speaker.
 - **During a share the bar belongs to the PC.** The phone's own volume is saved first and put back on stop before the effect is released, or at the next start after a crash. A share starts at the last share's level, so a leftover 0 can't silence the PC. If Android refuses the effect or another app takes it, Relay falls back to muting.
 - **Limits.** Not tested on other phones or with apps that use another output, such as games. Android chooses where a session-0 effect goes, and session-0 insert effects are documented as deprecated for some effect types. While Relay is dead nothing silences the speaker, so sound can return at the share's level until the service restarts. A route change during a share can restore the volume to the wrong output.
+
+## Idle wakeup budget (2026-11-05, v2 M2.19)
+
+- **Budget.** Idle with no PC in contact and Relay not on screen, Relay wakes the phone at most once per 15 minutes.
+- **What changed.** Log sampling (perf every 10 s, network every 60 s) now runs only while a PC session is open or Relay is on screen; otherwise its loop waits for that state, with no timer. The status redraw ("last seen 5 min ago" in the notification, tile and widget) runs only while the screen is on, and turning the screen on redraws at once. Nobody sees the notification with the screen off, so that loop no longer wakes the phone.
+- **Kept on purpose.** The relative wording stays, matching Home and the PC app; an absolute "last seen at 14:05" was considered and dropped for that reason.
+- **What may still wake it.** The recovery job (JobScheduler, 15-minute minimum period, batched by Doze) and packets arriving on the node's sockets. Not measured on a device yet: the device checklist checks it with `adb shell dumpsys batterystats` after an hour idle.
