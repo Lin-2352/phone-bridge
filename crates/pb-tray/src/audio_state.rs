@@ -302,6 +302,14 @@ impl Arrivals {
 }
 
 /// "12 s", "4 min 12 s", "1 h 3 min".
+/// No frame for this long and the share is stalled (a Wi-Fi hiccup shorter than this is not worth a word).
+pub const STALL_MS: u64 = 1_500;
+
+/// Whether a running share has stopped receiving: the flyout says "Reconnecting…" until the next frame.
+pub fn reconnecting(since_last_frame_ms: u64) -> bool {
+    since_last_frame_ms >= STALL_MS
+}
+
 pub fn duration_text(secs: u64) -> String {
     match secs {
         0..60 => format!("{secs} s"),
@@ -326,6 +334,21 @@ pub fn duration_text(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_short_gap_is_not_reconnecting() {
+        assert!(!super::reconnecting(1_499));
+    }
+
+    #[test]
+    fn a_long_gap_is_reconnecting() {
+        assert!(super::reconnecting(1_500));
+    }
+
+    #[test]
+    fn the_next_frame_is_live_again() {
+        assert!(!super::reconnecting(0));
+    }
+
     use super::*;
 
     #[test]

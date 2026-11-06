@@ -6,7 +6,7 @@
 //!
 //! The PC always dials. The microphone is never involved on this side.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,21 @@ static STOPS: Mutex<[Option<Arc<Notify>>; 2]> = Mutex::new([None, None]);
 
 fn track<T>(f: impl FnOnce(&mut Tracker) -> T) -> T {
     f(&mut TRACK.lock().unwrap_or_else(|p| p.into_inner()))
+}
+
+/// Milliseconds on `CLOCK` when the last phone-audio frame arrived; 0 while no share runs.
+static LAST_FRAME_MS: AtomicU64 = AtomicU64::new(0);
+static CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn clock_ms() -> u64 {
+    // +1 so a frame in the first millisecond is not mistaken for "none yet".
+    CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// Whether the running phone-audio share has gone quiet for `STALL_MS` (the flyout shows "Reconnecting…").
+pub fn stalled() -> bool {
+    let last = LAST_FRAME_MS.load(Ordering::Relaxed);
+    last != 0 && st::reconnecting(clock_ms().saturating_sub(last))
 }
 
 /// What this direction is doing now (the menu, Home and the flyout read it).
@@ -206,11 +221,15 @@ async fn run(
         // The output stream is not `Send`: it lives on one thread for the
         // whole session, which drives the async loop from there.
         Dir::PhoneToPc => {
-            let (handle, stop, log) =
-                (tokio::runtime::Handle::current(), stop.clone(), log.clone());
+            let (handle, stop, log, ui) = (
+                tokio::runtime::Handle::current(),
+                stop.clone(),
+                log.clone(),
+                ui.clone(),
+            );
             let joined = tokio::task::spawn_blocking(move || {
                 let mut sess = sess;
-                let end = handle.block_on(play_phone_audio(&mut sess, &stop, &log));
+                let end = handle.block_on(play_phone_audio(&mut sess, &stop, &log, &ui));
                 (sess, end)
             })
             .await;
@@ -262,7 +281,12 @@ async fn play_phone_audio(
     sess: &mut pb_transport::audio::AudioSession,
     stop: &Notify,
     log: &Log,
+    ui: &Ui,
 ) -> End {
+    // The session just came up: the first frame has until STALL_MS to arrive.
+    LAST_FRAME_MS.store(clock_ms(), Ordering::Relaxed);
+    let mut stall_tick = tokio::time::interval(Duration::from_millis(500));
+    let mut was_stalled = false;
     // Packets are about 6 ms each, so this bounds a scheduling hiccup, not
     // the latency: the ring behind it keeps that.
     let (tx, rx) = mpsc::channel::<Vec<u8>>(32);
@@ -314,6 +338,7 @@ async fn play_phone_audio(
                 // side keeps its own latency bound.
                 Some(f) => {
                     arrivals.frame(began.elapsed().as_millis() as u64, f.samples.len());
+                    LAST_FRAME_MS.store(clock_ms(), Ordering::Relaxed);
                     let t0 = Instant::now();
                     let pcm = match opus.as_mut() {
                         Some(d) => d.decode(&f.samples),
@@ -377,8 +402,17 @@ async fn play_phone_audio(
             },
             ev = events.recv() => break cause_of(ev),
             () = stop.notified() => break End::LocalStop,
+            // The flyout only repaints on an event: tell it when the stall starts or ends.
+            _ = stall_tick.tick() => {
+                let now = stalled();
+                if now != was_stalled {
+                    was_stalled = now;
+                    ui(UiEvent::AudioChanged);
+                }
+            }
         }
     };
+    LAST_FRAME_MS.store(0, Ordering::Relaxed);
     log.line(&format!(
         "AUDIO playback dropped_ms={} underruns={} (counted per sample frame, not per network chunk)",
         dropped(),

@@ -107,6 +107,11 @@ object AudioShare {
     private val heardSound = AtomicBoolean(false)
     private var noSound: NoSoundHint? = null
 
+    /** Whether the PC had a live session when the notice was last drawn (so a drop or a return redraws it). */
+    private var shownLinked = true
+
+    private fun linkedNow() = Bridge.liveSessions.intValue > 0
+
     /** Once a second, away from the capture thread: whether to say that nothing is reaching the PC. */
     private val soundWatch = object : Runnable {
         override fun run() {
@@ -116,7 +121,8 @@ object AudioShare {
                 val playing = ctx.getSystemService(AudioManager::class.java).isMusicActive
                 val changed = hint.onTick(SystemClock.elapsedRealtime(), heardSound.getAndSet(false), playing)
                 val peer = sharingWith.value
-                if (changed && peer != null) {
+                val linked = linkedNow()
+                if ((changed || linked != shownLinked) && peer != null) {
                     Log.i(TAG, "AUDIO nothing captured while a player is open: ${hint.showing}")
                     notifySession(ctx, AudioDirection.PHONE_TO_PC, sharingSource.value, peer, hint.showing)
                 }
@@ -475,11 +481,12 @@ object AudioShare {
 
     /** The persistent indicator with Stop, for every active session. */
     private fun notifySession(ctx: Context, d: AudioDirection, source: AudioSource, peer: String, noSound: Boolean = false) {
+        shownLinked = linkedNow()
         val stop = PendingIntent.getBroadcast(
             ctx, 60 + d.wire, Intent(ctx, AudioReceiver::class.java).putExtra("dir", d.wire),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val detail = sessionDetail(d, peer, noSound)
+        val detail = sessionDetail(d, peer, noSound, shownLinked)
         val n = Notification.Builder(ctx, "control")
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle(sessionNoticeText(d, source))

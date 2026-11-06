@@ -467,6 +467,7 @@ fn flyout_model(st: &State) -> crate::flyout::Model {
             crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
             crate::audio::phase(crate::audio_state::Dir::PcToPhone),
         ],
+        audio_stalled: crate::audio::stalled(),
         last: LAST_ACTIVITY.lock().map(|l| l.clone()).unwrap_or_default(),
         paused: st.settings.lock().map(|s| s.paused).unwrap_or(false),
         stopped: core_error().is_some(),

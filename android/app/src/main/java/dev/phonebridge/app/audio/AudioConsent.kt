@@ -103,7 +103,9 @@ fun sessionNoticeText(direction: AudioDirection, source: AudioSource): String = 
 }
 
 /** The line under [sessionNoticeText]. [noSound]: see [NoSoundHint]. */
-fun sessionDetail(direction: AudioDirection, peer: String, noSound: Boolean): String = when {
+fun sessionDetail(direction: AudioDirection, peer: String, noSound: Boolean, linked: Boolean = true): String = when {
+    // The PC's session is gone while the share runs: it comes back by itself (the PC dials again).
+    !linked -> "Reconnecting to $peer…"
     noSound -> "Nothing to send to $peer right now. Some apps don't allow their sound to be shared."
     direction == AudioDirection.PHONE_TO_PC -> "Sent to $peer"
     else -> "From $peer"

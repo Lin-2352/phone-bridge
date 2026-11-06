@@ -88,6 +88,8 @@ pub struct Model {
     pub screen_pending: bool,
     /// What each audio direction is doing (`Dir::index`).
     pub audio: [crate::audio_state::Phase; 2],
+    /// Phone audio is running but no frame has arrived for `audio_state::STALL_MS`.
+    pub audio_stalled: bool,
     pub last: String,
     /// Relay is paused: tiles and the drop zone are disabled, the header says so.
     pub paused: bool,

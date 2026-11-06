@@ -68,6 +68,7 @@ pub fn tiles(m: &Model) -> Vec<Tile> {
             label: match audio {
                 crate::audio_state::Phase::Idle => "Phone audio",
                 crate::audio_state::Phase::Asking => "Cancel start",
+                crate::audio_state::Phase::Running if m.audio_stalled => "Reconnecting…",
                 crate::audio_state::Phase::Running => "Stop audio",
             }
             .to_owned(),
@@ -204,6 +205,20 @@ mod tests {
         let running = audio_tile(&m);
         assert_eq!(running.label, "Stop audio");
         assert!(running.on && running.enabled);
+    }
+
+    #[test]
+    fn a_stalled_share_says_reconnecting_but_stays_stoppable() {
+        use crate::audio_state::{Dir, Phase};
+        let mut m = paired();
+        m.audio[Dir::PhoneToPc.index()] = Phase::Running;
+        m.audio_stalled = true;
+        let t = audio_tile(&m);
+        assert_eq!(t.label, "Reconnecting…");
+        assert!(t.on && t.enabled);
+        // Only a running share can be stalled; a stale flag on an idle tile says nothing.
+        m.audio[Dir::PhoneToPc.index()] = Phase::Idle;
+        assert_eq!(audio_tile(&m).label, "Phone audio");
     }
 
     #[test]

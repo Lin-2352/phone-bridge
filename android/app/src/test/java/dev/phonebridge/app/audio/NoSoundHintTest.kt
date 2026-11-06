@@ -82,4 +82,11 @@ class NoSoundHintTest {
         assertTrue(quiet, quiet.startsWith("Nothing to send to DESK right now."))
         assertTrue(quiet, quiet.contains("Some apps don't allow"))
     }
+
+    /** L2: a share whose PC link is gone says so first, whatever else it knew. */
+    @Test fun a_lost_session_says_reconnecting_first() {
+        assertEquals("Reconnecting to DESK…", sessionDetail(AudioDirection.PHONE_TO_PC, "DESK", noSound = false, linked = false))
+        assertEquals("Reconnecting to DESK…", sessionDetail(AudioDirection.PHONE_TO_PC, "DESK", noSound = true, linked = false))
+        assertEquals("Sent to DESK", sessionDetail(AudioDirection.PHONE_TO_PC, "DESK", noSound = false, linked = true))
+    }
 }
