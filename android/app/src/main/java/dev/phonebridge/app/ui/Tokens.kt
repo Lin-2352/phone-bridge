@@ -67,10 +67,10 @@ object Tokens {
         onPrimary = Color(0xFF082587),
         accent = Color(0xFFE8A93A),
         success = Color(0xFF6CCB5F),
-        warning = Color(0xFFFCE100),
+        warning = Color(0xFFE8A93A),
         danger = Color(0xFFFF998B),
         successText = Color(0xFF6CCB5F),
-        warningText = Color(0xFFFCE100),
+        warningText = Color(0xFFE8A93A),
         dangerText = Color(0xFFFF998B),
     )
 
@@ -94,7 +94,7 @@ object Tokens {
     val Materials = listOf(
         GlassMaterial(Color(0xFFF3F3F3), 0.92f, 30.0f, 0.0f, 0.06f, 0.0f), // native light
         GlassMaterial(Color(0xFF202020), 0.82f, 30.0f, 0.0f, 0.08f, 0.0f), // native dark
-        GlassMaterial(Color(0xFFF8F9FF), 0.92f, 24.0f, 0.1f, 0.1f, 0.02f), // relay light
+        GlassMaterial(Color(0xFFE6ECFF), 0.92f, 24.0f, 0.1f, 0.1f, 0.02f), // relay light
         GlassMaterial(Color(0xFF14172A), 0.88f, 24.0f, 0.12f, 0.12f, 0.02f), // relay dark
     )
 

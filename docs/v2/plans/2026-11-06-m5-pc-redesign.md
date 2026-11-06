@@ -31,6 +31,9 @@
 6. **Crisp text and 1 px hairlines across DPI scales:** grayscale text antialiasing on translucent glass (`Material != Solid`), ClearType on opaque cards and surfaces, tabular numerals (`tnum`) on live counters, and half-pixel (`+ 0.5`) stroke alignment on 1 px card borders. Tests: `text_aa_mode_matches_surface_opacity`, `stroke_rect_snaps_to_half_pixel` (M5.1).
 
 ## Rulings already made
+- Ruling (M5.0a): R-4 and R-22 are settled in the tokens, test first: Relay light tint `#E6ECFF` (`relay_light_glass_is_visibly_cooler_than_native_light`) and the dark `warning`/`warning_text` amber `#E8A93A` (`warning_is_amber_in_both_modes`) — the prototype review found Relay light indistinguishable from Native and dark attention yellow — cost if wrong: one tint value.
+- Ruling (M5.0a): the PC keeps Relay's own durations 120/200/300 ms; Microsoft's 83/167/250/333 ms are not adopted (REVIEW R-15) — the same tokens serve both platforms — cost if wrong: transitions a few tens of milliseconds slower than Windows' own apps; add PC duration tokens through gen-tokens and swap them in `ease.rs` only.
+- Ruling (M5.0a): the type ramp is whatever `tokens::ty` holds (12/14/16/20/28; the PC subtitle stays 16, see PRINCIPLES) — none.
 - Ruling: this plan (M5.0) is written before M4.9 and M4.R finish, because M4.9 waits on the owner's open preview tab and the owner asked for unblocked work to continue; the rulings marked "made in M5.0 ahead of M4.R" are recorded in PRINCIPLES and DECISIONS by M4.R, and Task M5.0a re-checks them — cost if wrong: one rewrite of this file.
 - Ruling (made in M5.0 ahead of M4.R; M4.R records it): the amber token is renamed `attention` and `Palette.accent`/`on_accent` become `primary`/`on_primary` in M5.1 — PRINCIPLES says one accent (`primary`); the PC already draws cobalt at all 22 + 11 reads and never draws amber — if wrong, a rename-only revert.
 - Ruling (made in M5.0 ahead of M4.R; M4.R records it): springs (ease.rs) are used only where motion follows the hand (a released drag, a fling); transitions use `tokens::easing` with `tokens::motion` durations — SPEC M5.2 asks for springs, research found no published Windows springs for transitions — if wrong, swap curves in `ease.rs` only.
@@ -75,7 +78,7 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 
 ---
 
-### Task M5.0a: Refresh at start
+### Task M5.0a: Refresh at start (done 2026-11-07; decisions below)
 - [ ] Check PROGRESS "Floot later" items R-4 and R-22: they change tokens the native app uses (the Relay light tint, and the dark `attention` colour versus `warning`). Settle them test-first in gen-tokens before building on `RELAY_LIGHT` or `attention`.
 - [ ] Re-read `docs/v2/design/PRINCIPLES.md`, the M4.R DECISIONS entry "Design tokens" and `design/tokens.toml`. Confirm each ruling marked "made in M5.0 ahead of M4.R" matches what M4.R wrote; if not, record a new ruling and edit this plan before M5.1.
 - [ ] Check the M4.R type-ramp decision (PRINCIPLES says 18/24, `tokens.toml` has 12/14/16/20/28) and use whatever `tokens::ty` contains.

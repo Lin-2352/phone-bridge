@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M4.R: milestone M4 is done except the "Floot later" list at the bottom (owner decision 2026-11-07). Plans M5.0 to M8.0 are written.
-- **Next task:** Task M5.0a (refresh the M5 plan against M4.R), then M5.1 (materials, system state and fallbacks), in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md).
+- **Last finished task:** M5.0a (the M5 refresh: R-4 and R-22 settled in the tokens, R-15 ruled). Plans M5.0 to M8.0 are written, enhanced by the owner and approved.
+- **Next task:** M5.1 (materials, system state and fallbacks; ADVISOR before changing `d2d::build`), in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -127,6 +127,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M4.R Milestone review: 0 Critical, 1 Important (status text on glass: placement rule plus the M5.3 test `status_text_sits_on_an_opaque_layer`), 9 Minor (3 fixed test-first: the forced-colors rule no longer opts out, Kotlin token types are data classes, the Android amber change is pinned by tests; 6 deferred); docs corrected (PRINCIPLES, DECISIONS "Design tokens", THREAT_MODEL "no change")
 
 ## M5 PC native redesign
+- [x] M5.0a Refresh at start (R-4 and R-22 settled in the tokens, R-15 ruled, type ramp confirmed)
 - [x] M5.0 Plan: [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md) (written ahead of M4.9/M4.R; Task M5.0a re-checks its rulings against M4.R)
 - [ ] M5.1 Materials: Mica, Acrylic, Relay glass, and fallbacks keyed on DWM failure, transparency off or high contrast
 - [ ] M5.2 Springs in `ease.rs` (only while animating; off when Windows animations are off)
@@ -236,8 +237,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## Floot later (owner decision 2026-11-07: do after Floot's daily build limit resets, 12:00 UTC)
 - [ ] Recapture the missing post-fix pages (kit relay dark, kit reduced transparency x2, android x4, motion x2) and one keyboard-focus shot, to verify REVIEW R-3, R-7, R-8, R-10 (fixed in Floot source, not yet seen)
-- [ ] R-4: make the Relay light look visibly different from Native (for example tint `#EEF1FF`), test-first in gen-tokens, then sync Floot `base.css`
-- [ ] R-22: dark-theme `attention` renders yellow (`warning` `#FCE100`), should be amber; test-first, then Floot
+- [ ] R-4 (token done in M5.0a, Relay light tint `#E6ECFF`): sync Floot `base.css` and recapture to confirm it is visibly different
+- [ ] R-22 (token done in M5.0a, dark `warning` is amber `#E8A93A`): sync Floot `base.css` and recapture
 - [ ] Sync Floot `base.css` from `design/floot/base.css` in the repo (M4.R split the forced-colors rule from the transparency opt-out) and re-check the Floot pages afterwards
 - [ ] R-11: Android shape tokens (card 16, sheet 28) and Android type ramp (planned in M6 Task M6.0a)
 - [ ] Minors R-12 to R-20 in `design/REVIEW.md` (destination on transfer rows, repeated labels, one elevation style, Windows durations 83/167/250/333, motion page layout, real nav controls, off-grid paddings, icon families, disabled-button status)

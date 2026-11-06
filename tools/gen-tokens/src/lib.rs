@@ -838,6 +838,48 @@ mod tests {
     }
 
     #[test]
+    fn relay_light_glass_is_visibly_cooler_than_native_light() {
+        // M4.9 R-4: over a white window the two looks must differ by more than a rounding error.
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        let channels = |c: u32| [(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF];
+        let native = channels(over(t.materials[0].tint, t.materials[0].opacity, 0xFFFFFF));
+        let relay = channels(over(t.materials[2].tint, t.materials[2].opacity, 0xFFFFFF));
+        let delta: u32 = native.iter().zip(relay).map(|(a, b)| a.abs_diff(b)).sum();
+        assert!(delta >= 28, "native {native:?} vs relay {relay:?}: {delta}");
+    }
+
+    #[test]
+    fn warning_is_amber_in_both_modes() {
+        // M4.9 R-22: the attention colour is amber (hue about 25 to 48 degrees), never yellow.
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        let hue = |c: u32| -> f64 {
+            let (r, g, b) = (
+                ((c >> 16) & 0xFF) as f64 / 255.0,
+                ((c >> 8) & 0xFF) as f64 / 255.0,
+                (c & 0xFF) as f64 / 255.0,
+            );
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            let d = max - min;
+            if d == 0.0 {
+                return 0.0;
+            }
+            let h = if max == r {
+                ((g - b) / d).rem_euclid(6.0)
+            } else if max == g {
+                (b - r) / d + 2.0
+            } else {
+                (r - g) / d + 4.0
+            };
+            h * 60.0
+        };
+        for (mode, p) in [("light", &t.light), ("dark", &t.dark)] {
+            let h = hue(colour(p, "warning"));
+            assert!((25.0..=48.0).contains(&h), "warning hue {h:.1} ({mode})");
+        }
+    }
+
+    #[test]
     fn primary_is_cobalt() {
         let t = load(include_str!("../../../design/tokens.toml")).unwrap();
         assert_eq!(t.light.primary, 0x3651C5);

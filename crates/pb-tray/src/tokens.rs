@@ -49,10 +49,10 @@ pub const DARK: Colors = Colors {
     on_primary: 0x082587,
     accent: 0xE8A93A,
     success: 0x6CCB5F,
-    warning: 0xFCE100,
+    warning: 0xE8A93A,
     danger: 0xFF998B,
     success_text: 0x6CCB5F,
-    warning_text: 0xFCE100,
+    warning_text: 0xE8A93A,
     danger_text: 0xFF998B,
 };
 
@@ -108,7 +108,7 @@ pub const NATIVE_DARK: Material = Material {
 };
 
 pub const RELAY_LIGHT: Material = Material {
-    tint: 0xF8F9FF,
+    tint: 0xE6ECFF,
     opacity: 0.92,
     blur: 24.0,
     highlight: 0.1,

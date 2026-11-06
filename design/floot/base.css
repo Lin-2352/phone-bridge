@@ -72,10 +72,10 @@
   --color-on-primary: #082587;
   --color-accent: #E8A93A;
   --color-success: #6CCB5F;
-  --color-warning: #FCE100;
+  --color-warning: #E8A93A;
   --color-danger: #FF998B;
   --color-success-text: #6CCB5F;
-  --color-warning-text: #FCE100;
+  --color-warning-text: #E8A93A;
   --color-danger-text: #FF998B;
   --glass-tint: #202020;
   --glass-opacity: 0.82;
@@ -86,7 +86,7 @@
 }
 
 [data-look="relay"] {
-  --glass-tint: #F8F9FF;
+  --glass-tint: #E6ECFF;
   --glass-opacity: 0.92;
   --glass-blur: 24.0px;
   --glass-highlight: 0.1;
