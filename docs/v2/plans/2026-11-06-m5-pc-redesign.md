@@ -70,6 +70,7 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 ---
 
 ### Task M5.0a: Refresh at start
+- [ ] Check PROGRESS "Floot later" items R-4 and R-22: they change tokens the native app uses (the Relay light tint, and the dark `attention` colour versus `warning`). Settle them test-first in gen-tokens before building on `RELAY_LIGHT` or `attention`.
 - [ ] Re-read `docs/v2/design/PRINCIPLES.md`, the M4.R DECISIONS entry "Design tokens" and `design/tokens.toml`. Confirm each ruling marked "made in M5.0 ahead of M4.R" matches what M4.R wrote; if not, record a new ruling and edit this plan before M5.1.
 - [ ] Check the M4.R type-ramp decision (PRINCIPLES says 18/24, `tokens.toml` has 12/14/16/20/28) and use whatever `tokens::ty` contains.
 - [ ] Check M4.9 token changes (`git log --grep '^M4.9'`) and re-run `cargo test -p gen-tokens`. Known M4.9 changes: the amber `accent` token is now `#955700` in light (it was `#C9820F`, 3.1:1) and new `success_text`/`warning_text`/`danger_text` tokens exist for text on a status tint; M5.1's rename `accent` → `attention` must carry these three new names across unchanged. Badge-style status chips on the PC use the `*_text` colours for their text and the status colour for the icon.

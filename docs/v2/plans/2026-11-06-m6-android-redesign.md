@@ -74,6 +74,7 @@ val LocalGlass = staticCompositionLocalOf { Tokens.Materials[0] }
 ---
 
 ### Task M6.0a: Refresh at start
+- [ ] Check PROGRESS "Floot later" items R-4 and R-22: they change tokens the native app uses (the Relay light tint, and the dark `attention` colour versus `warning`). Settle them test-first in gen-tokens before building on `Tokens.Materials[2]` (Relay light) or `attention`.
 - [ ] M4.9 R-11 (deferred to here): `design/tokens.toml` has no Android shapes; PRINCIPLES says cards 16, sheets and dialogs 28, buttons and chips full. Add them test-first in gen-tokens (a `[shape_android]` table with `card = 16`, `sheet = 28`, rendered into `Tokens.kt` as `Tokens.Shape` and into the Floot CSS), and make `GlassSurface` default to `Tokens.Shape.Card`, not `Tokens.Radius[3]` (12). Also decide the Android type ramp (Material 3 scale) in the same pass.
 - [ ] Re-check every item under "Today in the code" with Grep (line numbers drift). Known M4.9 token changes: amber `accent` is now `#955700` in light; `success_text`/`warning_text`/`danger_text` exist (text on a status tint, ≥ 4.5:1); Compose status chips use them.
 - [ ] `GlassSurface` content rule (M4.R review I-1): status words, badges and amber text sit on `SolidPanel` inside the glass, never directly on it; add `status_text_is_on_a_solid_panel` as a source-scan or semantics test in M6.1.
