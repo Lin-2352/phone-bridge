@@ -54,6 +54,15 @@ fn clock_ms() -> u64 {
     CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64 + 1
 }
 
+/// Clears the stall clock when the receive loop ends in any way, early returns included.
+struct StallClock;
+
+impl Drop for StallClock {
+    fn drop(&mut self) {
+        LAST_FRAME_MS.store(0, Ordering::Relaxed);
+    }
+}
+
 /// Whether the running phone-audio share has gone quiet for `STALL_MS` (the flyout shows "Reconnecting…").
 pub fn stalled() -> bool {
     let last = LAST_FRAME_MS.load(Ordering::Relaxed);
@@ -285,6 +294,7 @@ async fn play_phone_audio(
 ) -> End {
     // The session just came up: the first frame has until STALL_MS to arrive.
     LAST_FRAME_MS.store(clock_ms(), Ordering::Relaxed);
+    let _clock = StallClock;
     let mut stall_tick = tokio::time::interval(Duration::from_millis(500));
     let mut was_stalled = false;
     // Packets are about 6 ms each, so this bounds a scheduling hiccup, not
@@ -412,7 +422,6 @@ async fn play_phone_audio(
             }
         }
     };
-    LAST_FRAME_MS.store(0, Ordering::Relaxed);
     log.line(&format!(
         "AUDIO playback dropped_ms={} underruns={} (counted per sample frame, not per network chunk)",
         dropped(),
@@ -509,5 +518,27 @@ async fn send_test_tone(
             ev = sess.events.recv() => return cause_of(ev),
             () = stop.notified() => return End::LocalStop,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Early returns in `play_phone_audio` (decoder or output failing) must not leave the next share "stalled".
+    #[test]
+    fn the_stall_clock_is_cleared_when_the_loop_ends_any_way() {
+        LAST_FRAME_MS.store(1, Ordering::Relaxed);
+        assert_ne!(
+            LAST_FRAME_MS.load(Ordering::Relaxed),
+            0,
+            "a share is running"
+        );
+        drop(StallClock);
+        assert!(
+            !stalled(),
+            "after the loop ended there is nothing to be stalled"
+        );
+        assert_eq!(LAST_FRAME_MS.load(Ordering::Relaxed), 0);
     }
 }

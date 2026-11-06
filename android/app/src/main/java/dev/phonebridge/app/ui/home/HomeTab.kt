@@ -184,7 +184,7 @@ fun HomeTab(onTimeline: () -> Unit) {
             pcForgot = forgot,
             appNotificationsOn = ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled(),
             identityLost = prefs.identityLost,
-            vpnOn = vpnHint(vpnActive(ctx), paired = pc != null) != null,
+            vpnOn = vpnHint(vpnActive(ctx), paired = pc != null, reachFailed = Bridge.attemptFailed.value) != null,
         )
     }
     var confirmReset by remember { mutableStateOf(false) }
@@ -434,7 +434,7 @@ private fun needText(need: Need): Triple<String, String, String> = when (need) {
     )
     Need.VpnOn -> Triple(
         "A VPN is on",
-        vpnHint(vpnOn = true, paired = true).orEmpty(),
+        vpnHint(vpnOn = true, paired = true, reachFailed = true).orEmpty(),
         "VPN settings",
     )
 }

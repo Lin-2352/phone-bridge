@@ -216,7 +216,7 @@ object AudioShare {
                     if (!silenced) Log.w(TAG, "AUDIO silencing still queued after $SILENCE_WAIT_MS ms; sharing goes on")
                     synchronized(this) {
                         // Stopped or replaced meanwhile: that capture is gone.
-                        if (lifecycle === lc) completeLaunch(ctx, a, enc, helper)
+                        if (lifecycle === lc) completeLaunch(app, a, enc, helper)
                     }
                 }
             }

@@ -32,9 +32,12 @@ fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean,
     if (vpnOn) add(Need.VpnOn)
 }
 
-/** The VPN hint's body, or null when there is nothing to say (no VPN, or no PC paired yet). */
-fun vpnHint(vpnOn: Boolean, paired: Boolean): String? =
-    if (vpnOn && paired) "A VPN is on. If your PC can't reach this phone, turn the VPN off or allow local network access" else null
+/**
+ * The VPN hint's body, or null when there is nothing to say: no VPN, no PC paired yet, or the link works
+ * (a split-tunnel VPN lets the LAN through, and a card that never goes away would only nag).
+ */
+fun vpnHint(vpnOn: Boolean, paired: Boolean, reachFailed: Boolean): String? =
+    if (vpnOn && paired && reachFailed) "A VPN is on. If your PC can't reach this phone, turn the VPN off or allow local network access" else null
 
 /**
  * The hero card's status line, worded as on the PC: "Connected" only while a session is live,

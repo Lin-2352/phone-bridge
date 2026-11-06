@@ -88,9 +88,14 @@ class AttentionTest {
     /** L1: a VPN may keep the PC out; the hint is only a hint, and only for a paired phone. */
     @Test fun vpn_hint_shows_only_with_a_vpn_and_a_paired_pc() {
         val text = "A VPN is on. If your PC can't reach this phone, turn the VPN off or allow local network access"
-        assertEquals(text, vpnHint(vpnOn = true, paired = true))
-        assertEquals(null, vpnHint(vpnOn = false, paired = true))
-        assertEquals(null, vpnHint(vpnOn = true, paired = false))
+        assertEquals(text, vpnHint(vpnOn = true, paired = true, reachFailed = true))
+        assertEquals(null, vpnHint(vpnOn = false, paired = true, reachFailed = true))
+        assertEquals(null, vpnHint(vpnOn = true, paired = false, reachFailed = true))
+    }
+
+    /** A VPN that lets the LAN through (a split tunnel) must not leave a card on Home that never goes away. */
+    @Test fun a_working_link_with_a_vpn_shows_no_hint() {
+        assertEquals(null, vpnHint(vpnOn = true, paired = true, reachFailed = false))
     }
 
     @Test fun vpn_on_comes_after_every_other_need() {
