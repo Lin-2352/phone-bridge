@@ -492,7 +492,7 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 ## Audio leftovers (2026-11-06, v2 Part A)
 
 - **VPN hint.** Home shows "A VPN is on" only with a VPN active, a PC paired and the last attempt to reach it failed. A VPN alone is not a problem (a split-tunnel one, like Proton's, lets the LAN through), and the card has no dismiss.
-- **Reconnecting.** A running phone-audio share with no frame for `STALL_MS` (1.5 s) says "Reconnecting…" on the PC flyout. The sender never skips silent frames (no DTX), so a paused player does not trigger it. The phone's matching text rarely shows: audio rides its own session, so when it drops the share ends with it.
+- **Reconnecting.** A running phone-audio share with no frame for `STALL_MS` (1.5 s) says "Reconnecting…" on the PC flyout. The sender never skips silent frames (no DTX in the code), so a paused player should not trigger it; of 2,657 logged 10-second windows, the 12 with a gap of 1.5 s or more all show underruns (a real stall). Not yet seen on a paused player: that retest is the owner's. The phone's matching text rarely shows: audio rides its own session, so when it drops the share ends with it.
 - **Accept order.** The PC hears "yes" once the phone's speaker is silenced, or after 1.5 s, and the wait is no longer on the main thread (`acceptOrder`).
 - **Log fallback folder** follows the install's folder name, like the data folder (`Relay\logs` new, `PhoneBridge\logs` old).
 - **Release exe.** The portable folder in use runs the `--release` build. Its camera DLL bytes are embedded and differ from the previous spike build's, so the first camera start can show one UAC prompt.
