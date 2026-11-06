@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** L5 (Part A, leftovers, done; the portable `Relay.exe` in use was swapped for a `--release` build on 2026-11-06). Before it, M3.R: milestone M3 is done (the audio branch `feature/audio-full` was merged before M3.7 part 2, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
-- **Next task:** M4.1 (research pass). Plan: write `plans/2026-11-06-m4-design-system.md` first (M4.0), from the approved plan in the owner's session. `audio_is_current_again_right_after_a_blackout` can fail under a loaded full-workspace run on this PC (passes alone and in CI); it is timing-based.
+- **Last finished task:** M4.1 (research with cited decisions). Before it, L5 (Part A, leftovers, done; the portable `Relay.exe` in use was swapped for a `--release` build on 2026-11-06). Before it, M3.R: milestone M3 is done (the audio branch `feature/audio-full` was merged before M3.7 part 2, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
+- **Next task:** M4.2 (principles and the anti-AI-look checklist, from `design/RESEARCH.md`; it must also rule on the one accent against `primary`/`accent`/`warning`, and on WCAG 1.4.11 for component boundaries). Plan: `plans/2026-11-06-m4-design-system.md`. `audio_is_current_again_right_after_a_blackout` can fail under a loaded full-workspace run on this PC (passes alone and in CI); it is timing-based.
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -115,7 +115,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] L5 Part A wrap-up and docs
 
 ## M4 Design system and Floot prototypes
-- [ ] M4.1 Research pass: at least 3 real references per screen family, 2 sources per decision, citation review
+- [x] M4.1 Research pass: at least 3 real references per screen family, 2 sources per decision, citation review
 - [ ] M4.2 Anti-AI-look checklist written into the design principles
 - [ ] M4.3 `design/tokens.toml`: materials per theme and mode, elevation, radii, spacing, type, springs, Windows easing; modes
 - [ ] M4.4 `gen-tokens` also emits Floot `base.css`, plus WCAG contrast tests
