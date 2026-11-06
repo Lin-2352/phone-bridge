@@ -2144,6 +2144,7 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         .unwrap_or_default();
     crate::settings_rows::Model {
         theme,
+        look: n.look,
         share,
         share_images,
         passwords,
@@ -2212,6 +2213,13 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
         Action::Theme(t) => {
             let _ = st.settings.lock().map(|mut s| s.theme = t);
             crate::fluent::set_theme(t);
+            crate::fluent::on_theme_change();
+            save_settings(st);
+        }
+        Action::Look(l) => {
+            let l = l.min(1);
+            let _ = st.settings.lock().map(|mut s| s.look = l);
+            crate::fluent::set_look(l);
             crate::fluent::on_theme_change();
             save_settings(st);
         }

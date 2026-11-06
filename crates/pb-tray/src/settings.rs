@@ -30,6 +30,8 @@ pub struct Settings {
     pub save_dir: PathBuf,
     /// 0 = follow Windows, 1 = light, 2 = dark.
     pub theme: u8,
+    /// The glass look: 0 = native (Mica and Acrylic), 1 = Relay glass.
+    pub look: u8,
     /// Let a paired phone drive this PC's pointer and keyboard.
     pub allow_control: bool,
     /// Show the phone's notifications as Windows toasts.
@@ -97,6 +99,7 @@ impl Default for Settings {
             allow_shortcut_files: false,
             save_dir: downloads,
             theme: 0,
+            look: 0,
             allow_control: false,
             notify_enabled: true,
             notify_content: 1,
@@ -124,8 +127,9 @@ impl Default for Settings {
 }
 
 /// The settings file's format version. 1 introduced `version=` and pinned the save folder of
-/// installs that existed before the default changed.
-pub const SETTINGS_VERSION: u32 = 1;
+/// installs that existed before the default changed. 2 added `look=` (nothing to rewrite: an
+/// install that never chose gets the native look, and the file is saved at version 2).
+pub const SETTINGS_VERSION: u32 = 2;
 
 /// The folder name received files went to before "Relay" names (installs keep it).
 const LEGACY_SAVE_FOLDER: &str = "Phone Bridge";
@@ -246,6 +250,7 @@ impl Settings {
                         _ => 0,
                     }
                 }
+                "look" => s.look = u8::from(v == "relay"),
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
@@ -331,13 +336,14 @@ impl Settings {
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut text = format!("version={}\n", self.version);
         text += &format!(
-            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nallow_control={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nlook={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
             self.keep_in_history,
             self.share_images,
             self.auto_accept,
             ["system", "light", "dark"][self.theme.min(2) as usize],
+            ["native", "relay"][self.look.min(1) as usize],
             self.allow_control,
             self.save_dir.display()
         );
@@ -448,7 +454,10 @@ mod tests {
         assert_ne!(none.save_dir, phone_bridge_dir());
         let text =
             std::fs::read_to_string(&f).expect("a new install's first start writes the file");
-        assert!(text.starts_with("version=1\n"), "{text}");
+        assert!(
+            text.starts_with(&format!("version={SETTINGS_VERSION}\n")),
+            "{text}"
+        );
         std::fs::remove_file(&f).unwrap();
         std::fs::write(&f, "theme=dark\n").unwrap();
         let s = Settings::load_and_migrate(&f, &cx(false));
@@ -474,16 +483,52 @@ mod tests {
         let first = Settings::load_and_migrate(&f, &cx(true));
         assert_eq!(first.save_dir, phone_bridge_dir());
         let text = std::fs::read_to_string(&f).expect("the pin is saved");
-        assert!(text.starts_with("version=1\n"), "{text}");
+        assert!(
+            text.starts_with(&format!("version={SETTINGS_VERSION}\n")),
+            "{text}"
+        );
         let second = Settings::load_and_migrate(&f, &cx(true));
         assert_eq!(second.save_dir, phone_bridge_dir());
+    }
+
+    #[test]
+    fn v1_settings_gain_native_look() {
+        let d = mig_dir("v1look");
+        let f = d.join("settings.txt");
+        std::fs::write(&f, "version=1\ntheme=dark\n").unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(
+            s.look, 0,
+            "an install that never chose keeps the native look"
+        );
+        assert_eq!(s.version, 2);
+        assert_eq!(s.theme, 2, "the other settings are untouched");
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.starts_with("version=2\n"), "{text}");
+        assert!(text.contains("look=native\n"), "{text}");
+    }
+
+    #[test]
+    fn look_round_trips_and_unknown_values_read_as_native() {
+        let d = mig_dir("look");
+        let f = d.join("settings.txt");
+        let s = Settings {
+            look: 1,
+            ..Settings::default()
+        };
+        s.save(&f).unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("look=relay\n"), "{text}");
+        assert_eq!(Settings::load(&f).look, 1);
+        std::fs::write(&f, format!("version={SETTINGS_VERSION}\nlook=sparkly\n")).unwrap();
+        assert_eq!(Settings::load(&f).look, 0);
     }
 
     #[test]
     fn current_version_is_unchanged() {
         let d = mig_dir("cur");
         let f = d.join("settings.txt");
-        std::fs::write(&f, "version=1\ntheme=dark\n").unwrap();
+        std::fs::write(&f, format!("version={SETTINGS_VERSION}\ntheme=dark\n")).unwrap();
         let before = std::fs::read_to_string(&f).unwrap();
         let s = Settings::load_and_migrate(&f, &cx(true));
         assert_ne!(
@@ -521,7 +566,10 @@ mod tests {
         std::fs::write(&f, "theme=dark\n").unwrap();
         let first = Settings::load_and_migrate(&f, &cx(true));
         let text = std::fs::read_to_string(&f).unwrap();
-        assert!(text.starts_with("version=1\n"), "{text}");
+        assert!(
+            text.starts_with(&format!("version={SETTINGS_VERSION}\n")),
+            "{text}"
+        );
         assert!(text.contains(LEGACY_SAVE_FOLDER), "{text}");
         // Later, with the default folder changed for new installs, this install keeps its pin.
         let second = Settings::load_and_migrate(&f, &cx(true));
@@ -548,6 +596,7 @@ mod tests {
             "universal_clipboard",
             "auto_accept",
             "theme",
+            "look",
             "save_dir",
             "notify_content",
             "notify_app",
@@ -660,6 +709,7 @@ mod tests {
             auto_accept: false,
             save_dir: PathBuf::from(r"D:\Inbox"),
             theme: 2,
+            look: 1,
             allow_control: false,
             notify_enabled: false,
             notify_content: 2,

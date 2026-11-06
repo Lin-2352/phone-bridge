@@ -78,6 +78,23 @@ pub fn set_theme(mode: u8) {
     THEME.store(mode.min(2), Ordering::Relaxed);
 }
 
+/// 0 = native glass (Mica, Acrylic), 1 = Relay glass (from settings).
+static LOOK: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_look(look: u8) {
+    LOOK.store(look.min(1), Ordering::Relaxed);
+}
+
+/// The glass look the user chose.
+#[allow(dead_code)] // the surfaces read it from the next M5.1 commit
+pub fn look() -> crate::look::Look {
+    if LOOK.load(Ordering::Relaxed) == 1 {
+        crate::look::Look::Relay
+    } else {
+        crate::look::Look::Native
+    }
+}
+
 /// One DWORD from the user's Themes\Personalize key, if it is set.
 fn personalize(name: PCWSTR) -> Option<u32> {
     let mut v: u32 = 0;

@@ -146,7 +146,7 @@ fn item_height(i: &Item) -> f32 {
         Item::Message(..) => 56.0,
         Item::Row(r) => match r {
             Row::Header(_) => 40.0,
-            Row::Theme => 64.0,
+            Row::Theme | Row::Look => 64.0,
             Row::Toggle(..) => 68.0,
             Row::Choice(..) => 100.0,
             Row::App(_) => 56.0,
@@ -168,6 +168,7 @@ fn item_height(i: &Item) -> f32 {
 /// flight stays on it when the list changes around it.
 const LINK: u32 = 1;
 const THEME: u32 = 10;
+const LOOK: u32 = 13;
 const TOGGLE: u32 = 20;
 const CHOICE: u32 = 40;
 const OPEN_FOLDER: u32 = 50;
@@ -341,6 +342,17 @@ fn theme_buttons(card: RectF, s: f32) -> [RectF; 3] {
     })
 }
 
+/// The two look buttons (native glass, Relay glass), right-aligned in the card's middle.
+fn look_buttons(card: RectF, s: f32) -> [RectF; 2] {
+    let (l, rr) = inner(card, s);
+    let seg = (128.0 * s).min((rr - l) * 0.66 / 2.0);
+    let cy = (card.top + card.bottom) / 2.0;
+    std::array::from_fn(|k| {
+        let x = rr - seg * (2 - k) as f32;
+        rectf(x, cy - 16.0 * s, x + seg - 4.0 * s, cy + 16.0 * s)
+    })
+}
+
 /// The three choice buttons across the card's lower half.
 fn choice_buttons(card: RectF, s: f32) -> [RectF; 3] {
     let (l, rr) = inner(card, s);
@@ -386,6 +398,11 @@ fn controls(row: &Row, card: RectF, s: f32, m: &Model) -> Vec<(u32, RectF)> {
             .iter()
             .enumerate()
             .map(|(k, b)| (THEME + k as u32, *b))
+            .collect(),
+        Row::Look => look_buttons(card, s)
+            .iter()
+            .enumerate()
+            .map(|(k, b)| (LOOK + k as u32, *b))
             .collect(),
         Row::Toggle(k, ..) if toggle_enabled(m, *k) => vec![(toggle_id(*k), card)],
         Row::Toggle(..) => Vec::new(),
@@ -498,6 +515,12 @@ pub fn describe(hit: &Hit, m: &SettingsModel) -> Option<super::Desc> {
                     d.selected = usize::from(rm.theme) == k;
                     d
                 }
+                Row::Look => {
+                    let n = ["Native glass", "Relay glass"][k.min(1)];
+                    let mut d = Desc::new(format!("Look: {n}"), Role::Radio);
+                    d.selected = usize::from(rm.look.min(1)) == k;
+                    d
+                }
                 Row::Toggle(key, title, _) => {
                     let mut d = Desc::new(*title, Role::Toggle);
                     d.toggled = Some(rm.get(*key));
@@ -559,7 +582,8 @@ pub fn click(hit: &Hit, m: &SettingsModel) -> Option<Action> {
             let (p, _) = pages().get((id - LINK) as usize).copied()?;
             return Some(Action::SettingsPage(p));
         }
-        THEME..TOGGLE => SAction::Theme(u8::try_from(id - THEME).ok().filter(|t| *t <= 2)?),
+        THEME..LOOK => SAction::Theme(u8::try_from(id - THEME).ok().filter(|t| *t <= 2)?),
+        LOOK..TOGGLE => SAction::Look(u8::try_from(id - LOOK).ok().filter(|l| *l <= 1)?),
         TOGGLE..CHOICE => SAction::Toggle(*KEYS.get((id - TOGGLE) as usize)?),
         CHOICE..OPEN_FOLDER => {
             let n = id - CHOICE;
@@ -622,6 +646,14 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             text(c, Font::Body, "Theme", tr, p.text, Align::Left);
             for (k, label) in ["System", "Light", "Dark"].iter().enumerate() {
                 fluent::button(c, b[k], label, m.theme == k as u8);
+            }
+        }
+        Row::Look => {
+            let b = look_buttons(card, s);
+            let tr = rectf(il, card.top, left_of(il, b[0].left, s), card.bottom);
+            text(c, Font::Body, "Look", tr, p.text, Align::Left);
+            for (k, label) in ["Native glass", "Relay glass"].iter().enumerate() {
+                fluent::button(c, b[k], label, m.look.min(1) == k as u8);
             }
         }
         Row::Toggle(k, title, sub) => {
@@ -988,6 +1020,8 @@ mod tests {
             set(SAction::Theme(0)),
             set(SAction::Theme(1)),
             set(SAction::Theme(2)),
+            set(SAction::Look(0)),
+            set(SAction::Look(1)),
             set(SAction::ChangeFolder),
             set(SAction::OpenFolder),
             set(SAction::Pair),
@@ -1030,12 +1064,12 @@ mod tests {
         for w in &want {
             assert!(got.contains(w), "missing {w:?}");
         }
-        // Plus the seven page links.
+        // Plus a link to every page on every page.
         let links = got
             .iter()
             .filter(|a| matches!(a, Action::SettingsPage(_)))
             .count();
-        assert_eq!(links, 7 * 7);
+        assert_eq!(links, pages().len() * pages().len());
     }
 
     #[test]

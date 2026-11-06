@@ -367,6 +367,7 @@ fn main() {
         settings::Settings::load_and_migrate(&settings_path, &migrate_cx),
     ));
     fluent::set_theme(settings.lock().map(|s| s.theme).unwrap_or(0));
+    fluent::set_look(settings.lock().map(|s| s.look).unwrap_or(0));
     {
         let (want, keep) = settings
             .lock()

@@ -11,6 +11,8 @@ pub enum Page {
     Camera,
     Apps,
     Files,
+    /// Theme and look.
+    Appearance,
     General,
 }
 
@@ -19,6 +21,7 @@ pub enum Page {
 #[cfg_attr(not(test), allow(dead_code))] // the tests check it against the rows
 pub const OPTIONS: &[&str] = &[
     "Theme",
+    "Look",
     "Share clipboard",
     "Share images",
     "Passwords and codes",
@@ -57,6 +60,7 @@ pub fn label_of(row: &Row) -> Option<&'static str> {
     Some(match row {
         Row::Toggle(_, t, _) | Row::Choice(_, t, _) => t,
         Row::Theme => "Theme",
+        Row::Look => "Look",
         Row::App(_) => "Phone app",
         Row::Folder => "Save received files to",
         Row::Device(_) => "Paired device",
@@ -72,7 +76,7 @@ pub fn label_of(row: &Row) -> Option<&'static str> {
 }
 
 /// Sidebar order and titles.
-pub fn pages() -> [(Page, &'static str); 7] {
+pub fn pages() -> [(Page, &'static str); 8] {
     [
         (Page::Devices, "Devices"),
         (Page::Clipboard, "Clipboard"),
@@ -80,6 +84,7 @@ pub fn pages() -> [(Page, &'static str); 7] {
         (Page::Camera, "Camera"),
         (Page::Apps, "Apps"),
         (Page::Files, "Files"),
+        (Page::Appearance, "Appearance"),
         (Page::General, "General"),
     ]
 }
@@ -102,6 +107,7 @@ pub fn page_of(option: &str) -> Page {
         | "Clicking opens it on the phone"
         | "Copy one-time codes automatically"
         | "Quiet while the phone screen is open" => Page::Notifications,
+        "Theme" | "Look" => Page::Appearance,
         "Camera status" | "Camera window" => Page::Camera,
         "Phone app" => Page::Apps,
         "Accept files automatically"
@@ -124,6 +130,7 @@ fn texts(row: &Row, m: &Model) -> Vec<String> {
             v
         }
         Row::Theme => vec!["Theme".into(), "System Light Dark".into()],
+        Row::Look => vec!["Look".into(), "Native glass Relay glass".into()],
         Row::App(i) => m.apps.get(*i).map(|(n, _)| n.clone()).into_iter().collect(),
         Row::Folder => vec!["Save received files to".into(), m.save_dir.clone()],
         Row::Device(i) => m
@@ -209,6 +216,7 @@ mod tests {
                 "Camera",
                 "Apps",
                 "Files",
+                "Appearance",
                 "General"
             ]
         );
@@ -328,7 +336,8 @@ mod tests {
         );
         assert_eq!(page_of("Phone app"), Page::Apps);
         assert_eq!(page_of("Accept files automatically"), Page::Files);
-        assert_eq!(page_of("Theme"), Page::General);
+        assert_eq!(page_of("Theme"), Page::Appearance);
+        assert_eq!(page_of("Look"), Page::Appearance);
         assert_eq!(page_of("Start with Windows"), Page::General);
         assert_eq!(page_of("Keep history"), Page::General);
         assert_eq!(page_of("Clear history"), Page::General);

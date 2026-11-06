@@ -44,6 +44,8 @@ pub enum ChoiceKey {
 pub struct Model {
     /// 0 system, 1 light, 2 dark.
     pub theme: u8,
+    /// 0 native glass, 1 Relay glass.
+    pub look: u8,
     pub share: bool,
     pub share_images: bool,
     pub passwords: bool,
@@ -136,6 +138,8 @@ pub enum CameraAct {
 pub enum Action {
     Camera(CameraAct),
     Theme(u8),
+    /// 0 native glass, 1 Relay glass.
+    Look(u8),
     Toggle(Key),
     ChangeFolder,
     OpenFolder,
@@ -156,6 +160,8 @@ pub enum Action {
 pub enum Row {
     Header(&'static str),
     Theme,
+    /// Native glass or Relay glass.
+    Look,
     Toggle(Key, &'static str, &'static str),
     Choice(ChoiceKey, &'static str, [&'static str; 3]),
     /// A phone app, by index into `Model::apps`.
@@ -180,6 +186,7 @@ pub fn rows(m: &Model) -> Vec<Row> {
     let mut v = vec![
         Row::Header("Appearance"),
         Row::Theme,
+        Row::Look,
         Row::Header("Clipboard"),
         Row::Toggle(
             Key::Share,
