@@ -61,14 +61,14 @@ fun animationsEnabled(ctx: Context): Boolean =
  */
 
 /** The category tints, from the shared tokens so they follow light and dark. */
-enum class RelayTint { Primary, Accent, Success, Warning, Muted }
+enum class RelayTint { Primary, Attention, Success, Warning, Muted }
 
 @Composable
 fun tintColor(t: RelayTint): Color {
     val c = if (isDark()) Tokens.Dark else Tokens.Light
     return when (t) {
         RelayTint.Primary -> c.primary
-        RelayTint.Accent -> c.accent
+        RelayTint.Attention -> c.attention
         RelayTint.Success -> c.success
         RelayTint.Warning -> c.warning
         RelayTint.Muted -> c.textMuted

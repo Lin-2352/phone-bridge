@@ -14,9 +14,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.TextStyle
 
-/** Amber for codes: the shared `accent` token. */
-val Amber = Tokens.Light.accent
-val AmberDark = Tokens.Dark.accent
+/** Amber for codes: the shared `attention` token. */
+val Amber = Tokens.Light.attention
+val AmberDark = Tokens.Dark.attention
 
 /*
  * Colours come from the shared tokens (design/tokens.toml): surface -> background/surface,

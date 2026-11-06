@@ -450,9 +450,9 @@ private val GroupIcon: Map<Group, ImageVector> = mapOf(
 private fun groupTint(g: Group): Color = tintColor(
     when (g) {
         Group.Connection, Group.Files -> RelayTint.Primary
-        Group.Camera -> RelayTint.Accent
+        Group.Camera -> RelayTint.Attention
         Group.Screen -> RelayTint.Success
-        Group.Audio -> RelayTint.Accent
+        Group.Audio -> RelayTint.Attention
         Group.Notifications -> RelayTint.Warning
         Group.Settings -> RelayTint.Muted
     },

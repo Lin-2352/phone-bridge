@@ -346,10 +346,10 @@ private fun kindIcon(k: TlKind) = when (k) {
 
 private fun kindTint(k: TlKind) = when (k) {
     TlKind.File, TlKind.Link -> RelayTint.Primary
-    TlKind.ClipText -> RelayTint.Accent
+    TlKind.ClipText -> RelayTint.Attention
     TlKind.ClipImage -> RelayTint.Success
     TlKind.Notification -> RelayTint.Warning
-    TlKind.Audio -> RelayTint.Accent
+    TlKind.Audio -> RelayTint.Attention
 }
 
 private fun actionLabel(a: EntryAction) = when (a) {

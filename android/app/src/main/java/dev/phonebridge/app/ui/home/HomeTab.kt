@@ -315,11 +315,11 @@ fun HomeTab(onTimeline: () -> Unit) {
                     leadingContent = {
                         when (r.kind) {
                             RecentItem.Kind.File -> IconBadge(Icons.AutoMirrored.Filled.InsertDriveFile, tintColor(RelayTint.Primary))
-                            RecentItem.Kind.Clipboard -> IconBadge(Icons.Filled.ContentPaste, tintColor(RelayTint.Accent))
+                            RecentItem.Kind.Clipboard -> IconBadge(Icons.Filled.ContentPaste, tintColor(RelayTint.Attention))
                             RecentItem.Kind.Link -> IconBadge(Icons.Filled.Link, tintColor(RelayTint.Primary))
                             RecentItem.Kind.Picture -> IconBadge(Icons.Filled.Image, tintColor(RelayTint.Success))
                             RecentItem.Kind.Notification -> IconBadge(Icons.Filled.Notifications, tintColor(RelayTint.Warning))
-                            RecentItem.Kind.Audio -> IconBadge(Icons.AutoMirrored.Filled.VolumeUp, tintColor(RelayTint.Accent))
+                            RecentItem.Kind.Audio -> IconBadge(Icons.AutoMirrored.Filled.VolumeUp, tintColor(RelayTint.Attention))
                         }
                     },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),

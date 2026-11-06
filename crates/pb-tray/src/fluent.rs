@@ -152,7 +152,7 @@ pub fn palette() -> Palette {
         danger: t.danger,
         success: t.success,
         warning: t.warning,
-        amber: t.accent,
+        amber: t.attention,
     }
 }
 
@@ -861,7 +861,7 @@ mod tests {
     fn palette_comes_from_tokens() {
         set_theme(1);
         assert_eq!(palette().accent, tokens::LIGHT.primary);
-        assert_eq!(palette().amber, tokens::LIGHT.accent);
+        assert_eq!(palette().amber, tokens::LIGHT.attention);
         set_theme(2);
         assert_eq!(palette().bg, tokens::DARK.surface);
         assert_eq!(palette().text2, tokens::DARK.text_muted);

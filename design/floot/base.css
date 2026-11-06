@@ -9,7 +9,7 @@
   --color-text-muted: #5F5F5F;
   --color-primary: #3651C5;
   --color-on-primary: #FFFFFF;
-  --color-accent: #955700;
+  --color-attention: #955700;
   --color-success: #0F7B0F;
   --color-warning: #9D5D00;
   --color-danger: #C42B1C;
@@ -70,7 +70,7 @@
   --color-text-muted: #C5C5C5;
   --color-primary: #B9C3FF;
   --color-on-primary: #082587;
-  --color-accent: #E8A93A;
+  --color-attention: #E8A93A;
   --color-success: #6CCB5F;
   --color-warning: #E8A93A;
   --color-danger: #FF998B;

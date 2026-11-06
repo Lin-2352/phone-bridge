@@ -12,7 +12,7 @@ pub const COLOR_NAMES: [&str; 15] = [
     "text_muted",
     "primary",
     "on_primary",
-    "accent",
+    "attention",
     "success",
     "warning",
     "danger",
@@ -772,8 +772,8 @@ mod tests {
         let t = load(include_str!("../../../design/tokens.toml")).unwrap();
         for (mode, p) in [("light", &t.light), ("dark", &t.dark)] {
             for surface in ["surface", "surface_variant"] {
-                let c = contrast(colour(p, "accent"), colour(p, surface));
-                assert!(c >= 4.5, "accent on {surface} ({mode}): {c:.2}");
+                let c = contrast(colour(p, "attention"), colour(p, surface));
+                assert!(c >= 4.5, "attention on {surface} ({mode}): {c:.2}");
             }
         }
     }

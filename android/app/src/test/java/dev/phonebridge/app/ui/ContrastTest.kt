@@ -39,8 +39,8 @@ class ContrastTest {
     @Test fun amber_icon_badges_are_3_to_1() {
         for ((name, t, alpha) in listOf(Triple("light", Tokens.Light, 0.14f), Triple("dark", Tokens.Dark, 0.22f))) {
             for ((bgName, bg) in listOf("surface" to t.surface, "surfaceVariant" to t.surfaceVariant)) {
-                val badge = t.accent.copy(alpha = alpha).compositeOver(bg)
-                val r = ratio(t.accent, badge)
+                val badge = t.attention.copy(alpha = alpha).compositeOver(bg)
+                val r = ratio(t.attention, badge)
                 assertTrue("$name amber icon on its tint over $bgName: $r", r >= 3.0)
             }
         }
@@ -50,7 +50,7 @@ class ContrastTest {
     @Test fun pairing_code_digits_are_aa_on_the_amber_tint() {
         for ((name, t, s) in listOf(Triple("light", Tokens.Light, relayLightScheme()), Triple("dark", Tokens.Dark, relayDarkScheme()))) {
             for ((bgName, bg) in backgrounds(s)) {
-                val chip = t.accent.copy(alpha = 0.16f).compositeOver(bg)
+                val chip = t.attention.copy(alpha = 0.16f).compositeOver(bg)
                 val r = ratio(s.onSurface, chip)
                 assertTrue("$name digits on the amber tint over $bgName: $r", r >= 7.0)
             }
