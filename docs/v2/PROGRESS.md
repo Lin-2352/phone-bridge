@@ -5,7 +5,7 @@ The single place that says what is done, what is in progress and what is left in
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M5.0a (the M5 refresh: R-4 and R-22 settled in the tokens, R-15 ruled). Plans M5.0 to M8.0 are written, enhanced by the owner and approved.
-- **Next task:** M5.1 (materials, system state and fallbacks; ADVISOR before changing `d2d::build`), in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md).
+- **Next task:** M5.1 part 2 and 3: first the `accent` → `attention` rename (tokens, Kotlin, `Palette`; its own commit with the Android gates), then the Windows wiring (`d2d.rs`, `fluent.rs`, `ui.rs`, settings; windows that can be glass are always created on the DirectComposition path; menus and dialogs stay Solid until M5.6). Part 1 (the pure `look.rs` module) is committed and M5.1 stays unticked. See the advisor rulings in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);

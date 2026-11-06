@@ -131,6 +131,7 @@ mod transfers;
 #[cfg(windows)]
 mod uia;
 // Generated; some tokens (spacing, other durations) are used by the widgets (pages use them from Task 8 on).
+mod look;
 #[cfg(windows)]
 // Used from Task 11 (the settings page search).
 #[allow(dead_code)]
