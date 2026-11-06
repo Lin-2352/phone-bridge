@@ -22,7 +22,7 @@ import dev.phonebridge.app.audio.stepAfterKey
  */
 object PcVolumeKeys {
     private const val TAG = "PhoneBridgeAudio"
-    private var session: MediaSession? = null
+    @Volatile private var session: MediaSession? = null
     private var provider: VolumeProvider? = null
 
     /** The key filter holds the keys: the cast bar then always stays on, as no key reaches the real volume. */

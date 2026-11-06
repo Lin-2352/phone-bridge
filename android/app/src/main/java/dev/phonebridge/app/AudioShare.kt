@@ -13,10 +13,12 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.mutableStateOf
+import dev.phonebridge.app.audio.AcceptStep
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.audio.AudioReason
 import dev.phonebridge.app.audio.AudioSessions
 import dev.phonebridge.app.audio.CaptureLifecycle
+import dev.phonebridge.app.audio.acceptOrder
 import dev.phonebridge.app.audio.VolumeJobs
 import dev.phonebridge.app.audio.AudioSource
 import dev.phonebridge.app.audio.EndCause
@@ -205,13 +207,32 @@ object AudioShare {
         streamer = s
         // As early as it can be: the sound must not be heard here once the user has said yes.
         // The helper's route already keeps the speaker silent, and the real volume bar sets the level.
-        // Through the volume queue, so it never overtakes a restore still queued from the share before, and
-        // waited for, so the PC hears "yes" only once the phone is silent.
+        // Through the volume queue, so it never overtakes a restore still queued from the share before. The
+        // PC hears "yes" once the phone is silent, or after SILENCE_WAIT_MS; nothing waits on this (main) thread.
         if (a.source == AudioSource.PLAYBACK && !helper) {
-            if (!VolumeJobs.shared.runAndWait(SILENCE_WAIT_MS) { PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS) }) {
-                Log.w(TAG, "AUDIO silencing still queued after $SILENCE_WAIT_MS ms; sharing goes on")
+            val answered = java.util.concurrent.atomic.AtomicBoolean(false)
+            val answer = { silenced: Boolean, waitedMs: Long ->
+                if (acceptOrder(silenced, waitedMs, SILENCE_WAIT_MS) == AcceptStep.ANSWER && answered.compareAndSet(false, true)) {
+                    if (!silenced) Log.w(TAG, "AUDIO silencing still queued after $SILENCE_WAIT_MS ms; sharing goes on")
+                    synchronized(this) {
+                        // Stopped or replaced meanwhile: that capture is gone.
+                        if (lifecycle === lc) completeLaunch(ctx, a, enc, helper)
+                    }
+                }
             }
+            val queuedAt = SystemClock.elapsedRealtime()
+            VolumeJobs.shared.submit {
+                PhoneSpeaker.begin(app, AudioStreamer.FRAME_MS)
+                answer(true, SystemClock.elapsedRealtime() - queuedAt)
+            }
+            main.postDelayed({ answer(false, SILENCE_WAIT_MS) }, SILENCE_WAIT_MS)
+            return
         }
+        completeLaunch(ctx, a, enc, helper)
+    }
+
+    /** The PC is told "yes" and the share is shown: the part of [launch] that follows the silencing. */
+    private fun completeLaunch(ctx: Context, a: AudioAsk, enc: OpusEncoder?, helper: Boolean) {
         val o = Bridge.node?.answerAudioAccept(a.id, a.sampleRate.toUInt(), a.channels.toUInt(), if (enc != null) 1u else 0u)
         if (o == null) {
             // The question timed out or the PC left meanwhile.

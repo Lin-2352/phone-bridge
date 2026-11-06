@@ -387,13 +387,19 @@ pub fn dir_is_writable(p: &Path) -> bool {
     ok
 }
 
-/// `%LOCALAPPDATA%\PhoneBridge\logs`.
+/// `%LOCALAPPDATA%\Relay\logs` on a new install, `%LOCALAPPDATA%\PhoneBridge\logs` where Relay
+/// already keeps its data under the old name.
 pub fn fallback_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
+    let local = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("PhoneBridge")
-        .join("logs")
+        .unwrap_or_else(std::env::temp_dir);
+    fallback_dir_for(&local, |p| p.exists())
+}
+
+/// The folder choice of [fallback_dir], with the existence check passed in.
+fn fallback_dir_for(local_app_data: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let tray = crate::portable::pick_default_dir(local_app_data, exists);
+    tray.parent().unwrap_or(local_app_data).join("logs")
 }
 
 /// Open the logger once. Returns the folder in use.
@@ -487,6 +493,21 @@ pub fn install_panic_hook() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn new_installs_log_under_relay() {
+        let local = std::path::Path::new("C:/L");
+        let d = super::fallback_dir_for(local, |_| false);
+        assert_eq!(d, local.join("Relay").join("logs"));
+    }
+
+    #[test]
+    fn old_installs_keep_phonebridge_logs() {
+        let local = std::path::Path::new("C:/L");
+        let old_tray = local.join("PhoneBridge").join("tray");
+        let d = super::fallback_dir_for(local, |p| p == old_tray);
+        assert_eq!(d, local.join("PhoneBridge").join("logs"));
+    }
+
     use super::*;
 
     fn field<'a>(e: &'a Ev, k: &str) -> Option<&'a Value> {

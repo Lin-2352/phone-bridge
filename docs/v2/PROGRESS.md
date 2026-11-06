@@ -5,7 +5,7 @@ The single place that says what is done, what is in progress and what is left in
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M3.R: milestone M3 is done (the audio branch `feature/audio-full` was merged before M3.7 part 2, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
-- **Next task:** L3 (Part A, then M4). Before that note: write the M4 plan (design system and Floot prototypes) in [plans/](plans/), from SPEC milestone M4. Not started: the owner asked to stop after M3 and decide first. Deferred M3 review minors are in the note "M3 review" at the bottom
+- **Next task:** L4 (Part A, then M4). `audio_is_current_again_right_after_a_blackout` can fail under a loaded full-workspace run on this PC (passes alone 3/3 and in CI); it is timing-based. Before that note: write the M4 plan (design system and Floot prototypes) in [plans/](plans/), from SPEC milestone M4. Not started: the owner asked to stop after M3 and decide first. Deferred M3 review minors are in the note "M3 review" at the bottom
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -110,7 +110,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 ## Part A: leftovers before M4 (plan: plans/2026-11-06-leftovers.md)
 - [x] L1 VPN hint on Home (`vpnHint`, `Need.VpnOn`, `vpnActive`)
 - [x] L2 "Reconnecting" while audio is stalled (PC flyout and phone notification)
-- [ ] L3 Deferred M3 minors: accept off the main thread, `Relay\logs` fallback, volatile volume session
+- [x] L3 Deferred M3 minors: accept off the main thread, `Relay\logs` fallback, volatile volume session
 - [ ] L4 Release `Relay.exe` into the owner's `dist\Relay` (stop Relay, copy only the exe)
 - [ ] L5 Part A wrap-up and docs
 
