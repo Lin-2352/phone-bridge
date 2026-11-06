@@ -52,7 +52,7 @@ use windows::{
 };
 
 use crate::{
-    d2d::{self, color, Backdrop, Surface},
+    d2d::{self, color, Surface},
     tokens::{self, ty},
 };
 
@@ -76,6 +76,7 @@ static THEME: AtomicU8 = AtomicU8::new(0);
 
 pub fn set_theme(mode: u8) {
     THEME.store(mode.min(2), Ordering::Relaxed);
+    refresh_sys();
 }
 
 /// 0 = native glass (Mica, Acrylic), 1 = Relay glass (from settings).
@@ -83,10 +84,10 @@ static LOOK: AtomicU8 = AtomicU8::new(0);
 
 pub fn set_look(look: u8) {
     LOOK.store(look.min(1), Ordering::Relaxed);
+    refresh_sys();
 }
 
 /// The glass look the user chose.
-#[allow(dead_code)] // the surfaces read it from the next M5.1 commit
 pub fn look() -> crate::look::Look {
     if LOOK.load(Ordering::Relaxed) == 1 {
         crate::look::Look::Relay
@@ -243,13 +244,11 @@ pub fn high_contrast() -> bool {
 
 /// System backdrops (Mica, Acrylic) need Windows 11 22H2 (build 22621) and a local session; over Remote
 /// Desktop the surfaces are drawn solid.
-#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
 pub fn backdrop_supported(build: u32, remote_session: bool) -> bool {
     build >= 22621 && !remote_session
 }
 
 /// The Windows build number ("CurrentBuildNumber"), or 0 when it cannot be read.
-#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
 fn os_build() -> u32 {
     let mut buf = [0u16; 16];
     let mut size = (buf.len() * 2) as u32;
@@ -275,15 +274,32 @@ fn os_build() -> u32 {
         .unwrap_or(0)
 }
 
-#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
 fn remote_session() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
     // SAFETY: GetSystemMetrics has no preconditions.
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
 }
 
+static SYS: Mutex<Option<crate::look::SysState>> = Mutex::new(None);
+
+/// The system state as of the last change notification (and the first use): painting asks for it every
+/// frame, so it must not read the registry each time.
+pub fn sys_cached() -> crate::look::SysState {
+    let Ok(mut g) = SYS.lock() else {
+        return sys_state();
+    };
+    *g.get_or_insert_with(sys_state)
+}
+
+/// Re-reads the system state (theme, transparency, high contrast, animations, backdrop support).
+pub fn refresh_sys() {
+    let s = sys_state();
+    if let Ok(mut g) = SYS.lock() {
+        *g = Some(s);
+    }
+}
+
 /// Everything the material rules need to know about the system right now.
-#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
 pub fn sys_state() -> crate::look::SysState {
     crate::look::SysState {
         dark: dark(),
@@ -849,21 +865,29 @@ pub fn paint_with(surface: &mut Surface, hwnd: HWND, draw: impl FnOnce(&mut Canv
     surface.resize(w.max(1) as u32, h.max(1) as u32);
     let s = scale(hwnd);
     let p = palette();
-    let mica = surface.backdrop() == Backdrop::Mica;
+    // Match the DWM backdrop to the look and the system before the frame; never rebuilds the window.
+    surface.sync_material(look(), sys_cached());
+    let translucent = surface.translucent();
+    let cleartype = crate::look::uses_cleartype(surface.material(), false);
+    let glass = crate::look::surface_glass(surface.kind(), look(), sys_cached());
+    let relay_glass = surface.material() == crate::look::Material::RelayGlass;
     let area = rectf(0.0, 0.0, w as f32, h as f32);
     // A failed frame leaves the old one on screen; device loss is handled
     // (and the window invalidated) by the surface itself.
     let _ = surface.draw(|dc| {
         // SAFETY: state calls inside the surface's BeginDraw/EndDraw.
         unsafe {
-            dc.Clear(Some(&color(p.bg, if mica { 0.0 } else { 1.0 })));
+            dc.Clear(Some(&color(p.bg, if translucent { 0.0 } else { 1.0 })));
             dc.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            // ClearType needs an opaque target; on Mica it fringes.
-            dc.SetTextAntialiasMode(if mica {
-                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE
-            } else {
+            // ClearType needs an opaque target; over a translucent backdrop it fringes.
+            dc.SetTextAntialiasMode(if cleartype {
                 D2D1_TEXT_ANTIALIAS_MODE_DEFAULT
+            } else {
+                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE
             });
+            if relay_glass {
+                glass_extras(dc, w as f32, h as f32, &glass);
+            }
         }
         let mut canvas = Canvas { dc, s, p };
         draw(&mut canvas, area);
@@ -871,6 +895,49 @@ pub fn paint_with(surface: &mut Surface, hwnd: HWND, draw: impl FnOnce(&mut Canv
     // SAFETY: ends the paint begun above.
     unsafe {
         let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+/// What Relay glass adds over the DWM Acrylic base: a tint wash, the cached grain tile and a 1 px top
+/// highlight. Inside the surface's BeginDraw/EndDraw.
+fn glass_extras(dc: &ID2D1DeviceContext, w: f32, h: f32, g: &tokens::Material) {
+    use windows::Win32::Graphics::Direct2D::{
+        D2D1_BITMAP_BRUSH_PROPERTIES1, D2D1_EXTEND_MODE_WRAP,
+        D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+    };
+    let whole = D2D_RECT_F {
+        left: 0.0,
+        top: 0.0,
+        right: w,
+        bottom: h,
+    };
+    // SAFETY: drawing calls inside the surface's BeginDraw/EndDraw; brushes are created and dropped here.
+    unsafe {
+        if let Ok(brush) = dc.CreateSolidColorBrush(&color(g.tint, g.opacity * 0.5), None) {
+            dc.FillRectangle(&whole, &brush);
+        }
+        if g.grain > 0.0 {
+            if let Some(bmp) = d2d::grain_bitmap(dc) {
+                let props = D2D1_BITMAP_BRUSH_PROPERTIES1 {
+                    extendModeX: D2D1_EXTEND_MODE_WRAP,
+                    extendModeY: D2D1_EXTEND_MODE_WRAP,
+                    interpolationMode: D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
+                };
+                if let Ok(brush) = dc.CreateBitmapBrush(&bmp, Some(&props), None) {
+                    brush.SetOpacity(g.grain);
+                    dc.FillRectangle(&whole, &brush);
+                }
+            }
+        }
+        if g.highlight > 0.0 {
+            if let Ok(brush) = dc.CreateSolidColorBrush(&color(0xFFFFFF, g.highlight), None) {
+                let line = D2D_RECT_F {
+                    bottom: 1.0,
+                    ..whole
+                };
+                dc.FillRectangle(&line, &brush);
+            }
+        }
     }
 }
 
@@ -907,6 +974,7 @@ fn invalidations() -> Vec<isize> {
 /// The Windows or Relay theme changed: re-read `dark()`, match each
 /// registered window's frame to it and repaint the window.
 pub fn on_theme_change() {
+    refresh_sys();
     let windows = THEMED.lock().map(|v| v.clone()).unwrap_or_default();
     let d = dark() as i32;
     for h in windows {
@@ -986,6 +1054,7 @@ pub fn set_cursor(hand: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::d2d::Backdrop;
 
     #[test]
     fn caption_glyphs_are_ten_px_like_windows() {

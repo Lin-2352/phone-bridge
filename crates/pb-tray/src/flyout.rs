@@ -61,8 +61,6 @@ const ANIM_TIMER: usize = 1;
 const ANIM_MS: u32 = 16;
 /// Characters the status line keeps before it is clipped with an ellipsis.
 const STATUS_CHARS: usize = 56;
-/// Opacity of cards and tiles over Mica, so the backdrop shows through.
-const MICA_ALPHA: f32 = 0.6;
 const CAMERA: char = '\u{E722}';
 const VOLUME: char = '\u{E767}';
 const CHEVRON: char = '\u{E76C}';
@@ -305,7 +303,9 @@ fn paint(hwnd: HWND) {
         let mut slot = cell.borrow_mut();
         match (snap.as_ref(), slot.as_mut()) {
             (Some(snap), Some((h, surface))) if *h == hwnd.0 as isize => {
-                let mica = surface.backdrop() == Backdrop::Mica;
+                // Sync first: the backdrop decides how the cards are drawn.
+                surface.sync_material(fluent::look(), fluent::sys_cached());
+                let mica = surface.translucent();
                 fluent::paint_with(surface, hwnd, |c, _| draw(c, snap, mica));
                 true
             }
@@ -330,13 +330,24 @@ fn states(c: &Canvas, r: &RectF, hov: f32, prs: f32, radius: f32, over: (u32, u3
     }
 }
 
+/// How opaque the cards and tiles are over the backdrop: the flyout material's opacity, which the look
+/// rules keep above the text floor.
+fn glass_alpha() -> f32 {
+    crate::look::surface_glass(
+        crate::look::SurfaceKind::Flyout,
+        fluent::look(),
+        fluent::sys_cached(),
+    )
+    .opacity
+}
+
 fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     let (s, p) = (c.s, c.p);
     let l = layout(s);
     let m = &snap.model;
     let hov = |h: Hit| snap.hover_t[h.slot()];
     let prs = |h: Hit| snap.press_t[h.slot()];
-    let a = if mica { MICA_ALPHA } else { 1.0 };
+    let a = if mica { glass_alpha() } else { 1.0 };
     let (small, big) = (RADIUS[0] * s, RADIUS[1] * s);
 
     // Header: the phone as Home's hero card shows it, settings and close.
@@ -965,7 +976,7 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
         close();
         return;
     }
-    let made = d2d::make_window(Backdrop::Mica, |extra| {
+    let made = d2d::make_window(Backdrop::Acrylic, |extra| {
         // SAFETY: class registration (a repeat fails harmlessly) and window
         // creation on the UI thread; the window stays hidden.
         unsafe {
@@ -1001,6 +1012,7 @@ pub fn toggle(model: Model, on_action: Box<dyn Fn(Action) + Send>) {
     let Ok(d2d::Made { hwnd, surface, .. }) = made else {
         return;
     };
+    let surface = surface.with_kind(crate::look::SurfaceKind::Flyout);
     // Only the final window: a discarded Mica attempt never gets here.
     SURFACE.with(|cell| *cell.borrow_mut() = Some((hwnd.0 as isize, surface)));
     if let Ok(mut g) = CURRENT.lock() {

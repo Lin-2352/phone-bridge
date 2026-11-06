@@ -99,6 +99,18 @@ pub fn glass(look: Look, dark: bool, sys: SysState) -> tokens::Material {
     tokens_rules::resolve(base, modes)
 }
 
+/// `SystemParametersInfo` actions that announce a high-contrast or animation change.
+pub const SPI_SETHIGHCONTRAST: usize = 0x0043;
+pub const SPI_SETCLIENTAREAANIMATION: usize = 0x1043;
+
+/// Whether a `WM_SETTINGCHANGE` (its `wParam` action and its `lParam` area name) changes anything the
+/// surfaces draw from: the colour theme or transparency ("ImmersiveColorSet"), the high-contrast theme
+/// or "Show animations".
+pub fn setting_change_needs_refresh(action: usize, area: Option<&str>) -> bool {
+    matches!(action, SPI_SETHIGHCONTRAST | SPI_SETCLIENTAREAANIMATION)
+        || matches!(area, Some("ImmersiveColorSet" | "WindowsThemeElement"))
+}
+
 /// The glass values for one surface: opaque, with no blur, grain or highlight, whenever the surface is `Solid`
 /// (a Transfers card or the QR window must never be drawn with a translucent fill).
 pub fn surface_glass(kind: SurfaceKind, look: Look, sys: SysState) -> tokens::Material {
@@ -388,6 +400,21 @@ mod tests {
         assert_eq!(a, grain_tile_64());
         let mean = a.iter().map(|b| *b as u32).sum::<u32>() / a.len() as u32;
         assert!((120..=136).contains(&mean), "mean {mean}");
+    }
+
+    #[test]
+    fn these_setting_changes_refresh_the_surfaces() {
+        // The theme, accent and transparency toggles all arrive as "ImmersiveColorSet".
+        assert!(setting_change_needs_refresh(0, Some("ImmersiveColorSet")));
+        assert!(setting_change_needs_refresh(0, Some("WindowsThemeElement")));
+        assert!(setting_change_needs_refresh(SPI_SETHIGHCONTRAST, None));
+        assert!(setting_change_needs_refresh(
+            SPI_SETCLIENTAREAANIMATION,
+            None
+        ));
+        assert!(!setting_change_needs_refresh(0x002A, None));
+        assert!(!setting_change_needs_refresh(0, Some("intl")));
+        assert!(!setting_change_needs_refresh(0, None));
     }
 
     #[test]

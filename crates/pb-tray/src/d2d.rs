@@ -21,9 +21,9 @@ use windows::{
                     D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
                 },
                 D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Factory1,
-                D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
-                D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-                D2D1_FACTORY_TYPE_MULTI_THREADED,
+                D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE,
+                D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+                D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_MULTI_THREADED,
             },
             Direct3D::{
                 D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN,
@@ -38,7 +38,10 @@ use windows::{
                 IDCompositionVisual,
             },
             DirectWrite::{DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED},
-            Dwm::{DwmExtendFrameIntoClientArea, DWMSBT_AUTO, DWMSBT_MAINWINDOW},
+            Dwm::{
+                DwmExtendFrameIntoClientArea, DWMSBT_AUTO, DWMSBT_MAINWINDOW, DWMSBT_NONE,
+                DWMSBT_TRANSIENTWINDOW, DWM_SYSTEMBACKDROP_TYPE,
+            },
             Dxgi::{
                 Common::{
                     DXGI_ALPHA_MODE_IGNORE, DXGI_ALPHA_MODE_PREMULTIPLIED,
@@ -60,7 +63,11 @@ use windows::{
     },
 };
 
-use crate::{fluent, screen_render};
+use crate::{
+    fluent,
+    look::{self, Look, Material, SurfaceKind, SysState},
+    screen_render,
+};
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -71,15 +78,33 @@ fn err(e: impl std::fmt::Display) -> String {
 pub enum Backdrop {
     /// DWM Mica behind a premultiplied composition swap chain.
     Mica,
+    /// DWM Acrylic (also the base of Relay glass) behind a composition swap chain.
+    Acrylic,
     /// An opaque HWND swap chain painted from the tokens.
     Opaque,
 }
 
-/// Mica only when it is wanted, DWM accepted the backdrop and the
+impl Backdrop {
+    /// Presented through DirectComposition, so a backdrop can show through.
+    pub fn is_composition(self) -> bool {
+        self != Backdrop::Opaque
+    }
+}
+
+/// The DWM system backdrop that draws `m` (Solid asks for none).
+pub fn dwm_type(m: Material) -> DWM_SYSTEMBACKDROP_TYPE {
+    match m {
+        Material::Mica => DWMSBT_MAINWINDOW,
+        Material::Acrylic | Material::RelayGlass => DWMSBT_TRANSIENTWINDOW,
+        Material::Solid => DWMSBT_NONE,
+    }
+}
+
+/// A composition backdrop only when it is wanted, DWM accepted it and the
 /// DirectComposition swap chain was built; otherwise opaque.
-pub fn choose(want: Backdrop, mica_supported: bool, dcomp_ok: bool) -> Backdrop {
+pub fn choose(want: Backdrop, dwm_ok: bool, dcomp_ok: bool) -> Backdrop {
     match want {
-        Backdrop::Mica if mica_supported && dcomp_ok => Backdrop::Mica,
+        Backdrop::Mica | Backdrop::Acrylic if dwm_ok && dcomp_ok => want,
         _ => Backdrop::Opaque,
     }
 }
@@ -243,6 +268,8 @@ struct Shared {
 
 thread_local! {
     static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
+    /// The 64x64 grain tile, a device resource: dropped with the shared device.
+    static GRAIN: RefCell<Option<ID2D1Bitmap1>> = const { RefCell::new(None) };
     /// Surfaces alive on this thread (they hold the shared device).
     static LIVE: Cell<usize> = const { Cell::new(0) };
     /// Runs when the last surface on this thread goes (set on the UI thread).
@@ -296,6 +323,7 @@ pub fn release_if_unused() -> Release {
     if LIVE.with(Cell::get) > 0 {
         return Release::Busy;
     }
+    GRAIN.with(|g| *g.borrow_mut() = None);
     match SHARED.with(|c| c.borrow_mut().take()) {
         Some(_) => Release::Released,
         None => Release::Nothing,
@@ -313,6 +341,7 @@ fn drop_shared_if_lost() {
             .is_some_and(|s| unsafe { s.d3d.GetDeviceRemovedReason() }.is_err())
         {
             *g = None;
+            GRAIN.with(|g| *g.borrow_mut() = None);
         }
     });
 }
@@ -331,28 +360,26 @@ fn build(hwnd: HWND, want: Backdrop, size: (u32, u32)) -> Result<(Gfx, Backdrop)
             .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)
             .map_err(err)?;
         let mut comp = None;
-        if want == Backdrop::Mica {
-            let mica_supported =
-                fluent::transparency_on() && fluent::set_backdrop(hwnd, DWMSBT_MAINWINDOW);
-            let built = if mica_supported {
+        if want.is_composition() {
+            // A glass-capable window is always on the composition path, whatever the transparency setting
+            // is now: the window style cannot change later, and a toggle must not rebuild the window. The
+            // backdrop starts as none; `Surface::sync_material` sets the real one before the first frame.
+            let dwm_ok =
+                fluent::sys_cached().dwm_backdrop_ok && fluent::set_backdrop(hwnd, DWMSBT_NONE);
+            let built = if dwm_ok {
                 composition(hwnd, &d3d, &dxgi, &factory, size).ok()
             } else {
                 None
             };
-            if choose(want, mica_supported, built.is_some()) == Backdrop::Mica {
+            if choose(want, dwm_ok, built.is_some()) == want {
                 comp = built;
-            } else if mica_supported {
-                // Mica would only show in the title bar over an opaque client.
+            } else if dwm_ok {
+                // A backdrop would only show in the title bar over an opaque client.
                 fluent::set_backdrop(hwnd, DWMSBT_AUTO);
             }
         }
         let (swap, comp, backdrop, alpha) = match comp {
-            Some((swap, comp)) => (
-                swap,
-                Some(comp),
-                Backdrop::Mica,
-                D2D1_ALPHA_MODE_PREMULTIPLIED,
-            ),
+            Some((swap, comp)) => (swap, Some(comp), want, D2D1_ALPHA_MODE_PREMULTIPLIED),
             None => {
                 let swap = factory
                     .CreateSwapChainForHwnd(&d3d, hwnd, &swap_desc(size, false), None, None)
@@ -393,6 +420,10 @@ pub struct Surface {
     hwnd: HWND,
     want: Backdrop,
     backdrop: Backdrop,
+    /// Which surface this is, for the material rules (the main window by default).
+    kind: SurfaceKind,
+    /// The material drawn behind the content now; Solid on the HWND path.
+    material: Material,
     size: (u32, u32),
     /// None after device loss or a failed resize; rebuilt by the next `draw`.
     gfx: Option<Gfx>,
@@ -409,9 +440,51 @@ impl Surface {
             hwnd,
             want,
             backdrop,
+            kind: SurfaceKind::MainWindow,
+            material: Material::Solid,
             size,
             gfx: Some(gfx),
         })
+    }
+
+    /// Which kind of surface this is (flyout, dialog ...), for `sync_material`.
+    pub fn with_kind(mut self, kind: SurfaceKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn kind(&self) -> SurfaceKind {
+        self.kind
+    }
+
+    /// The material behind the content right now.
+    pub fn material(&self) -> Material {
+        self.material
+    }
+
+    /// Whether the backdrop shows through the content layer (anything but Solid).
+    pub fn translucent(&self) -> bool {
+        self.material != Material::Solid
+    }
+
+    /// Brings the DWM backdrop in line with the look and the system state. Called before every frame; it
+    /// changes nothing unless the answer changed, and it never recreates the window. A surface on the HWND
+    /// path is always Solid, and a backdrop DWM refuses is a downgrade to Solid.
+    pub fn sync_material(&mut self, look: Look, sys: SysState) {
+        let want = if self.backdrop.is_composition() {
+            look::material_for(self.kind, look, sys)
+        } else {
+            Material::Solid
+        };
+        if want == self.material {
+            return;
+        }
+        if self.backdrop.is_composition() && !fluent::set_backdrop(self.hwnd, dwm_type(want)) {
+            fluent::set_backdrop(self.hwnd, DWMSBT_NONE);
+            self.material = Material::Solid;
+            return;
+        }
+        self.material = want;
     }
 
     /// What the surface actually got (Mica can fall back to opaque).
@@ -504,12 +577,58 @@ impl Surface {
         let (gfx, backdrop) = build(self.hwnd, self.want, self.size)?;
         self.gfx = Some(gfx);
         self.backdrop = backdrop;
+        // The new window state starts with no backdrop; the next frame syncs it.
+        self.material = Material::Solid;
         // SAFETY: invalidates our own window so it repaints on the new device.
         unsafe {
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
         Ok(())
     }
+}
+
+/// The grain tile as a premultiplied white bitmap whose alpha is the tile's noise, made on first use and
+/// reused for every frame until the shared device goes.
+pub fn grain_bitmap(dc: &ID2D1DeviceContext) -> Option<ID2D1Bitmap1> {
+    if let Some(b) = GRAIN.with(|g| g.borrow().clone()) {
+        return Some(b);
+    }
+    let tile = look::grain_tile_64();
+    let mut px = vec![0u8; 64 * 64 * 4];
+    for (i, v) in tile.iter().enumerate() {
+        px[i * 4..i * 4 + 4].fill(*v);
+    }
+    let props = D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+        ..Default::default()
+    };
+    // SAFETY: `px` is 64 rows of 64 BGRA pixels, the size and pitch given; the bitmap copies it.
+    let bmp = unsafe {
+        dc.CreateBitmap(
+            windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                width: 64,
+                height: 64,
+            },
+            Some(px.as_ptr().cast()),
+            64 * 4,
+            &props,
+        )
+    }
+    .ok()?;
+    GRAIN.with(|g| *g.borrow_mut() = Some(bmp.clone()));
+    Some(bmp)
+}
+
+/// Whether the grain tile is currently cached (tests).
+#[cfg(test)]
+pub(crate) fn grain_cached() -> bool {
+    GRAIN.with(|g| g.borrow().is_some())
 }
 
 /// Runs the idle hook (the tray schedules the device's release).
@@ -564,13 +683,11 @@ pub fn make_window(
     want: Backdrop,
     create: impl Fn(WINDOW_EX_STYLE) -> Result<HWND, String>,
 ) -> Result<Made, String> {
-    let mica = want == Backdrop::Mica && fluent::transparency_on();
-    let first = if mica {
-        Backdrop::Mica
-    } else {
-        Backdrop::Opaque
-    };
-    let ex = if mica {
+    // Glass-capable whenever DWM can draw backdrops, even with transparency off right now: the window
+    // style is fixed at creation, and switching transparency on later must not rebuild the window.
+    let glass = want.is_composition() && fluent::sys_cached().dwm_backdrop_ok;
+    let first = if glass { want } else { Backdrop::Opaque };
+    let ex = if glass {
         WS_EX_NOREDIRECTIONBITMAP
     } else {
         WINDOW_EX_STYLE::default()
@@ -579,7 +696,7 @@ pub fn make_window(
     let t = std::time::Instant::now();
     match Surface::new(hwnd, first) {
         Ok(surface) if surface.backdrop() == first => {
-            if first == Backdrop::Mica {
+            if first.is_composition() {
                 let m = MARGINS {
                     cxLeftWidth: -1,
                     cxRightWidth: -1,
@@ -599,7 +716,7 @@ pub fn make_window(
             drop(other);
             // SAFETY: the window made above, not yet shown or registered.
             let _ = unsafe { DestroyWindow(hwnd) };
-            if first == Backdrop::Mica {
+            if first.is_composition() {
                 make_window(Backdrop::Opaque, create)
             } else {
                 Err("no Direct2D surface".into())
@@ -671,6 +788,94 @@ mod tests {
                 && (c.b - 0xC5 as f32 / 255.).abs() < 1e-6
                 && c.a == 0.5
         );
+    }
+
+    #[test]
+    fn acrylic_needs_both_dwm_and_dcomp() {
+        assert_eq!(choose(Backdrop::Acrylic, true, true), Backdrop::Acrylic);
+        assert_eq!(choose(Backdrop::Acrylic, false, true), Backdrop::Opaque);
+        assert_eq!(choose(Backdrop::Acrylic, true, false), Backdrop::Opaque);
+    }
+
+    #[test]
+    fn each_material_maps_to_its_dwm_backdrop() {
+        use crate::look::Material;
+        assert_eq!(dwm_type(Material::Mica), DWMSBT_MAINWINDOW);
+        assert_eq!(dwm_type(Material::Acrylic), DWMSBT_TRANSIENTWINDOW);
+        assert_eq!(dwm_type(Material::RelayGlass), DWMSBT_TRANSIENTWINDOW);
+        assert_eq!(dwm_type(Material::Solid), DWMSBT_NONE);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn toggling_transparency_keeps_the_same_window() {
+        use crate::look::{Look, Material, SurfaceKind, SysState};
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+        let glass = SysState {
+            dark: false,
+            transparency_on: true,
+            high_contrast: false,
+            animations_on: true,
+            dwm_backdrop_ok: true,
+        };
+        let solid = SysState {
+            transparency_on: false,
+            ..glass
+        };
+        let hwnd = test_window();
+        let mut s = Surface::new(hwnd, Backdrop::Acrylic)
+            .expect("surface")
+            .with_kind(SurfaceKind::Flyout);
+        for (look, sys) in [
+            (Look::Native, glass),
+            (Look::Native, solid),
+            (Look::Relay, glass),
+            (Look::Relay, solid),
+            (Look::Native, glass),
+        ] {
+            s.sync_material(look, sys);
+            // SAFETY: our own test window.
+            assert!(
+                unsafe { IsWindow(Some(hwnd)) }.as_bool(),
+                "a toggle never destroys the window"
+            );
+            if s.backdrop() == Backdrop::Opaque {
+                // The test window has a redirection bitmap, so it is on the HWND path: always solid.
+                assert_eq!(s.material(), Material::Solid);
+            } else if sys.transparency_on {
+                assert_ne!(s.material(), Material::Solid);
+            } else {
+                assert_eq!(s.material(), Material::Solid);
+            }
+        }
+        drop(s);
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_grain_brush_is_cached_with_the_device_and_dropped_with_it() {
+        let hwnd = test_window();
+        let mut s = Surface::new(hwnd, Backdrop::Opaque).expect("surface");
+        let mut first = None;
+        let mut second = None;
+        let _ = s.draw(|dc| {
+            first = grain_bitmap(dc).map(|b| b.as_raw());
+            second = grain_bitmap(dc).map(|b| b.as_raw());
+        });
+        assert!(first.is_some(), "the tile is made");
+        assert_eq!(first, second, "and reused, not rebuilt per frame");
+        assert!(grain_cached());
+        drop(s);
+        assert_eq!(release_if_unused(), Release::Released);
+        assert!(!grain_cached(), "released with the device");
+        // SAFETY: our own test window, made above on this thread.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 
     #[test]

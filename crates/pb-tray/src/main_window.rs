@@ -1207,7 +1207,9 @@ fn paint(hwnd: HWND) {
         let mut slot = cell.borrow_mut();
         match (snap.as_ref(), slot.as_mut()) {
             (Some(snap), Some((h, surface))) if *h == hwnd.0 as isize => {
-                let mica = surface.backdrop() == Backdrop::Mica;
+                // Sync first: the backdrop decides how the content layer is drawn.
+                surface.sync_material(fluent::look(), fluent::sys_cached());
+                let mica = surface.translucent();
                 fluent::paint_with(surface, hwnd, |c, area| draw(c, area, snap, mica));
                 true
             }
@@ -1255,7 +1257,16 @@ fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
         f.pane.right + over,
         f.pane.bottom + over,
     );
-    let alpha = if mica { 0.5 } else { 1.0 };
+    let alpha = if mica {
+        crate::look::surface_glass(
+            crate::look::SurfaceKind::MainWindow,
+            fluent::look(),
+            fluent::sys_cached(),
+        )
+        .opacity
+    } else {
+        1.0
+    };
     round_rect(
         c,
         &layer,

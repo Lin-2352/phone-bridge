@@ -23,7 +23,7 @@ use windows::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW,
                 PostMessageW, PostQuitMessage, RegisterClassW, TranslateMessage, IDI_APPLICATION,
                 MSG, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION,
-                WM_SETTINGCHANGE, WNDCLASSW,
+                WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WNDCLASSW,
             },
         },
     },
@@ -2985,14 +2985,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         // Windows switched light/dark (or accent): repaint the themed windows.
         WM_SETTINGCHANGE => {
-            if lparam.0 != 0 {
+            let area = if lparam.0 != 0 {
                 // SAFETY: for WM_SETTINGCHANGE a non-null lParam is a
                 // NUL-terminated string naming the changed area.
-                let area = unsafe { PCWSTR(lparam.0 as *const u16).to_string() };
-                if area.is_ok_and(|a| a == "ImmersiveColorSet") {
-                    crate::fluent::on_theme_change();
-                }
+                unsafe { PCWSTR(lparam.0 as *const u16).to_string() }.ok()
+            } else {
+                None
+            };
+            if crate::look::setting_change_needs_refresh(wparam.0, area.as_deref()) {
+                crate::fluent::on_theme_change();
             }
+            // SAFETY: default handling.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        // The system colours or the visual theme changed (high contrast switches both).
+        WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+            crate::fluent::on_theme_change();
             // SAFETY: default handling.
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
