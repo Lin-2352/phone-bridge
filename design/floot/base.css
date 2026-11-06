@@ -103,7 +103,16 @@
   --glass-grain: 0.02;
 }
 
-@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+@media (forced-colors: active) {
+  :root, [data-look] {
+  --glass-opacity: 1 !important;
+  --glass-blur: 0px !important;
+  --glass-grain: 0 !important;
+  --glass-highlight: 0 !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
   :root:not([data-force-glass="true"]), [data-look]:not([data-force-glass="true"]) {
   --glass-opacity: 1 !important;
   --glass-blur: 0px !important;

@@ -7,7 +7,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** A glass material: tint, opacity and the effects drawn on it; blur in dp. */
-class GlassMaterial(
+data class GlassMaterial(
     val tint: Color,
     val opacity: Float,
     val blur: Float,
@@ -17,9 +17,9 @@ class GlassMaterial(
 )
 
 /** A spring: stiffness and damping ratio. */
-class TokenSpring(val stiffness: Float, val dampingRatio: Float)
+data class TokenSpring(val stiffness: Float, val dampingRatio: Float)
 
-class TokenColors(
+data class TokenColors(
     val surface: Color,
     val surfaceVariant: Color,
     val outline: Color,

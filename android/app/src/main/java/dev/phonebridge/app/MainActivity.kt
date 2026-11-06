@@ -229,7 +229,7 @@ class MainActivity : ComponentActivity() {
                     fontSize = 40.sp,
                     fontWeight = FontWeight.Medium,
                     letterSpacing = 2.sp,
-                    // The digits carry the contrast (amber on the light tint is under 3:1); the amber is decoration.
+                    // The digits carry the contrast (onSurface on the tint, tested in ContrastTest); the amber is decoration.
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,
                     modifier = Modifier

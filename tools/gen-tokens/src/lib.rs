@@ -405,10 +405,10 @@ pub fn render_kotlin(t: &Tokens) -> String {
          import androidx.compose.ui.unit.dp\n\
          import androidx.compose.ui.unit.sp\n\n\
          /** A glass material: tint, opacity and the effects drawn on it; blur in dp. */\n\
-         class GlassMaterial(\n    val tint: Color,\n    val opacity: Float,\n    val blur: Float,\n    val highlight: Float,\n    val borderAlpha: Float,\n    val grain: Float,\n)\n\n\
+         data class GlassMaterial(\n    val tint: Color,\n    val opacity: Float,\n    val blur: Float,\n    val highlight: Float,\n    val borderAlpha: Float,\n    val grain: Float,\n)\n\n\
          /** A spring: stiffness and damping ratio. */\n\
-         class TokenSpring(val stiffness: Float, val dampingRatio: Float)\n\n\
-         class TokenColors(\n",
+         data class TokenSpring(val stiffness: Float, val dampingRatio: Float)\n\n\
+         data class TokenColors(\n",
     );
     for n in COLOR_NAMES {
         s.push_str(&format!("    val {}: Color,\n", camel(n)));
@@ -577,7 +577,17 @@ pub fn render_css(t: &Tokens) -> String {
     // Reduced transparency (also high contrast and lite): opaque, no blur, grain or highlight.
     let opaque = "  --glass-opacity: 1 !important;\n  --glass-blur: 0px !important;\n  --glass-grain: 0 !important;\n  --glass-highlight: 0 !important;\n";
     s.push_str(&format!(
-        "\n@media (prefers-reduced-transparency: reduce), (forced-colors: active) {{\n  :root:not([data-force-glass=\"true\"]), [data-look]:not([data-force-glass=\"true\"]) {{\n{opaque}  }}\n}}\n"
+        "
+@media (forced-colors: active) {{
+  :root, [data-look] {{
+{opaque}  }}
+}}
+
+@media (prefers-reduced-transparency: reduce) {{
+  :root:not([data-force-glass=\"true\"]), [data-look]:not([data-force-glass=\"true\"]) {{
+{opaque}  }}
+}}
+"
     ));
     s.push_str(&format!(
         "\n:root[data-reduce-transparency=\"true\"], :root[data-reduce-transparency=\"true\"][data-look] {{\n{opaque}}}\n"
@@ -789,25 +799,42 @@ mod tests {
     #[test]
     fn forced_glass_opts_out_of_the_os_preference() {
         // A prototype can show glass on a machine whose OS asks for reduced transparency, but only when it says so.
+        // High contrast (forced colours) is a separate rule and can never be opted out of.
         let t = load(include_str!("../../../design/tokens.toml")).unwrap();
         let css = render_css(&t);
-        let block = css
-            .split("@media (prefers-reduced-transparency: reduce)")
-            .nth(1)
-            .unwrap()
-            .split("}\n}")
-            .next()
-            .unwrap();
+        let after = |marker: &str| -> String {
+            css.split(marker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("no {marker} block"))
+                .split("\n}\n")
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let transparency = after("@media (prefers-reduced-transparency: reduce) {");
         assert!(
-            block.contains(":root:not([data-force-glass=\"true\"])"),
-            "{block}"
+            transparency.contains(":root:not([data-force-glass=\"true\"])"),
+            "{transparency}"
         );
         assert!(
-            block.contains("[data-look]:not([data-force-glass=\"true\"])"),
-            "{block}"
+            transparency.contains("[data-look]:not([data-force-glass=\"true\"])"),
+            "{transparency}"
         );
+        let forced = after("@media (forced-colors: active) {");
+        assert!(!forced.contains("data-force-glass"), "{forced}");
+        assert!(forced.contains("--glass-opacity: 1 !important"), "{forced}");
         // The explicit switch still wins.
         assert!(css.contains(":root[data-reduce-transparency=\"true\"]"));
+    }
+
+    #[test]
+    fn kotlin_token_types_are_data_classes() {
+        // Data classes give the Kotlin tests value equality, like the Rust structs (`PartialEq`).
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        let kt = render_kotlin(&t);
+        assert!(kt.contains("data class GlassMaterial("));
+        assert!(kt.contains("data class TokenSpring("));
+        assert!(kt.contains("data class TokenColors("));
     }
 
     #[test]

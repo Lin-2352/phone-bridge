@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M4.9 (owner decision 2026-11-07: finish everything that does not need Floot; the Floot leftovers are on the "Floot later" list at the bottom). Plans M5.0 to M8.0 are written.
-- **Next task:** M4.R (reviewer, doc corrections, DECISIONS and THREAT_MODEL, CI), then Task M5.0a and M5.1.
+- **Last finished task:** M4.R: milestone M4 is done except the "Floot later" list at the bottom (owner decision 2026-11-07). Plans M5.0 to M8.0 are written.
+- **Next task:** Task M5.0a (refresh the M5 plan against M4.R), then M5.1 (materials, system state and fallbacks), in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -124,7 +124,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M4.7 Floot Android screens (light/dark × both themes)
 - [x] M4.8 Floot motion demos
 - [x] M4.9 Screenshots and design review: 16 first-pass and 7 post-fix captures (JPEG, first screen) in `design/review/`, a fresh review in `design/REVIEW.md`, token fixes done and tested; the Floot-only leftovers moved to the "Floot later" list below on the owner's decision (2026-11-07)
-- [ ] M4.R Milestone review
+- [x] M4.R Milestone review: 0 Critical, 1 Important (status text on glass: placement rule plus the M5.3 test `status_text_sits_on_an_opaque_layer`), 9 Minor (3 fixed test-first: the forced-colors rule no longer opts out, Kotlin token types are data classes, the Android amber change is pinned by tests; 6 deferred); docs corrected (PRINCIPLES, DECISIONS "Design tokens", THREAT_MODEL "no change")
 
 ## M5 PC native redesign
 - [x] M5.0 Plan: [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md) (written ahead of M4.9/M4.R; Task M5.0a re-checks its rulings against M4.R)
@@ -238,5 +238,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] Recapture the missing post-fix pages (kit relay dark, kit reduced transparency x2, android x4, motion x2) and one keyboard-focus shot, to verify REVIEW R-3, R-7, R-8, R-10 (fixed in Floot source, not yet seen)
 - [ ] R-4: make the Relay light look visibly different from Native (for example tint `#EEF1FF`), test-first in gen-tokens, then sync Floot `base.css`
 - [ ] R-22: dark-theme `attention` renders yellow (`warning` `#FCE100`), should be amber; test-first, then Floot
+- [ ] Sync Floot `base.css` from `design/floot/base.css` in the repo (M4.R split the forced-colors rule from the transparency opt-out) and re-check the Floot pages afterwards
 - [ ] R-11: Android shape tokens (card 16, sheet 28) and Android type ramp (planned in M6 Task M6.0a)
 - [ ] Minors R-12 to R-20 in `design/REVIEW.md` (destination on transfer rows, repeated labels, one elevation style, Windows durations 83/167/250/333, motion page layout, real nav controls, off-grid paddings, icon families, disabled-button status)
+- 2026-11-07 (M4 review): a fresh reviewer read the M4 diff against the Review Focus. Deferred minors: the CSS `--spring-*-damping` name holds a damping ratio (web libraries read a coefficient); one CSS selector does nothing and the explicit reduce-transparency switch reaches only the root element (both prototype only); `TokenSpring(stiffness, dampingRatio)` is the reverse of Compose's `spring(dampingRatio, stiffness)` (M6.4 uses named arguments); `icons_are_3_to_1` does not cover the four status icon colours (they pass today); two code comments are inaccurate.

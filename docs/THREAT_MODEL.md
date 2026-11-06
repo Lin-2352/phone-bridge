@@ -126,3 +126,7 @@ Branch `cloud/v2-upgrade`; the rows above get their full update in milestone M11
 - **Two PCs with one name (M3.3):** the phone's asks for Control, the screen and the camera are keyed on the PC's id, so a PC that copies a trusted PC's name still has to be allowed.
 - **`devices.txt` (M3.4):** per-device facts on the PC are bounded when read and written (64 devices, 32 keys each, values cut at 256 characters; bad lines skipped), so a damaged or planted file can't grow memory without limit. It holds no secrets and grants nothing: trust stays in `peers.txt`.
 - **Old peers (M3.1, M3.8):** the wire version stays 0 and the new `Hello` fields are optional, so a 0.2.0 build keeps working with the same pairing checks; capabilities only say what a peer can do and never skip a consent.
+
+## Mitigations added in v2, milestone M4 (2026-11-06)
+
+No change to the threat model. M4 adds design tokens, a code generator (`tools/gen-tokens`) that writes Rust, Kotlin and CSS, and a private Floot design project. It adds no parser, no network path and no permission, and the shipping apps only gain generated constants that are not used yet. The Floot project is a private preview that is never published, and its preview link (which carries a login-free token) is kept out of the repository.

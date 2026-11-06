@@ -76,6 +76,7 @@ val LocalGlass = staticCompositionLocalOf { Tokens.Materials[0] }
 ### Task M6.0a: Refresh at start
 - [ ] M4.9 R-11 (deferred to here): `design/tokens.toml` has no Android shapes; PRINCIPLES says cards 16, sheets and dialogs 28, buttons and chips full. Add them test-first in gen-tokens (a `[shape_android]` table with `card = 16`, `sheet = 28`, rendered into `Tokens.kt` as `Tokens.Shape` and into the Floot CSS), and make `GlassSurface` default to `Tokens.Shape.Card`, not `Tokens.Radius[3]` (12). Also decide the Android type ramp (Material 3 scale) in the same pass.
 - [ ] Re-check every item under "Today in the code" with Grep (line numbers drift). Known M4.9 token changes: amber `accent` is now `#955700` in light; `success_text`/`warning_text`/`danger_text` exist (text on a status tint, ≥ 4.5:1); Compose status chips use them.
+- [ ] `GlassSurface` content rule (M4.R review I-1): status words, badges and amber text sit on `SolidPanel` inside the glass, never directly on it; add `status_text_is_on_a_solid_panel` as a source-scan or semantics test in M6.1.
 - [ ] Custom Compose controls (the Appearance switches, picker rows) must keep a 3:1 off-state boundary (`outline_strong`) and a 3:1 focus indicator; add `off_switch_boundary_is_3_to_1` to M6.1's `ContrastTest` (M4.9 R-2, R-3). Read the M4.R DECISIONS "Design tokens" entry and `design/tokens.toml`; record any change as a `Ruling:` in this plan before M6.1. Confirm what M5 changed in `tokens.toml` (the `accent` → `attention` rename also changes `Tokens.kt` and `Theme.kt:18-19`).
 
 ### Task M6.1: Theme system, Settings → Appearance, Roborazzi setup
@@ -107,7 +108,7 @@ val LocalGlass = staticCompositionLocalOf { Tokens.Materials[0] }
 
 ### Task M6.4: Motion
 **Files:** create `ui/Motion.kt`; modify `ui/RelayNavHost.kt`, sheets and list items to use it.
-**Interfaces:** `fun <T> tokenSpec(s: TokenSpring, modes: Modes): FiniteAnimationSpec<T>` (`springOrCut` non-null → `spring(dampingRatio, stiffness)`, else `tween(Tokens.Motion.FAST_MS)`).
+**Interfaces:** `fun <T> tokenSpec(s: TokenSpring, modes: Modes): FiniteAnimationSpec<T>` (`springOrCut` non-null → `spring(dampingRatio = s.dampingRatio, stiffness = s.stiffness)` with **named arguments**, because `TokenSpring(stiffness, dampingRatio)` is the reverse order of Compose's `spring(dampingRatio, stiffness)`; else `tween(Tokens.Motion.FAST_MS)`).
 - [ ] **Step 1:** run `./gradlew :app:dependencies --configuration releaseRuntimeClasspath | grep material3`; use `MotionScheme.expressive()` only if that version is stable and the API non-experimental, otherwise token springs; record the ruling.
 - [ ] **Step 2: failing tests:** `normal_modes_give_the_token_spring`, `reduced_motion_gives_a_fast_tween`, `lite_gives_a_fast_tween`.
 - [ ] **Step 3:** `./gradlew :app:testDebugUnitTest --tests '*MotionTest*'` — Expected: FAIL; implement; Expected: PASS. Replace the 150 ms fade literals in `RelayNavHost.kt`.

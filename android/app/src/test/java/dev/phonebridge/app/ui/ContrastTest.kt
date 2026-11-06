@@ -2,6 +2,7 @@ package dev.phonebridge.app.ui
 
 import androidx.compose.material3.ColorScheme
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -33,6 +34,28 @@ class ContrastTest {
 
     @Test fun light_contrast() = check("light", relayLightScheme())
     @Test fun dark_contrast() = check("dark", relayDarkScheme())
+
+    /** An amber icon on its own tint (`IconBadge`: 14% in light, 22% in dark over the page or a card) is a 3:1 pair. */
+    @Test fun amber_icon_badges_are_3_to_1() {
+        for ((name, t, alpha) in listOf(Triple("light", Tokens.Light, 0.14f), Triple("dark", Tokens.Dark, 0.22f))) {
+            for ((bgName, bg) in listOf("surface" to t.surface, "surfaceVariant" to t.surfaceVariant)) {
+                val badge = t.accent.copy(alpha = alpha).compositeOver(bg)
+                val r = ratio(t.accent, badge)
+                assertTrue("$name amber icon on its tint over $bgName: $r", r >= 3.0)
+            }
+        }
+    }
+
+    /** The pairing code's digits are drawn in onSurface on a 16% amber tint, so they keep a very high contrast. */
+    @Test fun pairing_code_digits_are_aa_on_the_amber_tint() {
+        for ((name, t, s) in listOf(Triple("light", Tokens.Light, relayLightScheme()), Triple("dark", Tokens.Dark, relayDarkScheme()))) {
+            for ((bgName, bg) in backgrounds(s)) {
+                val chip = t.accent.copy(alpha = 0.16f).compositeOver(bg)
+                val r = ratio(s.onSurface, chip)
+                assertTrue("$name digits on the amber tint over $bgName: $r", r >= 7.0)
+            }
+        }
+    }
 
     @Test fun ladder_is_monotonic_lighter_than_page() {
         for (s in listOf(relayLightScheme(), relayDarkScheme())) {
