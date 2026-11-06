@@ -84,4 +84,19 @@ class AttentionTest {
         )
         assertTrue(Need.IdentityLost !in needs(true, true, true, true, false, false, appNotificationsOn = true))
     }
+
+    /** L1: a VPN may keep the PC out; the hint is only a hint, and only for a paired phone. */
+    @Test fun vpn_hint_shows_only_with_a_vpn_and_a_paired_pc() {
+        val text = "A VPN is on. If your PC can't reach this phone, turn the VPN off or allow local network access"
+        assertEquals(text, vpnHint(vpnOn = true, paired = true))
+        assertEquals(null, vpnHint(vpnOn = false, paired = true))
+        assertEquals(null, vpnHint(vpnOn = true, paired = false))
+    }
+
+    @Test fun vpn_on_comes_after_every_other_need() {
+        val all = needs(false, true, false, false, true, true, appNotificationsOn = false, identityLost = true, vpnOn = true)
+        assertEquals(Need.VpnOn, all.last())
+        assertEquals(Need.IdentityLost, all.first())
+        assertTrue(Need.VpnOn !in needs(true, true, true, true, false, false, appNotificationsOn = true))
+    }
 }

@@ -80,6 +80,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.phonebridge.app.APP_NAME
+import dev.phonebridge.app.vpnActive
 import dev.phonebridge.app.AudioShare
 import dev.phonebridge.app.audio.AudioDirection
 import dev.phonebridge.app.Bridge
@@ -183,6 +184,7 @@ fun HomeTab(onTimeline: () -> Unit) {
             pcForgot = forgot,
             appNotificationsOn = ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled(),
             identityLost = prefs.identityLost,
+            vpnOn = vpnHint(vpnActive(ctx), paired = pc != null) != null,
         )
     }
     var confirmReset by remember { mutableStateOf(false) }
@@ -267,6 +269,7 @@ fun HomeTab(onTimeline: () -> Unit) {
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermissions)
                             Need.ControlOff -> accessOpener(dev.phonebridge.app.ui.settings.SpecialAccess.Control)
                             Need.PcForgotPhone -> forgetNames = forgottenPcNames()
+                            Need.VpnOn -> openSettings(ctx, Intent(Settings.ACTION_VPN_SETTINGS))
                             Need.AppNotificationsOff -> openSettings(
                                 ctx,
                                 Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName),
@@ -428,6 +431,11 @@ private fun needText(need: Need): Triple<String, String, String> = when (need) {
         "Notifications are off",
         "You will not see files, links or clips arriving from your PC.",
         "Turn on",
+    )
+    Need.VpnOn -> Triple(
+        "A VPN is on",
+        vpnHint(vpnOn = true, paired = true).orEmpty(),
+        "VPN settings",
     )
 }
 
