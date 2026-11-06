@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M8.0 (plans M5.0 to M8.0 written ahead of M4.9/M4.R; M4.8 is the last finished M4 task: Floot project "Relay design", checkpoints d058a6f7, 4fd65ce9, c1f8b610).
-- **Next task:** finish M4.9. Done so far: 16 first-pass and 7 post-fix captures (JPEG, first screen only) in `design/review/`, a fresh review in `design/REVIEW.md` (21 findings + 1 new), token fixes (amber `accent` #955700, `*_text` status colours, `data-force-glass`), Floot fixes for R-2, R-3, R-5..R-8, R-10. Still open, all needing Floot, whose daily build limit (100 actions) resets at 2026-11-07 12:00 UTC: (1) recapture kit relay dark, kit rt x2, android x2, motion and one keyboard-focus shot to verify R-3, R-7, R-8, R-10; (2) R-4 make Relay light visibly different (for example tint `#EEF1FF`, test-first in gen-tokens, then sync Floot `base.css`); (3) R-22 dark `attention` should be amber, not yellow; (4) R-11 Android shape tokens go to M6.0a. Then tick M4.9 and do M4.R. Plans M5.0-M8.0 are written.
+- **Last finished task:** M4.9 (owner decision 2026-11-07: finish everything that does not need Floot; the Floot leftovers are on the "Floot later" list at the bottom). Plans M5.0 to M8.0 are written.
+- **Next task:** M4.R (reviewer, doc corrections, DECISIONS and THREAT_MODEL, CI), then Task M5.0a and M5.1.
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -123,7 +123,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M4.6 Floot PC screens (light/dark × both themes)
 - [x] M4.7 Floot Android screens (light/dark × both themes)
 - [x] M4.8 Floot motion demos
-- [ ] M4.9 (needs a Floot window the owner opens: screenshots and the design review could not be taken here) Playwright screenshots and a design review against the checklist and contrast rules
+- [x] M4.9 Screenshots and design review: 16 first-pass and 7 post-fix captures (JPEG, first screen) in `design/review/`, a fresh review in `design/REVIEW.md`, token fixes done and tested; the Floot-only leftovers moved to the "Floot later" list below on the owner's decision (2026-11-07)
 - [ ] M4.R Milestone review
 
 ## M5 PC native redesign
@@ -233,3 +233,10 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-06: history of `cloud/v2-upgrade` (83 commits after `main`) and `cloud/v1-review-findings` (1 commit) rewritten on the owner's decision: AI author and committer set to the local identity, Co-Authored-By and Claude-Session trailers removed, the web commits' SSH signatures dropped, trees byte-identical. v2 head `5cdb9fe` → `aee6920`; v1 review head `88a3e58` → `3017110`. Any other clone must run `git fetch && git reset --hard origin/cloud/v2-upgrade` before working. Local backups: `backup/v2-before-rewrite`, `backup/v1rf-before-rewrite` (never pushed).
 - 2026-11-06: CI on `7859db3` failed once in `pb-camera-source` `com::tests::burst_of_requests_is_answered_one_per_tick_through_com` (a Windows timing test; the commit changed docs only) and passed on rerun: a known Windows-CI timing flake, next to `audio_is_current_again_right_after_a_blackout`. M4.9 and M4.R wait for the owner to open the Floot preview in a foreground tab (headless Edge/Chrome give no output here and the automated tab cannot be captured).
 - 2026-11-06: M4.9 review ran on captures taken in the owner's Chrome, which reports `prefers-reduced-transparency: reduce` (Windows transparency effects off): every first-pass capture was solid glass. The generated CSS now lets a page opt out with `data-force-glass="true"` (the Floot shell sets it for `?transparency=full`); the OS preference still wins by default. The shipping PC code does not share the prototype's weak off-toggle and focus-ring contrast (`fluent.rs` draws the focus ring in cobalt and the off toggle edge in the muted text colour); M5 adds tests for both.
+
+## Floot later (owner decision 2026-11-07: do after Floot's daily build limit resets, 12:00 UTC)
+- [ ] Recapture the missing post-fix pages (kit relay dark, kit reduced transparency x2, android x4, motion x2) and one keyboard-focus shot, to verify REVIEW R-3, R-7, R-8, R-10 (fixed in Floot source, not yet seen)
+- [ ] R-4: make the Relay light look visibly different from Native (for example tint `#EEF1FF`), test-first in gen-tokens, then sync Floot `base.css`
+- [ ] R-22: dark-theme `attention` renders yellow (`warning` `#FCE100`), should be amber; test-first, then Floot
+- [ ] R-11: Android shape tokens (card 16, sheet 28) and Android type ramp (planned in M6 Task M6.0a)
+- [ ] Minors R-12 to R-20 in `design/REVIEW.md` (destination on transfer rows, repeated labels, one elevation style, Windows durations 83/167/250/333, motion page layout, real nav controls, off-grid paddings, icon families, disabled-button status)
