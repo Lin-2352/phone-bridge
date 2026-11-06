@@ -777,7 +777,10 @@ mod tests {
                 for surface in ["surface", "surface_variant"] {
                     let tint = over(colour(p, status), 0.15, colour(p, surface));
                     let c = contrast(colour(p, &format!("{status}_text")), tint);
-                    assert!(c >= 4.5, "{status}_text on its tint over {surface} ({mode}): {c:.2}");
+                    assert!(
+                        c >= 4.5,
+                        "{status}_text on its tint over {surface} ({mode}): {c:.2}"
+                    );
                 }
             }
         }
@@ -795,8 +798,14 @@ mod tests {
             .split("}\n}")
             .next()
             .unwrap();
-        assert!(block.contains(":root:not([data-force-glass=\"true\"])"), "{block}");
-        assert!(block.contains("[data-look]:not([data-force-glass=\"true\"])"), "{block}");
+        assert!(
+            block.contains(":root:not([data-force-glass=\"true\"])"),
+            "{block}"
+        );
+        assert!(
+            block.contains("[data-look]:not([data-force-glass=\"true\"])"),
+            "{block}"
+        );
         // The explicit switch still wins.
         assert!(css.contains(":root[data-reduce-transparency=\"true\"]"));
     }
