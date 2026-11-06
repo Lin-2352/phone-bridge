@@ -196,7 +196,13 @@ pub fn palette() -> Palette {
         // SAFETY: GetSysColor reads a system colour; any index is accepted.
         return hc_palette(|i| unsafe { GetSysColor(SYS_COLOR_INDEX(i)) });
     }
-    let (t, hover) = if dark() {
+    palette_for(dark())
+}
+
+/// The token palette for light or dark, whatever the system and the setting say (also what tests use, so
+/// they never touch the global theme).
+pub fn palette_for(dark: bool) -> Palette {
+    let (t, hover) = if dark {
         (&tokens::DARK, 0x383838)
     } else {
         (&tokens::LIGHT, 0xF0F0F0)
@@ -811,6 +817,16 @@ pub fn round_rect(
     }
 }
 
+/// The track, edge and knob colours of a toggle. An enabled "off" toggle draws its edge and knob in the
+/// muted text colour, which is 3:1 against the track and the page (a disabled one is exempt).
+pub fn toggle_colors(p: &Palette, on: bool, enabled: bool) -> (u32, Option<u32>, u32) {
+    match (on, enabled) {
+        (true, true) => (p.primary, None, p.on_primary),
+        (false, true) => (p.card, Some(p.text2), p.text2),
+        (_, false) => (p.card, Some(p.stroke), p.stroke),
+    }
+}
+
 /// Windows 11 toggle switch (40x20 logical) whose right edge is at `right`,
 /// vertically centred on `cy`. Returns its rectangle for hit-testing.
 #[allow(dead_code)] // used by the widgets (pages use them from Task 8 on)
@@ -820,11 +836,7 @@ pub fn toggle(c: &Canvas, right: f32, cy: f32, on: bool, enabled: bool) -> RectF
     let knob = 12.0 * c.s;
     let inset = (h - knob) / 2.0;
     let p = &c.p;
-    let (track, edge, dot) = match (on, enabled) {
-        (true, true) => (p.primary, None, p.on_primary),
-        (false, true) => (p.card, Some(p.text2), p.text2),
-        (_, false) => (p.card, Some(p.stroke), p.stroke),
-    };
+    let (track, edge, dot) = toggle_colors(p, on, enabled);
     round_rect(c, &r, Some((track, 1.0)), edge, h / 2.0, false);
     let kx = if on {
         r.right - inset - knob
@@ -1109,6 +1121,33 @@ mod tests {
         assert_eq!(s.transparency_on, transparency_on());
         assert_eq!(s.high_contrast, high_contrast());
         assert_eq!(s.animations_on, !reduced_motion());
+    }
+
+    #[test]
+    fn off_toggle_has_a_3_to_1_boundary() {
+        fn lum(rgb: u32) -> f64 {
+            let ch = |sh: u32| {
+                let c = ((rgb >> sh) & 0xFF) as f64 / 255.0;
+                if c <= 0.03928 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+        }
+        let ratio = |a: u32, b: u32| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        for dark in [false, true] {
+            let p = palette_for(dark);
+            let (track, edge, dot) = toggle_colors(&p, false, true);
+            let edge = edge.expect("an off toggle has an edge");
+            assert!(ratio(edge, track) >= 3.0, "edge on track (dark {dark})");
+            assert!(ratio(edge, p.bg) >= 3.0, "edge on the page (dark {dark})");
+            assert!(ratio(dot, track) >= 3.0, "knob on track (dark {dark})");
+        }
     }
 
     #[test]

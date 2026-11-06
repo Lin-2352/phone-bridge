@@ -330,15 +330,29 @@ fn states(c: &Canvas, r: &RectF, hov: f32, prs: f32, radius: f32, over: (u32, u3
     }
 }
 
-/// How opaque the cards and tiles are over the backdrop: the flyout material's opacity, which the look
-/// rules keep above the text floor.
+/// How opaque the cards and tiles are over the backdrop: the flyout material's opacity, which is 1.0
+/// whenever the surface is solid and otherwise above the text floor.
+fn card_alpha(look: crate::look::Look, sys: crate::look::SysState) -> f32 {
+    crate::look::surface_glass(crate::look::SurfaceKind::Flyout, look, sys).opacity
+}
+
 fn glass_alpha() -> f32 {
-    crate::look::surface_glass(
-        crate::look::SurfaceKind::Flyout,
-        fluent::look(),
-        fluent::sys_cached(),
-    )
-    .opacity
+    card_alpha(fluent::look(), fluent::sys_cached())
+}
+
+/// The band behind the header: status words are only AA on an opaque card, never on bare glass.
+fn header_fill(p: &fluent::Palette) -> (u32, f32) {
+    (p.card, 1.0)
+}
+
+/// A tile's boundary: the control boundary colour (3:1) while it can be used, the divider colour once it
+/// is disabled.
+fn tile_edge(p: &fluent::Palette, enabled: bool) -> u32 {
+    if enabled {
+        p.outline_strong
+    } else {
+        p.stroke
+    }
 }
 
 fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
@@ -372,6 +386,9 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
             p.text2,
         ),
     };
+    let (band_rgb, band_alpha) = header_fill(&p);
+    let band = rectf(8.0 * s, 8.0 * s, px(s, W - 8) as f32, 64.0 * s);
+    round_rect(c, &band, Some((band_rgb, band_alpha)), None, big, false);
     let half = (badge.right - badge.left) / 2.0;
     round_rect(c, &badge, Some((tint, 0.14)), None, half, false);
     fluent::icon_sized(c, Font::IconLarge, glyph::PHONE, badge, tint);
@@ -444,14 +461,28 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
         let hit = Hit::Tile(t.kind);
         let r = from_rect(l.tiles[tile_index(t.kind)]);
         let fg = if !t.enabled {
-            round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
+            round_rect(
+                c,
+                &r,
+                Some((p.card, a)),
+                Some(tile_edge(&p, false)),
+                small,
+                false,
+            );
             mix(p.text, p.card, 0.6)
         } else if t.on {
             round_rect(c, &r, Some((p.primary, 1.0)), None, small, false);
             states(c, &r, 0.12 * hov(hit), 0.25 * prs(hit), small, (p.bg, p.bg));
             p.on_primary
         } else {
-            round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
+            round_rect(
+                c,
+                &r,
+                Some((p.card, a)),
+                Some(tile_edge(&p, true)),
+                small,
+                false,
+            );
             states(c, &r, hov(hit), prs(hit), small, (p.hover, p.stroke));
             p.text
         };
@@ -1145,6 +1176,84 @@ pub fn close() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::look::{Look, SysState};
+
+    fn lum(rgb: u32) -> f64 {
+        let ch = |sh: u32| {
+            let c = ((rgb >> sh) & 0xFF) as f64 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    }
+
+    fn contrast(a: u32, b: u32) -> f64 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    fn palettes() -> Vec<crate::fluent::Palette> {
+        vec![
+            crate::fluent::palette_for(false),
+            crate::fluent::palette_for(true),
+        ]
+    }
+
+    #[test]
+    fn status_text_sits_on_an_opaque_layer() {
+        // The warning line and the status words are only AA on an opaque card, never on bare glass.
+        for p in palettes() {
+            let (fill, alpha) = header_fill(&p);
+            assert_eq!(fill, p.card);
+            assert_eq!(alpha, 1.0);
+            assert!(contrast(p.warning, fill) >= 3.0 || contrast(p.text2, fill) >= 4.5);
+            assert!(contrast(p.text2, fill) >= 4.5);
+        }
+    }
+
+    #[test]
+    fn flyout_text_sits_on_an_opaque_layer_or_meets_the_floor() {
+        for look in [Look::Native, Look::Relay] {
+            for dark in [false, true] {
+                for transparency_on in [false, true] {
+                    for high_contrast in [false, true] {
+                        for dwm_backdrop_ok in [false, true] {
+                            let sys = SysState {
+                                dark,
+                                transparency_on,
+                                high_contrast,
+                                animations_on: true,
+                                dwm_backdrop_ok,
+                            };
+                            let a = card_alpha(look, sys);
+                            let solid = !transparency_on || high_contrast || !dwm_backdrop_ok;
+                            if solid {
+                                assert_eq!(a, 1.0, "{look:?} {sys:?}");
+                            } else {
+                                assert!(
+                                    a >= crate::look::TEXT_GLASS_MIN_ALPHA,
+                                    "{look:?} {sys:?}: {a}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tile_boundaries_are_3_to_1() {
+        for p in palettes() {
+            assert_eq!(tile_edge(&p, true), p.outline_strong);
+            assert!(contrast(tile_edge(&p, true), p.card) >= 3.0);
+            assert!(contrast(tile_edge(&p, true), p.bg) >= 3.0);
+            assert_eq!(tile_edge(&p, false), p.stroke, "a disabled tile is exempt");
+        }
+    }
 
     fn overlaps(a: &RECT, b: &RECT) -> bool {
         a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
