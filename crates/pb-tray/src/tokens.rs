@@ -15,6 +15,9 @@ pub struct Colors {
     pub success: u32,
     pub warning: u32,
     pub danger: u32,
+    pub success_text: u32,
+    pub warning_text: u32,
+    pub danger_text: u32,
 }
 
 pub const LIGHT: Colors = Colors {
@@ -26,10 +29,13 @@ pub const LIGHT: Colors = Colors {
     text_muted: 0x5F5F5F,
     primary: 0x3651C5,
     on_primary: 0xFFFFFF,
-    accent: 0xC9820F,
+    accent: 0x955700,
     success: 0x0F7B0F,
     warning: 0x9D5D00,
     danger: 0xC42B1C,
+    success_text: 0x0B6A0B,
+    warning_text: 0x8A5100,
+    danger_text: 0xA82316,
 };
 
 pub const DARK: Colors = Colors {
@@ -45,6 +51,9 @@ pub const DARK: Colors = Colors {
     success: 0x6CCB5F,
     warning: 0xFCE100,
     danger: 0xFF998B,
+    success_text: 0x6CCB5F,
+    warning_text: 0xFCE100,
+    danger_text: 0xFF998B,
 };
 
 /// Spacing steps in logical px.

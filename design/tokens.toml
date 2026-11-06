@@ -10,10 +10,14 @@ text = "#1A1A1A"
 text_muted = "#5F5F5F"
 primary = "#3651C5"
 on_primary = "#FFFFFF"
-accent = "#C9820F"
+accent = "#955700"
 success = "#0F7B0F"
 warning = "#9D5D00"
 danger = "#C42B1C"
+# Text drawn on the 15% tint of the status colour (badges); the status colour itself is for icons and fills.
+success_text = "#0B6A0B"
+warning_text = "#8A5100"
+danger_text = "#A82316"
 
 [dark]
 surface = "#202020"
@@ -28,6 +32,9 @@ accent = "#E8A93A"
 success = "#6CCB5F"
 warning = "#FCE100"
 danger = "#FF998B"
+success_text = "#6CCB5F"
+warning_text = "#FCE100"
+danger_text = "#FF998B"
 
 [space]
 steps = [4, 8, 12, 16, 24, 32]

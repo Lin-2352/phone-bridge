@@ -3,7 +3,7 @@
 
 use toml::{Table, Value};
 
-pub const COLOR_NAMES: [&str; 12] = [
+pub const COLOR_NAMES: [&str; 15] = [
     "surface",
     "surface_variant",
     "outline",
@@ -16,6 +16,9 @@ pub const COLOR_NAMES: [&str; 12] = [
     "success",
     "warning",
     "danger",
+    "success_text",
+    "warning_text",
+    "danger_text",
 ];
 /// The four materials in order: native light, native dark, relay light, relay dark.
 pub const MATERIAL_PATHS: [(&str, &str); 4] = [
@@ -40,7 +43,7 @@ const MOTION_NAMES: [&str; 3] = ["fast_ms", "normal_ms", "emphasised_ms"];
 /// One theme's colours as 0xRRGGBB, in `COLOR_NAMES` order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
-    pub values: [u32; 12],
+    pub values: [u32; 15],
     pub primary: u32,
     pub outline: u32,
     pub outline_strong: u32,
@@ -112,7 +115,7 @@ fn steps(root: &Table, name: &str, len: usize) -> Result<Vec<u32>, String> {
 
 fn palette(root: &Table, name: &str) -> Result<Palette, String> {
     let t = table(root, name)?;
-    let mut values = [0u32; 12];
+    let mut values = [0u32; 15];
     for (slot, key) in values.iter_mut().zip(COLOR_NAMES) {
         let s = t
             .get(key)
@@ -574,7 +577,7 @@ pub fn render_css(t: &Tokens) -> String {
     // Reduced transparency (also high contrast and lite): opaque, no blur, grain or highlight.
     let opaque = "  --glass-opacity: 1 !important;\n  --glass-blur: 0px !important;\n  --glass-grain: 0 !important;\n  --glass-highlight: 0 !important;\n";
     s.push_str(&format!(
-        "\n@media (prefers-reduced-transparency: reduce), (forced-colors: active) {{\n  :root, [data-look] {{\n{opaque}  }}\n}}\n"
+        "\n@media (prefers-reduced-transparency: reduce), (forced-colors: active) {{\n  :root:not([data-force-glass=\"true\"]), [data-look]:not([data-force-glass=\"true\"]) {{\n{opaque}  }}\n}}\n"
     ));
     s.push_str(&format!(
         "\n:root[data-reduce-transparency=\"true\"], :root[data-reduce-transparency=\"true\"][data-look] {{\n{opaque}}}\n"
@@ -751,6 +754,51 @@ mod tests {
             // Primary also appears as text on opaque surfaces.
             assert!(contrast(p.primary, colour(p, "surface")) >= 4.5);
         }
+    }
+
+    #[test]
+    fn attention_is_readable_as_text_and_icon() {
+        // The amber role carries words and an icon, so it must pass text contrast on the opaque surfaces.
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        for (mode, p) in [("light", &t.light), ("dark", &t.dark)] {
+            for surface in ["surface", "surface_variant"] {
+                let c = contrast(colour(p, "accent"), colour(p, surface));
+                assert!(c >= 4.5, "accent on {surface} ({mode}): {c:.2}");
+            }
+        }
+    }
+
+    #[test]
+    fn status_text_is_aa_on_its_tint() {
+        // Badges are the status colour at 15% over the surface, with `<status>_text` drawn on top.
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        for (mode, p) in [("light", &t.light), ("dark", &t.dark)] {
+            for status in ["success", "warning", "danger"] {
+                for surface in ["surface", "surface_variant"] {
+                    let tint = over(colour(p, status), 0.15, colour(p, surface));
+                    let c = contrast(colour(p, &format!("{status}_text")), tint);
+                    assert!(c >= 4.5, "{status}_text on its tint over {surface} ({mode}): {c:.2}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn forced_glass_opts_out_of_the_os_preference() {
+        // A prototype can show glass on a machine whose OS asks for reduced transparency, but only when it says so.
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        let css = render_css(&t);
+        let block = css
+            .split("@media (prefers-reduced-transparency: reduce)")
+            .nth(1)
+            .unwrap()
+            .split("}\n}")
+            .next()
+            .unwrap();
+        assert!(block.contains(":root:not([data-force-glass=\"true\"])"), "{block}");
+        assert!(block.contains("[data-look]:not([data-force-glass=\"true\"])"), "{block}");
+        // The explicit switch still wins.
+        assert!(css.contains(":root[data-reduce-transparency=\"true\"]"));
     }
 
     #[test]

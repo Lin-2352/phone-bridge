@@ -72,7 +72,8 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 ### Task M5.0a: Refresh at start
 - [ ] Re-read `docs/v2/design/PRINCIPLES.md`, the M4.R DECISIONS entry "Design tokens" and `design/tokens.toml`. Confirm each ruling marked "made in M5.0 ahead of M4.R" matches what M4.R wrote; if not, record a new ruling and edit this plan before M5.1.
 - [ ] Check the M4.R type-ramp decision (PRINCIPLES says 18/24, `tokens.toml` has 12/14/16/20/28) and use whatever `tokens::ty` contains.
-- [ ] Check M4.9 token changes (`git log --grep '^M4.9'`) and re-run `cargo test -p gen-tokens`.
+- [ ] Check M4.9 token changes (`git log --grep '^M4.9'`) and re-run `cargo test -p gen-tokens`. Known M4.9 changes: the amber `accent` token is now `#955700` in light (it was `#C9820F`, 3.1:1) and new `success_text`/`warning_text`/`danger_text` tokens exist for text on a status tint; M5.1's rename `accent` → `attention` must carry these three new names across unchanged. Badge-style status chips on the PC use the `*_text` colours for their text and the status colour for the icon.
+- [ ] M4.9 R-15: `tokens::motion` is 120/200/300 ms, not Microsoft's published 83/167/250/333 ms. Decide here: either add PC duration tokens (83, 167, 250, 333) to `design/tokens.toml` through the gen-tokens tests and use them for transitions, or change the ruling text to say 120/200/300 are Relay's own durations. Record the decision as a `Ruling:`.
 - [ ] Re-check the "Today in the code" line numbers with Grep; the facts were verified on 2026-11-06.
 
 ### Task M5.1: Materials, system state and fallbacks
@@ -89,7 +90,7 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 **Interfaces:** Consumes `tokens::{NATIVE_LIGHT, NATIVE_DARK, RELAY_LIGHT, RELAY_DARK}` and `tokens_rules::{Modes, resolve}`. Produces everything in "Shared interfaces".
 
 - [ ] **Step 1 (ADVISOR):** before changing `d2d::build` (every window's creation path), call `advisor`.
-- [ ] **Step 2: write failing tests.** In `look.rs`: `native_main_window_is_mica`, `native_flyout_menu_dialog_are_acrylic`, `relay_layers_are_relay_glass`, `transparency_off_is_solid_everywhere`, `high_contrast_is_solid_everywhere`, `old_windows_without_backdrops_is_solid`, `qr_is_always_solid`, `text_layers_meet_the_glass_floor` (for every look × dark × `SysState`, the text-layer alpha is ≥ 0.70 or the material is `Solid`), `on_theme_change_rebuilds_backdrops` (`rebuild_needed` true when transparency, high contrast, dark or backdrop support changes; false otherwise). In `fluent.rs`: `high_contrast_palette_uses_system_colours`. In `settings.rs`: `v1_settings_gain_native_look`.
+- [ ] **Step 2: write failing tests.** In `look.rs`: `native_main_window_is_mica`, `native_flyout_menu_dialog_are_acrylic`, `relay_layers_are_relay_glass`, `transparency_off_is_solid_everywhere`, `high_contrast_is_solid_everywhere`, `old_windows_without_backdrops_is_solid`, `qr_is_always_solid`, `focus_ring_is_3_to_1` (the focus-ring colour, `Palette.primary`, has `contrast ≥ 3.0` against `card` and `bg` in light, dark and high contrast; the M4.9 review found the prototype's rings at 1.2:1, the shipping tray already draws cobalt, this test keeps it so), `text_layers_meet_the_glass_floor` (for every look × dark × `SysState`, the text-layer alpha is ≥ 0.70 or the material is `Solid`), `on_theme_change_rebuilds_backdrops` (`rebuild_needed` true when transparency, high contrast, dark or backdrop support changes; false otherwise). In `fluent.rs`: `high_contrast_palette_uses_system_colours`. In `settings.rs`: `v1_settings_gain_native_look`.
 - [ ] **Step 3:** `cargo test -p pb-tray look::` — Expected: FAIL (module missing).
 - [ ] **Step 4: implement** `look.rs`, then the renames (token first through gen-tokens, `cargo run -p gen-tokens`), then the Windows wiring.
 - [ ] **Step 5:** `cargo test -p pb-tray` and `cargo test -p gen-tokens` — Expected: PASS.
@@ -108,7 +109,7 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 ### Task M5.3: Tray flyout
 **Files:** modify `flyout.rs`, `flyout_tiles.rs`; test in `flyout.rs`.
 **Interfaces:** Consumes `look::material_for(SurfaceKind::Flyout, look, sys)` and `look::glass`. Produces nothing new.
-- [ ] **Step 1: failing test** `flyout_text_sits_on_an_opaque_layer_or_meets_the_floor`: for every look × dark × `SysState`, the flyout's text-layer alpha is `1.0` when the material is `Solid`, otherwise ≥ `look::TEXT_GLASS_MIN_ALPHA`; and tile boundaries use `Palette.outline_strong`.
+- [ ] **Step 1: failing tests** `off_toggle_has_a_3_to_1_boundary` (`fluent::toggle` with `on = false, enabled = true` draws its edge with `Palette.text2`/`outline_strong`, and that colour has `contrast ≥ 3.0` against the track fill and the card in light and dark; M4.9 R-2) and `flyout_text_sits_on_an_opaque_layer_or_meets_the_floor`: for every look × dark × `SysState`, the flyout's text-layer alpha is `1.0` when the material is `Solid`, otherwise ≥ `look::TEXT_GLASS_MIN_ALPHA`; and tile boundaries use `Palette.outline_strong`.
 - [ ] **Step 2:** `cargo test -p pb-tray flyout::` — Expected: FAIL (alpha is still `MICA_ALPHA = 0.6`).
 - [ ] **Step 3: implement.** Delete `MICA_ALPHA`; draw the backdrop from `look::glass`; controls on opaque cards; radius 8, controls 4; layout from Floot `/pc` "Tray flyout".
 - [ ] **Step 4:** `cargo test -p pb-tray flyout::` — Expected: PASS, with the 8 flyout and 17 tile tests unchanged.

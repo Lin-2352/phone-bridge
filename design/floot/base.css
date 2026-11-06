@@ -9,10 +9,13 @@
   --color-text-muted: #5F5F5F;
   --color-primary: #3651C5;
   --color-on-primary: #FFFFFF;
-  --color-accent: #C9820F;
+  --color-accent: #955700;
   --color-success: #0F7B0F;
   --color-warning: #9D5D00;
   --color-danger: #C42B1C;
+  --color-success-text: #0B6A0B;
+  --color-warning-text: #8A5100;
+  --color-danger-text: #A82316;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -71,6 +74,9 @@
   --color-success: #6CCB5F;
   --color-warning: #FCE100;
   --color-danger: #FF998B;
+  --color-success-text: #6CCB5F;
+  --color-warning-text: #FCE100;
+  --color-danger-text: #FF998B;
   --glass-tint: #202020;
   --glass-opacity: 0.82;
   --glass-blur: 30.0px;
@@ -98,7 +104,7 @@
 }
 
 @media (prefers-reduced-transparency: reduce), (forced-colors: active) {
-  :root, [data-look] {
+  :root:not([data-force-glass="true"]), [data-look]:not([data-force-glass="true"]) {
   --glass-opacity: 1 !important;
   --glass-blur: 0px !important;
   --glass-grain: 0 !important;

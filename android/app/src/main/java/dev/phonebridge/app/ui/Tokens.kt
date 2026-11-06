@@ -32,6 +32,9 @@ class TokenColors(
     val success: Color,
     val warning: Color,
     val danger: Color,
+    val successText: Color,
+    val warningText: Color,
+    val dangerText: Color,
 )
 
 object Tokens {
@@ -44,10 +47,13 @@ object Tokens {
         textMuted = Color(0xFF5F5F5F),
         primary = Color(0xFF3651C5),
         onPrimary = Color(0xFFFFFFFF),
-        accent = Color(0xFFC9820F),
+        accent = Color(0xFF955700),
         success = Color(0xFF0F7B0F),
         warning = Color(0xFF9D5D00),
         danger = Color(0xFFC42B1C),
+        successText = Color(0xFF0B6A0B),
+        warningText = Color(0xFF8A5100),
+        dangerText = Color(0xFFA82316),
     )
 
     val Dark = TokenColors(
@@ -63,6 +69,9 @@ object Tokens {
         success = Color(0xFF6CCB5F),
         warning = Color(0xFFFCE100),
         danger = Color(0xFFFF998B),
+        successText = Color(0xFF6CCB5F),
+        warningText = Color(0xFFFCE100),
+        dangerText = Color(0xFFFF998B),
     )
 
     val Space: List<Dp> = listOf(4.dp, 8.dp, 12.dp, 16.dp, 24.dp, 32.dp)
