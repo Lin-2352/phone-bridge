@@ -1238,7 +1238,7 @@ fn focus_ring(c: &Canvas, r: RectF) {
     let radius = RADIUS[1] * c.s;
     for grow in [2.0, 1.0] {
         let o = rectf(r.left - grow, r.top - grow, r.right + grow, r.bottom + grow);
-        round_rect(c, &o, None, Some(c.p.accent), radius + grow, false);
+        round_rect(c, &o, None, Some(c.p.primary), radius + grow, false);
     }
 }
 

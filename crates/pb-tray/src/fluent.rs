@@ -41,7 +41,9 @@ use windows::{
             },
             Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
         },
-        System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
+        System::Registry::{
+            RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+        },
         UI::{
             HiDpi::GetDpiForWindow,
             WindowsAndMessaging::{GetClientRect, LoadCursorW, SetCursor, IDC_ARROW, IDC_HAND},
@@ -112,29 +114,70 @@ pub fn dark() -> bool {
     }
 }
 
-/// Theme colours as 0xRRGGBB, from the design tokens.
+/// Theme colours as 0xRRGGBB, from the design tokens (or the system colours in high contrast).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub bg: u32,
     pub card: u32,
     /// Hover fill; not a token, a grey step between `card` and `stroke`.
     pub hover: u32,
+    /// A divider.
     pub stroke: u32,
+    /// The boundary of a control (3:1 against its surface).
+    #[allow(dead_code)]
+    pub outline_strong: u32,
     pub text: u32,
     pub text2: u32,
-    pub accent: u32,
-    pub on_accent: u32,
+    /// The one accent: selection, the primary button, the focus ring.
+    pub primary: u32,
+    pub on_primary: u32,
     pub danger: u32,
     // Used from the widgets and the main window (Tasks 4 on).
     #[allow(dead_code)]
     pub success: u32,
     #[allow(dead_code)]
     pub warning: u32,
+    /// The amber status colour: always drawn with an icon and words.
     #[allow(dead_code)]
-    pub amber: u32,
+    pub attention: u32,
+}
+
+// GetSysColor indices (winuser.h).
+pub(crate) const SYS_WINDOW: i32 = 5;
+pub(crate) const SYS_WINDOWTEXT: i32 = 8;
+pub(crate) const SYS_BTNFACE: i32 = 15;
+pub(crate) const SYS_HIGHLIGHT: i32 = 13;
+pub(crate) const SYS_HIGHLIGHTTEXT: i32 = 14;
+pub(crate) const SYS_GRAYTEXT: i32 = 17;
+
+/// The high-contrast palette: only the system's own colours, so the user's theme decides. `get` returns a
+/// COLORREF (0x00BBGGRR) for a `GetSysColor` index. Boundaries are the text colour and status colours are
+/// the text colour too (words and icons carry the meaning).
+pub fn hc_palette(get: impl Fn(i32) -> u32) -> Palette {
+    let rgb = |i: i32| colorref(get(i));
+    Palette {
+        bg: rgb(SYS_WINDOW),
+        card: rgb(SYS_WINDOW),
+        hover: rgb(SYS_BTNFACE),
+        stroke: rgb(SYS_WINDOWTEXT),
+        outline_strong: rgb(SYS_WINDOWTEXT),
+        text: rgb(SYS_WINDOWTEXT),
+        text2: rgb(SYS_GRAYTEXT),
+        primary: rgb(SYS_HIGHLIGHT),
+        on_primary: rgb(SYS_HIGHLIGHTTEXT),
+        danger: rgb(SYS_WINDOWTEXT),
+        success: rgb(SYS_WINDOWTEXT),
+        warning: rgb(SYS_WINDOWTEXT),
+        attention: rgb(SYS_WINDOWTEXT),
+    }
 }
 
 pub fn palette() -> Palette {
+    if high_contrast() {
+        use windows::Win32::Graphics::Gdi::{GetSysColor, SYS_COLOR_INDEX};
+        // SAFETY: GetSysColor reads a system colour; any index is accepted.
+        return hc_palette(|i| unsafe { GetSysColor(SYS_COLOR_INDEX(i)) });
+    }
     let (t, hover) = if dark() {
         (&tokens::DARK, 0x383838)
     } else {
@@ -145,14 +188,92 @@ pub fn palette() -> Palette {
         card: t.surface_variant,
         hover,
         stroke: t.outline,
+        outline_strong: t.outline_strong,
         text: t.text,
         text2: t.text_muted,
-        accent: t.primary,
-        on_accent: t.on_primary,
+        primary: t.primary,
+        on_primary: t.on_primary,
         danger: t.danger,
         success: t.success,
         warning: t.warning,
-        amber: t.attention,
+        attention: t.attention,
+    }
+}
+
+/// Windows "Show animations" aside, this is the system's high-contrast switch (a High contrast theme).
+pub fn high_contrast() -> bool {
+    use windows::Win32::UI::{
+        Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
+        WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        },
+    };
+    let mut hc = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: SPI_GETHIGHCONTRAST fills the HIGHCONTRASTW whose size is in `cbSize`.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            hc.cbSize,
+            Some(std::ptr::addr_of_mut!(hc).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    ok.is_ok() && (hc.dwFlags.0 & HCF_HIGHCONTRASTON.0) != 0
+}
+
+/// System backdrops (Mica, Acrylic) need Windows 11 22H2 (build 22621) and a local session; over Remote
+/// Desktop the surfaces are drawn solid.
+#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
+pub fn backdrop_supported(build: u32, remote_session: bool) -> bool {
+    build >= 22621 && !remote_session
+}
+
+/// The Windows build number ("CurrentBuildNumber"), or 0 when it cannot be read.
+#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
+fn os_build() -> u32 {
+    let mut buf = [0u16; 16];
+    let mut size = (buf.len() * 2) as u32;
+    // SAFETY: reads one registry string into `buf`; `size` is its size in bytes.
+    let r = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
+            w!("CurrentBuildNumber"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if r.is_err() {
+        return 0;
+    }
+    let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..len])
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
+#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
+fn remote_session() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
+    // SAFETY: GetSystemMetrics has no preconditions.
+    unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
+/// Everything the material rules need to know about the system right now.
+#[allow(dead_code)] // the surfaces call this from the next M5.1 commit
+pub fn sys_state() -> crate::look::SysState {
+    crate::look::SysState {
+        dark: dark(),
+        transparency_on: transparency_on(),
+        high_contrast: high_contrast(),
+        animations_on: !reduced_motion(),
+        dwm_backdrop_ok: backdrop_supported(os_build(), remote_session()),
     }
 }
 
@@ -554,7 +675,7 @@ pub fn focus_ring(c: &Canvas, r: RectF) {
     let radius = crate::tokens::RADIUS[1] * c.s;
     for grow in [2.0, 1.0] {
         let o = rectf(r.left - grow, r.top - grow, r.right + grow, r.bottom + grow);
-        round_rect(c, &o, None, Some(c.p.accent), radius + grow, false);
+        round_rect(c, &o, None, Some(c.p.primary), radius + grow, false);
     }
 }
 
@@ -667,7 +788,7 @@ pub fn toggle(c: &Canvas, right: f32, cy: f32, on: bool, enabled: bool) -> RectF
     let inset = (h - knob) / 2.0;
     let p = &c.p;
     let (track, edge, dot) = match (on, enabled) {
-        (true, true) => (p.accent, None, p.on_accent),
+        (true, true) => (p.primary, None, p.on_primary),
         (false, true) => (p.card, Some(p.text2), p.text2),
         (_, false) => (p.card, Some(p.stroke), p.stroke),
     };
@@ -688,8 +809,8 @@ pub fn button(c: &Canvas, r: RectF, label: &str, accent: bool) {
     let radius = tokens::RADIUS[0] * c.s;
     let p = c.p;
     if accent {
-        round_rect(c, &r, Some((p.accent, 1.0)), None, radius, false);
-        text(c, Font::Body, label, r, p.on_accent, Align::Center);
+        round_rect(c, &r, Some((p.primary, 1.0)), None, radius, false);
+        text(c, Font::Body, label, r, p.on_primary, Align::Center);
     } else {
         round_rect(c, &r, Some((p.card, 1.0)), Some(p.stroke), radius, false);
         text(c, Font::Body, label, r, p.text, Align::Center);
@@ -860,12 +981,48 @@ mod tests {
     #[test]
     fn palette_comes_from_tokens() {
         set_theme(1);
-        assert_eq!(palette().accent, tokens::LIGHT.primary);
-        assert_eq!(palette().amber, tokens::LIGHT.attention);
+        assert_eq!(palette().primary, tokens::LIGHT.primary);
+        assert_eq!(palette().attention, tokens::LIGHT.attention);
+        assert_eq!(palette().outline_strong, tokens::LIGHT.outline_strong);
         set_theme(2);
         assert_eq!(palette().bg, tokens::DARK.surface);
         assert_eq!(palette().text2, tokens::DARK.text_muted);
         set_theme(0);
+    }
+
+    #[test]
+    fn high_contrast_palette_uses_system_colours() {
+        // GetSysColor returns 0x00BBGGRR; give every index a distinct value.
+        let get = |i: i32| -> u32 { 0x0001_0203 + (i as u32) * 0x0001_0101 };
+        let rgb = |i: i32| colorref(get(i));
+        let p = hc_palette(get);
+        assert_eq!((p.bg, p.card), (rgb(SYS_WINDOW), rgb(SYS_WINDOW)));
+        assert_eq!(p.text, rgb(SYS_WINDOWTEXT));
+        assert_eq!(p.text2, rgb(SYS_GRAYTEXT));
+        assert_eq!(p.primary, rgb(SYS_HIGHLIGHT));
+        assert_eq!(p.on_primary, rgb(SYS_HIGHLIGHTTEXT));
+        assert_eq!(p.hover, rgb(SYS_BTNFACE));
+        // In high contrast every boundary is the text colour, so boundaries are as strong as text.
+        assert_eq!(p.stroke, rgb(SYS_WINDOWTEXT));
+        assert_eq!(p.outline_strong, rgb(SYS_WINDOWTEXT));
+    }
+
+    #[test]
+    fn backdrop_support_needs_22621_and_a_local_session() {
+        assert!(backdrop_supported(22621, false));
+        assert!(backdrop_supported(26100, false));
+        assert!(!backdrop_supported(22620, false), "before 22H2");
+        assert!(!backdrop_supported(19045, false), "Windows 10");
+        assert!(!backdrop_supported(26100, true), "Remote Desktop");
+    }
+
+    #[test]
+    fn sys_state_reads_the_system_without_panicking() {
+        let s = sys_state();
+        // Whatever this machine says, the pieces must agree with the single-value readers.
+        assert_eq!(s.transparency_on, transparency_on());
+        assert_eq!(s.high_contrast, high_contrast());
+        assert_eq!(s.animations_on, !reduced_motion());
     }
 
     #[test]

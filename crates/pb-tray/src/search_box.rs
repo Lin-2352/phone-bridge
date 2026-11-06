@@ -316,7 +316,7 @@ pub fn edit_rect(outer: RectF, s: f32) -> RectF {
 /// and the search glyph. `c.s` is the scale.
 pub fn draw_frame(c: &mut Canvas, outer: RectF, focused: bool) {
     let p = c.p;
-    let border = if focused { p.accent } else { p.stroke };
+    let border = if focused { p.primary } else { p.stroke };
     round_rect(
         c,
         &outer,

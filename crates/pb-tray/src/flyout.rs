@@ -343,7 +343,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
     let badge = from_rect(l.badge);
     let (title, sub, sub_rgb, tint) = match &m.phone {
         Some(card) => {
-            let tint = if card.connected { p.accent } else { p.text2 };
+            let tint = if card.connected { p.primary } else { p.text2 };
             match home::warning(card) {
                 Some(w) => (card.name.clone(), w, p.warning, tint),
                 None => (
@@ -436,9 +436,9 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
             round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
             mix(p.text, p.card, 0.6)
         } else if t.on {
-            round_rect(c, &r, Some((p.accent, 1.0)), None, small, false);
+            round_rect(c, &r, Some((p.primary, 1.0)), None, small, false);
             states(c, &r, 0.12 * hov(hit), 0.25 * prs(hit), small, (p.bg, p.bg));
-            p.on_accent
+            p.on_primary
         } else {
             round_rect(c, &r, Some((p.card, a)), Some(p.stroke), small, false);
             states(c, &r, hov(hit), prs(hit), small, (p.hover, p.stroke));
@@ -464,7 +464,7 @@ fn draw(c: &mut Canvas, snap: &Snapshot, mica: bool) {
             // The camera status window stays reachable even while the
             // tile itself is dimmed.
             let ci = from_rect(l.camera_info);
-            let over = if t.on { p.on_accent } else { p.stroke };
+            let over = if t.on { p.on_primary } else { p.stroke };
             let k = 0.2 * hov(Hit::CameraInfo) + 0.2 * prs(Hit::CameraInfo);
             if k > 0.0 {
                 round_rect(c, &ci, Some((over, k)), None, small, false);

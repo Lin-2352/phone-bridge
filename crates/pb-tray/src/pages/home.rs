@@ -751,7 +751,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
                 cy + 24.0 * s,
             );
             let tint = if card.connected {
-                pal.accent
+                pal.primary
             } else {
                 pal.text2
             };
@@ -803,7 +803,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
         let on = q.on(m);
         let radius = RADIUS[1] * s;
         let (fill, fg) = if on {
-            ((pal.accent, 1.0), pal.on_accent)
+            ((pal.primary, 1.0), pal.on_primary)
         } else if !q.enabled(m) {
             ((pal.card, 1.0), pal.text2)
         } else {
@@ -870,7 +870,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &HomeModel, hits: &[Hit]) {
         Font::Body,
         "See all",
         p.see_all,
-        pal.accent,
+        pal.primary,
         Align::Right,
     );
     widgets::card(c, p.activity);

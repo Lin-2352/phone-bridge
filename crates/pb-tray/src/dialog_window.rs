@@ -371,11 +371,11 @@ fn paint_dialog(c: &mut Canvas, v: &View) {
         let down = v.pressed == Some(b);
         let (fill, stroke, ink) = if accent {
             let fill = if down {
-                mix(p.accent, p.on_accent, 0.25)
+                mix(p.primary, p.on_primary, 0.25)
             } else {
-                mix(p.accent, p.on_accent, t * 0.12)
+                mix(p.primary, p.on_primary, t * 0.12)
             };
-            (fill, None, p.on_accent)
+            (fill, None, p.on_primary)
         } else {
             let fill = if down {
                 mix(p.hover, p.stroke, 0.5)

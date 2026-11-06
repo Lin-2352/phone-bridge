@@ -677,7 +677,7 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             };
             let b = right_button(card, s, 88.0, 16.0);
             let g = rectf(il, cy - 10.0 * s, il + 20.0 * s, cy + 10.0 * s);
-            let tint = if *changed { p.danger } else { p.accent };
+            let tint = if *changed { p.danger } else { p.primary };
             fluent::icon(c, fluent::glyph::PHONE, g, tint);
             let (l, right) = (g.right + SPACE[2] * s, left_of(g.right, b.left, s));
             let t = rectf(l, card.top + 11.0 * s, right, card.top + 33.0 * s);
@@ -726,7 +726,7 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             let (b, rb) = camera_buttons(card, s, repair);
             let dot = rectf(il, card.top + 19.0 * s, il + 10.0 * s, card.top + 29.0 * s);
             let colour = match mark {
-                Mark::Ok => p.accent,
+                Mark::Ok => p.primary,
                 Mark::Bad => p.danger,
                 Mark::Wait | Mark::Idle => p.text2,
             };
@@ -804,7 +804,7 @@ pub fn draw(c: &mut Canvas, r: RectF, view: RectF, m: &SettingsModel, _hits: &[H
                 lr.left + 3.0 * s,
                 lr.bottom - 10.0 * s,
             );
-            round_rect(c, &bar, Some((p.accent, 1.0)), None, 1.5 * s, false);
+            round_rect(c, &bar, Some((p.primary, 1.0)), None, 1.5 * s, false);
         }
         let t = rectf(lr.left + 16.0 * s, lr.top, lr.right, lr.bottom);
         let rgb = if on { p.text } else { p.text2 };

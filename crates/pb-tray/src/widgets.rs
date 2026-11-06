@@ -164,7 +164,7 @@ pub fn draw_nav_item(c: &Canvas, r: RectF, glyph: char, label: &str, selected: b
             r.left + 3.0 * c.s,
             r.bottom - 16.0 * c.s,
         );
-        round_rect(c, &bar, Some((p.accent, 1.0)), None, 1.5 * c.s, false);
+        round_rect(c, &bar, Some((p.primary, 1.0)), None, 1.5 * c.s, false);
     }
     let g = rectf(r.left, r.top + 8.0 * c.s, r.right, r.top + 30.0 * c.s);
     icon_sized(
@@ -172,7 +172,7 @@ pub fn draw_nav_item(c: &Canvas, r: RectF, glyph: char, label: &str, selected: b
         Font::IconLarge,
         glyph,
         g,
-        if selected { p.accent } else { p.text2 },
+        if selected { p.primary } else { p.text2 },
     );
     let l = rectf(r.left, r.top + 32.0 * c.s, r.right, r.bottom - 4.0 * c.s);
     let rgb = if selected { p.text } else { p.text2 };
@@ -260,7 +260,7 @@ pub enum InfoKind {
 pub fn info_bar(c: &Canvas, r: RectF, kind: InfoKind, message: &str) {
     let p = c.p;
     let (rgb, glyph) = match kind {
-        InfoKind::Info => (p.accent, '\u{E946}'),
+        InfoKind::Info => (p.primary, '\u{E946}'),
         InfoKind::Warning => (p.warning, '\u{E7BA}'),
         InfoKind::Error => (p.danger, '\u{EA39}'),
     };

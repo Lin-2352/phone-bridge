@@ -238,7 +238,7 @@ fn draw(c: &mut Canvas, items: &[Item], hover: Option<usize>) {
         };
         let ic = rectf(r.left + 8.0 * s, r.top, r.left + 36.0 * s, r.bottom);
         match item.checked {
-            Some(true) => fluent::icon(c, fluent::glyph::CHECK, ic, p.accent),
+            Some(true) => fluent::icon(c, fluent::glyph::CHECK, ic, p.primary),
             Some(false) => {}
             None => fluent::icon(c, item.glyph, ic, ink),
         }

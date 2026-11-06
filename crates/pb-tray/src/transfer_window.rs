@@ -530,7 +530,7 @@ fn paint_rows(
             let ink = match row.state {
                 State::Failed(_) | State::Cancelled(_) => p.text2,
                 State::Done => p.success,
-                _ => p.accent,
+                _ => p.primary,
             };
             round_rect(c, &fill, Some((ink, 1.0)), None, 2.0 * s, false);
         }
@@ -542,11 +542,11 @@ fn paint_rows(
             let accent = matches!(a, Action::Retry | Action::Open);
             let (fill, stroke, ink) = if accent {
                 let f = if down {
-                    mix(p.accent, p.on_accent, 0.25)
+                    mix(p.primary, p.on_primary, 0.25)
                 } else {
-                    mix(p.accent, p.on_accent, t * 0.12)
+                    mix(p.primary, p.on_primary, t * 0.12)
                 };
-                (f, None, p.on_accent)
+                (f, None, p.on_primary)
             } else {
                 let f = if down {
                     mix(p.hover, p.stroke, 0.5)
