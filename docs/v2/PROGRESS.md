@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M4.2 (principles). Before it, L5 (Part A, leftovers, done; the portable `Relay.exe` in use was swapped for a `--release` build on 2026-11-06). Before it, M3.R: milestone M3 is done (the audio branch `feature/audio-full` was merged before M3.7 part 2, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
-- **Next task:** M4.3 (materials, elevation, springs, easing and modes as tokens; also add `outline_strong`). Plan: `plans/2026-11-06-m4-design-system.md`. `audio_is_current_again_right_after_a_blackout` can fail under a loaded full-workspace run on this PC (passes alone and in CI); it is timing-based.
+- **Last finished task:** M4.3 (materials, elevation, springs, easing, modes as tokens). Before it, L5 (Part A, leftovers, done; the portable `Relay.exe` in use was swapped for a `--release` build on 2026-11-06). Before it, M3.R: milestone M3 is done (the audio branch `feature/audio-full` was merged before M3.7 part 2, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
+- **Next task:** M4.4 (CSS output and WCAG tests in the generator; the AA tests decide the material opacities, per RESEARCH.md: text surfaces 0.70 or more, icon-only 0.50 or more). Plan: `plans/2026-11-06-m4-design-system.md`. `audio_is_current_again_right_after_a_blackout` can fail under a loaded full-workspace run on this PC (passes alone and in CI); it is timing-based.
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -117,7 +117,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 ## M4 Design system and Floot prototypes
 - [x] M4.1 Research pass: at least 3 real references per screen family, 2 sources per decision, citation review
 - [x] M4.2 Anti-AI-look checklist written into the design principles
-- [ ] M4.3 `design/tokens.toml`: materials per theme and mode, elevation, radii, spacing, type, springs, Windows easing; modes
+- [x] M4.3 `design/tokens.toml`: materials per theme and mode, elevation, radii, spacing, type, springs, Windows easing; modes
 - [ ] M4.4 `gen-tokens` also emits Floot `base.css`, plus WCAG contrast tests
 - [ ] M4.5 Floot "Phone Bridge design": rewrite the design principles; share the preview link
 - [ ] M4.6 Floot PC screens (light/dark × both themes)

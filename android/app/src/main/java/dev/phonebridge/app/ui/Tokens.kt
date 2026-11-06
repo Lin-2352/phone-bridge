@@ -6,10 +6,24 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** A glass material: tint, opacity and the effects drawn on it; blur in dp. */
+class GlassMaterial(
+    val tint: Color,
+    val opacity: Float,
+    val blur: Float,
+    val highlight: Float,
+    val borderAlpha: Float,
+    val grain: Float,
+)
+
+/** A spring: stiffness and damping ratio. */
+class TokenSpring(val stiffness: Float, val dampingRatio: Float)
+
 class TokenColors(
     val surface: Color,
     val surfaceVariant: Color,
     val outline: Color,
+    val outlineStrong: Color,
     val text: Color,
     val textMuted: Color,
     val primary: Color,
@@ -25,6 +39,7 @@ object Tokens {
         surface = Color(0xFFF3F3F3),
         surfaceVariant = Color(0xFFFBFBFB),
         outline = Color(0xFFE5E5E5),
+        outlineStrong = Color(0xFF767676),
         text = Color(0xFF1A1A1A),
         textMuted = Color(0xFF5F5F5F),
         primary = Color(0xFF3651C5),
@@ -39,6 +54,7 @@ object Tokens {
         surface = Color(0xFF202020),
         surfaceVariant = Color(0xFF2D2D2D),
         outline = Color(0xFF3F3F3F),
+        outlineStrong = Color(0xFF8A8A8A),
         text = Color(0xFFFFFFFF),
         textMuted = Color(0xFFC5C5C5),
         primary = Color(0xFFB9C3FF),
@@ -64,5 +80,28 @@ object Tokens {
         const val FAST_MS = 120
         const val NORMAL_MS = 200
         const val EMPHASISED_MS = 300
+    }
+
+    val Materials = listOf(
+        GlassMaterial(Color(0xFFF3F3F3), 0.8f, 30.0f, 0.0f, 0.06f, 0.0f), // native light
+        GlassMaterial(Color(0xFF202020), 0.8f, 30.0f, 0.0f, 0.08f, 0.0f), // native dark
+        GlassMaterial(Color(0xFFF8F9FF), 0.72f, 24.0f, 0.1f, 0.1f, 0.02f), // relay light
+        GlassMaterial(Color(0xFF14172A), 0.72f, 24.0f, 0.12f, 0.12f, 0.02f), // relay dark
+    )
+
+    val ElevationBlur: List<Float> = listOf(0.0f, 2.0f, 8.0f, 16.0f)
+    val ElevationAlpha: List<Float> = listOf(0.0f, 0.08f, 0.12f, 0.16f)
+
+    object Springs {
+        val Standard = TokenSpring(700.0f, 0.9f)
+        val Emphasised = TokenSpring(380.0f, 0.8f)
+        val Quick = TokenSpring(1400.0f, 0.9f)
+        val Effects = TokenSpring(1600.0f, 1.0f)
+    }
+
+    object Easing {
+        val Standard: List<Float> = listOf(0.55f, 0.55f, 0.0f, 1.0f)
+        val Decelerate: List<Float> = listOf(0.0f, 0.0f, 0.0f, 1.0f)
+        val Accelerate: List<Float> = listOf(1.0f, 0.0f, 1.0f, 1.0f)
     }
 }

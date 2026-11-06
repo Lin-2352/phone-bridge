@@ -3,10 +3,11 @@
 
 use toml::{Table, Value};
 
-pub const COLOR_NAMES: [&str; 11] = [
+pub const COLOR_NAMES: [&str; 12] = [
     "surface",
     "surface_variant",
     "outline",
+    "outline_strong",
     "text",
     "text_muted",
     "primary",
@@ -16,17 +17,53 @@ pub const COLOR_NAMES: [&str; 11] = [
     "warning",
     "danger",
 ];
+/// The four materials in order: native light, native dark, relay light, relay dark.
+pub const MATERIAL_PATHS: [(&str, &str); 4] = [
+    ("native", "light"),
+    ("native", "dark"),
+    ("relay", "light"),
+    ("relay", "dark"),
+];
+const MATERIAL_KEYS: [&str; 6] = [
+    "tint",
+    "opacity",
+    "blur",
+    "highlight",
+    "border_alpha",
+    "grain",
+];
+pub const SPRING_NAMES: [&str; 4] = ["standard", "emphasised", "quick", "effects"];
+pub const EASING_NAMES: [&str; 3] = ["standard", "decelerate", "accelerate"];
 const TYPE_NAMES: [&str; 5] = ["caption", "body", "subtitle", "title", "display"];
 const MOTION_NAMES: [&str; 3] = ["fast_ms", "normal_ms", "emphasised_ms"];
 
 /// One theme's colours as 0xRRGGBB, in `COLOR_NAMES` order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
-    pub values: [u32; 11],
+    pub values: [u32; 12],
     pub primary: u32,
+    pub outline: u32,
+    pub outline_strong: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One glass material: a tint colour, an opacity and the effects drawn on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Material {
+    pub tint: u32,
+    pub opacity: f32,
+    pub blur: f32,
+    pub highlight: f32,
+    pub border_alpha: f32,
+    pub grain: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpringTok {
+    pub stiffness: f32,
+    pub damping_ratio: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tokens {
     pub light: Palette,
     pub dark: Palette,
@@ -34,6 +71,11 @@ pub struct Tokens {
     pub radius: Vec<u32>,
     pub types: [u32; 5],
     pub motion: [u32; 3],
+    pub materials: [Material; 4],
+    pub elevation_blur: [f32; 4],
+    pub elevation_alpha: [f32; 4],
+    pub springs: [SpringTok; 4],
+    pub easing: [[f32; 4]; 3],
 }
 
 fn table<'a>(root: &'a Table, name: &str) -> Result<&'a Table, String> {
@@ -70,7 +112,7 @@ fn steps(root: &Table, name: &str, len: usize) -> Result<Vec<u32>, String> {
 
 fn palette(root: &Table, name: &str) -> Result<Palette, String> {
     let t = table(root, name)?;
-    let mut values = [0u32; 11];
+    let mut values = [0u32; 12];
     for (slot, key) in values.iter_mut().zip(COLOR_NAMES) {
         let s = t
             .get(key)
@@ -81,9 +123,69 @@ fn palette(root: &Table, name: &str) -> Result<Palette, String> {
             .and_then(|h| u32::from_str_radix(h, 16).ok())
             .ok_or_else(|| format!("invalid colour [{name}] {key} = {s:?}, want \"#RRGGBB\""))?;
     }
+    let at = |n: &str| values[COLOR_NAMES.iter().position(|c| *c == n).unwrap_or(0)];
     Ok(Palette {
         values,
-        primary: values[5],
+        primary: at("primary"),
+        outline: at("outline"),
+        outline_strong: at("outline_strong"),
+    })
+}
+
+fn hex(s: &str, what: &str) -> Result<u32, String> {
+    s.strip_prefix('#')
+        .filter(|h| h.len() == 6)
+        .and_then(|h| u32::from_str_radix(h, 16).ok())
+        .ok_or_else(|| format!("invalid colour {what} = {s:?}, want \"#RRGGBB\""))
+}
+
+/// A TOML number written as `0.8` or `380`.
+fn float(t: &Table, ctx: &str, key: &str) -> Result<f32, String> {
+    t.get(key)
+        .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+        .map(|f| f as f32)
+        .ok_or_else(|| format!("missing or invalid [{ctx}] {key}"))
+}
+
+fn floats<const N: usize>(t: &Table, ctx: &str, key: &str) -> Result<[f32; N], String> {
+    let arr = t
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("missing [{ctx}] {key}"))?;
+    let v: Vec<f32> = arr
+        .iter()
+        .map(|x| {
+            x.as_float()
+                .or_else(|| x.as_integer().map(|i| i as f64))
+                .map(|f| f as f32)
+        })
+        .collect::<Option<_>>()
+        .ok_or_else(|| format!("invalid [{ctx}] {key}"))?;
+    v.try_into()
+        .map_err(|v: Vec<f32>| format!("[{ctx}] {key} needs {N} values, has {}", v.len()))
+}
+
+fn material(root: &Table, look: &str, mode: &str) -> Result<Material, String> {
+    let ctx = format!("material.{look}.{mode}");
+    let t = table(root, "material")?
+        .get(look)
+        .and_then(Value::as_table)
+        .and_then(|l| l.get(mode))
+        .and_then(Value::as_table)
+        .ok_or_else(|| format!("missing table [{ctx}]"))?;
+    for k in MATERIAL_KEYS {
+        if !t.contains_key(k) {
+            return Err(format!("missing [{ctx}] {k}"));
+        }
+    }
+    let tint = t.get("tint").and_then(Value::as_str).unwrap_or_default();
+    Ok(Material {
+        tint: hex(tint, &format!("[{ctx}] tint"))?,
+        opacity: float(t, &ctx, "opacity")?,
+        blur: float(t, &ctx, "blur")?,
+        highlight: float(t, &ctx, "highlight")?,
+        border_alpha: float(t, &ctx, "border_alpha")?,
+        grain: float(t, &ctx, "grain")?,
     })
 }
 
@@ -102,7 +204,45 @@ pub fn load(src: &str) -> Result<Tokens, String> {
     for (slot, k) in motion.iter_mut().zip(MOTION_NAMES) {
         *slot = int(mo, "motion", k)?;
     }
+    let mut materials = [Material {
+        tint: 0,
+        opacity: 0.0,
+        blur: 0.0,
+        highlight: 0.0,
+        border_alpha: 0.0,
+        grain: 0.0,
+    }; 4];
+    for (slot, (look, mode)) in materials.iter_mut().zip(MATERIAL_PATHS) {
+        *slot = material(&root, look, mode)?;
+    }
+    let el = table(&root, "elevation")?;
+    let sp = table(&root, "spring")?;
+    let mut springs = [SpringTok {
+        stiffness: 0.0,
+        damping_ratio: 0.0,
+    }; 4];
+    for (slot, name) in springs.iter_mut().zip(SPRING_NAMES) {
+        let ctx = format!("spring.{name}");
+        let t = sp
+            .get(name)
+            .and_then(Value::as_table)
+            .ok_or_else(|| format!("missing table [{ctx}]"))?;
+        *slot = SpringTok {
+            stiffness: float(t, &ctx, "stiffness")?,
+            damping_ratio: float(t, &ctx, "damping_ratio")?,
+        };
+    }
+    let ez = table(&root, "easing")?;
+    let mut easing = [[0.0f32; 4]; 3];
+    for (slot, name) in easing.iter_mut().zip(EASING_NAMES) {
+        *slot = floats::<4>(ez, "easing", name)?;
+    }
     Ok(Tokens {
+        materials,
+        elevation_blur: floats::<4>(el, "elevation", "blur")?,
+        elevation_alpha: floats::<4>(el, "elevation", "alpha")?,
+        springs,
+        easing,
         light,
         dark,
         space: steps(&root, "space", 6)?,
@@ -145,6 +285,30 @@ fn join(v: &[u32], suffix: &str) -> String {
         .join(", ")
 }
 
+/// A float as a Rust literal (`0.8`, `380.0`).
+fn rf(v: f32) -> String {
+    format!("{v:?}")
+}
+
+fn rf_list(v: &[f32]) -> String {
+    v.iter().map(|x| rf(*x)).collect::<Vec<_>>().join(", ")
+}
+
+fn kf_list(v: &[f32]) -> String {
+    v.iter()
+        .map(|x| format!("{}f", rf(*x)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn material_const(look: &str, mode: &str) -> String {
+    format!(
+        "{}_{}",
+        look.to_ascii_uppercase(),
+        mode.to_ascii_uppercase()
+    )
+}
+
 pub fn render_rust(t: &Tokens) -> String {
     let mut s = String::from(HEADER);
     s.push_str("\n/// Colours as 0xRRGGBB.\n#[derive(Clone, Copy)]\npub struct Colors {\n");
@@ -184,6 +348,48 @@ pub fn render_rust(t: &Tokens) -> String {
         ));
     }
     s.push_str("}\n");
+    s.push_str(
+        "\n/// A glass material: the surface tint (0xRRGGBB), its opacity and the effects drawn on it. Blur is in logical px.\n\
+         #[derive(Clone, Copy, Debug, PartialEq)]\n\
+         pub struct Material {\n    pub tint: u32,\n    pub opacity: f32,\n    pub blur: f32,\n    pub highlight: f32,\n    pub border_alpha: f32,\n    pub grain: f32,\n}\n",
+    );
+    for ((look, mode), m) in MATERIAL_PATHS.iter().zip(t.materials) {
+        s.push_str(&format!(
+            "\npub const {}: Material = Material {{\n    tint: 0x{:06X},\n    opacity: {},\n    blur: {},\n    highlight: {},\n    border_alpha: {},\n    grain: {},\n}};\n",
+            material_const(look, mode),
+            m.tint,
+            rf(m.opacity),
+            rf(m.blur),
+            rf(m.highlight),
+            rf(m.border_alpha),
+            rf(m.grain)
+        ));
+    }
+    s.push_str(&format!(
+        "\n/// Elevation steps: shadow blur in logical px and shadow alpha.\npub const ELEVATION_BLUR: [f32; 4] = [{}];\npub const ELEVATION_ALPHA: [f32; 4] = [{}];\n",
+        rf_list(&t.elevation_blur),
+        rf_list(&t.elevation_alpha)
+    ));
+    s.push_str(
+        "\n/// A spring: stiffness and damping ratio.\n#[derive(Clone, Copy, Debug, PartialEq)]\npub struct Spring {\n    pub stiffness: f32,\n    pub damping_ratio: f32,\n}\n\n/// Springs; effects (opacity, colour) are critically damped and never overshoot.\npub mod spring {\n    use super::Spring;\n",
+    );
+    for (n, sp) in SPRING_NAMES.iter().zip(t.springs) {
+        s.push_str(&format!(
+            "    pub const {}: Spring = Spring {{\n        stiffness: {},\n        damping_ratio: {},\n    }};\n",
+            n.to_ascii_uppercase(),
+            rf(sp.stiffness),
+            rf(sp.damping_ratio)
+        ));
+    }
+    s.push_str("}\n\n/// Cubic-bezier easing curves (x1, y1, x2, y2).\npub mod easing {\n");
+    for (n, c) in EASING_NAMES.iter().zip(t.easing) {
+        s.push_str(&format!(
+            "    pub const {}: [f32; 4] = [{}];\n",
+            n.to_ascii_uppercase(),
+            rf_list(&c)
+        ));
+    }
+    s.push_str("}\n");
     s
 }
 
@@ -195,6 +401,10 @@ pub fn render_kotlin(t: &Tokens) -> String {
          import androidx.compose.ui.unit.Dp\n\
          import androidx.compose.ui.unit.dp\n\
          import androidx.compose.ui.unit.sp\n\n\
+         /** A glass material: tint, opacity and the effects drawn on it; blur in dp. */\n\
+         class GlassMaterial(\n    val tint: Color,\n    val opacity: Float,\n    val blur: Float,\n    val highlight: Float,\n    val borderAlpha: Float,\n    val grain: Float,\n)\n\n\
+         /** A spring: stiffness and damping ratio. */\n\
+         class TokenSpring(val stiffness: Float, val dampingRatio: Float)\n\n\
          class TokenColors(\n",
     );
     for n in COLOR_NAMES {
@@ -225,6 +435,40 @@ pub fn render_kotlin(t: &Tokens) -> String {
         s.push_str(&format!(
             "        const val {} = {v}\n",
             n.to_ascii_uppercase()
+        ));
+    }
+    s.push_str("    }\n\n    val Materials = listOf(\n");
+    for ((look, mode), m) in MATERIAL_PATHS.iter().zip(t.materials) {
+        s.push_str(&format!(
+            "        GlassMaterial(Color(0xFF{:06X}), {}f, {}f, {}f, {}f, {}f), // {look} {mode}\n",
+            m.tint,
+            rf(m.opacity),
+            rf(m.blur),
+            rf(m.highlight),
+            rf(m.border_alpha),
+            rf(m.grain)
+        ));
+    }
+    s.push_str("    )\n\n");
+    s.push_str(&format!(
+        "    val ElevationBlur: List<Float> = listOf({})\n    val ElevationAlpha: List<Float> = listOf({})\n\n    object Springs {{\n",
+        kf_list(&t.elevation_blur),
+        kf_list(&t.elevation_alpha)
+    ));
+    for (n, sp) in SPRING_NAMES.iter().zip(t.springs) {
+        s.push_str(&format!(
+            "        val {} = TokenSpring({}f, {}f)\n",
+            pascal(n),
+            rf(sp.stiffness),
+            rf(sp.damping_ratio)
+        ));
+    }
+    s.push_str("    }\n\n    object Easing {\n");
+    for (n, c) in EASING_NAMES.iter().zip(t.easing) {
+        s.push_str(&format!(
+            "        val {}: List<Float> = listOf({})\n",
+            pascal(n),
+            kf_list(&c)
         ));
     }
     s.push_str("    }\n}\n");
@@ -264,6 +508,41 @@ mod tests {
     fn primary_is_cobalt() {
         let t = load(include_str!("../../../design/tokens.toml")).unwrap();
         assert_eq!(t.light.primary, 0x3651C5);
+    }
+
+    #[test]
+    fn materials_load_for_both_looks_and_modes() {
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        assert_eq!(t.materials.len(), 4);
+        let relay_dark = t.materials[3];
+        assert!(relay_dark.opacity > 0.0 && relay_dark.opacity <= 1.0);
+        assert!(relay_dark.blur > 0.0);
+        // Native materials carry no highlight or grain: they are the platform's own look.
+        assert_eq!(t.materials[0].grain, 0.0);
+    }
+
+    #[test]
+    fn a_missing_material_key_is_an_error_naming_it() {
+        let src =
+            include_str!("../../../design/tokens.toml").replacen("border_alpha", "border_alfa", 1);
+        let e = load(&src).unwrap_err();
+        assert!(e.contains("border_alpha"), "{e}");
+    }
+
+    #[test]
+    fn springs_and_easing_load_in_their_order() {
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        // Effects (opacity, colour) are critically damped: they never overshoot.
+        assert_eq!(t.springs[3].damping_ratio, 1.0);
+        assert!(t.springs.iter().all(|s| s.stiffness > 0.0));
+        assert_eq!(t.easing[1], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(t.elevation_blur[0], 0.0);
+    }
+
+    #[test]
+    fn control_outlines_are_a_separate_stronger_colour() {
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        assert_ne!(t.light.outline_strong, t.light.outline);
     }
 
     #[test]

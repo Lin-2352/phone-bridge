@@ -137,6 +137,7 @@ mod uia;
 mod search_box;
 #[allow(dead_code)]
 mod tokens;
+mod tokens_rules;
 #[cfg(windows)]
 mod ui;
 #[cfg(windows)]

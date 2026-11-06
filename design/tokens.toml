@@ -5,6 +5,7 @@
 surface = "#F3F3F3"
 surface_variant = "#FBFBFB"
 outline = "#E5E5E5"
+outline_strong = "#767676"
 text = "#1A1A1A"
 text_muted = "#5F5F5F"
 primary = "#3651C5"
@@ -18,6 +19,7 @@ danger = "#C42B1C"
 surface = "#202020"
 surface_variant = "#2D2D2D"
 outline = "#3F3F3F"
+outline_strong = "#8A8A8A"
 text = "#FFFFFF"
 text_muted = "#C5C5C5"
 primary = "#B9C3FF"
@@ -44,3 +46,66 @@ display = 28
 fast_ms = 120
 normal_ms = 200
 emphasised_ms = 300
+
+# Glass materials per look (native = the platform's own, relay = Relay glass) and mode. Opacity is the
+# lever for contrast (see docs/v2/design/RESEARCH.md); the M4.4 tests decide which values pass AA.
+# tint is the surface colour, blur is in dp, the rest are 0..1.
+[material.native.light]
+tint = "#F3F3F3"
+opacity = 0.80
+blur = 30
+highlight = 0.0
+border_alpha = 0.06
+grain = 0.0
+
+[material.native.dark]
+tint = "#202020"
+opacity = 0.80
+blur = 30
+highlight = 0.0
+border_alpha = 0.08
+grain = 0.0
+
+[material.relay.light]
+tint = "#F8F9FF"
+opacity = 0.72
+blur = 24
+highlight = 0.10
+border_alpha = 0.10
+grain = 0.02
+
+[material.relay.dark]
+tint = "#14172A"
+opacity = 0.72
+blur = 24
+highlight = 0.12
+border_alpha = 0.12
+grain = 0.02
+
+# Elevation steps: shadow blur in px and shadow alpha.
+[elevation]
+blur = [0, 2, 8, 16]
+alpha = [0.0, 0.08, 0.12, 0.16]
+
+# Springs: spatial ones may overshoot a little, effects (opacity, colour) never do.
+[spring.standard]
+stiffness = 700
+damping_ratio = 0.9
+
+[spring.emphasised]
+stiffness = 380
+damping_ratio = 0.8
+
+[spring.quick]
+stiffness = 1400
+damping_ratio = 0.9
+
+[spring.effects]
+stiffness = 1600
+damping_ratio = 1.0
+
+# Cubic-bezier easing for tweens (Windows publishes curves, not springs).
+[easing]
+standard = [0.55, 0.55, 0.0, 1.0]
+decelerate = [0.0, 0.0, 0.0, 1.0]
+accelerate = [1.0, 0.0, 1.0, 1.0]

@@ -6,6 +6,7 @@ pub struct Colors {
     pub surface: u32,
     pub surface_variant: u32,
     pub outline: u32,
+    pub outline_strong: u32,
     pub text: u32,
     pub text_muted: u32,
     pub primary: u32,
@@ -20,6 +21,7 @@ pub const LIGHT: Colors = Colors {
     surface: 0xF3F3F3,
     surface_variant: 0xFBFBFB,
     outline: 0xE5E5E5,
+    outline_strong: 0x767676,
     text: 0x1A1A1A,
     text_muted: 0x5F5F5F,
     primary: 0x3651C5,
@@ -34,6 +36,7 @@ pub const DARK: Colors = Colors {
     surface: 0x202020,
     surface_variant: 0x2D2D2D,
     outline: 0x3F3F3F,
+    outline_strong: 0x8A8A8A,
     text: 0xFFFFFF,
     text_muted: 0xC5C5C5,
     primary: 0xB9C3FF,
@@ -64,4 +67,90 @@ pub mod motion {
     pub const FAST_MS: u32 = 120;
     pub const NORMAL_MS: u32 = 200;
     pub const EMPHASISED_MS: u32 = 300;
+}
+
+/// A glass material: the surface tint (0xRRGGBB), its opacity and the effects drawn on it. Blur is in logical px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Material {
+    pub tint: u32,
+    pub opacity: f32,
+    pub blur: f32,
+    pub highlight: f32,
+    pub border_alpha: f32,
+    pub grain: f32,
+}
+
+pub const NATIVE_LIGHT: Material = Material {
+    tint: 0xF3F3F3,
+    opacity: 0.8,
+    blur: 30.0,
+    highlight: 0.0,
+    border_alpha: 0.06,
+    grain: 0.0,
+};
+
+pub const NATIVE_DARK: Material = Material {
+    tint: 0x202020,
+    opacity: 0.8,
+    blur: 30.0,
+    highlight: 0.0,
+    border_alpha: 0.08,
+    grain: 0.0,
+};
+
+pub const RELAY_LIGHT: Material = Material {
+    tint: 0xF8F9FF,
+    opacity: 0.72,
+    blur: 24.0,
+    highlight: 0.1,
+    border_alpha: 0.1,
+    grain: 0.02,
+};
+
+pub const RELAY_DARK: Material = Material {
+    tint: 0x14172A,
+    opacity: 0.72,
+    blur: 24.0,
+    highlight: 0.12,
+    border_alpha: 0.12,
+    grain: 0.02,
+};
+
+/// Elevation steps: shadow blur in logical px and shadow alpha.
+pub const ELEVATION_BLUR: [f32; 4] = [0.0, 2.0, 8.0, 16.0];
+pub const ELEVATION_ALPHA: [f32; 4] = [0.0, 0.08, 0.12, 0.16];
+
+/// A spring: stiffness and damping ratio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spring {
+    pub stiffness: f32,
+    pub damping_ratio: f32,
+}
+
+/// Springs; effects (opacity, colour) are critically damped and never overshoot.
+pub mod spring {
+    use super::Spring;
+    pub const STANDARD: Spring = Spring {
+        stiffness: 700.0,
+        damping_ratio: 0.9,
+    };
+    pub const EMPHASISED: Spring = Spring {
+        stiffness: 380.0,
+        damping_ratio: 0.8,
+    };
+    pub const QUICK: Spring = Spring {
+        stiffness: 1400.0,
+        damping_ratio: 0.9,
+    };
+    pub const EFFECTS: Spring = Spring {
+        stiffness: 1600.0,
+        damping_ratio: 1.0,
+    };
+}
+
+/// Cubic-bezier easing curves (x1, y1, x2, y2).
+pub mod easing {
+    pub const STANDARD: [f32; 4] = [0.55, 0.55, 0.0, 1.0];
+    pub const DECELERATE: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+    pub const ACCELERATE: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
 }
