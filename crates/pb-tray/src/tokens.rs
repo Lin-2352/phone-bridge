@@ -82,7 +82,7 @@ pub struct Material {
 
 pub const NATIVE_LIGHT: Material = Material {
     tint: 0xF3F3F3,
-    opacity: 0.8,
+    opacity: 0.92,
     blur: 30.0,
     highlight: 0.0,
     border_alpha: 0.06,
@@ -91,7 +91,7 @@ pub const NATIVE_LIGHT: Material = Material {
 
 pub const NATIVE_DARK: Material = Material {
     tint: 0x202020,
-    opacity: 0.8,
+    opacity: 0.82,
     blur: 30.0,
     highlight: 0.0,
     border_alpha: 0.08,
@@ -100,7 +100,7 @@ pub const NATIVE_DARK: Material = Material {
 
 pub const RELAY_LIGHT: Material = Material {
     tint: 0xF8F9FF,
-    opacity: 0.72,
+    opacity: 0.92,
     blur: 24.0,
     highlight: 0.1,
     border_alpha: 0.1,
@@ -109,7 +109,7 @@ pub const RELAY_LIGHT: Material = Material {
 
 pub const RELAY_DARK: Material = Material {
     tint: 0x14172A,
-    opacity: 0.72,
+    opacity: 0.88,
     blur: 24.0,
     highlight: 0.12,
     border_alpha: 0.12,

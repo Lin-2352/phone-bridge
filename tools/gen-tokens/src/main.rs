@@ -9,6 +9,7 @@ fn main() -> Result<(), String> {
         std::fs::read_to_string(root.join("design/tokens.toml")).map_err(|e| e.to_string())?;
     let t = gen_tokens::load(&src)?;
     let outs = [
+        ("design/floot/base.css", gen_tokens::render_css(&t)),
         ("crates/pb-tray/src/tokens.rs", gen_tokens::render_rust(&t)),
         (
             "android/app/src/main/java/dev/phonebridge/app/ui/Tokens.kt",

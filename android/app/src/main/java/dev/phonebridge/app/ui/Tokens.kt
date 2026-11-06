@@ -83,10 +83,10 @@ object Tokens {
     }
 
     val Materials = listOf(
-        GlassMaterial(Color(0xFFF3F3F3), 0.8f, 30.0f, 0.0f, 0.06f, 0.0f), // native light
-        GlassMaterial(Color(0xFF202020), 0.8f, 30.0f, 0.0f, 0.08f, 0.0f), // native dark
-        GlassMaterial(Color(0xFFF8F9FF), 0.72f, 24.0f, 0.1f, 0.1f, 0.02f), // relay light
-        GlassMaterial(Color(0xFF14172A), 0.72f, 24.0f, 0.12f, 0.12f, 0.02f), // relay dark
+        GlassMaterial(Color(0xFFF3F3F3), 0.92f, 30.0f, 0.0f, 0.06f, 0.0f), // native light
+        GlassMaterial(Color(0xFF202020), 0.82f, 30.0f, 0.0f, 0.08f, 0.0f), // native dark
+        GlassMaterial(Color(0xFFF8F9FF), 0.92f, 24.0f, 0.1f, 0.1f, 0.02f), // relay light
+        GlassMaterial(Color(0xFF14172A), 0.88f, 24.0f, 0.12f, 0.12f, 0.02f), // relay dark
     )
 
     val ElevationBlur: List<Float> = listOf(0.0f, 2.0f, 8.0f, 16.0f)
