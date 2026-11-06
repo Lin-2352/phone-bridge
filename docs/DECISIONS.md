@@ -488,3 +488,11 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Lag: queue length.** The queue grew 40 ms at each dropout and shrank 20 ms per clean minute, so on real Wi-Fi it sat at 180 to 260 ms, plus up to 80 ms before skipping. `PlayoutTarget` now takes the third-worst of the longest gaps in 2 s windows over 30 s, plus 40 ms, between 60 and 160 ms. Repeated gaps get covered, a rare stall does not raise the delay on everything, and it comes back down within 30 s.
 - **What didn't work, measured.** Sizing from packet age left out the frame length: a queue of 65 ms ran dry 4 times per 10 s. A speed correction of 2% was heard as the sound being slowed down, so it is now 0.5%. A margin of 20 ms gave a dropout every 24 s from ordinary gaps of 60 to 90 ms.
 - **Wi-Fi media streaming mode (`WlanSetInterface`) was tried and removed.** Switched on and off by the minute during one share: 85.9% against 85.6% of packets within 20 ms, and no fewer stalls.
+
+## Audio leftovers (2026-11-06, v2 Part A)
+
+- **VPN hint.** Home shows "A VPN is on" only with a VPN active, a PC paired and the last attempt to reach it failed. A VPN alone is not a problem (a split-tunnel one, like Proton's, lets the LAN through), and the card has no dismiss.
+- **Reconnecting.** A running phone-audio share with no frame for `STALL_MS` (1.5 s) says "Reconnecting…" on the PC flyout. The sender never skips silent frames (no DTX), so a paused player does not trigger it. The phone's matching text rarely shows: audio rides its own session, so when it drops the share ends with it.
+- **Accept order.** The PC hears "yes" once the phone's speaker is silenced, or after 1.5 s, and the wait is no longer on the main thread (`acceptOrder`).
+- **Log fallback folder** follows the install's folder name, like the data folder (`Relay\logs` new, `PhoneBridge\logs` old).
+- **Release exe.** The portable folder in use runs the `--release` build. Its camera DLL bytes are embedded and differ from the previous spike build's, so the first camera start can show one UAC prompt.
