@@ -4,7 +4,7 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M6.0 (plans M5.0 and M6.0 written ahead of M4.9/M4.R; M4.8 is the last finished M4 task: Floot project "Relay design", checkpoints d058a6f7, 4fd65ce9, c1f8b610).
+- **Last finished task:** M7.0 (plans M5.0, M6.0 and M7.0 written ahead of M4.9/M4.R; M4.8 is the last finished M4 task: Floot project "Relay design", checkpoints d058a6f7, 4fd65ce9, c1f8b610).
 - **Next task:** M4.9 (BLOCKED on the owner: the Floot preview must be open in the owner's own foreground browser tab so `screenshot_preview` can capture; headless Edge/Chrome produce no output here). Then M4.R, then M5.0a/M5.1 (plan written: M5.0). M6.0, M7.0 and M8.0 plans are still to write.
 - **Read first, in this order:**
   1. this file;
@@ -162,6 +162,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M6.R Milestone review and CI green
 
 ## M7 Security shield
+- [x] M7.0 Plan: [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md) (written ahead of M4.9/M4.R; Task M7.0a refreshes it at start)
 - [ ] M7.1 Android unlock gate (BiometricPrompt per API level; `FragmentActivity` hosts)
 - [ ] M7.2 PC unlock gate (Windows Hello interop on Windows 11; unavailable with a reason elsewhere)
 - [ ] M7.3 Gate wired to every guarded action, with a 60 s grace
