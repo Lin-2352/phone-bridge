@@ -75,4 +75,13 @@ class AttentionTest {
         assertEquals(listOf(Need.AppNotificationsOff), needs(true, false, true, true, false, false, appNotificationsOn = false))
         assertEquals(listOf(Need.PcForgotPhone, Need.AppNotificationsOff), needs(true, false, true, true, false, true, appNotificationsOn = false))
     }
+
+    /** M3.7 (B5): nothing else on Home works until the identity is reset, so it comes first. */
+    @Test fun a_lost_identity_comes_first() {
+        assertEquals(
+            Need.IdentityLost,
+            needs(false, true, false, false, true, true, appNotificationsOn = false, identityLost = true).first(),
+        )
+        assertTrue(Need.IdentityLost !in needs(true, true, true, true, false, false, appNotificationsOn = true))
+    }
 }

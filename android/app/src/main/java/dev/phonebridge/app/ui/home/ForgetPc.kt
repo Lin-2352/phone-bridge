@@ -1,5 +1,7 @@
 package dev.phonebridge.app.ui.home
 
+import dev.phonebridge.app.APP_NAME
+
 /** The confirmation shown before "Remove and pair again" deletes pairings. */
 data class ForgetPrompt(val title: String, val body: String)
 
@@ -16,3 +18,11 @@ fun forgetPrompt(names: List<String>): ForgetPrompt {
             "Only continue if you recognise the reset. Then scan the QR code on your PC to pair again.",
     )
 }
+
+/** The confirmation shown before "Reset and pair again" (M3.7, B5). */
+fun identityResetPrompt(): ForgetPrompt = ForgetPrompt(
+    title = "Reset and pair again?",
+    body = "$APP_NAME can no longer open the keys that identify this phone, usually after the screen lock was changed or the " +
+        "phone was restored. Resetting makes new ones. Your PCs will see this phone as a new device: remove it on each PC, " +
+        "then pair again by scanning the QR code on your PC. Nothing else on this phone is deleted.",
+)

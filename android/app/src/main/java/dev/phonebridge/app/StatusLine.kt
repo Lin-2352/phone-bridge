@@ -19,8 +19,10 @@ data class RelayStatus(val title: String, val detail: String?) {
 fun relayStatus(
     running: Boolean, ready: Boolean, pc: String?, connected: Boolean,
     lastSeenMs: Long, nowMs: Long, controller: String? = null, discoveryOff: Boolean = false,
-    attemptFailed: Boolean = false,
+    attemptFailed: Boolean = false, identityLost: Boolean = false,
 ): RelayStatus = when {
+    // The service stopped on purpose: "is off" would send the user the wrong way.
+    identityLost -> RelayStatus("$APP_NAME can't open its keys", "Reset and pair again from $APP_NAME's Home screen")
     !running -> RelayStatus("$APP_NAME is off", null)
     !ready -> RelayStatus("Starting\u2026", null)
     controller != null -> RelayStatus("$controller is controlling this phone", null)

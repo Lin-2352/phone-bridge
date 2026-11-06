@@ -35,4 +35,12 @@ class ForgetPcTest {
         assertFalse(isOpenable(true, null))
         assertFalse(isOpenable(false, "content://x/1"))
     }
+
+    /** M3.7 (B5): after a reset every PC sees a stranger, so the prompt says what to do on each PC. */
+    @Test fun the_reset_prompt_says_the_pcs_will_see_a_new_device() {
+        val p = identityResetPrompt()
+        assertTrue(p.body, p.body.contains("new device"))
+        assertTrue(p.body, p.body.contains("remove it on each PC"))
+        assertTrue(p.body, p.body.contains("pair again"))
+    }
 }

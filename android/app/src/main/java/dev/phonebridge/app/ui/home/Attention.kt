@@ -3,7 +3,7 @@ package dev.phonebridge.app.ui.home
 import dev.phonebridge.app.screenshotAccessMissing
 
 /** One problem the Home "Needs attention" card lists, each with its own fix. */
-enum class Need { NotificationAccess, PhotosPermission, ControlOff, PcForgotPhone, AppNotificationsOff }
+enum class Need { IdentityLost, NotificationAccess, PhotosPermission, ControlOff, PcForgotPhone, AppNotificationsOff }
 
 /**
  * A PC asked to control this phone and was refused because Relay control was not running
@@ -20,7 +20,9 @@ fun controlWaiting(refusedAtMs: Long, nowMs: Long, controlOn: Boolean, windowMs:
  * Photos matter only while screenshots are shared; Control only while a PC's request waits (off alone is
  * normal: it switches itself off after every session). [appNotificationsOn] is the app's own notifications.
  */
-fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean, controlOn: Boolean, controlWaiting: Boolean, pcForgot: Boolean, appNotificationsOn: Boolean): List<Need> = buildList {
+fun needs(notifyAccess: Boolean, screenshotsOn: Boolean, photosGranted: Boolean, controlOn: Boolean, controlWaiting: Boolean, pcForgot: Boolean, appNotificationsOn: Boolean, identityLost: Boolean = false): List<Need> = buildList {
+    // Nothing else works until the identity is reset.
+    if (identityLost) add(Need.IdentityLost)
     if (!notifyAccess) add(Need.NotificationAccess)
     if (screenshotAccessMissing(screenshotsOn, photosGranted)) add(Need.PhotosPermission)
     if (controlWaiting && !controlOn) add(Need.ControlOff)

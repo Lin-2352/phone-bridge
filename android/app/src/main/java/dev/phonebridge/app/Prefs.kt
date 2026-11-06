@@ -129,6 +129,11 @@ class Prefs(context: Context) {
         sp.edit().remove("allow_control").remove("allow_screen").apply()
     }
 
+    /** The Keystore can no longer open this phone's identity (M3.7, B5): Relay stays off until it is reset. */
+    var identityLost: Boolean
+        get() = sp.getBoolean("identity_lost", false)
+        set(v) = sp.edit().putBoolean("identity_lost", v).apply()
+
     /** "Phone Bridge stopped" was shown and not yet resolved (shown once, not every 15 min). */
     var stoppedNotified: Boolean
         get() = sp.getBoolean("stopped_notified", false)

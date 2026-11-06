@@ -15,7 +15,7 @@ import uniffi.pb_ffi.PbException
  * Android Keystore. Blob format: 12-byte IV || ciphertext+tag.
  */
 class KeystoreWrapper : KeyWrapper {
-    private val alias = "phone_bridge_identity_v1"
+    private val alias = ALIAS
 
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -46,5 +46,14 @@ class KeystoreWrapper : KeyWrapper {
         c.doFinal(sealed.copyOfRange(12, sealed.size))
     } catch (e: Exception) {
         throw PbException.Failed("keystore unwrap failed: $e")
+    }
+
+    companion object {
+        private const val ALIAS = "phone_bridge_identity_v1"
+
+        /** Deletes the key that sealed the identity (M3.7 reset): a new one is made on the next start. */
+        fun forget() {
+            runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) }
+        }
     }
 }

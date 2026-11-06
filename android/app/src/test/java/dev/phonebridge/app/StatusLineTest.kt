@@ -65,4 +65,10 @@ class StatusLineTest {
         assertEquals("Last seen just now", st(seen = now - 5_000).detail)
         assertEquals("Last seen yesterday", st(seen = now - 30 * 3600_000L).detail)
     }
+
+    /** M3.7 (B5): the service has stopped on purpose, so "Relay is off" would send the user the wrong way. */
+    @Test fun a_lost_identity_is_said_before_anything_else() {
+        val s = relayStatus(false, false, "DESK", false, 0L, now, identityLost = true)
+        assertEquals("Relay can't open its keys", s.title)
+    }
 }

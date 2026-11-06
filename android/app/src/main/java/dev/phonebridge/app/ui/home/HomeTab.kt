@@ -182,7 +182,25 @@ fun HomeTab(onTimeline: () -> Unit) {
             controlWaiting = controlWaiting(refusedAt, now, controlOn),
             pcForgot = forgot,
             appNotificationsOn = ctx.getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled(),
+            identityLost = prefs.identityLost,
         )
+    }
+    var confirmReset by remember { mutableStateOf(false) }
+    if (confirmReset) {
+        val prompt = identityResetPrompt()
+        RelayDialog(
+            title = prompt.title,
+            onDismissRequest = { confirmReset = false },
+            confirmText = "Reset and pair again",
+            destructive = true,
+            onConfirm = {
+                confirmReset = false
+                dev.phonebridge.app.resetIdentity(ctx)
+            },
+            dismissText = "Cancel",
+        ) {
+            Text(prompt.body, style = MaterialTheme.typography.bodyMedium)
+        }
     }
     var forgetNames by remember { mutableStateOf<List<String>?>(null) }
     forgetNames?.let { names ->
@@ -244,6 +262,7 @@ fun HomeTab(onTimeline: () -> Unit) {
                 item(key = "needs") {
                     NeedsCard(list, Modifier.animateItem()) { need ->
                         when (need) {
+                            Need.IdentityLost -> confirmReset = true
                             Need.NotificationAccess -> accessOpener(dev.phonebridge.app.ui.settings.SpecialAccess.Notifications)
                             Need.PhotosPermission -> askPhotos.launch(ClipImages.imagePermissions)
                             Need.ControlOff -> accessOpener(dev.phonebridge.app.ui.settings.SpecialAccess.Control)
@@ -378,6 +397,11 @@ private fun NeedsCard(needs: List<Need>, modifier: Modifier, onFix: (Need) -> Un
 
 /** Heading, explanation and fix button for one [Need]. */
 private fun needText(need: Need): Triple<String, String, String> = when (need) {
+    Need.IdentityLost -> Triple(
+        "$APP_NAME can't open its keys",
+        "This phone's identity can't be read any more, usually after a change of screen lock. Reset it, then pair again with your PC.",
+        "Reset and pair again",
+    )
     Need.NotificationAccess -> Triple(
         "Phone notifications are not reaching your PC",
         "$APP_NAME needs notification access. Tap Fix, then turn on $APP_NAME.",

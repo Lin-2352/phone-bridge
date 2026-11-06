@@ -133,6 +133,7 @@ object Bridge {
             up, nodeReady.value, linked.value, isConnected(), lastSeenAny(ctx), System.currentTimeMillis(), controlledBy.value,
             discoveryOff = node?.let { !it.discoveryActive() } ?: false,
             attemptFailed = attemptFailed.value,
+            identityLost = Prefs(ctx).identityLost,
         )
     }
 
@@ -436,11 +437,23 @@ class PbService : Service() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                val failure = startFailure(e)
+                if (failure == StartFailure.KEYSTORE_RESET) {
+                    // The identity can't be opened: retrying can never help (M3.7, B5). Stop, say so once,
+                    // and keep the recovery job from starting it again until the user resets.
+                    Log.e(TAG, "SERVICE failed to start: $failure")
+                    AppLog.event("events", "node_failed", "failure" to failure.name, "try" to attempt)
+                    Prefs(this).identityLost = true
+                    cancelRecovery(this)
+                    notifyIdentityLost(this)
+                    android.os.Handler(mainLooper).post { stopSelf() }
+                    return
+                }
                 // Keystore not ready, port busy...: try again briefly, then do not sit in
                 // the foreground pretending to work. RecoveryJob retries later.
                 val reason = nodeFailureReason((e as? uniffi.pb_ffi.PbException.Failed)?.reason ?: e.message)
-                Log.e(TAG, "SERVICE failed to start (try $attempt): $reason")
-                AppLog.event("events", "node_failed", "type" to e.javaClass.simpleName, "why" to reason, "try" to attempt)
+                Log.e(TAG, "SERVICE failed to start (try $attempt, $failure): $reason")
+                AppLog.event("events", "node_failed", "failure" to failure.name, "why" to reason, "try" to attempt)
                 val wait = nodeRetryDelayMs(attempt)
                 if (wait == null) {
                     notifyInfo(this, "$APP_NAME could not start", "Open $APP_NAME to try again. If this keeps happening, restart your phone")

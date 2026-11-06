@@ -54,7 +54,8 @@ fun ensureRunning(ctx: Context, why: String) {
         }
         return
     }
-    if (!Prefs(ctx).enabled || Bridge.running.value) return
+    val p = Prefs(ctx)
+    if (!shouldRecover(p.enabled, Bridge.running.value, p.identityLost)) return
     try {
         ctx.startForegroundService(Intent(ctx, PbService::class.java))
         Log.i(TAG, "RECOVERY started service ($why)")
