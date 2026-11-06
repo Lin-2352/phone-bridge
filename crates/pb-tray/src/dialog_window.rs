@@ -22,10 +22,11 @@ use windows::{
         Graphics::Gdi::{InvalidateRect, ScreenToClient, ValidateRect},
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            Controls::WM_MOUSELEAVE,
             HiDpi::AdjustWindowRectExForDpi,
             Input::KeyboardAndMouse::{
-                GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_ESCAPE, VK_RETURN, VK_SHIFT,
-                VK_SPACE, VK_TAB,
+                GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE,
+                TRACKMOUSEEVENT, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
             },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
@@ -33,9 +34,9 @@ use windows::{
                 RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
                 TranslateMessage, HWND_TOPMOST, IDC_ARROW, MSG, SM_CXSCREEN, SM_CYSCREEN,
                 SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_DPICHANGED,
-                WM_ERASEBKGND, WM_GETDLGCODE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT,
-                WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOPMOST,
-                WS_OVERLAPPED, WS_SYSMENU,
+                WM_ERASEBKGND, WM_GETDLGCODE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_CAPTION,
+                WS_EX_APPWINDOW, WS_EX_TOPMOST, WS_OVERLAPPED, WS_SYSMENU,
             },
         },
     },
@@ -49,8 +50,12 @@ use crate::{
 };
 
 const CLASS: PCWSTR = w!("PhoneBridgeDialog");
+/// The hover animation's frame timer: runs only while a hover value is moving.
 const TIMER_ANIM: usize = 1;
 const TICK_MS: u32 = 16;
+/// Polls whether the question is still wanted; far slower than a frame loop.
+const TIMER_ALIVE: usize = 2;
+const ALIVE_MS: u32 = 500;
 /// DLGC_WANTALLKEYS: keep Tab, Enter and Esc for us instead of the dialog manager.
 const DLGC_WANTALLKEYS: isize = 0x0004;
 
@@ -491,17 +496,34 @@ fn cursor_client(hwnd: HWND) -> Option<POINT> {
     }
 }
 
-fn tick(hwnd: HWND) {
+/// Every button's hover value has reached what the pointer asks for: nothing to animate.
+fn hover_settled(hover: &[f32; 2], over: Option<Button>) -> bool {
+    [Button::Primary, Button::Secondary]
+        .iter()
+        .all(|b| ease::settled(hover[idx(*b)], f32::from(over == Some(*b))))
+}
+
+/// The slow timer: the question timed out or was withdrawn, so close and answer "no" (a no-op for the
+/// asker, which has stopped listening).
+fn check_alive(hwnd: HWND) {
     if !is_alive() {
-        // The request timed out or was withdrawn: close, answer "no" (a
-        // no-op for the asker, which has stopped listening).
         answer(hwnd, false);
-        return;
     }
+}
+
+/// Starts the frame timer (a repeat just restarts it); the pointer moved, so a hover may change.
+fn wake_frames(hwnd: HWND) {
+    // SAFETY: our own timer on our own window.
+    let _ = unsafe { SetTimer(Some(hwnd), TIMER_ANIM, TICK_MS, None) };
+}
+
+fn tick(hwnd: HWND) {
     let pt = cursor_client(hwnd);
-    let changed = STATE.with(|st| {
+    let (changed, settled) = STATE.with(|st| {
         let mut st = st.borrow_mut();
-        let Some(st) = st.as_mut() else { return false };
+        let Some(st) = st.as_mut() else {
+            return (false, true);
+        };
         let now = Instant::now();
         let dt = now.duration_since(st.last_tick).as_millis().min(100) as u32;
         st.last_tick = now;
@@ -514,11 +536,15 @@ fn tick(hwnd: HWND) {
             changed |= next != cur;
             st.hover[idx(b)] = next;
         }
-        changed
+        (changed, hover_settled(&st.hover, over))
     });
     if changed {
         // SAFETY: repaint our own window.
         let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+    if !ease::needs_frame_timer(!settled) {
+        // SAFETY: our own timer; the next pointer move starts it again.
+        let _ = unsafe { KillTimer(Some(hwnd), TIMER_ANIM) };
     }
 }
 
@@ -530,7 +556,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_TIMER => {
-            tick(hwnd);
+            match wparam.0 {
+                TIMER_ALIVE => check_alive(hwnd),
+                _ => tick(hwnd),
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            // SAFETY: asks Windows for one WM_MOUSELEAVE for our own window.
+            let _ = unsafe { TrackMouseEvent(&mut track) };
+            wake_frames(hwnd);
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            wake_frames(hwnd);
             LRESULT(0)
         }
         WM_GETDLGCODE => LRESULT(DLGC_WANTALLKEYS),
@@ -658,6 +703,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // SAFETY: our own timer and thread.
             unsafe {
                 let _ = KillTimer(Some(hwnd), TIMER_ANIM);
+                let _ = KillTimer(Some(hwnd), TIMER_ALIVE);
                 PostQuitMessage(0);
             }
             LRESULT(0)
@@ -794,7 +840,9 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
         );
         fluent::frame(hwnd, false);
         fluent::register_window(hwnd);
+        // One frame loop to settle the first hover; it stops itself. The alive check is a slow timer.
         let _ = SetTimer(Some(hwnd), TIMER_ANIM, TICK_MS, None);
+        let _ = SetTimer(Some(hwnd), TIMER_ALIVE, ALIVE_MS, None);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         let _ = SetFocus(Some(hwnd));
@@ -812,6 +860,28 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn the_dialog_timer_stops_when_settled() {
+        // At rest: no hover value is moving, so no frame timer is needed.
+        assert!(hover_settled(&[0.0, 0.0], None));
+        assert!(!ease::needs_frame_timer(!hover_settled(&[0.0, 0.0], None)));
+        assert!(hover_settled(&[1.0, 0.0], Some(Button::Primary)));
+        // Moving toward a hovered button, or fading away from one that is not hovered: keep ticking.
+        assert!(!hover_settled(&[0.4, 0.0], Some(Button::Primary)));
+        assert!(!hover_settled(&[0.0, 0.7], None));
+        assert!(ease::needs_frame_timer(!hover_settled(
+            &[0.4, 0.0],
+            Some(Button::Primary)
+        )));
+    }
+
+    #[test]
+    fn the_alive_check_has_its_own_slow_timer() {
+        assert_ne!(TIMER_ANIM, TIMER_ALIVE);
+        // Polling is_alive is not a frame loop (checked when the crate is built).
+        const _: () = assert!(ALIVE_MS >= 250);
+    }
 
     #[test]
     fn code_is_grouped_in_two_halves() {

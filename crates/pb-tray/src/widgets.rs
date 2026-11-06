@@ -296,9 +296,21 @@ fn pulse_alpha(ms: u128) -> f32 {
     0.06 + 0.08 * tri
 }
 
-/// A page showing a skeleton must keep its frame timer running, because the
-/// placeholder pulses until real content replaces it.
-pub const SKELETON_ANIMATES: bool = true;
+/// The placeholder's opacity: still (the middle of the pulse) under reduced motion.
+fn skeleton_alpha(ms: u128, reduced: bool) -> f32 {
+    if reduced {
+        0.10
+    } else {
+        pulse_alpha(ms)
+    }
+}
+
+/// A page showing a skeleton must keep its frame timer running while the placeholder pulses; with
+/// reduced motion it is still, so no timer is needed.
+#[allow(dead_code)] // the pages that show a skeleton ask it when they set their frame timer
+pub fn skeleton_animates(reduced: bool) -> bool {
+    !reduced
+}
 
 /// Loading placeholder block that pulses with `now` (it needs frames until
 /// replaced by real content).
@@ -310,7 +322,10 @@ pub fn skeleton(c: &Canvas, r: RectF, now: Instant) {
     round_rect(
         c,
         &r,
-        Some((c.p.text, pulse_alpha(ms))),
+        Some((
+            c.p.text,
+            skeleton_alpha(ms, crate::fluent::reduced_motion()),
+        )),
         None,
         radius,
         false,
@@ -321,6 +336,21 @@ pub fn skeleton(c: &Canvas, r: RectF, now: Instant) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn skeleton_is_still_with_reduced_motion() {
+        let still = skeleton_alpha(0, true);
+        for ms in [1, 300, 600, 900, 1_199, 5_000] {
+            assert_eq!(skeleton_alpha(ms, true), still, "{ms} ms");
+        }
+        assert!(
+            !skeleton_animates(true),
+            "no frame timer for a still skeleton"
+        );
+        assert!(skeleton_animates(false));
+        // Moving otherwise.
+        assert_ne!(skeleton_alpha(0, false), skeleton_alpha(600, false));
+    }
 
     #[test]
     fn only_visible_rows_plus_overscan() {

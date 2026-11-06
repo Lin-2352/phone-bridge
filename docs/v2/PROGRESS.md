@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M5.1 (materials, system state, the Look setting and the fallbacks). Visual checks of Mica, Acrylic and Relay glass are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M5.2 (springs in `ease.rs`, only while animating and off when Windows animations are off; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
+- **Last finished task:** M5.2 (motion: springs for released drags, token curve, timers that stop). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M5.3 (tray flyout on the tokens; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -130,7 +130,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M5.0a Refresh at start (R-4 and R-22 settled in the tokens, R-15 ruled, type ramp confirmed)
 - [x] M5.0 Plan: [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md) (written ahead of M4.9/M4.R; Task M5.0a re-checks its rulings against M4.R)
 - [x] M5.1 Materials: Mica, Acrylic, Relay glass, and fallbacks keyed on DWM failure, transparency off or high contrast (look.rs rules, Look setting and Appearance page, system state and high-contrast palette, glass windows always on the composition path so a toggle never rebuilds a window, cached grain tile; menus and dialogs stay Solid until M5.6; the visual check is on [DEVICE-CHECKS.md](DEVICE-CHECKS.md))
-- [ ] M5.2 Springs in `ease.rs` (only while animating; off when Windows animations are off)
+- [x] M5.2 Springs in `ease.rs` (only while animating; off when Windows animations are off): `SpringAnim` and `spring_anim` (none under reduced motion), `ease::STANDARD` from the token curve, the dialog's frame timer stops when hover settles (a slow 500 ms timer checks the question is still wanted), the skeleton is still under reduced motion
 - [ ] M5.3 Tray flyout
 - [ ] M5.4 Main window: Home, Devices, Transfers, Timeline, Settings
 - [ ] M5.5 Pairing and QR

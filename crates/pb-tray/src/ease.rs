@@ -35,10 +35,14 @@ pub fn settled(current: f32, target: f32) -> bool {
 }
 
 /// Control points of the standard easing curve, cubic-bezier(x1, y1, x2, y2)
-/// from (0, 0) to (1, 1): quick start, long gentle settle.
-/// `design/tokens.toml` names no curve yet, so it lives here.
+/// from (0, 0) to (1, 1); the value is the design token `easing.standard`.
 #[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
-pub const STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
+pub const STANDARD: (f32, f32, f32, f32) = (
+    crate::tokens::easing::STANDARD[0],
+    crate::tokens::easing::STANDARD[1],
+    crate::tokens::easing::STANDARD[2],
+    crate::tokens::easing::STANDARD[3],
+);
 
 /// One coordinate of a cubic bezier from 0 to 1 with inner controls `a`, `b`.
 #[allow(dead_code)] // the widgets animate with it (pages use them from Task 8 on)
@@ -110,6 +114,83 @@ impl Anim {
     }
 }
 
+/// A frame timer is needed only while something animates; a window kills its timer when this turns false.
+pub fn needs_frame_timer(anim_running: bool) -> bool {
+    anim_running
+}
+
+/// A spring animation for motion that follows the user's hand (a released drag, a fling settling).
+/// Transitions use `Anim` with the token curve and durations instead. Units are the caller's own (pixels,
+/// 0..1): the spring is linear, so how long it takes does not depend on the distance.
+#[allow(dead_code)] // the nav track and scrollbar thumb use it when drags are released
+#[derive(Clone, Copy, Debug)]
+pub struct SpringAnim {
+    x: f32,
+    v: f32,
+    target: f32,
+    span: f32,
+    spring: crate::tokens::Spring,
+}
+
+#[allow(dead_code)] // the nav track and scrollbar thumb use it when drags are released
+impl SpringAnim {
+    pub fn new(from: f32, to: f32, spring: crate::tokens::Spring) -> Self {
+        Self {
+            x: from,
+            v: 0.0,
+            target: to,
+            span: (to - from).abs().max(1.0),
+            spring,
+        }
+    }
+
+    /// Advances by `dt_ms` (at most 64: a stall while a window is dragged must not blow the velocity up)
+    /// and returns the new value. Semi-implicit Euler in sub-steps of at most 4 ms, with
+    /// omega = sqrt(stiffness) and the damping ratio from the token.
+    pub fn step(&mut self, dt_ms: u32) -> f32 {
+        if self.settled() {
+            self.x = self.target;
+            self.v = 0.0;
+            return self.x;
+        }
+        let w = self.spring.stiffness.sqrt();
+        let damping = 2.0 * self.spring.damping_ratio * w;
+        let mut left = dt_ms.min(64) as f32 / 1000.0;
+        while left > 0.0 {
+            let h = left.min(0.004);
+            let a = -w * w * (self.x - self.target) - damping * self.v;
+            self.v += a * h;
+            self.x += self.v * h;
+            left -= h;
+        }
+        if self.settled() {
+            self.x = self.target;
+            self.v = 0.0;
+        }
+        self.x
+    }
+
+    /// Within a thousandth of the distance of the target, and nearly still.
+    pub fn settled(&self) -> bool {
+        (self.x - self.target).abs() < 0.001 * self.span && self.v.abs() < 0.01 * self.span
+    }
+
+    pub fn value(&self) -> f32 {
+        self.x
+    }
+}
+
+/// The spring for a released drag, or `None` when reduced motion asks for a cut.
+#[allow(dead_code)] // the nav track and scrollbar thumb use it when drags are released
+pub fn spring_anim(
+    from: f32,
+    to: f32,
+    spring: crate::tokens::Spring,
+    modes: crate::tokens_rules::Modes,
+) -> Option<SpringAnim> {
+    crate::tokens_rules::spring_or_cut(spring, modes).map(|s| SpringAnim::new(from, to, s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +245,92 @@ mod tests {
     fn a_settled_value_needs_no_timer() {
         assert!(settled(1.0, 1.0));
         assert!(!settled(0.5, 1.0));
+    }
+
+    /// Steps `a` in 16 ms frames until it settles; the time it took, in ms (capped at 5 s).
+    fn settle_ms(a: &mut SpringAnim) -> u32 {
+        let mut t = 0;
+        while !a.settled() && t < 5_000 {
+            a.step(16);
+            t += 16;
+        }
+        t
+    }
+
+    #[test]
+    fn a_spring_reaches_its_target_and_settles() {
+        use crate::tokens::spring;
+        for s in [
+            spring::STANDARD,
+            spring::EMPHASISED,
+            spring::QUICK,
+            spring::EFFECTS,
+        ] {
+            let mut a = SpringAnim::new(0.0, 1.0, s);
+            let t = settle_ms(&mut a);
+            assert!(t < 1_500, "{s:?} took {t} ms");
+            assert_eq!(a.step(16), 1.0, "settled means exactly on target");
+        }
+    }
+
+    #[test]
+    fn pixel_range_spring_settles_without_tail_burn() {
+        use crate::tokens::spring;
+        let mut a = SpringAnim::new(0.0, 240.0, spring::STANDARD);
+        assert!(settle_ms(&mut a) < 600);
+    }
+
+    #[test]
+    fn a_long_stall_dt_is_clamped_and_stays_stable() {
+        use crate::tokens::spring;
+        let mut a = SpringAnim::new(0.0, 1.0, spring::EMPHASISED);
+        let x = a.step(2_000);
+        assert!(x <= 1.15, "a window-drag stall must not explode: {x}");
+        assert!(x.is_finite());
+    }
+
+    #[test]
+    fn the_effects_spring_never_overshoots() {
+        use crate::tokens::spring;
+        let mut a = SpringAnim::new(0.0, 1.0, spring::EFFECTS);
+        for _ in 0..2_000 {
+            assert!(a.step(1) <= 1.0 + 1e-4, "effects must not overshoot");
+        }
+    }
+
+    #[test]
+    fn an_emphasised_spring_overshoots_a_little() {
+        use crate::tokens::spring;
+        let mut a = SpringAnim::new(0.0, 1.0, spring::EMPHASISED);
+        let mut peak = 0.0f32;
+        for _ in 0..1_000 {
+            peak = peak.max(a.step(4));
+        }
+        assert!(peak > 1.0, "it passes the target");
+        assert!(peak < 1.10, "by under 10%: {peak}");
+    }
+
+    #[test]
+    fn standard_matches_the_token_curve() {
+        let [x1, y1, x2, y2] = crate::tokens::easing::STANDARD;
+        assert_eq!(STANDARD, (x1, y1, x2, y2));
+        assert!(standard(0.0).abs() < 1e-3 && (standard(1.0) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn reduced_motion_makes_no_spring() {
+        use crate::{tokens::spring, tokens_rules::Modes};
+        let reduced = Modes {
+            reduced_motion: true,
+            ..Modes::default()
+        };
+        assert!(spring_anim(0.0, 1.0, spring::STANDARD, reduced).is_none());
+        assert!(spring_anim(0.0, 1.0, spring::STANDARD, Modes::default()).is_some());
+    }
+
+    #[test]
+    fn a_frame_timer_runs_only_while_something_animates() {
+        assert!(needs_frame_timer(true));
+        assert!(!needs_frame_timer(false));
     }
 }
