@@ -28,14 +28,17 @@
 3. **High contrast on:** system colours, no glass. Tests: `high_contrast_palette_uses_system_colours`, `high_contrast_is_solid_everywhere` (M5.1).
 4. **Windows animations off:** no spring and no timer left running. Tests: `reduced_motion_makes_no_spring`, `the_dialog_timer_stops_when_settled` (M5.2).
 5. **Idle with nothing animating:** 0 CPU, measured by `scripts/pc-budget.ps1`; test `budget_table_flags_each_overrun` (M5.11).
+6. **Crisp text and 1 px hairlines across DPI scales:** grayscale text antialiasing on translucent glass (`Material != Solid`), ClearType on opaque cards and surfaces, tabular numerals (`tnum`) on live counters, and half-pixel (`+ 0.5`) stroke alignment on 1 px card borders. Tests: `text_aa_mode_matches_surface_opacity`, `stroke_rect_snaps_to_half_pixel` (M5.1).
 
 ## Rulings already made
 - Ruling: this plan (M5.0) is written before M4.9 and M4.R finish, because M4.9 waits on the owner's open preview tab and the owner asked for unblocked work to continue; the rulings marked "made in M5.0 ahead of M4.R" are recorded in PRINCIPLES and DECISIONS by M4.R, and Task M5.0a re-checks them — cost if wrong: one rewrite of this file.
 - Ruling (made in M5.0 ahead of M4.R; M4.R records it): the amber token is renamed `attention` and `Palette.accent`/`on_accent` become `primary`/`on_primary` in M5.1 — PRINCIPLES says one accent (`primary`); the PC already draws cobalt at all 22 + 11 reads and never draws amber — if wrong, a rename-only revert.
 - Ruling (made in M5.0 ahead of M4.R; M4.R records it): springs (ease.rs) are used only where motion follows the hand (a released drag, a fling); transitions use `tokens::easing` with `tokens::motion` durations — SPEC M5.2 asks for springs, research found no published Windows springs for transitions — if wrong, swap curves in `ease.rs` only.
+- Ruling: `RelayGlass` grain is a pre-baked 64×64 tileable monochrome bitmap (seeded `xorshift32`, `D2D1_EXTEND_MODE_WRAP`, alpha `0.025`) created once with the surface's device resources, plus a 1 px top-edge inner highlight — zero per-frame procedural cost and deterministic under WARP — none.
+- Ruling: Direct2D uses `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE` while drawing directly over a translucent backdrop (`Mica`, `Acrylic`, `RelayGlass`) and `CLEARTYPE` inside opaque cards or `Solid` surfaces — ClearType on premultiplied alpha causes colour fringing — none.
 - Ruling: "quick panel" on the PC means the tray flyout (Relay's Quick-Settings-style panel) — the PC has no other — if wrong, UIA for another window is a later task.
 - Ruling: the Transfers page is new (the main window has none today).
-- Ruling: snapshot renders use WARP — deterministic pixels on CI — hardware differences are not tested.
+- Ruling: snapshot renders use WARP with a deterministic simulated backdrop pass over `wallpaper.png` per `Material` — DWM does not composite `Mica`/`Acrylic` on offscreen targets, and the snapshot job must verify the visual difference between materials — hardware differences are not tested.
 - Ruling: a missing Segoe UI Variable falls back to Segoe UI in the product, not only in tests — the README promises Windows 10 2004, which lacks the variable font — none.
 - Ruling: lite mode is Android-only; on the PC `Modes.lite` stays false — SPEC defines lite for Android.
 
@@ -62,10 +65,13 @@ pub fn material_for(kind: SurfaceKind, look: Look, sys: SysState) -> Material
 pub fn modes(sys: SysState) -> crate::tokens_rules::Modes
 pub fn glass(look: Look, dark: bool, sys: SysState) -> crate::tokens::Material
 pub fn rebuild_needed(old: SysState, new: SysState) -> bool
+pub fn uses_cleartype(material: Material, on_opaque_card: bool) -> bool
+pub fn snap_hairline(px: f32) -> f32
+pub fn grain_tile_64() -> [u8; 4096]
 pub const TEXT_GLASS_MIN_ALPHA: f32 = 0.70;
 pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 ```
-`material_for`: any of `!transparency_on`, `high_contrast`, `!dwm_backdrop_ok` gives `Solid`. Native: `MainWindow` = `Mica`; `Flyout`, `Menu`, `Dialog` = `Acrylic`; everything else `Solid`. Relay: those four = `RelayGlass` (DWM Acrylic base plus Direct2D tint, highlight and grain); everything else `Solid`. `Qr` is always `Solid`.
+`material_for`: any of `!transparency_on`, `high_contrast`, `!dwm_backdrop_ok` gives `Solid`. Native: `MainWindow` = `Mica`; `Flyout`, `Menu`, `Dialog` = `Acrylic`; everything else `Solid`. Relay: those four = `RelayGlass` (DWM Acrylic base plus a Direct2D tint, a 1 px top inner highlight and the pre-baked 64×64 grain bitmap); everything else `Solid`. `Qr` is always `Solid`. `uses_cleartype` is true only when `material == Material::Solid || on_opaque_card`. `snap_hairline(px)` returns `px.floor() + 0.5` so 1 px borders land on pixel centres.
 
 ---
 
@@ -80,7 +86,7 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 ### Task M5.1: Materials, system state and fallbacks
 **Files:**
 - Create `crates/pb-tray/src/look.rs`; add `mod look;` in `main.rs`.
-- Modify `d2d.rs`: `Backdrop` gains `Acrylic`; `choose`/`build` take a `DWM_SYSTEMBACKDROP_TYPE` from the material instead of the hard-coded `DWMSBT_MAINWINDOW`.
+- Modify `d2d.rs`: `Backdrop` gains `Acrylic` and `RelayGlass`; `choose`/`build` take a `DWM_SYSTEMBACKDROP_TYPE` from the material (`DWMSBT_MAINWINDOW` for Mica, `DWMSBT_TRANSIENTWINDOW` for Acrylic and RelayGlass, `DWMSBT_NONE` for Solid); create the 64×64 `grain_tile_64()` `ID2D1BitmapBrush` (`D2D1_EXTEND_MODE_WRAP`) once per surface and draw it plus the 1 px top highlight on `RelayGlass`; switch `SetTextAntialiasMode` through `look::uses_cleartype`; align 1 px card strokes with `look::snap_hairline`.
 - Modify `fluent.rs`: add `pub fn high_contrast() -> bool` (`SPI_GETHIGHCONTRAST`, `HCF_HIGHCONTRASTON`), `pub fn sys_state() -> look::SysState`, `pub fn hc_palette(get: impl Fn(i32) -> u32) -> Palette` (COLOR_WINDOW, WINDOWTEXT, HIGHLIGHT, HIGHLIGHTTEXT, GRAYTEXT, HOTLIGHT, BTNFACE), `Palette.outline_strong`, rename `accent`/`on_accent`/`amber` to `primary`/`on_primary`/`attention`; `on_theme_change()` rebuilds backdrops when `look::rebuild_needed` is true.
 - Modify `design/tokens.toml`, `tools/gen-tokens/src/lib.rs`, regenerate `tokens.rs`, `Tokens.kt`, `design/floot/base.css`; update Kotlin users of the old name (`ui/Theme.kt:18-19`, `RelayTint.Accent`).
 - Modify `ui.rs`: `WM_SETTINGCHANGE` also handles `SPI_SETHIGHCONTRAST`, "WindowsThemeElement"; handle `WM_SYSCOLORCHANGE` and `WM_THEMECHANGED`.
@@ -91,7 +97,7 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 **Interfaces:** Consumes `tokens::{NATIVE_LIGHT, NATIVE_DARK, RELAY_LIGHT, RELAY_DARK}` and `tokens_rules::{Modes, resolve}`. Produces everything in "Shared interfaces".
 
 - [ ] **Step 1 (ADVISOR):** before changing `d2d::build` (every window's creation path), call `advisor`.
-- [ ] **Step 2: write failing tests.** In `look.rs`: `native_main_window_is_mica`, `native_flyout_menu_dialog_are_acrylic`, `relay_layers_are_relay_glass`, `transparency_off_is_solid_everywhere`, `high_contrast_is_solid_everywhere`, `old_windows_without_backdrops_is_solid`, `qr_is_always_solid`, `focus_ring_is_3_to_1` (the focus-ring colour, `Palette.primary`, has `contrast ≥ 3.0` against `card` and `bg` in light, dark and high contrast; the M4.9 review found the prototype's rings at 1.2:1, the shipping tray already draws cobalt, this test keeps it so), `text_layers_meet_the_glass_floor` (for every look × dark × `SysState`, the text-layer alpha is ≥ 0.70 or the material is `Solid`), `on_theme_change_rebuilds_backdrops` (`rebuild_needed` true when transparency, high contrast, dark or backdrop support changes; false otherwise). In `fluent.rs`: `high_contrast_palette_uses_system_colours`. In `settings.rs`: `v1_settings_gain_native_look`.
+- [ ] **Step 2: write failing tests.** In `look.rs`: `native_main_window_is_mica`, `native_flyout_menu_dialog_are_acrylic`, `relay_layers_are_relay_glass`, `transparency_off_is_solid_everywhere`, `high_contrast_is_solid_everywhere`, `old_windows_without_backdrops_is_solid`, `qr_is_always_solid`, `focus_ring_is_3_to_1` (the focus-ring colour, `Palette.primary`, has `contrast ≥ 3.0` against `card` and `bg` in light, dark and high contrast; the M4.9 review found the prototype's rings at 1.2:1, the shipping tray already draws cobalt, this test keeps it so), `text_layers_meet_the_glass_floor` (for every look × dark × `SysState`, the text-layer alpha is ≥ 0.70 or the material is `Solid`), `on_theme_change_rebuilds_backdrops` (`rebuild_needed` true when transparency, high contrast, dark or backdrop support changes; false otherwise). `text_aa_mode_matches_surface_opacity` (`uses_cleartype` is false on bare Mica/Acrylic/RelayGlass and true on Solid or `on_opaque_card`), `stroke_rect_snaps_to_half_pixel` (`snap_hairline(10.0) == 10.5` and `snap_hairline(10.9) == 10.5`), `grain_tile_is_deterministic_and_balanced` (two calls to `grain_tile_64()` are byte-identical and its mean is within `120..=136`). In `fluent.rs`: `high_contrast_palette_uses_system_colours`. In `settings.rs`: `v1_settings_gain_native_look`.
 - [ ] **Step 3:** `cargo test -p pb-tray look::` — Expected: FAIL (module missing).
 - [ ] **Step 4: implement** `look.rs`, then the renames (token first through gen-tokens, `cargo run -p gen-tokens`), then the Windows wiring.
 - [ ] **Step 5:** `cargo test -p pb-tray` and `cargo test -p gen-tokens` — Expected: PASS.
@@ -100,9 +106,9 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 ### Task M5.2: Motion
 **Files:** modify `ease.rs`, `dialog_window.rs`, `widgets.rs`, `flyout.rs`, `main_window.rs`.
 
-**Interfaces:** Produces `pub struct SpringAnim { x: f32, v: f32, target: f32, spring: tokens::Spring }` with `new(from, to, s) -> Self`, `step(&mut self, dt_ms: u32) -> f32` (semi-implicit Euler at sub-steps ≤ 4 ms; ω = √stiffness, ζ = damping_ratio), `settled(&self) -> bool` (|x−target| < 0.001 and |v| < 0.01); `pub fn needs_frame_timer(anim_running: bool) -> bool`. `ease::STANDARD` takes its value from `tokens::easing::STANDARD` (delete the stale comment at ease.rs:39).
+**Interfaces:** Produces `pub struct SpringAnim { x: f32, v: f32, target: f32, span: f32, spring: tokens::Spring }` with `new(from: f32, to: f32, s: tokens::Spring) -> Self` (`span = (to - from).abs().max(1.0)`), `step(&mut self, dt_ms: u32) -> f32` (clamps `dt_ms` to 64 so a window-drag stall never explodes the velocity; semi-implicit Euler at sub-steps ≤ 4 ms; ω = √stiffness, ζ = damping_ratio) and `settled(&self) -> bool` (`(self.x - self.target).abs() < 0.001 * self.span && self.v.abs() < 0.01 * self.span`); `pub fn needs_frame_timer(anim_running: bool) -> bool`. `ease::STANDARD` takes its value from `tokens::easing::STANDARD` (delete the stale comment at ease.rs:39).
 
-- [ ] **Step 1: failing tests:** `a_spring_reaches_its_target_and_settles`, `the_effects_spring_never_overshoots` (ζ = 1.0), `an_emphasised_spring_overshoots_a_little` (passes the target by under 10%), `standard_matches_the_token_curve`, `reduced_motion_makes_no_spring` (via `tokens_rules::spring_or_cut`), `the_dialog_timer_stops_when_settled`, `skeleton_is_still_with_reduced_motion`.
+- [ ] **Step 1: failing tests:** `a_spring_reaches_its_target_and_settles`, `pixel_range_spring_settles_without_tail_burn` (a spring from 0.0 to 240.0 settles in under 600 ms), `a_long_stall_dt_is_clamped_and_stays_stable` (`step(2_000)` does not overshoot by more than 15%), `the_effects_spring_never_overshoots` (ζ = 1.0), `an_emphasised_spring_overshoots_a_little` (passes the target by under 10%), `standard_matches_the_token_curve`, `reduced_motion_makes_no_spring` (via `tokens_rules::spring_or_cut`), `the_dialog_timer_stops_when_settled`, `skeleton_is_still_with_reduced_motion`.
 - [ ] **Step 2:** `cargo test -p pb-tray ease::` — Expected: FAIL.
 - [ ] **Step 3: implement.** Springs only for released drags (nav track, scrollbar thumb); transitions keep `tokens::easing` + `tokens::motion`. The dialog frame timer runs only while animating; a separate 500 ms timer polls `is_alive`. `skeleton` is static under reduced motion.
 - [ ] **Step 4:** tests PASS; gates; commit `M5.2: token motion and timers that stop`.
@@ -118,8 +124,8 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 
 ### Task M5.4: Main window pages including Transfers
 **Files:** modify `main_window.rs`, `pages/mod.rs`, `pages/{home,devices,settings,timeline}.rs`; create `pages/transfers.rs`.
-**Interfaces:** Produces `Page::Transfers` (rail order Home, Devices, Transfers, Timeline, Settings), `pub struct TransfersModel { pub rows: Vec<TransferRow> }`, `pub fn pages::transfers::draw(c: &mut Canvas, r: RectF, view: RectF, m: &TransfersModel, hits: &[Hit])`. Consumes the transfer state in `transfers.rs`.
-- [ ] **Step 1: failing tests:** `rail_has_five_pages_in_order` (labels equal `["Home","Devices","Transfers","Timeline","Settings"]`), `transfers_page_lists_active_then_finished` (running rows precede finished rows; finished are newest first), `an_empty_transfers_page_says_so` (the empty model yields the empty-state text from `strings.rs`).
+**Interfaces:** Produces `Page::Transfers` (rail order Home, Devices, Transfers, Timeline, Settings), `pub struct TransfersModel { pub rows: Vec<TransferRow> }`, `pub fn pages::transfers::draw(c: &mut Canvas, r: RectF, view: RectF, m: &TransfersModel, hits: &[Hit])`. Consumes the transfer state in `transfers.rs`. Numeric progress and byte counts on Transfers and Timeline use tabular numerals (the `tnum` OpenType feature on the DirectWrite text layout, or a monospace fallback) so live progress updates never shift text horizontally.
+- [ ] **Step 1: failing tests:** `rail_has_five_pages_in_order` (labels equal `["Home","Devices","Transfers","Timeline","Settings"]`), `transfers_page_lists_active_then_finished` (running rows precede finished rows; finished are newest first), `an_empty_transfers_page_says_so` (the empty model yields the empty-state text from `strings.rs`), `transfer_progress_format_has_stable_field_order` (`"42% · 12.4 MB / 29.5 MB"`).
 - [ ] **Step 2:** `cargo test -p pb-tray pages::` — Expected: FAIL (no `Page::Transfers`).
 - [ ] **Step 3: implement.** Glass (Mica or Relay) behind the rail only, panes opaque; restyle the four existing pages on tokens; keep all existing page tests (home 23, devices 4, settings 19, timeline 14).
 - [ ] **Step 4:** `cargo test -p pb-tray` — Expected: PASS.
@@ -159,8 +165,8 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 
 ### Task M5.9: Narrator for the flyout
 **Files:** modify `uia.rs`, `a11y.rs`, `flyout.rs`.
-**Interfaces:** `uia::publish(hwnd: isize, s: Snapshot) -> bool`, `uia::root_for(hwnd, wparam, lparam) -> LRESULT` (per-window `HashMap<isize, Snapshot>`); `pub fn a11y::flyout_tree(tiles: &[Tile], m: &Model) -> Vec<Node>`.
-- [ ] **Step 1: failing tests:** `flyout_tree_names_every_tile_and_its_state` (one node per tile, role toggle, name equals the tile label, `toggled` equals `Tile.on`), `two_windows_keep_their_own_trees` (publishing for hwnd 1 does not change hwnd 2's tree).
+**Interfaces:** `uia::publish(hwnd: isize, s: Snapshot) -> bool` (returns true when the focused node's name or toggle state changed, and raises the UIA event when UIA has an active client), `uia::root_for(hwnd, wparam, lparam) -> LRESULT` (per-window `HashMap<isize, Snapshot>`); `pub fn a11y::flyout_tree(tiles: &[Tile], m: &Model) -> Vec<Node>`.
+- [ ] **Step 1: failing tests:** `flyout_tree_names_every_tile_and_its_state` (one node per tile, role toggle, name equals the tile label, `toggled` equals `Tile.on`), `two_windows_keep_their_own_trees` (publishing for hwnd 1 does not change hwnd 2's tree), `publish_detects_when_focused_tile_toggles` (toggling `Tile.on` on the focused node makes `publish` return true).
 - [ ] **Step 2:** `cargo test -p pb-tray a11y:: uia::` — Expected: FAIL.
 - [ ] **Step 3: implement.** The flyout answers `WM_GETOBJECT` and publishes its tree after each model change.
 - [ ] **Step 4:** same command — Expected: PASS.
@@ -168,8 +174,8 @@ pub const ICON_GLASS_MIN_ALPHA: f32 = 0.50;
 
 ### Task M5.10: Offscreen snapshot CI job
 **Files:** modify `d2d.rs`, `main.rs`, `fluent.rs`, `.github/workflows/ci.yml`; create `crates/pb-tray/snapshot/wallpaper.png`, `crates/pb-tray/snapshot/golden/`, `tools/snapshot-diff/`.
-**Interfaces:** `pub fn d2d::offscreen(w: u32, h: u32) -> Result<Offscreen, String>` (WARP); `pub fn fluent::font_face(f: Font) -> &'static str`; `pub fn check_fonts(have: &dyn Fn(&str) -> bool) -> Result<(), String>`; `tools/snapshot-diff` CLI `snapshot-diff <actual-dir> <golden-dir>` exiting 1 beyond tolerance (per-channel 8, ≤ 0.5% of pixels differing).
-- [ ] **Step 1: failing tests:** `snapshot_names_cover_every_surface_look_and_mode` (the name list equals 9 surfaces × 2 looks × 2 modes, no duplicates), `diff_accepts_within_tolerance_and_rejects_beyond` (an image with 8-level noise passes, one with a 9-level shift on 1% of pixels fails), `missing_fonts_fail_fast` (`check_fonts` returns `Err("missing font: …")` when neither text face exists).
+**Interfaces:** `pub fn d2d::offscreen(w: u32, h: u32) -> Result<Offscreen, String>` (WARP; composites a deterministic simulated backdrop over `wallpaper.png` per `Material` — blurred plus high-luminosity tint for Mica, blurred plus medium tint for Acrylic, blurred plus tint plus grain plus 1 px top highlight for RelayGlass, an opaque fill for Solid — so offscreen renders test each material distinctly without DWM); `pub fn fluent::font_face(f: Font) -> &'static str`; `pub fn check_fonts(have: &dyn Fn(&str) -> bool) -> Result<(), String>`; `tools/snapshot-diff` CLI `snapshot-diff <actual-dir> <golden-dir>` exiting 1 beyond tolerance (per-channel 8, ≤ 0.5% of pixels differing).
+- [ ] **Step 1: failing tests:** `snapshot_names_cover_every_surface_look_and_mode` (the name list equals 9 surfaces × 2 looks × 2 modes, no duplicates), `simulated_backdrops_differ_across_mica_acrylic_relay_and_solid` (a blank glass surface under Mica, Acrylic, RelayGlass and Solid yields four distinct pixel buffers), `diff_accepts_within_tolerance_and_rejects_beyond` (an image with 8-level noise passes, one with a 9-level shift on 1% of pixels fails), `missing_fonts_fail_fast` (`check_fonts` returns `Err("missing font: …")` when neither text face exists).
 - [ ] **Step 2:** `cargo test -p pb-tray snapshot::` and `cargo test -p snapshot-diff` — Expected: FAIL.
 - [ ] **Step 3: implement.** `--snapshot <dir>` (only under `cfg(feature = "test-hooks")`) draws every surface over the fixed wallpaper and exits 3 with `missing font: <name>` per `check_fonts`. CI job `snapshots` (windows-latest): print `Get-ChildItem C:\Windows\Fonts\Segoe*`, `cargo build -p pb-tray --features test-hooks`, run `--snapshot`, `snapshot-diff`, upload artifact. Add `cargo clippy -p pb-tray --features test-hooks --all-targets -- -D warnings`; add `'--snapshot'` to the `windows-zip` release string scan. Check `cargo deny` for any new image crate licence.
 - [ ] **Step 4:** unit tests PASS locally; push once without goldens to get the artifact, read several PNGs with the Read tool, commit them as goldens, push again — Expected: the `snapshots` job green.
