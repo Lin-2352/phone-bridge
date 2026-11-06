@@ -4,7 +4,7 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M4.8 (Floot project "Relay design", private preview, checkpoint d058a6f7: base.css generated and mapped onto Floot's names, a kit page, PC, Android and motion pages; M4.9 waits for the owner's open preview). Before it, L5 (Part A, leftovers, done; the portable `Relay.exe` in use was swapped for a `--release` build on 2026-11-06). Before it, M3.R: milestone M3 is done (the audio branch `feature/audio-full` was merged before M3.7 part 2, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
+- **Last finished task:** M6.0 (plans M5.0 and M6.0 written ahead of M4.9/M4.R; M4.8 is the last finished M4 task: Floot project "Relay design", checkpoints d058a6f7, 4fd65ce9, c1f8b610).
 - **Next task:** M4.9 (BLOCKED on the owner: the Floot preview must be open in the owner's own foreground browser tab so `screenshot_preview` can capture; headless Edge/Chrome produce no output here). Then M4.R, then M5.0a/M5.1 (plan written: M5.0). M6.0, M7.0 and M8.0 plans are still to write.
 - **Read first, in this order:**
   1. this file;
@@ -142,6 +142,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M5.R Milestone review and CI green
 
 ## M6 Android native redesign
+- [x] M6.0 Plan: [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md) (written ahead of M4.9/M4.R; Task M6.0a refreshes it at start)
 - [ ] M6.1 Theme system (Native glass, Relay glass `GlassSurface`) and Settings → Appearance
 - [ ] M6.2 Backdrop blur with Haze (API 31+), tinted scrim below that, frame-time fallback
 - [ ] M6.3 Lite mode (automatic triggers and a manual toggle)
