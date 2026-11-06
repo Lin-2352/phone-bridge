@@ -10,4 +10,4 @@ Part A of the plan the owner approved on 2026-11-06 (the plan covers M4 to M11 a
 | L4 | Release `Relay.exe` in the portable folder in use (stop Relay, copy only the exe, restart) | no repo change |
 | L5 | Docs and the owner-only list | `DECISIONS.md`, `PROGRESS.md` |
 
-Left to the owner: rewriting the 8 AI-attributed web commits (`3dbe031..5591b9e`), the earphones test, the audio delay choice, the paused-YouTube retest, and "Reset and pair again" after a real screen-lock change.
+Done 2026-11-06: the AI-attributed web commits were rewritten (see PROGRESS notes). Left to the owner: the earphones test, the audio delay choice, the paused-YouTube retest, and "Reset and pair again" after a real screen-lock change.

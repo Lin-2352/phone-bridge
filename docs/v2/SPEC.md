@@ -20,7 +20,7 @@ The 2026-11-04 review (`docs/REVIEW-2026-11-04.md` on `cloud/v1-review-findings`
 ## Your decisions (from our Q&A)
 | Topic | Decision |
 |---|---|
-| Branching | One branch, `cloud/v2-upgrade`, from `main`. The first commit cherry-picks the review doc (`88a3e58`) |
+| Branching | One branch, `cloud/v2-upgrade`, from `main`. The first commit cherry-picks the review doc (`3017110`) |
 | Floot | Prototype every PC and Android screen in your "Phone Bridge design" project, then rebuild the native apps to match through `design/tokens.toml` |
 | Themes | Two, chosen by the user on both apps: **Native glass** (the OS's own materials) and **Relay glass** (one custom frosted look) |
 | Old devices | Android 10+ stays (`minSdk 29`), plus `armeabi-v7a`. Lite mode turns on automatically. No blur below Android 12 |
@@ -102,7 +102,7 @@ Each milestone is one plan. The ledger records each milestone's last commit, so 
 **One change from the order you approved** (Harden → Redesign → Level up): the protocol, peer-ID and migration foundations (M3) now come before the redesign. The new Devices and Transfers screens depend on them, and doing them first avoids building those screens twice.
 
 ### M0 Baseline (no change in behaviour)
-- **Branch:** create it, cherry-pick `88a3e58`, commit this spec.
+- **Branch:** create it, cherry-pick `3017110`, commit this spec.
 - **Toolchain:**
   - Rust 1.99.1 here, matching CI.
   - Try installing the Android SDK here; if that's blocked, the Android checks run only in CI.
