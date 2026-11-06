@@ -313,6 +313,42 @@ impl InputDatagram {
 mod tests {
     use super::*;
 
+    /// `Hello` exactly as Relay 0.2.0 shipped it (M3.8): fields 1-3 only.
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct HelloV020 {
+        #[prost(uint32, tag = "1")]
+        protocol_version: u32,
+        #[prost(string, tag = "2")]
+        device_name: String,
+        #[prost(string, repeated, tag = "3")]
+        capabilities: Vec<String>,
+    }
+
+    #[test]
+    fn hello_from_0_2_0_reads_with_defaults() {
+        let old = HelloV020 {
+            protocol_version: 0,
+            device_name: "Pixel".into(),
+            capabilities: vec!["clipboard".into(), CAP_AUDIO.into()],
+        };
+        let h = Hello::decode(old.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(h.device_name, "Pixel");
+        assert_eq!(h.min_compatible, 0);
+        assert_eq!(h.app_version, "");
+        let me = Hello::new("PC", local_capabilities());
+        assert_eq!(update_side(&me, &h), None, "this build accepts 0.2.0");
+        assert_eq!(update_side(&h, &me), None, "and 0.2.0 accepts this build");
+    }
+
+    #[test]
+    fn this_hello_reads_as_0_2_0() {
+        let h = Hello::new("PC", local_capabilities());
+        let old = HelloV020::decode(h.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(old.protocol_version, 0);
+        assert_eq!(old.device_name, "PC");
+        assert_eq!(old.capabilities, local_capabilities());
+    }
+
     #[test]
     fn hello_reports_listed_capabilities() {
         let h = Hello::new("PC", vec!["clipboard".into(), CAP_AUDIO.into()]);

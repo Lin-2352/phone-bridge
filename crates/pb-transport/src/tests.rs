@@ -3603,3 +3603,68 @@ async fn session_announces_the_local_capabilities() {
         pb_protocol::local_capabilities()
     );
 }
+
+/// M3.8: a phone still on Relay 0.2.0 sends a `Hello` with fields 1-3 only. With fields 4 and 5 at their
+/// defaults this encodes to exactly those bytes (`this_hello_reads_as_0_2_0` in pb-protocol pins that).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_0_2_0_peer_still_talks() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let conn = phone
+        .dial(pc.peer_id(), &loopback(&pc), SESSION_ALPN)
+        .await
+        .unwrap();
+    let (mut send, recv) = conn.open_bi().await.unwrap();
+    let old = Hello {
+        protocol_version: 0,
+        device_name: "Phone".into(),
+        capabilities: vec!["clipboard".into(), pb_protocol::CAP_AUDIO.into()],
+        min_compatible: 0,
+        app_version: String::new(),
+    };
+    write_frame(&mut send, &Control::from(ControlMsg::Hello(old)))
+        .await
+        .unwrap();
+    let mut inc = tokio::time::timeout(Duration::from_secs(5), pc_ev.sessions.recv())
+        .await
+        .expect("the PC accepts a 0.2.0 phone")
+        .unwrap();
+    assert_eq!(inc.remote_hello.app_version, "");
+    // Phone to PC.
+    write_frame(
+        &mut send,
+        &Control::from(ControlMsg::ClipboardText(ClipboardText {
+            text: "from 0.2.0".into(),
+            sensitive: false,
+        })),
+    )
+    .await
+    .unwrap();
+    match inc.recv().await.unwrap() {
+        Some(ControlMsg::ClipboardText(c)) => assert_eq!(c.text, "from 0.2.0"),
+        other => panic!("unexpected {other:?}"),
+    }
+    // PC to phone: the old side skips the PC's Hello and heartbeats, then reads the text.
+    inc.send(ControlMsg::ClipboardText(ClipboardText {
+        text: "to 0.2.0".into(),
+        sensitive: false,
+    }))
+    .await
+    .unwrap();
+    let mut recv = FrameReader::new(recv);
+    let got = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Control {
+                msg: Some(ControlMsg::ClipboardText(c)),
+            }) = recv.next::<Control>().await.unwrap()
+            {
+                break c.text;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(got, "to 0.2.0");
+}

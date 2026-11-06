@@ -30,6 +30,8 @@ body   = protobuf message (prost), at most 65536 bytes
 
 Compatibility: a device whose `protocol_version` is below the peer's `min_compatible` must update. The device that finds this closes with code 426 and reason `update:you` (the receiver must update) or `update:me` (the closer must). A close with any other reason (Relay 0.2.0's) reads as "update both".
 
+Relay 0.2.0 sends fields 1-3 only. A `Hello` with fields 4 and 5 at their defaults encodes to the same bytes, so a 0.2.0 device and this build still talk: tested both ways in `pb-protocol` (`hello_from_0_2_0_reads_with_defaults`, `this_hello_reads_as_0_2_0`) and end to end in `pb-transport` (`a_0_2_0_peer_still_talks`, clipboard text both ways).
+
 ### `Control` envelope (session stream)
 `oneof msg { Hello = 1; Heartbeat = 2; ClipboardText = 3; Offer = 4; OfferReply = 5; TransferDone = 6; Cancel = 7; ClipboardUpdate = 8; }`
 - `Heartbeat { seq: uint64 }` every 5 s from both sides; 15 s of silence ends the session.

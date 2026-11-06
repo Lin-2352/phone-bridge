@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M3.7 (B5, Android side done; the audio branch `feature/audio-full` was merged first, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
-- **Next task:** M3.8 (a 0.2.0-style peer still talks), then M3.R. Details are in the note "After M3.7" at the bottom of this file
+- **Last finished task:** M3.8. Before it, M3.7 (B5, Android side done; the audio branch `feature/audio-full` was merged first, see the note "Audio merge" at the bottom). Plan: [plans/2026-11-05-m3-foundations.md](plans/2026-11-05-m3-foundations.md)
+- **Next task:** M3.R (one reviewer for the whole M3 diff, fixes test-first, THREAT_MODEL and DECISIONS, CI green). Details are in the note "After M3.7" at the bottom of this file
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -104,7 +104,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M3.5 Android prefs versioning with stepwise migrations
 - [x] M3.6 "Relay" folder names for new installs (existing paths kept)
 - [x] M3.7 B5: Keystore-reset recovery ("Reset and pair again"): `pb-identity` reset and `PbError::IdentityUnreadable` (part 1); Android `startFailure`/`shouldRecover`, `Need.IdentityLost` first, status line, one notification, `IdentityReset.kt`, Home card with a confirmation (part 2)
-- [ ] M3.8 Transport test: a 0.2.0-style peer and the new build still talk
+- [x] M3.8 Transport test: a 0.2.0-style peer and the new build still talk (`a_0_2_0_peer_still_talks`; `HelloV020` round trips in `pb-protocol`)
 - [ ] M3.R Milestone review and CI green
 
 ## M4 Design system and Floot prototypes
