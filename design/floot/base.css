@@ -115,12 +115,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root {
-  --motion-normal: var(--motion-fast) !important;
-  --motion-emphasised: var(--motion-fast) !important;
+  --motion-normal-ms: var(--motion-fast-ms) !important;
+  --motion-emphasised-ms: var(--motion-fast-ms) !important;
   }
 }
 
 :root[data-reduce-motion="true"] {
-  --motion-normal: var(--motion-fast) !important;
-  --motion-emphasised: var(--motion-fast) !important;
+  --motion-normal-ms: var(--motion-fast-ms) !important;
+  --motion-emphasised-ms: var(--motion-fast-ms) !important;
 }

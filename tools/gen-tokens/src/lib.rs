@@ -580,7 +580,9 @@ pub fn render_css(t: &Tokens) -> String {
         "\n:root[data-reduce-transparency=\"true\"], :root[data-reduce-transparency=\"true\"][data-look] {{\n{opaque}}}\n"
     ));
     // Reduced motion: no springs, a short cross-fade instead.
-    let cut = "  --motion-normal: var(--motion-fast) !important;\n  --motion-emphasised: var(--motion-fast) !important;\n";
+    let cut = "  --motion-normal-ms: var(--motion-fast-ms) !important;
+  --motion-emphasised-ms: var(--motion-fast-ms) !important;
+";
     s.push_str(&format!(
         "\n@media (prefers-reduced-motion: reduce) {{\n  :root {{\n{cut}  }}\n}}\n"
     ));
@@ -626,6 +628,21 @@ mod tests {
             render_css(&t),
             lf(include_str!("../../../design/floot/base.css"))
         );
+    }
+
+    #[test]
+    fn reduced_rules_only_touch_variables_that_exist() {
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        let css = render_css(&t);
+        let root = css.split("[data-theme").next().unwrap();
+        for line in css.lines().filter(|l| l.contains("!important")) {
+            let name = line.trim().split(':').next().unwrap();
+            assert!(
+                root.contains(&format!("{name}:")),
+                "{name} is not defined in :root"
+            );
+        }
+        assert!(css.contains("--motion-normal-ms: var(--motion-fast-ms) !important;"));
     }
 
     #[test]
