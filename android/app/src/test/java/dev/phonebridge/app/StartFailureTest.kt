@@ -33,4 +33,25 @@ class StartFailureTest {
         assertFalse(shouldRecover(enabled = false, running = false, identityLost = false))
         assertFalse(shouldRecover(enabled = true, running = true, identityLost = false))
     }
+
+    @Test
+    fun a_start_that_opened_the_identity_clears_a_stale_lost_flag() {
+        // A flag left by a start that failed while a reset ran must not outlive a node that works.
+        assertFalse(identityLostAfter(was = true, failure = null))
+        assertFalse(identityLostAfter(was = false, failure = null))
+    }
+
+    @Test
+    fun only_a_keystore_reset_sets_the_lost_flag() {
+        assertTrue(identityLostAfter(was = false, failure = StartFailure.KEYSTORE_RESET))
+        assertFalse(identityLostAfter(was = false, failure = StartFailure.RETRY))
+        assertTrue(identityLostAfter(was = true, failure = StartFailure.RETRY))
+    }
+
+    @Test
+    fun opening_the_app_or_sharing_does_not_restart_relay_while_its_identity_is_lost() {
+        assertTrue(startsOnOpen(enabled = true, identityLost = false))
+        assertFalse(startsOnOpen(enabled = true, identityLost = true))
+        assertFalse(startsOnOpen(enabled = false, identityLost = false))
+    }
 }

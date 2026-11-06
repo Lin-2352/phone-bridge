@@ -355,7 +355,8 @@ fn main() {
     // (no version) are migrated once, so a new default can't move an existing install's folders.
     let migrate_cx = settings::MigrateCtx {
         existing_install: opts.dir.join("peers.txt").exists()
-            || opts.dir.join("identity.sealed").exists(),
+            || opts.dir.join("identity.sealed").exists()
+            || opts.dir.join("identity.key").exists(),
         home: std::env::var_os("USERPROFILE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir),

@@ -17,3 +17,16 @@ fun startFailure(e: Throwable): StartFailure =
 
 /** Whether the recovery job should start Relay again: never while its identity is lost, or it would fail forever. */
 fun shouldRecover(enabled: Boolean, running: Boolean, identityLost: Boolean): Boolean = enabled && !running && !identityLost
+
+/**
+ * The lost-identity flag after a start: [failure] is null when the node started. A node that opened its
+ * identity proves the flag wrong (for example one left by a start that failed while a reset ran).
+ */
+fun identityLostAfter(was: Boolean, failure: StartFailure?): Boolean = when (failure) {
+    null -> false
+    StartFailure.KEYSTORE_RESET -> true
+    StartFailure.RETRY -> was
+}
+
+/** Whether opening the app or sharing to it starts Relay: not while its identity is lost, as that start can only fail again. */
+fun startsOnOpen(enabled: Boolean, identityLost: Boolean): Boolean = enabled && !identityLost

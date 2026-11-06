@@ -443,7 +443,7 @@ class PbService : Service() {
                     // and keep the recovery job from starting it again until the user resets.
                     Log.e(TAG, "SERVICE failed to start: $failure")
                     AppLog.event("events", "node_failed", "failure" to failure.name, "try" to attempt)
-                    Prefs(this).identityLost = true
+                    Prefs(this).identityLost = identityLostAfter(Prefs(this).identityLost, failure)
                     cancelRecovery(this)
                     notifyIdentityLost(this)
                     android.os.Handler(mainLooper).post { stopSelf() }
@@ -532,6 +532,7 @@ class PbService : Service() {
         }
         Bridge.linked.value = n.peers().firstOrNull()?.name
         Bridge.nodeReady.value = true
+        Prefs(this).let { if (it.identityLost) it.identityLost = identityLostAfter(it.identityLost, failure = null) }
         AppLog.event("events", "node_ready", "paired" to n.peers().size)
         ScreenshotWatcher.sync(this)
         updateStatus()

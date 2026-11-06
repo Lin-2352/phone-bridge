@@ -183,10 +183,22 @@ fn parse_bool(v: &str) -> Option<bool> {
 
 impl Settings {
     /// Reads the file, migrates it and saves it back if a migration changed it, so each step
-    /// runs once. A missing file gives the defaults and is not created.
+    /// runs once. A missing file is written at once: with today's defaults on a new install (so its
+    /// next start, which already has an identity, isn't taken for an old one), and migrated from
+    /// version 0 on an old install that never saved its settings (Relay 0.2.0 wrote the file only
+    /// when something changed).
     pub fn load_and_migrate(path: &Path, cx: &MigrateCtx) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::load(path);
+            if !cx.existing_install {
+                let s = Self::load(path);
+                let _ = s.save(path);
+                return s;
+            }
+            let (to, migrated) = migrate(0, Vec::new(), cx);
+            let mut s = Self::from_pairs(&migrated, path);
+            s.version = to;
+            let _ = s.save(path);
+            return s;
         };
         let pairs = parse_pairs(&text);
         let from = pairs
@@ -434,10 +446,37 @@ mod tests {
         // No file at all, and a file on a install that has no identity yet.
         let none = Settings::load_and_migrate(&f, &cx(false));
         assert_ne!(none.save_dir, phone_bridge_dir());
-        assert!(!f.exists(), "loading alone does not create the file");
+        let text =
+            std::fs::read_to_string(&f).expect("a new install's first start writes the file");
+        assert!(text.starts_with("version=1\n"), "{text}");
+        std::fs::remove_file(&f).unwrap();
         std::fs::write(&f, "theme=dark\n").unwrap();
         let s = Settings::load_and_migrate(&f, &cx(false));
         assert_ne!(s.save_dir, phone_bridge_dir());
+    }
+
+    #[test]
+    fn new_install_keeps_relay_on_the_second_start() {
+        let d = mig_dir("new2");
+        let f = d.join("settings.txt");
+        let first = Settings::load_and_migrate(&f, &cx(false));
+        // By the second start the first one made an identity, so the install looks existing.
+        let second = Settings::load_and_migrate(&f, &cx(true));
+        assert_ne!(second.save_dir, phone_bridge_dir());
+        assert_eq!(first.save_dir, second.save_dir);
+    }
+
+    #[test]
+    fn old_install_that_never_saved_keeps_phone_bridge() {
+        // Relay 0.2.0 wrote settings.txt only on a settings change or when the main window moved.
+        let d = mig_dir("never");
+        let f = d.join("settings.txt");
+        let first = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(first.save_dir, phone_bridge_dir());
+        let text = std::fs::read_to_string(&f).expect("the pin is saved");
+        assert!(text.starts_with("version=1\n"), "{text}");
+        let second = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(second.save_dir, phone_bridge_dir());
     }
 
     #[test]

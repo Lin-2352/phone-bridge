@@ -42,6 +42,11 @@ class ShareActivity : Activity() {
             finish()
             return
         }
+        if (!startsOnOpen(enabled = true, identityLost = Prefs(this).identityLost)) {
+            Toast.makeText(this, "$APP_NAME can't open its keys. Open $APP_NAME to reset it", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
         startForegroundService(Intent(this, PbService::class.java))
         // The service may have been stopped by Android and is starting again
         // now; then the node (and the peer list) comes a moment later.

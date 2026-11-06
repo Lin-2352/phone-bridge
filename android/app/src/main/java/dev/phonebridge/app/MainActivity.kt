@@ -109,7 +109,8 @@ class MainActivity : ComponentActivity() {
         // A stop from the system's active-apps list can land mid-share, and with Relay now off no service
         // starts to put the volume back. A live share is left alone.
         if (!AudioShare.sessions.isActive(dev.phonebridge.app.audio.AudioDirection.PHONE_TO_PC)) PhoneSpeaker.restore(this)
-        if (prefs.enabled) startForegroundService(Intent(this, PbService::class.java))
+        // With the identity lost, Home shows the reset card; a start would only fail and notify again.
+        if (startsOnOpen(prefs.enabled, prefs.identityLost)) startForegroundService(Intent(this, PbService::class.java))
         setContent {
             RelayTheme {
                 val dark = isDark()
