@@ -30,8 +30,9 @@ use windows::{
                 KillTimer, LoadCursorW, RegisterClassW, SetForegroundWindow, SetTimer,
                 SetWindowPos, ShowWindow, HTCLIENT, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
                 SWP_NOZORDER, SW_SHOW, WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND,
-                WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
-                WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+                WM_SETCURSOR, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                WS_POPUP,
             },
         },
     },
@@ -760,6 +761,22 @@ fn repaint(hwnd: HWND) {
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
+/// Publishes the flyout's tiles as its UI Automation tree, when a screen reader is listening. Each tile
+/// is a toggle named by its label, with its on state.
+fn publish_tree(hwnd: HWND) {
+    if !crate::uia::listening() {
+        return;
+    }
+    let nodes = match CURRENT.lock() {
+        Ok(g) => match g.as_ref() {
+            Some(st) => crate::a11y::flyout_tree(&tiles(&st.model)),
+            None => return,
+        },
+        Err(_) => return,
+    };
+    crate::uia::publish(hwnd.0 as isize, crate::uia::Snapshot { nodes, focus: None });
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let xy = || {
         (
@@ -770,8 +787,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     match msg {
         WM_PAINT => {
             paint(hwnd);
+            publish_tree(hwnd);
             LRESULT(0)
         }
+        // Screen readers ask for the flyout's tree through UI Automation.
+        WM_GETOBJECT => crate::uia::root_for(hwnd, wparam, lparam),
         WM_ERASEBKGND => LRESULT(1),
         // Resize and present in the same message: no stale or black edges.
         WM_SIZE => {

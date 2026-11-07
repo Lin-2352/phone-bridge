@@ -8,7 +8,10 @@
 //! as `WM_UIA_ACT` and run on the UI thread like a click.
 #![allow(unsafe_code)]
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use windows::{
     core::{implement, IUnknown, IUnknownImpl, Interface, BOOL, BSTR},
@@ -62,26 +65,35 @@ pub struct Snapshot {
     pub focus: Option<u32>,
 }
 
-static SNAPSHOT: Mutex<Option<Arc<Snapshot>>> = Mutex::new(None);
+/// Each window's last-painted tree, keyed by its handle: a flyout and the main window publish their own.
+static SNAPSHOTS: Mutex<Option<HashMap<isize, Arc<Snapshot>>>> = Mutex::new(None);
 
-fn snapshot() -> Arc<Snapshot> {
-    SNAPSHOT
+/// Replaces window `key`'s snapshot in `store`; true when it changed.
+fn publish_into(store: &mut HashMap<isize, Arc<Snapshot>>, key: isize, s: Snapshot) -> bool {
+    let same = store
+        .get(&key)
+        .is_some_and(|o| o.focus == s.focus && o.nodes == s.nodes);
+    if !same {
+        store.insert(key, Arc::new(s));
+    }
+    !same
+}
+
+/// The snapshot of window `hwnd` (empty when it has published none).
+fn snapshot_for(hwnd: isize) -> Arc<Snapshot> {
+    SNAPSHOTS
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .clone()
+        .get_or_insert_with(HashMap::new)
+        .get(&hwnd)
+        .cloned()
         .unwrap_or_default()
 }
 
-/// Replaces the snapshot; true when it changed.
-pub fn publish(s: Snapshot) -> bool {
-    let mut g = SNAPSHOT.lock().unwrap_or_else(|p| p.into_inner());
-    let same = g
-        .as_ref()
-        .is_some_and(|o| o.focus == s.focus && o.nodes == s.nodes);
-    if !same {
-        *g = Some(Arc::new(s));
-    }
-    !same
+/// Replaces window `hwnd`'s snapshot; true when it changed.
+pub fn publish(hwnd: isize, s: Snapshot) -> bool {
+    let mut g = SNAPSHOTS.lock().unwrap_or_else(|p| p.into_inner());
+    publish_into(g.get_or_insert_with(HashMap::new), hwnd, s)
 }
 
 /// Whether any UI Automation client is attached (building the tree is
@@ -226,7 +238,7 @@ impl IRawElementProviderSimple_Impl for Elem_Impl {
     }
 
     fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> windows::core::Result<IUnknown> {
-        let s = snapshot();
+        let s = snapshot_for(self.hwnd);
         let Some(n) = self.node(&s) else {
             return Err(E_FAIL.into());
         };
@@ -250,7 +262,7 @@ impl IRawElementProviderSimple_Impl for Elem_Impl {
     }
 
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> windows::core::Result<VARIANT> {
-        let s = snapshot();
+        let s = snapshot_for(self.hwnd);
         let Some(n) = self.node(&s) else {
             // The window itself: the host provider supplies most of it.
             return Ok(match id.0 {
@@ -288,7 +300,7 @@ impl IRawElementProviderFragment_Impl for Elem_Impl {
         &self,
         dir: NavigateDirection,
     ) -> windows::core::Result<IRawElementProviderFragment> {
-        let s = snapshot();
+        let s = snapshot_for(self.hwnd);
         let ids: Vec<u32> = s.nodes.iter().map(|n| n.id).collect();
         let target = match (self.node, dir) {
             (None, d) if d == NavigateDirection_FirstChild => ids.first().copied(),
@@ -335,7 +347,7 @@ impl IRawElementProviderFragment_Impl for Elem_Impl {
     }
 
     fn BoundingRectangle(&self) -> windows::core::Result<UiaRect> {
-        let s = snapshot();
+        let s = snapshot_for(self.hwnd);
         let r = match self.node {
             None => {
                 let c = self.client_rect();
@@ -390,7 +402,7 @@ impl IRawElementProviderFragmentRoot_Impl for Elem_Impl {
         unsafe {
             let _ = ScreenToClient(self.hwnd(), &mut p);
         }
-        let s = snapshot();
+        let s = snapshot_for(self.hwnd);
         let (px, py) = (p.x as f32, p.y as f32);
         let hit = s.nodes.iter().find(|n| {
             px >= n.rect.left && px < n.rect.right && py >= n.rect.top && py < n.rect.bottom
@@ -399,7 +411,7 @@ impl IRawElementProviderFragmentRoot_Impl for Elem_Impl {
     }
 
     fn GetFocus(&self) -> windows::core::Result<IRawElementProviderFragment> {
-        let s = snapshot();
+        let s = snapshot_for(self.hwnd);
         match s.focus {
             Some(id) if s.nodes.iter().any(|n| n.id == id) => Ok(provider(self.sibling(Some(id)))),
             _ => Err(windows::core::Error::empty()),
@@ -421,7 +433,7 @@ impl IToggleProvider_Impl for Elem_Impl {
     }
 
     fn ToggleState(&self) -> windows::core::Result<ToggleState> {
-        let n = self.node(&snapshot()).ok_or(E_FAIL)?;
+        let n = self.node(&snapshot_for(self.hwnd)).ok_or(E_FAIL)?;
         Ok(if n.toggled == Some(true) {
             ToggleState_On
         } else {
@@ -433,7 +445,7 @@ impl IToggleProvider_Impl for Elem_Impl {
 #[allow(non_snake_case)]
 impl IExpandCollapseProvider_Impl for Elem_Impl {
     fn Expand(&self) -> windows::core::Result<()> {
-        let n = self.node(&snapshot()).ok_or(E_FAIL)?;
+        let n = self.node(&snapshot_for(self.hwnd)).ok_or(E_FAIL)?;
         if n.expanded == Some(false) {
             self.post(Act::Activate)?;
         }
@@ -441,7 +453,7 @@ impl IExpandCollapseProvider_Impl for Elem_Impl {
     }
 
     fn Collapse(&self) -> windows::core::Result<()> {
-        let n = self.node(&snapshot()).ok_or(E_FAIL)?;
+        let n = self.node(&snapshot_for(self.hwnd)).ok_or(E_FAIL)?;
         if n.expanded == Some(true) {
             self.post(Act::Activate)?;
         }
@@ -449,7 +461,7 @@ impl IExpandCollapseProvider_Impl for Elem_Impl {
     }
 
     fn ExpandCollapseState(&self) -> windows::core::Result<ExpandCollapseState> {
-        let n = self.node(&snapshot()).ok_or(E_FAIL)?;
+        let n = self.node(&snapshot_for(self.hwnd)).ok_or(E_FAIL)?;
         Ok(match n.expanded {
             Some(true) => ExpandCollapseState_Expanded,
             Some(false) => ExpandCollapseState_Collapsed,
@@ -461,7 +473,7 @@ impl IExpandCollapseProvider_Impl for Elem_Impl {
 #[allow(non_snake_case)]
 impl ISelectionItemProvider_Impl for Elem_Impl {
     fn Select(&self) -> windows::core::Result<()> {
-        let n = self.node(&snapshot()).ok_or(E_FAIL)?;
+        let n = self.node(&snapshot_for(self.hwnd)).ok_or(E_FAIL)?;
         if !n.selected {
             self.post(Act::Activate)?;
         }
@@ -477,11 +489,55 @@ impl ISelectionItemProvider_Impl for Elem_Impl {
     }
 
     fn IsSelected(&self) -> windows::core::Result<BOOL> {
-        let n = self.node(&snapshot()).ok_or(E_FAIL)?;
+        let n = self.node(&snapshot_for(self.hwnd)).ok_or(E_FAIL)?;
         Ok(n.selected.into())
     }
 
     fn SelectionContainer(&self) -> windows::core::Result<IRawElementProviderSimple> {
         Ok(self.sibling(None).into())
+    }
+}
+
+#[cfg(test)]
+mod per_window_tests {
+    use super::*;
+    use crate::pages::Role;
+
+    fn snap(name: &str, on: bool) -> Snapshot {
+        Snapshot {
+            nodes: vec![Node {
+                id: 1,
+                name: name.into(),
+                role: Role::Toggle,
+                rect: crate::fluent::rectf(0.0, 0.0, 0.0, 0.0),
+                toggled: Some(on),
+                expanded: None,
+                selected: false,
+            }],
+            focus: None,
+        }
+    }
+
+    #[test]
+    fn two_windows_keep_their_own_trees() {
+        let mut store = HashMap::new();
+        assert!(publish_into(&mut store, 1, snap("camera", true)));
+        assert!(publish_into(&mut store, 2, snap("audio", false)));
+        assert_eq!(store[&1].nodes[0].name, "camera");
+        assert_eq!(store[&2].nodes[0].name, "audio");
+        // Publishing for window 1 does not change window 2.
+        assert!(publish_into(&mut store, 1, snap("camera-2", true)));
+        assert_eq!(store[&2].nodes[0].name, "audio");
+    }
+
+    #[test]
+    fn publish_detects_when_focused_tile_toggles() {
+        let mut store = HashMap::new();
+        assert!(publish_into(&mut store, 1, snap("camera", false)));
+        assert!(
+            !publish_into(&mut store, 1, snap("camera", false)),
+            "unchanged"
+        );
+        assert!(publish_into(&mut store, 1, snap("camera", true)), "toggled");
     }
 }

@@ -773,7 +773,7 @@ fn publish_tree(hwnd: HWND, force: bool) {
         }
     });
     if let Some(snap) = snap {
-        crate::uia::publish(snap);
+        crate::uia::publish(hwnd.0 as isize, snap);
     }
 }
 

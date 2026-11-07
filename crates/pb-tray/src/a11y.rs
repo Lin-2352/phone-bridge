@@ -67,9 +67,54 @@ pub fn tree(
     v
 }
 
+/// The flyout's tiles as a tree: one toggle per tile, named by its label, with its on state. Built from the
+/// same tiles the flyout draws, so the screen reader cannot drift from the painted tiles.
+pub fn flyout_tree(tiles: &[crate::flyout_tiles::Tile]) -> Vec<Node> {
+    tiles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Node {
+            id: i as u32 + 1,
+            name: t.label.clone(),
+            role: Role::Toggle,
+            rect: crate::fluent::rectf(0.0, 0.0, 0.0, 0.0),
+            toggled: Some(t.on),
+            expanded: None,
+            selected: false,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flyout_tiles::{Tile, TileKind};
+
+    fn tile(kind: TileKind, label: &str, on: bool) -> Tile {
+        Tile {
+            kind,
+            label: label.into(),
+            on,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn flyout_tree_names_every_tile_and_its_state() {
+        let tiles = vec![
+            tile(TileKind::Camera, "Camera", true),
+            tile(TileKind::Audio, "Audio", false),
+        ];
+        let nodes = flyout_tree(&tiles);
+        assert_eq!(nodes.len(), tiles.len(), "one node per tile");
+        assert_eq!(nodes[0].name, "Camera");
+        assert_eq!(nodes[0].role, Role::Toggle);
+        assert_eq!(nodes[0].toggled, Some(true));
+        assert_eq!(nodes[1].name, "Audio");
+        assert_eq!(nodes[1].toggled, Some(false));
+        // Ids are unique, so focus can name a node.
+        assert_ne!(nodes[0].id, nodes[1].id);
+    }
     use crate::fluent::rectf;
     use crate::main_window::Page;
     use crate::pages::devices::DevicesModel;
