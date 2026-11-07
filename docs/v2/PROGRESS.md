@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M7.3. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M7.R, then M8 (see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
+- **Last finished task:** M7.R. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M8 (several devices; M8.2 first; see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -172,7 +172,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M7.6 PBD2 packets: MACed probe and answer, only MACed addresses dialled, per-peer ratchet off PBD1, fuzz target (PBD2 packets, marks, replay cache, node wiring, fuzz target, docs; Relay 0.2.0 interop pinned in both directions)
 - [x] M7.7 Pairing limits per source plus a global cap; 2 time-boxed handshakes at most (per-source limits, global cap, time box)
 - [ ] M7.8 Per-peer session and offer quotas (THREAT_MODEL row 14)
-- [ ] M7.R Milestone review and CI green
+- [x] M7.R Milestone review and CI green (reviewed inline; docs written; follow-ups listed)
 
 ## M8 Several devices
 - [x] M8.0 Plan: [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md) (written ahead of M4.9/M4.R; Task M8.0a refreshes it at start)

@@ -529,3 +529,13 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Verification:** the Gradle verification trust regex covers `dev.chrisbanes.haze`; the sha256 entries are not pinned yet (open item for M6.R).
 - **Frame budget:** `FrameBudget` (more than a quarter of the last 120 frames over 1.5 intervals) trips to lite on its own. Wiring it to the frames on screen is open in M6.2.
 
+## Security shield (v2 M7, 2026-11-07)
+
+- **The gate is an extra step, never the only one.** It guards allow decisions, always-allow and auto-accept, confirming a pairing, unpairing and turning itself off. When it cannot run, the old consent dialog stands (a person is not locked out of their own consent); the settings row says why. A failed or cancelled unlock starts no grace.
+- **Grace is 60 s,** reset by locking the screen; a clock that goes backwards asks. Default on in release and qa builds, off in debug builds.
+- **PBD2 marks live in `discovery2.txt`,** never as a fourth field of `peers.txt`: Relay 0.2.0 drops a line with an extra column and would lose the pairing. A peer is marked when a session's `Hello` lists `discovery2`. PBD1 stays for unmarked peers and is removed in the next minor release.
+- **The PBD2 mac covers a label, the window and every byte before the mac** (a superset of the plan's field list), so what is authenticated cannot drift from what is parsed. A probe's source address is not learned; only an answer's MACed addresses become candidates.
+- **Pairing limits are per source IP,** with a global cap per code and a 150 s time box per pairing slot. The old rule "3 wrong tokens from anyone burn the code" is replaced by tests that are strictly more specific.
+- **Session quota is 16 per peer** (the plan said 8): normal heavy use (main session, screen, camera, audio each way, control, concurrent batches) can reach nine or ten.
+- **Disconnect everything needs no confirmation and no gate:** it only removes access. The PC pauses Relay; the phone turns Relay off until resumed.
+- **Not done in M7:** the flyout, tile and notification entry points for Disconnect; the `OfferPermit` call sites in the tray and ffi; the SAS confirm and the allow-list switches on Android are not behind the gate; the Hello and biometric prompts are checked on devices (DEVICE-CHECKS).
