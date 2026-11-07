@@ -105,3 +105,28 @@ fun pcStatus(live: Boolean, lastSeenMs: Long, nowMs: Long, paired: Boolean): Str
         else -> "${minutes / (24 * 60)} d ago"
     }
 }
+
+/** Where a send goes: to one PC, to a choice among several, or nowhere because none is paired. */
+sealed interface SendTarget {
+    data class One(val id: String) : SendTarget
+
+    /** Several PCs: ids ordered default first, then by label ignoring case. */
+    data class Ask(val ids: List<String>) : SendTarget
+
+    object None : SendTarget
+}
+
+/**
+ * Picks the target of a send. An explicit id that is still paired wins; one PC needs no question; several ask with
+ * the default first; an explicit id that is no longer paired is ignored.
+ */
+fun sendTarget(peers: List<PbPeer>, explicit: String?, defaultId: String?): SendTarget {
+    if (explicit != null && peers.any { it.id == explicit }) return SendTarget.One(explicit)
+    return when (peers.size) {
+        0 -> SendTarget.None
+        1 -> SendTarget.One(peers[0].id)
+        else -> SendTarget.Ask(
+            peers.sortedWith(compareBy({ it.id != defaultId }, { it.name.lowercase() })).map { it.id },
+        )
+    }
+}

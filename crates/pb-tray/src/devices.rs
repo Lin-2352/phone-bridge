@@ -62,6 +62,39 @@ pub fn default_after_removal(
         .unwrap_or_default()
 }
 
+/// Where a send goes: straight to one phone, to a choice among several, or nowhere because none is paired.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendTarget {
+    One(String),
+    /// Several phones: ids ordered default first, then by name ignoring case.
+    Ask(Vec<String>),
+    None,
+}
+
+/// Picks the target of a send from the paired phones (id, name). An explicit id that is still paired wins; one
+/// phone needs no question; several ask, with the default first; an explicit id that is no longer paired is ignored.
+#[cfg_attr(not(test), allow(dead_code))] // used by the send entry points
+pub fn send_target(
+    peers: &[(String, String)],
+    explicit: Option<&str>,
+    default: &str,
+) -> SendTarget {
+    if let Some(e) = explicit {
+        if peers.iter().any(|(id, _)| id == e) {
+            return SendTarget::One(e.to_owned());
+        }
+    }
+    match peers {
+        [] => SendTarget::None,
+        [(id, _)] => SendTarget::One(id.clone()),
+        _ => {
+            let mut rows: Vec<&(String, String)> = peers.iter().collect();
+            rows.sort_by_key(|(id, name)| (id != default, name.to_lowercase()));
+            SendTarget::Ask(rows.into_iter().map(|(id, _)| id.clone()).collect())
+        }
+    }
+}
+
 impl DeviceStore {
     /// Reads the text; bad lines and anything over the limits are skipped.
     pub fn parse(text: &str) -> Self {
@@ -255,6 +288,53 @@ mod tests {
             "",
             "no device left: no default"
         );
+    }
+
+    fn two() -> Vec<(String, String)> {
+        vec![
+            (B.to_owned(), "bravo".to_owned()),
+            (C.to_owned(), "Alpha".to_owned()),
+        ]
+    }
+
+    #[test]
+    fn one_phone_needs_no_picker() {
+        let one = vec![(B.to_owned(), "bravo".to_owned())];
+        assert_eq!(send_target(&one, None, ""), SendTarget::One(B.to_owned()));
+    }
+
+    #[test]
+    fn several_phones_ask_with_the_default_first() {
+        assert_eq!(
+            send_target(&two(), None, B),
+            SendTarget::Ask(vec![B.to_owned(), C.to_owned()])
+        );
+        assert_eq!(
+            send_target(&two(), None, ""),
+            SendTarget::Ask(vec![C.to_owned(), B.to_owned()]),
+            "no default: by name"
+        );
+    }
+
+    #[test]
+    fn an_explicit_phone_skips_the_picker() {
+        assert_eq!(
+            send_target(&two(), Some(C), B),
+            SendTarget::One(C.to_owned())
+        );
+    }
+
+    #[test]
+    fn an_unpaired_explicit_phone_falls_back_to_asking() {
+        assert_eq!(
+            send_target(&two(), Some(A), ""),
+            SendTarget::Ask(vec![C.to_owned(), B.to_owned()])
+        );
+    }
+
+    #[test]
+    fn no_phone_means_pair_first() {
+        assert_eq!(send_target(&[], Some(A), A), SendTarget::None);
     }
 
     #[test]

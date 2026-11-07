@@ -792,6 +792,22 @@ pub async fn run(
                                 }
                             }
                             refresh(&node, &peers);
+                            // If it was the default device, the next one by name takes over (or none).
+                            let rest: Vec<(String, String)> = peers
+                                .lock()
+                                .map(|g| g.iter().map(|(i, n)| (i.to_string(), n.clone())).collect())
+                                .unwrap_or_default();
+                            if let Ok(mut s) = settings.lock() {
+                                let next = crate::devices::default_after_removal(
+                                    &rest,
+                                    &id.to_string(),
+                                    &s.default_device,
+                                );
+                                if next != s.default_device {
+                                    s.default_device = next;
+                                    let _ = s.save(&opts.dir.join("settings.txt"));
+                                }
+                            }
                             // Its toasts go with it.
                             ui(UiEvent::NotifySync { peer: id, keys: Vec::new() });
                             ui(UiEvent::Info("Device removed".into()));

@@ -83,4 +83,33 @@ class PcStoreTest {
         assertEquals(Allow.Always, p.screen)
         assertEquals(Allow.Never, p.camera)
     }
+
+    @Test
+    fun one_pc_needs_no_picker() {
+        assertEquals(SendTarget.One("a"), sendTarget(listOf(peer("a", "Alpha")), null, null))
+    }
+
+    @Test
+    fun several_pcs_ask_with_the_default_first() {
+        val ps = listOf(peer("b", "bravo"), peer("a", "Alpha"))
+        assertEquals(SendTarget.Ask(listOf("b", "a")), sendTarget(ps, null, "b"))
+        assertEquals("no default: by name", SendTarget.Ask(listOf("a", "b")), sendTarget(ps, null, null))
+    }
+
+    @Test
+    fun an_explicit_pc_skips_the_picker() {
+        val ps = listOf(peer("b", "bravo"), peer("a", "Alpha"))
+        assertEquals(SendTarget.One("a"), sendTarget(ps, "a", "b"))
+    }
+
+    @Test
+    fun an_unpaired_explicit_pc_falls_back_to_asking() {
+        val ps = listOf(peer("b", "bravo"), peer("a", "Alpha"))
+        assertEquals(SendTarget.Ask(listOf("a", "b")), sendTarget(ps, "gone", null))
+    }
+
+    @Test
+    fun no_pc_means_pair_first() {
+        assertEquals(SendTarget.None, sendTarget(emptyList(), "x", "x"))
+    }
 }
