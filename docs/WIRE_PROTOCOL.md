@@ -5,7 +5,7 @@ Status: draft. Matches the `pb-protocol` crate at protocol version 0. Two device
 ## Layers
 1. **QUIC** (iroh 1.3.0 / noq) provides encryption, authentication of the peer's Ed25519 key, streams and unreliable datagrams.
 2. **ALPN** `pb/0` for sessions, `pb-pair/0` for pairing. (Spikes used `pb-spike/0`.) Session connections from peers not in the paired-peer store are closed with application code 403 before any stream is read.
-   Application close codes: 0 bye, 200 file saved, 300 transfer cancelled, 400 pairing refused or transfer failed, 403 not paired, 410 this device closed every connection ("Disconnect everything"; the pairing is untouched), 426 incompatible protocol version (`Hello`), 429 busy (the paired peer already has the most sessions it may keep open, 8), 500 the joiner could not save the pairing.
+   Application close codes: 0 bye, 200 file saved, 300 transfer cancelled, 400 pairing refused or transfer failed, 403 not paired, 410 this device closed every connection ("Disconnect everything"; the pairing is untouched), 426 incompatible protocol version (`Hello`), 429 busy (the paired peer already has the most sessions it may keep open, 16), 500 the joiner could not save the pairing.
 3. **Control stream**: the first bidirectional stream opened by the connecting side. Carries length-prefixed protobuf frames.
 4. **Feature streams**: one bidirectional stream per transfer (files, clipboard payloads, camera). Each begins with a frame naming the feature.
 5. **Datagrams**: unreliable, unordered, small. Used for audio PCM only (input travels on a reliable stream).

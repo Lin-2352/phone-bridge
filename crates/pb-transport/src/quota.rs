@@ -10,8 +10,10 @@ use std::{
 
 use pb_identity::PeerId;
 
-/// Sessions one paired peer may have open at once.
-pub const MAX_SESSIONS_PER_PEER: usize = 8;
+/// Sessions one paired peer may have open at once. Relay itself can hold close to ten for one phone at the extreme
+/// (the main session, screen, camera, audio each way, control, concurrent file batches and clipboard sends), so the
+/// limit leaves room above that and still bounds a misbehaving peer.
+pub const MAX_SESSIONS_PER_PEER: usize = 16;
 /// File offers one peer may make in a minute.
 pub const MAX_OFFERS_PER_PEER_PER_MIN: usize = 30;
 /// How long an offer counts against the per-minute limit.
@@ -153,12 +155,15 @@ mod tests {
     const GB: u64 = 1024 * 1024 * 1024;
 
     #[test]
-    fn the_ninth_session_is_refused() {
+    fn the_session_past_the_quota_is_refused() {
         let q = PeerQuotas::default();
         let held: Vec<_> = (0..MAX_SESSIONS_PER_PEER)
             .map(|_| q.open_session(peer(1)).expect("within quota"))
             .collect();
-        assert!(q.open_session(peer(1)).is_none(), "the ninth is refused");
+        assert!(
+            q.open_session(peer(1)).is_none(),
+            "one past the quota is refused"
+        );
         drop(held);
     }
 

@@ -221,7 +221,7 @@ async fn close_all_closes_every_live_connection() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_ninth_session_from_one_peer_is_refused_as_busy() {
+async fn the_session_past_the_quota_from_one_peer_is_refused_as_busy() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (phone, _pev, _) = node(2, "Phone").await;
     let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
@@ -237,7 +237,7 @@ async fn the_ninth_session_from_one_peer_is_refused_as_busy() {
     let err = phone.connect(&pc.peer_id()).await.err();
     assert!(
         matches!(err, Some(Error::Busy)),
-        "the ninth is refused as busy: {err:?}"
+        "one past the quota is refused as busy: {err:?}"
     );
     // One session ends and its slot frees: the PC sees the close, then a new one opens.
     drop(held.pop());
