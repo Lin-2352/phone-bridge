@@ -23,7 +23,7 @@ class SendClipTileService : TileService() {
     override fun onStartListening() {
         qsTile?.apply {
             state = Tile.STATE_INACTIVE
-            if (Build.VERSION.SDK_INT >= 29) subtitle = "To your PC"
+            if (Build.VERSION.SDK_INT >= 29) subtitle = dev.phonebridge.app.devices.tileSubtitle(Bridge.defaultLabel(this@SendClipTileService))
             updateTile()
         }
     }

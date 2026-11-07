@@ -163,6 +163,13 @@ object Bridge {
 
     fun firstPeer() = node?.peers()?.firstOrNull()
 
+    /** What to call the default PC (its nickname, with a suffix when two share a name), or null when none is paired. */
+    fun defaultLabel(ctx: android.content.Context): String? {
+        val peers = node?.peers().orEmpty()
+        val d = defaultPeer(ctx) ?: return null
+        return dev.phonebridge.app.devices.labels(peers, peers.associate { it.id to Prefs(ctx).pcNickname(it.id) })[d.id] ?: d.name
+    }
+
     /** The paired PC that sends go to when none is chosen: the saved default while it is paired, else the first. */
     fun defaultPeer(ctx: android.content.Context): uniffi.pb_ffi.PbPeer? {
         val peers = node?.peers().orEmpty()
@@ -537,7 +544,7 @@ class PbService : Service() {
         if (!NotifyListener.live.any { it.category == android.app.Notification.CATEGORY_CALL }) {
             restoreRinger(this)
         }
-        Bridge.linked.value = n.peers().firstOrNull()?.name
+        Bridge.linked.value = Bridge.defaultLabel(this)
         Bridge.nodeReady.value = true
         Prefs(this).let { if (it.identityLost) it.identityLost = identityLostAfter(it.identityLost, failure = null) }
         AppLog.event("events", "node_ready", "paired" to n.peers().size)

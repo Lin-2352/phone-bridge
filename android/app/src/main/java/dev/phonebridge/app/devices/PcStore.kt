@@ -130,3 +130,13 @@ fun sendTarget(peers: List<PbPeer>, explicit: String?, defaultId: String?): Send
         )
     }
 }
+
+/** The tile's second line: where a tap sends. */
+fun tileSubtitle(defaultLabel: String?): String = if (defaultLabel.isNullOrBlank()) "To your PC" else "To $defaultLabel"
+
+/** The widget's status line: the default PC's label, or the plain state when none is paired. */
+fun widgetLabel(defaultLabel: String?, fallback: String): String = defaultLabel?.takeIf { it.isNotBlank() } ?: fallback
+
+/** True when a tap cannot pick a PC by itself: several are paired and none is the saved default. */
+fun needsPicker(peers: List<PbPeer>, defaultId: String?): Boolean =
+    peers.size > 1 && peers.none { it.id == defaultId }

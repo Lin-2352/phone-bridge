@@ -112,4 +112,26 @@ class PcStoreTest {
     fun no_pc_means_pair_first() {
         assertEquals(SendTarget.None, sendTarget(emptyList(), "x", "x"))
     }
+
+    @Test
+    fun tile_click_targets_the_default() {
+        assertEquals("To Desk", tileSubtitle("Desk"))
+        assertEquals("To your PC", tileSubtitle(null))
+        assertEquals("To your PC", tileSubtitle("  "))
+    }
+
+    @Test
+    fun widget_label_names_the_default() {
+        assertEquals("Desk", widgetLabel("Desk", "Connected"))
+        assertEquals("Not paired", widgetLabel(null, "Not paired"))
+    }
+
+    @Test
+    fun no_default_with_several_pcs_opens_the_picker() {
+        val ps = listOf(peer("a", "Alpha"), peer("b", "Bravo"))
+        assertEquals(true, needsPicker(ps, null))
+        assertEquals(true, needsPicker(ps, "gone"))
+        assertEquals(false, needsPicker(ps, "b"))
+        assertEquals(false, needsPicker(listOf(peer("a", "Alpha")), null))
+    }
 }

@@ -458,6 +458,9 @@ pub enum UiEvent {
     /// A phone wants to control this PC and the user has not allowed it yet.
     AskControl {
         from: String,
+        /// The asking phone's id (hex), so per-device settings apply to the right one.
+        #[allow(dead_code)] // read by the per-device permissions (M8.4)
+        peer_id: String,
         reply: oneshot::Sender<bool>,
     },
     /// Ask the user whether to accept (only when auto-accept is off). The
@@ -465,6 +468,9 @@ pub enum UiEvent {
     /// paused, the phone went away).
     IncomingOffer {
         from: String,
+        /// The offering phone's id (hex).
+        #[allow(dead_code)] // read by the per-device permissions (M8.4)
+        peer_id: String,
         name: String,
         size: u64,
         /// Where it would be saved.
@@ -529,6 +535,17 @@ pub struct Options {
     pub port: u16,
     pub name: String,
     pub pair_on_start: bool,
+}
+
+/// The phone sends go to when none is chosen: the saved default while it is still paired, otherwise the first.
+fn default_target(peers: &Peers, settings: &SharedSettings) -> Option<(PeerId, String)> {
+    let saved = settings
+        .lock()
+        .map(|s| s.default_device.clone())
+        .unwrap_or_default();
+    let g = peers.lock().ok()?;
+    let ids: Vec<String> = g.iter().map(|(id, _)| id.to_string()).collect();
+    crate::devices::default_position(&ids, &saved).and_then(|i| g.get(i).cloned())
 }
 
 /// Paired devices, readable by the UI to build its menu.
@@ -864,7 +881,7 @@ pub async fn run(
                 Some(Cmd::SendFiles(paths)) => {
                     let (node, log, ui, settings) =
                         (node.clone(), log.clone(), ui.clone(), settings.clone());
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
                             ui(UiEvent::Info("Pair a phone first".into()));
@@ -956,7 +973,7 @@ pub async fn run(
                     });
                 }
                 Some(Cmd::ShowScreen) => {
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -982,7 +999,7 @@ pub async fn run(
                     }
                 }
                 Some(Cmd::StartCamera) => {
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1005,14 +1022,14 @@ pub async fn run(
                     }
                     log.line("CAMERA stopped by the user");
                     if crate::camera::is_streaming() {
-                        if let Some((id, _)) = peers.lock().ok().and_then(|g| g.first().cloned()) {
+                        if let Some((id, _)) = default_target(&peers, &settings) {
                             touch(&id);
                         }
                     }
                     tokio::task::spawn_blocking(crate::camera::stop);
                 }
                 Some(Cmd::StartAudio(d)) => {
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1052,7 +1069,7 @@ pub async fn run(
                         }
                     }
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1096,7 +1113,7 @@ pub async fn run(
                 Some(Cmd::SendText { text, link }) => {
                     let (node, log, ui, settings) =
                         (node.clone(), log.clone(), ui.clone(), settings.clone());
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
                             ui(UiEvent::Info("Pair a device first".into()));
@@ -1124,7 +1141,7 @@ pub async fn run(
                 Some(Cmd::SendClipboard(text)) => {
                     let (node, log, ui, settings) =
                         (node.clone(), log.clone(), ui.clone(), settings.clone());
-                    let target = peers.lock().ok().and_then(|g| g.first().cloned());
+                    let target = default_target(&peers, &settings);
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
                             ui(UiEvent::Info("Pair a device first".into()));
@@ -1546,6 +1563,7 @@ async fn pump_session(
                     let (tx, rx) = oneshot::channel();
                     ui(UiEvent::AskControl {
                         from: from.clone(),
+                        peer_id: s.peer.to_string(),
                         reply: tx,
                     });
                     allow = tokio::time::timeout(std::time::Duration::from_secs(60), rx)
@@ -1631,6 +1649,7 @@ async fn pump_session(
                     let (tx, mut rx) = oneshot::channel();
                     ui(UiEvent::IncomingOffer {
                         from: s.peer_name.clone(),
+                        peer_id: s.peer.to_string(),
                         name: file_label.clone(),
                         size: offer.size,
                         folder: dir.clone(),

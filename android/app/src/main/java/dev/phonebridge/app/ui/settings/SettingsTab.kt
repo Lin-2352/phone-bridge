@@ -560,7 +560,7 @@ fun SettingsTab(onDone: () -> Unit) {
                     }
                     Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
                     Prefs(ctx).forgetPc(p.id, Bridge.node?.peers().orEmpty())
-                    Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
+                    Bridge.linked.value = Bridge.defaultLabel(ctx)
                     PbService.refresh(ctx)
                     onDone()
                 }

@@ -1383,7 +1383,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 ),
             );
         }
-        UiEvent::AskControl { from, reply } => {
+        UiEvent::AskControl { from, reply, .. } => {
             ask_yes_no(
                 Dialog::question(
                     format!("Allow {from} to control this PC?"),
@@ -1413,6 +1413,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
         UiEvent::IncomingOffer {
             from,
             name,
+            peer_id: _,
             size,
             folder,
             reply,

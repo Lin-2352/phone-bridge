@@ -545,7 +545,7 @@ private fun removeForgottenPcs(ctx: Context) {
         }
         val prefs = Prefs(ctx)
         prefs.dropAllowancesExcept(node.peers().map { it.id })
-        Bridge.linked.value = node.peers().firstOrNull()?.name
+        Bridge.linked.value = Bridge.defaultLabel(ctx)
         PbService.refresh(ctx)
     }
 }
