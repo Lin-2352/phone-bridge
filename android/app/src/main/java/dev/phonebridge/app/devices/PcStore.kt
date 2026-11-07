@@ -1,0 +1,107 @@
+package dev.phonebridge.app.devices
+
+import uniffi.pb_ffi.PbPeer
+
+/** An answer to a request from one PC: ask each time, always allow, or never ask (refuse without a prompt). */
+enum class Allow { Ask, Always, Never }
+
+/**
+ * Everything the phone remembers about one paired PC. Keys are `<peerId>/<key>` in one preferences file, so a PC
+ * removed from the phone takes its settings with it and a new PC starts from [freshDefaults].
+ */
+data class PcSettings(
+    val nickname: String?,
+    val control: Allow,
+    val screen: Allow,
+    val camera: Allow,
+    val audio: Allow,
+    val clipboardSync: Boolean,
+    val notifications: Boolean,
+    val autoAccept: Boolean,
+    val lastSeenMs: Long,
+)
+
+/** A new PC: ask for everything, share nothing automatically. */
+fun freshDefaults(): PcSettings = PcSettings(
+    nickname = null,
+    control = Allow.Ask,
+    screen = Allow.Ask,
+    camera = Allow.Ask,
+    audio = Allow.Ask,
+    clipboardSync = false,
+    notifications = false,
+    autoAccept = false,
+    lastSeenMs = 0L,
+)
+
+private fun allow(v: Any?): Allow = when (v) {
+    "always" -> Allow.Always
+    "never" -> Allow.Never
+    else -> Allow.Ask
+}
+
+/** The stored value of an [Allow], as written to preferences. */
+fun Allow.stored(): String = name.lowercase()
+
+/** One PC's settings from the flat preferences map; a missing or unknown value reads as the fresh default. */
+fun pcSettings(all: Map<String, Any?>, id: String): PcSettings {
+    val d = freshDefaults()
+    fun key(k: String) = "$id/$k"
+    return PcSettings(
+        nickname = (all[key("nickname")] as? String)?.takeIf { it.isNotBlank() },
+        control = allow(all[key("control")]),
+        screen = allow(all[key("screen")]),
+        camera = allow(all[key("camera")]),
+        audio = allow(all[key("audio")]),
+        clipboardSync = all[key("clipboard_sync")] as? Boolean ?: d.clipboardSync,
+        notifications = all[key("notifications")] as? Boolean ?: d.notifications,
+        autoAccept = all[key("auto_accept")] as? Boolean ?: d.autoAccept,
+        lastSeenMs = all[key("last_seen_ms")] as? Long ?: d.lastSeenMs,
+    )
+}
+
+/** The longest nickname kept. */
+const val MAX_NICKNAME = 64
+
+/** A nickname is a local label: control characters are dropped, it is trimmed and cut to [MAX_NICKNAME]. */
+fun cleanNickname(raw: String?): String? =
+    raw?.filter { !it.isISOControl() }?.trim()?.take(MAX_NICKNAME)?.takeIf { it.isNotEmpty() }
+
+/** What to show for a PC: its nickname if it has one, otherwise the name it announced. */
+fun displayName(nickname: String?, name: String): String = cleanNickname(nickname) ?: name
+
+/**
+ * A label for each PC, by id. Two PCs with the same display name get the first four characters of their
+ * fingerprint added, so they can be told apart; a nickname that breaks the tie needs no suffix.
+ */
+fun labels(peers: List<PbPeer>, nick: Map<String, String?>): Map<String, String> {
+    val base = peers.associate { it.id to displayName(nick[it.id], it.name) }
+    val repeated = base.values.groupingBy { it }.eachCount().filterValues { it > 1 }.keys
+    return peers.associate { p ->
+        val b = base.getValue(p.id)
+        p.id to if (b in repeated) "$b (${p.fingerprint.take(4)})" else b
+    }
+}
+
+/**
+ * The default PC after a removal: the current one stays unless it is the one removed; then the first remaining PC
+ * by name ignoring case, or none when no PC is left.
+ */
+fun defaultAfterRemoval(remaining: List<PbPeer>, removed: String, current: String?): String? {
+    if (current != null && current != removed && remaining.any { it.id == current }) return current
+    return remaining.minByOrNull { it.name.lowercase() }?.id
+}
+
+/** The status line of one PC, from its own last-seen time. */
+fun pcStatus(live: Boolean, lastSeenMs: Long, nowMs: Long, paired: Boolean): String {
+    if (!paired) return "Not paired"
+    if (live) return "Connected"
+    if (lastSeenMs <= 0L) return "Not seen yet"
+    val minutes = (nowMs - lastSeenMs) / 60_000
+    return "Last seen " + when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "$minutes min ago"
+        minutes < 24 * 60 -> "${minutes / 60} h ago"
+        else -> "${minutes / (24 * 60)} d ago"
+    }
+}

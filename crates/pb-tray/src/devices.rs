@@ -11,6 +11,8 @@ const MAX_DEVICES: usize = 64;
 const MAX_KEYS: usize = 32;
 const MAX_VALUE: usize = 256;
 const ID_LEN: usize = 64;
+/// The longest nickname kept.
+pub const MAX_NICKNAME: usize = 64;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeviceStore {
@@ -33,6 +35,31 @@ fn clean(v: &str) -> String {
         .filter(|c| !c.is_control())
         .take(MAX_VALUE)
         .collect()
+}
+
+/// A nickname is a local label: control characters dropped, trimmed, cut to [`MAX_NICKNAME`] characters.
+pub fn clean_nickname(raw: &str) -> Option<String> {
+    let s: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let s: String = s.trim().chars().take(MAX_NICKNAME).collect();
+    (!s.is_empty()).then_some(s)
+}
+
+/// The default device after one was unpaired: the current default stays unless it is the one removed, then the
+/// first remaining device by name ignoring case, or empty when none is left. `remaining` is (id, name).
+#[cfg_attr(not(test), allow(dead_code))] // used by the unpair path
+pub fn default_after_removal(
+    remaining: &[(String, String)],
+    removed: &str,
+    current: &str,
+) -> String {
+    if !current.is_empty() && current != removed && remaining.iter().any(|(id, _)| id == current) {
+        return current.to_owned();
+    }
+    remaining
+        .iter()
+        .min_by_key(|(_, name)| name.to_lowercase())
+        .map(|(id, _)| id.clone())
+        .unwrap_or_default()
 }
 
 impl DeviceStore {
@@ -82,6 +109,24 @@ impl DeviceStore {
         kv.insert(key.to_owned(), value.clone()).as_deref() != Some(value.as_str())
     }
 
+    /// The local nickname of a device, if it has one. Never sent to the device.
+    #[cfg_attr(not(test), allow(dead_code))] // read by the device list
+    pub fn nickname(&self, id: &str) -> Option<String> {
+        clean_nickname(self.get(id, "nickname")?)
+    }
+
+    /// Sets (or, when blank, clears) the nickname. True when the stored value changed.
+    #[cfg_attr(not(test), allow(dead_code))] // called by the rename action
+    pub fn set_nickname(&mut self, id: &str, raw: &str) -> bool {
+        match clean_nickname(raw) {
+            Some(n) => self.set(id, "nickname", &n),
+            None => self
+                .devices
+                .get_mut(id)
+                .is_some_and(|kv| kv.remove("nickname").is_some()),
+        }
+    }
+
     /// Forgets a device (it was unpaired).
     pub fn forget(&mut self, id: &str) -> bool {
         self.devices.remove(id).is_some()
@@ -94,8 +139,13 @@ impl DeviceStore {
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, self.to_text())?;
+        // Flush to disk before the rename, so a power cut leaves the old file or the new one, never half.
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(self.to_text().as_bytes())?;
+        f.sync_all()?;
+        drop(f);
         std::fs::rename(tmp, path)
     }
 }
@@ -106,6 +156,7 @@ mod tests {
 
     const A: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
     const B: &str = "bb00000000000000000000000000000000000000000000000000000000000002";
+    const C: &str = "cc00000000000000000000000000000000000000000000000000000000000003";
 
     #[test]
     fn values_round_trip() {
@@ -149,6 +200,61 @@ mod tests {
         assert!(s.forget(A));
         assert!(!s.forget(A));
         assert_eq!(s.get(A, "app_version"), None);
+    }
+
+    #[test]
+    fn nickname_is_cleaned_and_capped() {
+        let mut s = DeviceStore::default();
+        assert!(s.set_nickname(A, "  Desk\u{7} PC  "));
+        assert_eq!(s.nickname(A).as_deref(), Some("Desk PC"));
+        assert!(s.set_nickname(A, &"x".repeat(200)));
+        assert_eq!(s.nickname(A).unwrap().chars().count(), MAX_NICKNAME);
+        assert!(s.set_nickname(A, "   "), "a blank nickname clears it");
+        assert_eq!(s.nickname(A), None);
+        assert!(!s.set_nickname(A, ""), "already clear: no change");
+    }
+
+    #[test]
+    fn save_survives_a_crash_between_write_and_rename() {
+        let dir = std::env::temp_dir().join(format!("pb-dev-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("devices.txt");
+        let mut s = DeviceStore::default();
+        s.set(A, "app_version", "0.3.0");
+        s.save(&path).unwrap();
+        // A crash after the temp file was written but before the rename leaves a stray temp file.
+        std::fs::write(path.with_extension("tmp"), "version=1\ngarbage").unwrap();
+        assert_eq!(DeviceStore::load(&path), s);
+        s.set(A, "app_version", "0.4.0");
+        s.save(&path).unwrap();
+        assert_eq!(
+            DeviceStore::load(&path).get(A, "app_version"),
+            Some("0.4.0")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_is_dropped_when_its_device_is_unpaired() {
+        let rest = vec![
+            (B.to_owned(), "bravo".to_owned()),
+            (C.to_owned(), "Alpha".to_owned()),
+        ];
+        assert_eq!(
+            default_after_removal(&rest, A, A),
+            C,
+            "first by name, ignoring case"
+        );
+        assert_eq!(
+            default_after_removal(&rest, A, B),
+            B,
+            "another device was removed: keep"
+        );
+        assert_eq!(
+            default_after_removal(&[], A, A),
+            "",
+            "no device left: no default"
+        );
     }
 
     #[test]
