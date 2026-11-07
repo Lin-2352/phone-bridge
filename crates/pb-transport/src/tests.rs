@@ -191,6 +191,40 @@ async fn revoked_peer_can_no_longer_connect() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_ninth_session_from_one_peer_is_refused_as_busy() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let mut held = Vec::new();
+    for _ in 0..crate::quota::MAX_SESSIONS_PER_PEER {
+        let s = phone
+            .connect(&pc.peer_id())
+            .await
+            .expect("within the quota");
+        held.push((s, pc_ev.sessions.recv().await.unwrap()));
+    }
+    let err = phone.connect(&pc.peer_id()).await.err();
+    assert!(
+        matches!(err, Some(Error::Busy)),
+        "the ninth is refused as busy: {err:?}"
+    );
+    // One session ends and its slot frees: the PC sees the close, then a new one opens.
+    drop(held.pop());
+    let mut again = None;
+    for _ in 0..50 {
+        match phone.connect(&pc.peer_id()).await {
+            Ok(s) => {
+                again = Some(s);
+                break;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+        }
+    }
+    assert!(again.is_some(), "a closed session frees its slot");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unpairing_ends_a_session_that_is_open() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (phone, _pev, _) = node(2, "Phone").await;

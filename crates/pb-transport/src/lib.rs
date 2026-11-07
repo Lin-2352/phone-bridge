@@ -13,6 +13,7 @@ pub mod files;
 pub mod input;
 pub mod notify;
 pub mod pairing;
+pub mod quota;
 pub mod screen;
 pub mod tuning;
 
@@ -64,6 +65,8 @@ pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
 const CLOSE_NOT_PAIRED: u32 = 403;
 const CLOSE_PAIR_FAILED: u32 = 400;
+/// A paired peer opened more sessions than its quota allows (M7.8).
+const CLOSE_BUSY: u32 = 429;
 /// The joiner could not save the pairing: the host takes its own back.
 const CLOSE_PAIR_NOT_SAVED: u32 = 500;
 /// The peer's `Hello` names a protocol version this build does not speak.
@@ -104,6 +107,8 @@ pub enum Error {
     Storage(String),
     /// The two devices can't talk: the named side needs a newer Relay.
     VersionMismatch(UpdateSide),
+    /// The other device has too many requests from this one open or recent; try again in a moment.
+    Busy,
 }
 
 impl fmt::Display for Error {
@@ -121,6 +126,7 @@ impl fmt::Display for Error {
             Self::TooLarge => f.write_str("too large to send"),
             Self::PeerChanged => f.write_str("another device answers for this peer: if it was reinstalled or reset, remove it and pair again"),
             Self::HashMismatch => f.write_str("file was corrupted in transit (hash mismatch); nothing was saved"),
+            Self::Busy => f.write_str("the other device is busy with too many requests from this one; try again in a moment"),
             Self::Cancelled => f.write_str("transfer cancelled"),
             Self::PeerCancelled => f.write_str("the other device cancelled the transfer"),
             Self::Io(e) => write!(f, "file error: {e}"),
@@ -267,6 +273,8 @@ struct Inner {
     ticket: Mutex<Option<Ticket>>,
     /// Wrong pairing tokens, per source and in total (outlives the rotation of the code).
     bad_tokens: Mutex<pairing::BadTokenLimits>,
+    /// Per-peer limits on open sessions and file offers.
+    quotas: quota::PeerQuotas,
     pairings: mpsc::Sender<PendingPairing>,
     sessions: mpsc::Sender<Session>,
     discovery: Mutex<Option<discovery::Discovery>>,
@@ -385,6 +393,7 @@ impl Node {
                 store,
                 ticket: Mutex::new(None),
                 bad_tokens: Mutex::default(),
+                quotas: quota::PeerQuotas::default(),
                 pairings: pair_tx,
                 sessions: sess_tx,
                 discovery: Mutex::new(None),
@@ -496,6 +505,18 @@ impl Node {
     /// and anything it has open now (a transfer, a control session) ends.
     /// False when it was not paired, and also when the removal could not be
     /// saved (it is then still paired); [`Self::try_unpair`] tells them apart.
+    /// Admits a file offer from `peer` against its quota (at most 30 a minute, and its in-flight bytes plus this
+    /// one must fit in `free`, the free space on the disk). Hold the permit while the file is received; dropping
+    /// it releases the reservation. A refusal is the answer to send back (too many requests, or no space).
+    pub fn offer_permit(
+        &self,
+        peer: PeerId,
+        size: u64,
+        free: u64,
+    ) -> Result<quota::OfferPermit, quota::QuotaRefusal> {
+        self.inner.quotas.offer(peer, size, free, Instant::now())
+    }
+
     pub fn unpair(&self, peer: &PeerId) -> bool {
         self.try_unpair(peer).unwrap_or(false)
     }
@@ -511,6 +532,7 @@ impl Node {
         // later pairing never reuses a value an old dial captured.
         self.forget_changed(peer);
         lock(&self.inner.candidates).remove(peer);
+        self.inner.quotas.forget(peer);
         lock(&self.inner.live).retain(|(p, w)| {
             if p != peer {
                 return true;
@@ -863,6 +885,17 @@ impl Node {
             conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");
             return;
         };
+        // A paired peer may only have so many sessions open at once; the rest are told it is busy.
+        let Some(permit) = self.inner.quotas.open_session(peer) else {
+            conn.close(CLOSE_BUSY.into(), b"busy");
+            return;
+        };
+        // The slot is held for as long as the connection lives.
+        let held = conn.clone();
+        tokio::spawn(async move {
+            let _ = held.closed().await;
+            drop(permit);
+        });
         // The TLS handshake proved it holds the paired key: not changed.
         self.forget_changed(&peer);
         self.track(peer, &conn);
@@ -1039,6 +1072,9 @@ fn closed_by_peer(conn: &Connection, fallback: Error) -> Error {
         }
         Some(ConnectionError::ApplicationClosed(c)) if c.error_code == CLOSE_PAIR_FAILED.into() => {
             Error::Rejected
+        }
+        Some(ConnectionError::ApplicationClosed(c)) if c.error_code == CLOSE_BUSY.into() => {
+            Error::Busy
         }
         Some(ConnectionError::ApplicationClosed(c))
             if c.error_code == CLOSE_INCOMPATIBLE.into() =>
