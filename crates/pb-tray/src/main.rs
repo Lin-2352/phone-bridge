@@ -136,6 +136,7 @@ mod look;
 // Used from Task 11 (the settings page search).
 #[allow(dead_code)]
 mod search_box;
+mod snapshot;
 #[allow(dead_code)]
 mod tokens;
 mod tokens_rules;

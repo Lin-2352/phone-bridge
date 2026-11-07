@@ -4,6 +4,7 @@ resolver = "2"
 exclude = ["fuzz"]
 members = [
     "crates/pb-identity",
+    "tools/snapshot-diff",
     "crates/pb-protocol",
     "crates/pb-transport",
     "crates/pb-cli",
