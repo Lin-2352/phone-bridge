@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M6.6. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M6.7 (Transfers; see the plan in [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md)).
+- **Last finished task:** M6.14. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M6.8 (Timeline; see the plan in [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -157,7 +157,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M6.11 Consent sheets
 - [ ] M6.12 Pairing and SAS
 - [ ] M6.13 Widget, quick panel and tile
-- [ ] M6.14 Per-OEM background guidance (Xiaomi, Samsung, Huawei, Oppo/realme)
+- [x] M6.14 Per-OEM background guidance (Xiaomi, Samsung, Huawei, Oppo/realme) (maker guidance rules and the Settings row that opens the maker's screen)
 - [ ] M6.15 Roborazzi screenshots of every screen (both themes, every mode)
 - [ ] M6.16 CI emulator smoke job (API 29 and 36; PSS recorded)
 - [ ] M6.R Milestone review and CI green

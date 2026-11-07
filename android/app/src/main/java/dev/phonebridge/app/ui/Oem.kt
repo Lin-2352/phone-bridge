@@ -54,3 +54,26 @@ fun oemGuide(oem: Oem): OemGuide = when (oem) {
         intents = emptyList(),
     )
 }
+
+/**
+ * Opens the first maker settings screen this phone has (checked with resolveActivity), or the app's own
+ * settings page. It only opens a settings screen for the person; nothing is changed by Relay.
+ */
+fun openMakerSettings(ctx: android.content.Context) {
+    val guide = oemGuide(oemOf(android.os.Build.MANUFACTURER, android.os.Build.BRAND))
+    for (name in guide.intents) {
+        val (pkg, cls) = name.split("/", limit = 2)
+        val intent = android.content.Intent()
+            .setComponent(android.content.ComponentName(pkg, if (cls.startsWith(".")) pkg + cls else cls))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (intent.resolveActivity(ctx.packageManager) != null) {
+            ctx.startActivity(intent)
+            return
+        }
+    }
+    ctx.startActivity(
+        android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(android.net.Uri.parse("package:${ctx.packageName}"))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+    )
+}

@@ -101,6 +101,12 @@ import dev.phonebridge.app.treeLabel
 import dev.phonebridge.app.ui.LocalResumeCount
 import dev.phonebridge.app.ui.home.openSettings
 import dev.phonebridge.app.ui.ThemeChoice
+import dev.phonebridge.app.ui.liteReason
+import dev.phonebridge.app.ui.oemGuide
+import dev.phonebridge.app.ui.oemOf
+import dev.phonebridge.app.ui.openMakerSettings
+import dev.phonebridge.app.ui.liteText
+import dev.phonebridge.app.ui.rememberLiteSignals
 import dev.phonebridge.app.ui.components.CategoryRow
 import dev.phonebridge.app.ui.components.PillSearch
 import dev.phonebridge.app.ui.components.RelayCard
@@ -466,6 +472,8 @@ private fun groupTint(g: Group): Color = tintColor(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsTab(onDone: () -> Unit) {
+    // The reason lite is on by itself, shown under its switch.
+    val liteNow = liteReason(rememberLiteSignals(forced = ThemeChoice.liteForced.value, slowFrames = false))
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
@@ -722,7 +730,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                 )
                                 RelayRow(
                                     title = "Lite mode",
-                                    supporting = "No blur and no idle animation. Turns on by itself on low-memory phones, in battery saver, or with animations off",
+                                    supporting = "No blur and no idle animation. " + liteText(liteNow),
                                     checked = ThemeChoice.liteForced.value,
                                     onChecked = { ThemeChoice.liteForced.value = it; prefs.liteForced = it },
                                 )
@@ -790,6 +798,12 @@ fun SettingsTab(onDone: () -> Unit) {
                                     supporting = if (Bridge.running.value) "On: your PC can reach this phone. Quick Settings tile turns it off" else "Off: your PC cannot reach this phone",
                                     checked = Bridge.running.value,
                                     onChecked = { setBridgeEnabled(ctx, it) },
+                                )
+                                val maker = oemGuide(oemOf(android.os.Build.MANUFACTURER, android.os.Build.BRAND))
+                                RelayRow(
+                                    title = "Your phone's background settings",
+                                    supporting = maker.steps.joinToString(" "),
+                                    onClick = { openMakerSettings(ctx) },
                                 )
                                 RowDivider()
                                 val unrestricted = remember(resumed) { mutableStateOf(isBatteryUnrestricted(ctx)) }
