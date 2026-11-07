@@ -16,6 +16,15 @@ pub struct DevicesModel {
     /// (name, short fingerprint, answers as a different device now), in
     /// the tray's peer order (Remove names a device by its index).
     pub devices: Vec<(String, String, bool)>,
+    /// Index of the default device (sends go there when none is chosen), if any.
+    pub default: Option<usize>,
+}
+
+impl DevicesModel {
+    /// Whether row `k` offers "Make default": there is a choice, and it is not the default already.
+    fn can_make_default(&self, k: usize) -> bool {
+        self.devices.len() > 1 && self.default != Some(k)
+    }
 }
 
 /// The line under a device's name, and whether it is a warning (drawn in
@@ -27,6 +36,7 @@ pub fn note(d: &(String, String, bool)) -> (String, bool) {
 /// Hit ids.
 const PAIR: u32 = 1;
 const REMOVE: u32 = 10;
+const MAKE_DEFAULT: u32 = 1000;
 
 /// Sizes in logical px.
 const PAD: f32 = 24.0;
@@ -34,6 +44,7 @@ const TITLE_H: f32 = 40.0;
 const EMPTY_H: f32 = 184.0;
 const ROW_H: f32 = 64.0;
 const REMOVE_W: f32 = 88.0;
+const DEFAULT_W: f32 = 120.0;
 const PAIR_W: f32 = 136.0;
 const BUTTON_H: f32 = 32.0;
 
@@ -42,8 +53,8 @@ struct Parts {
     title: RectF,
     /// The card: the device rows, or the empty state.
     card: RectF,
-    /// Row and its Remove button, per device.
-    rows: Vec<(RectF, RectF)>,
+    /// Row, its Remove button and its Make default button, per device.
+    rows: Vec<(RectF, RectF, RectF)>,
     pair: RectF,
     bottom: f32,
 }
@@ -83,7 +94,13 @@ fn parts(r: RectF, s: f32, m: &DevicesModel) -> Parts {
                 (right - pad).max(left),
                 cy + BUTTON_H * s / 2.0,
             );
-            (row, b)
+            let d = rectf(
+                (b.left - SPACE[2] * s - DEFAULT_W * s).max(left),
+                b.top,
+                (b.left - SPACE[2] * s).max(left),
+                b.bottom,
+            );
+            (row, b, d)
         })
         .collect();
     let pt = card.bottom + SPACE[3] * s;
@@ -99,15 +116,19 @@ fn parts(r: RectF, s: f32, m: &DevicesModel) -> Parts {
 
 pub fn layout(r: RectF, s: f32, m: &DevicesModel) -> Vec<Hit> {
     let p = parts(r, s, m);
-    let mut hits: Vec<Hit> = p
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(k, (_, b))| Hit {
+    let mut hits: Vec<Hit> = Vec::new();
+    for (k, (_, b, d)) in p.rows.iter().enumerate() {
+        hits.push(Hit {
             id: REMOVE + k as u32,
             r: *b,
-        })
-        .collect();
+        });
+        if m.can_make_default(k) {
+            hits.push(Hit {
+                id: MAKE_DEFAULT + k as u32,
+                r: *d,
+            });
+        }
+    }
     hits.push(Hit {
         id: PAIR,
         r: p.pair,
@@ -140,8 +161,11 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &DevicesModel) {
             "Pair your phone to send files, share the clipboard and more.",
         );
     }
-    for (d, (row, b)) in m.devices.iter().zip(&p.rows) {
-        let (line, warn) = note(d);
+    for (k, (d, (row, b, mk))) in m.devices.iter().zip(&p.rows).enumerate() {
+        let (mut line, warn) = note(d);
+        if m.default == Some(k) && m.devices.len() > 1 {
+            line = format!("Default \u{b7} {line}");
+        }
         let pad = fluent::ROW_PAD as f32 * s;
         let cy = (row.top + row.bottom) / 2.0;
         let g = rectf(
@@ -157,12 +181,22 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &DevicesModel) {
             if warn { pal.danger } else { pal.text2 },
         );
         let tx = g.right + SPACE[2] * s;
-        let tr = (b.left - SPACE[2] * s).max(tx);
+        let tr = if m.can_make_default(k) {
+            mk.left
+        } else {
+            b.left
+        }
+        .max(tx + 1.0)
+            - SPACE[2] * s;
+        let tr = tr.max(tx);
         let name = rectf(tx, cy - 20.0 * s, tr, cy);
         text(c, Font::Body, &d.0, name, pal.text, Align::Left);
         let meta = rectf(tx, cy, tr, cy + 18.0 * s);
         let rgb = if warn { pal.danger } else { pal.text2 };
         text(c, Font::Caption, &line, meta, rgb, Align::Left);
+        if m.can_make_default(k) {
+            fluent::button(c, *mk, "Make default", false);
+        }
         fluent::button(c, *b, "Remove", false);
     }
     fluent::button(c, p.pair, crate::strings::PAIR_DEVICE, true);
@@ -172,6 +206,13 @@ pub fn describe(hit: &Hit, m: &DevicesModel) -> Option<super::Desc> {
     use super::{Desc, Role};
     match hit.id {
         PAIR => Some(Desc::new(crate::strings::PAIR_DEVICE, Role::Button)),
+        id if id >= MAKE_DEFAULT => {
+            let d = m.devices.get((id - MAKE_DEFAULT) as usize)?;
+            Some(Desc::new(
+                format!("Make {} the default device", d.0),
+                Role::Button,
+            ))
+        }
         id if id >= REMOVE => {
             let d = m.devices.get((id - REMOVE) as usize)?;
             Some(Desc::new(format!("Remove {}", d.0), Role::Button))
@@ -183,6 +224,9 @@ pub fn describe(hit: &Hit, m: &DevicesModel) -> Option<super::Desc> {
 pub fn click(hit: &Hit, m: &DevicesModel) -> Option<Action> {
     match hit.id {
         PAIR => Some(Action::Flyout(flyout::Action::Pair)),
+        id if id >= MAKE_DEFAULT && ((id - MAKE_DEFAULT) as usize) < m.devices.len() => {
+            Some(Action::MakeDefault((id - MAKE_DEFAULT) as usize))
+        }
         id if id >= REMOVE && ((id - REMOVE) as usize) < m.devices.len() => {
             Some(Action::Unpair((id - REMOVE) as usize))
         }
@@ -211,6 +255,7 @@ mod tests {
                 ("Pixel 8".into(), "18CF-F6D8".into(), false),
                 ("Galaxy".into(), "AB12-CD34".into(), true),
             ],
+            default: Some(0),
         }
     }
 
@@ -235,18 +280,38 @@ mod tests {
     fn remove_and_pair_use_the_tray_actions() {
         let m = model();
         let hits = layout(page(), 1.0, &m);
-        // Remove per device, then Pair a device.
-        assert_eq!(hits.len(), 3);
+        // Remove per device, Make default for the one that is not the default, then Pair a device.
+        assert_eq!(hits.len(), 4);
         assert_eq!(click(&hits[0], &m), Some(Action::Unpair(0)));
         assert_eq!(click(&hits[1], &m), Some(Action::Unpair(1)));
+        assert_eq!(click(&hits[2], &m), Some(Action::MakeDefault(1)));
         assert_eq!(
-            click(&hits[2], &m),
+            click(&hits[3], &m),
             Some(Action::Flyout(flyout::Action::Pair))
         );
         let h = content_height(800.0, 1.5, &m);
         for x in layout(rectf(0.0, 0.0, 800.0, 10.0), 1.5, &m) {
             assert!(x.r.bottom <= h * 1.5 + 0.5);
         }
+    }
+
+    #[test]
+    fn the_default_device_offers_no_make_default() {
+        let mut m = model();
+        m.default = Some(1);
+        let ids: Vec<Action> = layout(page(), 1.0, &m)
+            .iter()
+            .filter_map(|h| click(h, &m))
+            .collect();
+        assert!(ids.contains(&Action::MakeDefault(0)));
+        assert!(!ids.contains(&Action::MakeDefault(1)));
+        let one = DevicesModel {
+            devices: vec![("Pixel 8".into(), "18CF-F6D8".into(), false)],
+            default: Some(0),
+        };
+        assert!(!layout(page(), 1.0, &one)
+            .iter()
+            .any(|h| h.id >= MAKE_DEFAULT));
     }
 
     #[test]

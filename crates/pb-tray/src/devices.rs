@@ -62,6 +62,13 @@ pub fn default_after_removal(
         .unwrap_or_default()
 }
 
+/// Position of the default device among `ids`: the saved one while it is still there, otherwise the first.
+pub fn default_position(ids: &[String], saved: &str) -> Option<usize> {
+    ids.iter()
+        .position(|i| i == saved)
+        .or(if ids.is_empty() { None } else { Some(0) })
+}
+
 /// Where a send goes: straight to one phone, to a choice among several, or nowhere because none is paired.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendTarget {
@@ -330,6 +337,19 @@ mod tests {
             send_target(&two(), Some(A), ""),
             SendTarget::Ask(vec![C.to_owned(), B.to_owned()])
         );
+    }
+
+    #[test]
+    fn default_position_follows_the_saved_id_or_the_first() {
+        let ids = vec![B.to_owned(), C.to_owned()];
+        assert_eq!(default_position(&ids, C), Some(1));
+        assert_eq!(
+            default_position(&ids, A),
+            Some(0),
+            "saved device is gone: the first"
+        );
+        assert_eq!(default_position(&ids, ""), Some(0));
+        assert_eq!(default_position(&[], C), None);
     }
 
     #[test]

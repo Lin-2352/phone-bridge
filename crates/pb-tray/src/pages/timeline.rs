@@ -1255,6 +1255,7 @@ mod tests {
                 draw(&mut c, view, view, &empty, &[]);
                 let d = devices::DevicesModel {
                     devices: vec![("Galaxy".into(), "AB12-CD34".into(), true)],
+                    default: Some(0),
                 };
                 devices::draw(&mut c, view, &d);
                 devices::draw(&mut c, view, &devices::DevicesModel::default());

@@ -558,6 +558,20 @@ fn page_action(a: crate::pages::Action) {
         }
         // The tray's own Remove: it asks first, then unpairs.
         Action::Unpair(i) => post_command(raw, ID_UNPAIR_BASE + i),
+        // Only a preference for where sends go: saved at once, no consent involved.
+        Action::MakeDefault(i) => {
+            let id = st
+                .peers
+                .lock()
+                .ok()
+                .and_then(|g| g.get(i).map(|(id, _)| id.to_string()));
+            if let Some(id) = id {
+                if let Ok(mut s) = st.settings.lock() {
+                    s.default_device = id;
+                }
+                save_settings(st);
+            }
+        }
         // The registry's own cancel and retry, off the window thread (retry starts a send).
         Action::TransferCancel(id) => {
             std::thread::spawn(move || {
@@ -734,6 +748,22 @@ fn paired_devices(st: &State) -> Vec<(String, String, bool)> {
         .unwrap_or_default()
 }
 
+/// Index (in the tray's peer order) of the default device: the saved one while it is still paired, otherwise the
+/// first, so sends always have somewhere to go. None when nothing is paired.
+fn default_index(st: &State) -> Option<usize> {
+    let saved = st
+        .settings
+        .lock()
+        .map(|s| s.default_device.clone())
+        .unwrap_or_default();
+    let ids: Vec<String> = st
+        .peers
+        .lock()
+        .map(|g| g.iter().map(|(id, _)| id.to_string()).collect())
+        .unwrap_or_default();
+    crate::devices::default_position(&ids, &saved)
+}
+
 /// What the Timeline model was built from: the store's version, history
 /// on, the local day and the time zone.
 type TimelineKey = (u64, bool, i64, i64);
@@ -827,6 +857,7 @@ fn page_model(st: &State) -> crate::pages::Model {
         timeline,
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
+            default: default_index(st),
         },
         transfers: crate::pages::transfers::TransfersModel::from_registry(),
         // The window adds its own sub-page and query. The rows (a registry

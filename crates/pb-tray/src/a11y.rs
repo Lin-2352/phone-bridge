@@ -124,6 +124,7 @@ mod tests {
         let m = Model {
             devices: DevicesModel {
                 devices: vec![("Pixel 8".into(), "AB".into(), false)],
+                default: Some(0),
             },
             ..Default::default()
         };

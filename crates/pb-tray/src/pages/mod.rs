@@ -60,6 +60,8 @@ pub enum Action {
     Stop(home::SessionKind),
     /// Remove the paired device at this index (the tray asks first).
     Unpair(usize),
+    /// Make the paired device at this index the one sends go to when none is chosen.
+    MakeDefault(usize),
     /// Cancel or retry the transfer with this id (the registry's own cancel and retry).
     TransferCancel(u64),
     TransferRetry(u64),
