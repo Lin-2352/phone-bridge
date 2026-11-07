@@ -6,6 +6,10 @@
 
 pub mod vault;
 
+mod discovery_key;
+
+pub use discovery_key::DiscoveryKey;
+
 use std::{collections::BTreeMap, fmt};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -20,6 +24,8 @@ pub enum IdentityError {
     InvalidPublicKey,
     /// The signature did not verify for this peer and message.
     BadSignature,
+    /// The peer's key has low order: it would give a shared secret of zero.
+    WeakPeerKey,
 }
 
 impl fmt::Display for IdentityError {
@@ -28,6 +34,7 @@ impl fmt::Display for IdentityError {
             Self::Random => "OS random number generator failed",
             Self::InvalidPublicKey => "invalid Ed25519 public key",
             Self::BadSignature => "signature verification failed",
+            Self::WeakPeerKey => "peer key has low order",
         })
     }
 }

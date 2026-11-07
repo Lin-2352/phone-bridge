@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M7.1. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M7.2 (PC unlock gate with Windows Hello; see the plan in [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md)).
+- **Last finished task:** M7.5. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M7.6 (PBD2 packets; a wire change, advisor first; see [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -168,7 +168,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M7.2 PC unlock gate (Windows Hello interop on Windows 11; unavailable with a reason elsewhere)
 - [ ] M7.3 Gate wired to every guarded action, with a 60 s grace
 - [ ] M7.4 "Disconnect everything" in the tray, flyout, tile, notification and Home
-- [ ] M7.5 PBD2 key derivation inside `pb-identity` (X25519 + HKDF; all-zero results rejected)
+- [x] M7.5 PBD2 key derivation inside `pb-identity` (X25519 + HKDF; all-zero results rejected) (key derivation, cross-checked with an independent implementation)
 - [ ] M7.6 PBD2 packets: MACed probe and answer, only MACed addresses dialled, per-peer ratchet off PBD1, fuzz target
 - [ ] M7.7 Pairing limits per source plus a global cap; 2 time-boxed handshakes at most
 - [ ] M7.8 Per-peer session and offer quotas (THREAT_MODEL row 14)
