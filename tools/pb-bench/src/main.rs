@@ -16,6 +16,8 @@
 //! `up` = PC sends to phone, `down` = phone sends to PC. Output is one
 //! `key=value` line per run so a script can collect it.
 
+mod budget;
+
 use std::{
     net::{SocketAddr, UdpSocket},
     time::{Duration, Instant},
