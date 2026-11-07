@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.security.gated
+import dev.phonebridge.app.security.Guarded
 import dev.phonebridge.app.ui.RelayTheme
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
@@ -40,9 +42,9 @@ class ControlRequestActivity : FragmentActivity() {
                     ConsentDialog(
                         title = "Let $peer control this phone?",
                         body = "Its mouse and keyboard will work here. Stop any time from $APP_NAME or with Ctrl+Alt+P on the PC.",
-                        onAllow = { answer(true, always = false) },
+                        onAllow = { gated(Guarded.AllowDecision, "Allow PC control") { answer(true, always = false) } },
                         onDeny = { answer(false, always = false) },
-                        onAlways = if (peerId.isNotEmpty()) ({ answer(true, always = true) }) else null,
+                        onAlways = if (peerId.isNotEmpty()) ({ gated(Guarded.AlwaysAllow, "Always allow PC control") { answer(true, always = true) } }) else null,
                     )
                 }
             }

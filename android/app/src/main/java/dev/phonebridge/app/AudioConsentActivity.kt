@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.security.gated
+import dev.phonebridge.app.security.Guarded
 import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
@@ -118,7 +120,7 @@ class AudioConsentActivity : FragmentActivity() {
                                 "Whatever this phone plays is sent to the PC and plays there. Android asks once more before it starts. Stop any time from the notification."
                             }
                         },
-                        onAllow = { allow() },
+                        onAllow = { gated(Guarded.AllowDecision, "Allow audio sharing") { allow() } },
                         onDeny = { if (!finished) refuse(AudioReason.DECLINED) },
                     )
                 }

@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.security.gated
+import dev.phonebridge.app.security.Guarded
 import dev.phonebridge.app.ui.RelayTheme
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
@@ -92,9 +94,9 @@ class ScreenConsentActivity : FragmentActivity() {
                     ConsentDialog(
                         title = "Let ${a.peer} see this screen?",
                         body = screenConsentBody(ControlService.instance != null),
-                        onAllow = { allow(always = false) },
+                        onAllow = { gated(Guarded.AllowDecision, "Allow screen sharing") { allow(always = false) } },
                         onDeny = { if (!answered) decline() },
-                        onAlways = if (peerId.isNotEmpty()) ({ allow(always = true) }) else null,
+                        onAlways = if (peerId.isNotEmpty()) ({ gated(Guarded.AlwaysAllow, "Always allow screen sharing") { allow(always = true) } }) else null,
                     )
                 }
             }

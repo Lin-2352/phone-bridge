@@ -100,6 +100,8 @@ import dev.phonebridge.app.statusLine
 import dev.phonebridge.app.treeLabel
 import dev.phonebridge.app.ui.LocalResumeCount
 import dev.phonebridge.app.ui.home.openSettings
+import dev.phonebridge.app.security.Guarded
+import dev.phonebridge.app.security.gated
 import dev.phonebridge.app.ui.ThemeChoice
 import dev.phonebridge.app.ui.liteReason
 import dev.phonebridge.app.ui.oemGuide
@@ -527,14 +529,19 @@ fun SettingsTab(onDone: () -> Unit) {
             destructive = true,
             onConfirm = {
                 removing = null
-                // A failed save keeps the PC paired; the list below is re-read either way.
-                runCatching { Bridge.node?.tryUnpair(p.id) }.exceptionOrNull()?.let {
-                    notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
+                val removeIt = {
+                    // A failed save keeps the PC paired; the list below is re-read either way.
+                    runCatching { Bridge.node?.tryUnpair(p.id) }.exceptionOrNull()?.let {
+                        notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
+                    }
+                    Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
+                    Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
+                    PbService.refresh(ctx)
+                    onDone()
                 }
-                Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
-                Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
-                PbService.refresh(ctx)
-                onDone()
+                // Unpairing is guarded: an unlock first (a failed or cancelled one leaves the PC paired).
+                val gateActivity = (ctx as? androidx.fragment.app.FragmentActivity)
+                if (gateActivity != null) gateActivity.gated(Guarded.Unpair, "Remove ${p.name}") { removeIt() } else removeIt()
             },
             dismissText = "Cancel",
         ) {
@@ -673,7 +680,12 @@ fun SettingsTab(onDone: () -> Unit) {
                                     title = "Accept from my devices automatically",
                                     supporting = "Only paired devices can send",
                                     checked = auto,
-                                    onChecked = { auto = it; prefs.autoAccept = it; Bridge.node?.setAutoAccept(it) },
+                                    onChecked = { on ->
+                                        val apply = { auto = on; prefs.autoAccept = on; Bridge.node?.setAutoAccept(on) }
+                                        val a = (ctx as? androidx.fragment.app.FragmentActivity)
+                                        // Turning it on lets devices send without asking, so it is guarded; off only removes access.
+                                        if (on && a != null) a.gated(Guarded.AutoAccept, "Accept from my devices automatically") { apply() } else apply()
+                                    },
                                 )
                                 RowDivider()
                                 RelayRow(
@@ -747,7 +759,13 @@ fun SettingsTab(onDone: () -> Unit) {
                                     supporting = if (secure) "Allowing, always-allow and pairing ask for your fingerprint or screen lock"
                                     else "Set a screen lock first",
                                     checked = gateOn,
-                                    onChecked = { if (secure) { gateOn = it; prefs.unlockGate = it } },
+                                    onChecked = { on ->
+                                        val apply = { gateOn = on; prefs.unlockGate = on }
+                                        val a = (ctx as? androidx.fragment.app.FragmentActivity)
+                                        // Turning the gate off takes one unlock; turning it on needs none.
+                                        if (secure && !on && a != null) a.gated(Guarded.GateOff, "Turn off the unlock gate") { apply() }
+                                        else if (secure) apply()
+                                    },
                                 )
                                 RowDivider()
                                 RelayRow(

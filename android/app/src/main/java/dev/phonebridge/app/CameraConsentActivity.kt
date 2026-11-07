@@ -1,5 +1,7 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.security.gated
+import dev.phonebridge.app.security.Guarded
 import dev.phonebridge.app.ui.RelayTheme
 import android.Manifest
 import androidx.fragment.app.FragmentActivity
@@ -96,10 +98,10 @@ class CameraConsentActivity : FragmentActivity() {
                     ConsentDialog(
                         title = "Let ${a.peer} use your camera?",
                         body = "Your camera becomes a webcam on the PC while it is on. Android shows its camera indicator, and Stop is in the notification.",
-                        onAllow = { allow(always = false) },
+                        onAllow = { gated(Guarded.AllowDecision, "Allow the camera") { allow(always = false) } },
                         onDeny = { if (!answered) decline() },
                         // Without a known id "Always allow" could not be remembered.
-                        onAlways = if (peerId.isNotEmpty()) ({ allow(always = true) }) else null,
+                        onAlways = if (peerId.isNotEmpty()) ({ gated(Guarded.AlwaysAllow, "Always allow the camera") { allow(always = true) } }) else null,
                     )
                 }
             }

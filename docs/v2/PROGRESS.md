@@ -246,3 +246,25 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - 2026-11-07: the owner reviewed the plans for M5 to M8, supplied an enhanced version (crisp text and hairlines, a baked grain tile, a passive frame-metrics monitor with warmup, Back as deny on the Android consent sheet, biometric lockout and a busy Windows Hello verifier treated as failures, PBD2 address validation, overflow-safe quotas, unpair purges per-device permissions) and told me to follow it with monitors and the advisor. The enhancements are merged into the four plan files; the plans are approved. Next: Task M5.0a, then M5.1.
 
 - 2026-11-07 (M5.4): tabular numerals (`tnum`) on the Transfers progress line are not applied: DirectWrite needs a typography feature on the text layout, which `fluent::text` does not expose; the progress text keeps one fixed field order. Revisit with the M5.8 polish. The `fmt_bytes` wording drops decimals from 10 up ("12 MB"), so the plan's "12.4 MB" example reads "12 MB".
+
+## Open follow-ups (2026-11-07)
+
+Ticked tasks above that still have named pieces open. They are listed here so a tick never reads as "everything done".
+
+- [ ] M5.10 offscreen renderer (`d2d::offscreen`, `--snapshot`), goldens and the `snapshots` CI job (only the pure parts and `tools/snapshot-diff` exist)
+- [ ] M5.11 the budget run itself (`scripts/pc-budget.ps1` needs the owner's Relay closed) and the DECISIONS table
+- [ ] M5.8 XML toast copy audit (`strings.rs`)
+- [ ] M5 Segoe UI Variable to Segoe UI font fallback in the product, and tabular numerals on live counters
+- [ ] M6.1 Roborazzi: `GlassScreenshotTest` is parked in `android/app/src/screenshotPending/` (the Robolectric process crashes natively on Windows); run it on Linux CI, record goldens
+- [ ] M6.2 the Quick panel's blur-behind does not follow `blurMode`; Gradle verification sha256 entries for Haze
+- [ ] M6.4 sheet, list and card motion use `tokenSpec` as those screens are rebuilt
+- [ ] M6.7 the Transfers screen, its route, the Home card and notification link, and feeding `Transfers` from `PbService`
+- [ ] M6.11 the four consent activities still use `ConsentDialog`; swapping to `ConsentSheet` changes what Back does (owner decision: Back denies, or does nothing)
+- [ ] M6.5, M6.8, M6.9, M6.10, M6.12, M6.13 the screens, widget, quick panel and tile
+- [ ] M6.15 and M6.16 screenshot matrix and the emulator job (CI)
+- [ ] M7.1 the BiometricPrompt path is checked on the device (device checklist)
+- [ ] M7.2 the Windows Hello call (`pb-platform-win`, `IUserConsentVerifierInterop`), the settings row and the gate call sites on the PC
+- [ ] M7.3 Android: the gate also guards the SAS confirm and turning on an always-allow switch in Settings (consent screens, Remove PC, auto-accept and the gate switch are done)
+- [ ] M7.4 the flyout action, the quick-settings tile, the notification action and a Home button for "Disconnect everything" (the tray menu and the Settings row exist)
+- [ ] M7.8 the tray and ffi call sites that take an `OfferPermit` when an offer arrives, and the "too many requests" notice; THREAT_MODEL row 14 stays "partly implemented"
+
