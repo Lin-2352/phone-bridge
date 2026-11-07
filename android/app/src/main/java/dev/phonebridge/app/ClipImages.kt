@@ -84,7 +84,7 @@ object ClipImages {
      */
     suspend fun sendBytes(ctx: Context, bytes: ByteArray): String? {
         val node = Bridge.awaitNode() ?: return "$APP_NAME is not running"
-        val peer = node.peers().firstOrNull() ?: return "Pair $APP_NAME with your PC first"
+        val peer = Bridge.defaultPeer(ctx) ?: return "Pair $APP_NAME with your PC first"
         val png = toPng(bytes) ?: return imageSendNotice("not a picture")
         if (png.size > MAX_IMAGE_BYTES) return imageSendNotice("too large")
         val tmp = File(ctx.cacheDir, "send-${System.nanoTime()}.png")

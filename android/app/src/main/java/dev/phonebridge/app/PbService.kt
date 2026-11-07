@@ -163,6 +163,13 @@ object Bridge {
 
     fun firstPeer() = node?.peers()?.firstOrNull()
 
+    /** The paired PC that sends go to when none is chosen: the saved default while it is paired, else the first. */
+    fun defaultPeer(ctx: android.content.Context): uniffi.pb_ffi.PbPeer? {
+        val peers = node?.peers().orEmpty()
+        val saved = Prefs(ctx).defaultPc
+        return peers.firstOrNull { it.id == saved } ?: peers.firstOrNull()
+    }
+
     /** The node, waiting up to [ms] for a service that is just starting. */
     suspend fun awaitNode(ms: Long = 10_000): PbNode? {
         repeat((ms / 100).toInt()) {

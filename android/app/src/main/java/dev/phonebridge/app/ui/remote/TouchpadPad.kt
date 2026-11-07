@@ -111,7 +111,7 @@ private object Scan {
  * One input session to the paired PC, held while the owning lifecycle is started.
  * [generation] is bumped on every start and stop, so a connect from an earlier start is dropped.
  */
-private class TouchpadSession {
+private class TouchpadSession(private val appContext: android.content.Context) {
     @Volatile var input: PbInput? = null
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
     var status by mutableStateOf("Connecting…")
@@ -146,7 +146,7 @@ private class TouchpadSession {
         }
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
-            val peer = node?.peers()?.firstOrNull()
+            val peer = if (node == null) null else Bridge.defaultPeer(appContext)
             if (node == null || peer == null) {
                 fail(if (node == null) "$APP_NAME did not start. Try again" else "Pair with your PC first")
                 return@launch
@@ -196,7 +196,8 @@ private class TouchpadSession {
  */
 @Composable
 fun TouchpadPad(modifier: Modifier = Modifier) {
-    val session = remember { TouchpadSession() }
+    val appCtx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val session = remember { TouchpadSession(appCtx) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val view = LocalView.current
     DisposableEffect(lifecycle, view) {

@@ -50,7 +50,8 @@ class ShareActivity : Activity() {
         startForegroundService(Intent(this, PbService::class.java))
         // The service may have been stopped by Android and is starting again
         // now; then the node (and the peer list) comes a moment later.
-        val known = Bridge.firstPeer()
+        val known = Bridge.defaultPeer(this)
+        var chosenId: String? = known?.id
         if (Bridge.node != null && known == null) {
             Toast.makeText(this, "Pair $APP_NAME with your PC first", Toast.LENGTH_LONG).show()
             finish()
@@ -119,25 +120,47 @@ class ShareActivity : Activity() {
             },
             opened.map { it.name },
         )
-        val sheet = android.app.AlertDialog.Builder(this)
-            .setTitle("Send to ${known?.name ?: "your PC"}?")
+        window.decorView.filterTouchesWhenObscured = true
+        showSheet(opened, toSend, preview, uris.size - opened.size, chosenId)
+    }
+
+    /** The confirm sheet. With several PCs paired it offers "Change PC" (the default is preselected). */
+    private fun showSheet(opened: List<OutgoingShare.Out>, toSend: SharedTextKind?, preview: String, dropped: Int, chosenId: String?) {
+        val peers = Bridge.node?.peers().orEmpty()
+        val names = dev.phonebridge.app.devices.labels(peers, peers.associate { it.id to Prefs(this).pcNickname(it.id) })
+        val target = peers.firstOrNull { it.id == chosenId }
+        val label = target?.let { names[it.id] ?: it.name }
+        val b = android.app.AlertDialog.Builder(this)
+            .setTitle("Send to ${label ?: "your PC"}?")
             .setMessage(preview)
-            .setPositiveButton("Send") { _, _ -> send(opened, toSend, known?.name, uris.size - opened.size) }
+            .setPositiveButton("Send") { _, _ -> send(opened, toSend, label, dropped, target?.id) }
             .setNegativeButton("Cancel") { _, _ -> finish() }
             .setOnCancelListener { finish() }
-            .create()
+        if (peers.size > 1) {
+            b.setNeutralButton("Change PC") { _, _ ->
+                val order = (dev.phonebridge.app.devices.sendTarget(peers, null, chosenId) as? dev.phonebridge.app.devices.SendTarget.Ask)?.ids
+                    ?: peers.map { it.id }
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Send to")
+                    .setItems(order.map { names[it] ?: it }.toTypedArray()) { _, i ->
+                        showSheet(opened, toSend, preview, dropped, order[i])
+                    }
+                    .setOnCancelListener { showSheet(opened, toSend, preview, dropped, chosenId) }
+                    .show()
+            }
+        }
+        val sheet = b.create()
         // A tap that went through another app's overlay is not a decision.
         sheet.setOnShowListener { sheet.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.filterTouchesWhenObscured = true }
-        window.decorView.filterTouchesWhenObscured = true
         sheet.show()
     }
 
-    private fun send(opened: List<OutgoingShare.Out>, toSend: SharedTextKind?, knownName: String?, dropped: Int) {
+    private fun send(opened: List<OutgoingShare.Out>, toSend: SharedTextKind?, knownName: String?, dropped: Int, peerId: String?) {
         unsent = emptyList()
         val app = applicationContext
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
-            val peer = node?.peers()?.firstOrNull()
+            val peer = node?.peers()?.let { ps -> ps.firstOrNull { it.id == peerId } ?: ps.firstOrNull() }
             if (node == null || peer == null) {
                 opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() }; runCatching { it.keep?.close() } }
                 AppLog.event("events", "share_dropped", "why" to if (node == null) "no_node" else "not_paired")

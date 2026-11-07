@@ -82,7 +82,7 @@ class SendClipboardActivity : Activity() {
 
     private suspend fun sendText(app: Context, text: String, sensitive: Boolean): String? {
         val node = Bridge.awaitNode() ?: return "$APP_NAME is not running"
-        val peer = node.peers().firstOrNull() ?: return "Pair $APP_NAME with your PC first"
+        val peer = Bridge.defaultPeer(app) ?: return "Pair $APP_NAME with your PC first"
         return try {
             node.sendClipboard(peer.id, text, sensitive)
             Log.i(TAG, "SENDCLIP text to ${peer.name}")
