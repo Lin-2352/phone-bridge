@@ -1,6 +1,7 @@
 //! The PC's unlock gate (M7.2): whether Windows Hello can guard the sensitive actions on this PC, and why not
 //! when it cannot. Pure: the Hello state and the Windows facts come in as values, so the rules are tested
 //! everywhere. The verification call itself lives in pb-platform-win (a worker thread only).
+#![cfg_attr(not(windows), allow(dead_code))]
 
 /// Windows 11's build (22000) is the first with the Hello consent verifier interop.
 pub const MIN_BUILD: u32 = 22000;
@@ -127,12 +128,15 @@ fn grace() -> std::sync::MutexGuard<'static, Grace> {
     GRACE_STATE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+#[cfg(windows)]
 static AVAILABILITY: std::sync::Mutex<Option<(std::time::Instant, GateAvailability)>> =
     std::sync::Mutex::new(None);
 
+#[cfg(windows)]
 /// How long a read of Windows Hello's state is reused (it is asked of Windows, so not on every repaint).
 const AVAILABILITY_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[cfg(windows)]
 /// The gate's availability for the settings row, without blocking the window: the last answer, refreshed on a
 /// worker thread when it is older than ten seconds. Until the first answer arrives it reads "available".
 pub fn cached_availability() -> GateAvailability {
@@ -167,6 +171,7 @@ pub fn would_prompt(enabled: bool) -> bool {
     enabled && grace().needs_unlock(std::time::Instant::now())
 }
 
+#[cfg(windows)]
 fn hello_to_state(s: pb_platform_win::hello::HelloState) -> HelloState {
     use pb_platform_win::hello::HelloState as H;
     match s {
@@ -178,6 +183,7 @@ fn hello_to_state(s: pb_platform_win::hello::HelloState) -> HelloState {
     }
 }
 
+#[cfg(windows)]
 /// Whether the gate can run on this PC right now (asks Windows: call it off the window thread).
 pub fn current_availability() -> GateAvailability {
     availability(
@@ -187,6 +193,7 @@ pub fn current_availability() -> GateAvailability {
     )
 }
 
+#[cfg(windows)]
 /// Runs the gate for a guarded action on a worker thread (Windows Hello blocks), then calls `then(true)` when the
 /// action may go ahead and `then(false)` when the person did not unlock. A gate that is off, a grace that holds,
 /// or a PC where Hello cannot run (the old consent stands) all go ahead; the last also starts the grace, so an
@@ -218,6 +225,7 @@ pub fn guard(
     });
 }
 
+#[cfg(windows)]
 /// Wraps a dialog's answer: a "yes" goes through the gate first, and a failed or cancelled unlock turns it into a
 /// "no" (nothing is allowed). A "no" never needs the gate.
 pub fn gate_answer(
