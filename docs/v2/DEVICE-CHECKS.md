@@ -22,3 +22,16 @@ Each line says what to look at, on which setup, and which task added it. Tests p
 - [ ] **M7.2 PC always-allow.** "Let my phone control this PC" on, "Play PC audio without asking" on and "Accept files automatically" on each ask for Hello first; turning them off, or turning the gate on, does not.
 - [ ] **M7.4 Disconnect everything.** The tray menu entry and the phone's Settings row close every connection, stop every share, turn every "always allow" off and pause Relay until it is turned on again.
 
+## Several devices (M8)
+
+Setup: the phone paired with two PCs (the tray, and a second identity from `pb.exe --dir <d2> --port 47201`).
+
+- [ ] **M8.5 Upgrade keeps the answers.** Install the build from before the per-PC change, turn on a global "always allow" and "accept automatically", then install the current build over it. Each paired PC keeps those answers (Settings, Connection, the PC's permissions); a PC paired afterwards starts at Ask.
+- [ ] **M8.2 Names and default.** Rename a PC on the phone, Make default, remove the default PC: the default moves to the next one and the status line names it.
+- [ ] **M8.1 Share sheet.** Share text to Relay with two PCs: it goes to the default, and "Change PC" sends it to the other.
+- [ ] **M8.4 Never.** Set a PC to Never for screen, camera, control and audio. Each request from that PC is refused without a dialog, with at most one "Request blocked" note a minute. Also after the PC resumes a screen or camera share inside its grace.
+- [ ] **M8.4 Always while locked.** With Always set and the phone locked, the request still asks.
+- [ ] **M8.4 Per-PC switches.** Clipboard, notifications and automatic accept on for one PC only: only that PC receives clips and notification mirrors, and only its files are accepted unasked.
+- [ ] **M7 Gate on new switches.** With the unlock gate on, turning on "Share clipboard" or "Share this phone's audio without asking" asks for an unlock; turning them off does not.
+- [ ] **M8.3 Tile and widget.** The Send tile and widget name the default PC and send to it.
+- [ ] **PC Send to.** With "Send to" set to Ask and two phones, the tray menu lists both and the choice is used once.
