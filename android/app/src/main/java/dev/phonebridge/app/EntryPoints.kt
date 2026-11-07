@@ -160,7 +160,9 @@ class ShareActivity : Activity() {
         val app = applicationContext
         Bridge.scope.launch {
             val node = Bridge.awaitNode()
-            val peer = node?.peers()?.let { ps -> ps.firstOrNull { it.id == peerId } ?: ps.firstOrNull() }
+            // The chosen PC if still paired; with none chosen the default. A chosen PC that is gone is not replaced
+            // by another one: the share is dropped and the person told.
+            val peer = if (node == null) null else if (peerId != null) node.peers().firstOrNull { it.id == peerId } else Bridge.defaultPeer(app)
             if (node == null || peer == null) {
                 opened.forEach { runCatching { android.os.ParcelFileDescriptor.adoptFd(it.fd).close() }; runCatching { it.keep?.close() } }
                 AppLog.event("events", "share_dropped", "why" to if (node == null) "no_node" else "not_paired")

@@ -84,6 +84,23 @@ class PcStoreTest {
         assertEquals(Allow.Never, p.camera)
     }
 
+    private val idA = "a".repeat(64)
+    private val idB = "b".repeat(64)
+
+    @Test
+    fun re_pairing_a_removed_device_starts_at_fresh_defaults() {
+        val keys = setOf("$idA/never_screen", "$idA/auto_accept", "$idB/clipboard_sync", "default_pc", "theme", "allow_audio_pcs")
+        assertEquals(listOf("$idA/never_screen", "$idA/auto_accept"), keysOfUnpaired(keys, listOf(idB)))
+        assertEquals("other keys are never touched", emptyList<String>(), keysOfUnpaired(keys - setOf("$idA/never_screen", "$idA/auto_accept"), listOf(idB)))
+    }
+
+    @Test
+    fun the_default_moves_on_when_its_pc_is_gone() {
+        assertEquals(idB, defaultIfStillPaired(idA, listOf(idB)))
+        assertEquals(idB, defaultIfStillPaired(idB, listOf(idA, idB)))
+        assertNull(defaultIfStillPaired(idA, emptyList()))
+    }
+
     @Test
     fun one_pc_needs_no_picker() {
         assertEquals(SendTarget.One("a"), sendTarget(listOf(peer("a", "Alpha")), null, null))

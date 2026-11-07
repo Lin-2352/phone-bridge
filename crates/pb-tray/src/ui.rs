@@ -2684,11 +2684,26 @@ fn pick_folder() -> Option<std::path::PathBuf> {
 /// With several phones paired, a send from the tray, flyout or hotkey asks which phone first (default on top).
 /// True when the menu was shown; the send then continues from [`command`] with the chosen phone.
 fn ask_send_target(hwnd: HWND, st: &State, action: usize) -> bool {
-    let peers: Vec<(String, String)> = st
+    let raw_peers: Vec<(String, String, String)> = st
         .peers
         .lock()
-        .map(|g| g.iter().map(|(i, n)| (i.to_string(), n.clone())).collect())
+        .map(|g| {
+            g.iter()
+                .map(|(i, n)| (i.to_string(), n.clone(), i.fingerprint()))
+                .collect()
+        })
         .unwrap_or_default();
+    let labels = crate::devices::unique_labels(
+        &raw_peers
+            .iter()
+            .map(|(_, n, fp)| (n.clone(), fp.clone()))
+            .collect::<Vec<_>>(),
+    );
+    let peers: Vec<(String, String)> = raw_peers
+        .iter()
+        .zip(labels)
+        .map(|((i, _, _), label)| (i.clone(), label))
+        .collect();
     let saved = st
         .settings
         .lock()
@@ -2730,7 +2745,12 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 .and_then(|g| g.get(n - ID_SEND_TO_BASE).map(|(i, _)| i.to_string()));
             let action = PENDING_SEND.swap(0, std::sync::atomic::Ordering::SeqCst);
             if let (Some(phone), true) = (phone, action != 0) {
-                crate::core::send_next_to(phone);
+                let kind = if action == ID_SEND_FILES {
+                    crate::core::SendKind::Files
+                } else {
+                    crate::core::SendKind::Clipboard
+                };
+                crate::core::send_next_to(phone, kind);
                 SEND_TARGET_CHOSEN.store(true, std::sync::atomic::Ordering::SeqCst);
                 command(hwnd, st, action);
             }
@@ -2743,6 +2763,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 let _ = st.cmds.send(Cmd::SendClipboard(t));
             }
             Ok(ClipText::Excluded) => {
+                crate::core::clear_next_target();
                 st.log
                     .line("SEND refused: clipboard marked private by its source app");
                 balloon(
@@ -2751,14 +2772,22 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                     "Not sent: the app that copied this marked it private",
                 );
             }
-            Ok(ClipText::Empty) => balloon(hwnd, "Relay", "Clipboard has no text"),
-            Err(e) => balloon(hwnd, "Relay", &format!("Could not read clipboard: {e}")),
+            Ok(ClipText::Empty) => {
+                crate::core::clear_next_target();
+                balloon(hwnd, "Relay", "Clipboard has no text")
+            }
+            Err(e) => {
+                crate::core::clear_next_target();
+                balloon(hwnd, "Relay", &format!("Could not read clipboard: {e}"))
+            }
         },
         ID_SEND_FILES => {
             let cmds = st.cmds.clone();
             std::thread::spawn(move || {
                 let files = pick_files();
-                if !files.is_empty() {
+                if files.is_empty() {
+                    crate::core::clear_next_target();
+                } else {
                     let _ = cmds.send(Cmd::SendFiles(files));
                 }
             });

@@ -60,6 +60,16 @@ fun pcSettings(all: Map<String, Any?>, id: String): PcSettings {
     )
 }
 
+/** Preference keys of the form `<peer id>/...` whose peer is no longer paired: they go when the PC is removed. */
+fun keysOfUnpaired(allKeys: Collection<String>, pairedIds: Collection<String>): List<String> {
+    val id = Regex("^[0-9a-fA-F]{64}/")
+    return allKeys.filter { k -> id.containsMatchIn(k) && k.substringBefore('/') !in pairedIds }
+}
+
+/** The default PC after the paired set changed without a removal event: kept while paired, else the first. */
+fun defaultIfStillPaired(current: String?, pairedIds: List<String>): String? =
+    if (current != null && current in pairedIds) current else pairedIds.firstOrNull()
+
 /** The longest nickname kept. */
 const val MAX_NICKNAME = 64
 

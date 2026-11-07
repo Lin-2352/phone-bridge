@@ -931,6 +931,7 @@ class PbService : Service() {
         val ask = Intent(this, AudioConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
             .putExtra("peer", e.peerName)
+            .putExtra("peerId", audioPeer)
             .putExtra("source", e.source.toInt())
             .putExtra("rate", e.sampleRate.toInt())
             .putExtra("channels", e.channels.toInt())
@@ -1042,9 +1043,17 @@ class PbService : Service() {
         if (consentStep(Prefs(this).pcAllow(peerId, kind), keyguardLocked()) != ConsentStep.AutoDeny) return false
         Log.i(TAG, "${kind.key.uppercase()} request from $peerName blocked: set to Never")
         AppLog.event("events", "consent_blocked", "kind" to kind.key)
-        notifyInfo(this, "Request blocked", dev.phonebridge.app.devices.blockedText(kind, peerName))
+        // One note per PC and kind a minute: a PC that keeps asking must not fill the shade.
+        val now = android.os.SystemClock.elapsedRealtime()
+        val key = "$peerId/${kind.key}"
+        if (dev.phonebridge.app.devices.shouldNotifyBlock(blockNoted[key], now)) {
+            blockNoted[key] = now
+            notifyInfo(this, "Request blocked", dev.phonebridge.app.devices.blockedText(kind, peerName))
+        }
         return true
     }
+
+    private val blockNoted = HashMap<String, Long>()
 
     private fun allowsUnasked(kind: dev.phonebridge.app.devices.ConsentKind, peerId: String): Boolean =
         consentStep(Prefs(this).pcAllow(peerId, kind), keyguardLocked()) == ConsentStep.AutoAllow

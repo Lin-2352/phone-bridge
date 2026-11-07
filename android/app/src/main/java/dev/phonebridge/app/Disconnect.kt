@@ -13,6 +13,9 @@ fun alwaysAllowKeysToClear(): List<String> = listOf(
     "allow_camera_pcs",
     "allow_audio_pcs",
     "audio_skip_confirm_phone_to_pc",
+    // Pending global answers (set while Relay was off) that the next start would fold into every PC.
+    "allow_control",
+    "allow_screen",
 )
 
 /** True for a key that holds an "always allow" answer: one of the fixed keys, or a PC's automatic file accept. */
@@ -20,7 +23,7 @@ fun isAlwaysAllowKey(key: String): Boolean = key in alwaysAllowKeysToClear() || 
 
 /** The preferences after "Disconnect everything": every always-allow answer removed, and Relay off until resumed. */
 fun afterDisconnect(all: Map<String, Any?>): Map<String, Any?> =
-    all.filterKeys { !isAlwaysAllowKey(it) } + ("enabled" to false)
+    all.filterKeys { !isAlwaysAllowKey(it) } + mapOf("enabled" to false, "auto_accept" to false)
 
 /** The preferences after the person resumes Relay: it is on again; the removed answers are not restored. */
 fun afterResume(all: Map<String, Any?>): Map<String, Any?> = all + ("enabled" to true)

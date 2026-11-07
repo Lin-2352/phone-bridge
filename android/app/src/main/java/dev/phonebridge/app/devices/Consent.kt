@@ -8,6 +8,9 @@ enum class ConsentKind(val key: String, val label: String) {
     Audio("audio", "an audio share"),
 }
 
+/** Whether a "blocked by Never" note may be shown again: at most one per PC and kind a minute. */
+fun shouldNotifyBlock(lastMs: Long?, nowMs: Long): Boolean = lastMs == null || nowMs < lastMs || nowMs - lastMs >= 60_000L
+
 /** The note shown when a request was refused without a prompt because the PC is set to Never. */
 fun blockedText(kind: ConsentKind, pc: String): String = "Blocked ${kind.label} from $pc (set to Never)"
 

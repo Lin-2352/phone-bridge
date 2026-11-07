@@ -310,6 +310,13 @@ struct Outbox {
     active: Mutex<HashMap<String, Notification>>,
     icons: Mutex<HashMap<String, Icon>>,
     peers: Mutex<HashMap<PeerId, PeerState>>,
+    /// Only these PCs (ids as text) get live notifications; `None` means every paired PC.
+    allowed: Mutex<Option<HashSet<String>>>,
+}
+
+/// Whether a PC may receive notifications given the allowed list.
+fn peer_allowed(allowed: &Option<HashSet<String>>, id: &str) -> bool {
+    allowed.as_ref().is_none_or(|set| set.contains(id))
 }
 
 /// Phone side: sends notifications to every paired PC on short sessions
@@ -325,7 +332,13 @@ impl NotifyOutbox {
             active: Mutex::default(),
             icons: Mutex::default(),
             peers: Mutex::default(),
+            allowed: Mutex::default(),
         }))
+    }
+
+    /// Limits live notifications to these PCs (`None`: every paired PC).
+    pub fn set_allowed(&self, ids: Option<Vec<String>>) {
+        *lock(&self.0.allowed) = ids.map(|v| v.into_iter().collect());
     }
 
     #[cfg(test)]
@@ -402,7 +415,11 @@ impl NotifyOutbox {
 
     fn queue(&self, item: impl Fn() -> Out) {
         let mut peers = lock(&self.0.peers);
+        let allowed = lock(&self.0.allowed).clone();
         for p in self.0.node.paired_peers() {
+            if !peer_allowed(&allowed, &p.id.to_string()) {
+                continue;
+            }
             let st = peers.entry(p.id).or_default();
             if let Some(tx) = &st.tx {
                 if tx.send(item()).is_ok() {
@@ -687,6 +704,19 @@ mod tests {
         let mut w = RateWindow::new(50);
         assert!((0..50).all(|_| w.hit()));
         assert!(!w.hit());
+    }
+
+    #[test]
+    fn only_listed_pcs_get_live_notifications() {
+        let none: Option<HashSet<String>> = None;
+        assert!(peer_allowed(&none, "a"), "no list: every PC");
+        let some = Some(HashSet::from(["a".to_owned()]));
+        assert!(peer_allowed(&some, "a"));
+        assert!(!peer_allowed(&some, "b"));
+        assert!(
+            !peer_allowed(&Some(HashSet::new()), "a"),
+            "an empty list means none"
+        );
     }
 
     #[tokio::test]

@@ -4,9 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M8.5 (M7.R before it). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M8.R (milestone review of several devices; see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
-- **M8 (2026-11-07):** M8.1 to M8.5 are ticked, each with its open pieces under "Open follow-ups"; the milestone review (M8.R) is next.
+- **Last finished task:** M8.R (M8 is done). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M9 has no plan yet. M8 is done; what is still open from M5 to M8 is under "Open follow-ups (2026-11-07)" below, and the phone checks are in [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -182,7 +181,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M8.3 Tile and widget act on the default device; long-press opens the picker — tile subtitle and widget status name the default PC, widget has a PC button that lists the paired PCs; the tile long-press PC chip is open (follow-ups)
 - [x] M8.4 Per-device permissions; DECISIONS entry superseding `DECISIONS.md:428` — phone and ffi: Ask / Always / Never per PC with consentStep, per-PC clipboard, notification and auto-accept switches, permissions dialog behind the unlock gate; PC: control and auto-accept per phone, Disconnect clears each; audio, clipboard and notification switches per phone on the PC are open (follow-ups)
 - [x] M8.5 Migration: today's settings become the first PC's — phone migrateToPerPc and PC DeviceStore::migrate (lazy, once per device), a device paired later starts closed
-- [ ] M8.R Milestone review and CI green
+- [x] M8.R Milestone review and CI green — one reviewer (3 Critical, 7 Important, 9 Minor): all Critical and 6 Important fixed test-first (a yes for one phone no longer reaches an unmigrated one; live notifications obey the per-PC switch; phone audio asks per PC; unpairing purges a PC's settings; Disconnect clears the legacy keys; a Send-to choice is scoped to its command and expires; the share goes to the chosen or default PC; Never notes are rate-limited); the rest are under Open follow-ups
 
 ## M9 Transfers that resume
 - [ ] M9.1 Resume protocol: `resume_token`, `resume_from`, prefix hash, `resume` capability
@@ -252,6 +251,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 Ticked tasks above that still have named pieces open. They are listed here so a tick never reads as "everything done".
 
+- **M8.R (review findings left open):** a PC-side per-phone permissions page and Never on the PC (the file can hold it, no screen sets it); drag and drop, Explorer "Send to" and the screen-window file send still go to the default phone without asking; a "Send to" menu row or Make default is found by index, so a phone list that changes while the menu is open can send to another phone; the Remove / Rename / permissions dialog titles on the phone and the control question on the PC use the bare name (the picker and lists do show the suffix); a screen or camera resume inside its grace skips the Never check; turning clipboard sync on and the audio-skip switch are not behind the unlock gate; a per-PC automatic accept is applied a moment after the node starts (the global default decides until `applyPeerSwitches` runs).
 - **M8.3:** the tile long-press (`QS_TILE_PREFERENCES`) still opens the Quick panel without a PC chip; the PC button on the widget is shown only while the widget's process has a node.
 - **M8.4:** on the PC the audio-skip, clipboard and notification switches are still read from the global setting (the per-device fields exist, migrate and are cleared by nothing); a blocked request is a notification and an app-log line, not a Timeline entry (the entry kind is shared with the PC); the PC has no per-phone settings page; Android auto-accept is per PC but the transport also keeps the global flag for peers not in a list.
 - **M8.1:** Explorer "Send to" (`--send`) and the flyout drop zone go to the default phone without asking; the phone share sheet uses a platform list, not the Compose `DevicePickerSheet`; the camera-stop liveness touch uses the default phone.

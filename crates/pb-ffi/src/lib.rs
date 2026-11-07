@@ -880,6 +880,14 @@ impl PeerSet {
         *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(ids.into_iter().collect());
     }
 
+    /// True when any PC may use the feature: a list names at least one, or no list was set and the global is on.
+    fn any(&self, global: &std::sync::atomic::AtomicBool) -> bool {
+        match &*self.0.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some(ids) => !ids.is_empty(),
+            None => global.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
     /// True when `peer` may use the feature: it is listed, or no list was set and the global switch is on.
     fn allows(&self, global: &std::sync::atomic::AtomicBool, peer: &str) -> bool {
         match &*self.0.lock().unwrap_or_else(|p| p.into_inner()) {
@@ -887,6 +895,11 @@ impl PeerSet {
             None => global.load(std::sync::atomic::Ordering::Relaxed),
         }
     }
+}
+
+/// Whether phone notifications are shared with anyone now (the global switch, or a PC named by its own).
+fn notify_wanted(sh: &Shared) -> bool {
+    sh.notify_peers.any(&sh.notify_enabled)
 }
 
 /// State shared between the node object and the session pumps.
@@ -2057,8 +2070,6 @@ impl PbNode {
         self.shared.control_refused.get()
     }
 
-    /// "Disconnect everything": closes every connection to a paired PC. Pairing is untouched; the app also clears
-    /// every "always allow" and pauses itself (Kotlin side).
     /// Ids of the paired devices that are connected right now.
     pub fn connected_peers(&self) -> Vec<String> {
         self.node
@@ -2068,6 +2079,8 @@ impl PbNode {
             .collect()
     }
 
+    /// "Disconnect everything": closes every connection to a paired PC. Pairing is untouched; the app also clears
+    /// every "always allow" and pauses itself (Kotlin side).
     pub async fn disconnect_all(&self) {
         self.node.close_all(b"disconnect").await;
     }
@@ -2300,6 +2313,7 @@ impl PbNode {
 
     /// Which PCs get this phone's notifications and may act on them.
     pub fn set_notify_peers(&self, ids: Vec<String>) {
+        self.shared.notify.set_allowed(Some(ids.clone()));
         self.shared.notify_peers.set(ids);
     }
 
@@ -2313,11 +2327,7 @@ impl PbNode {
     /// PC" is off).
     pub fn notify_posted(&self, n: PbNotification) {
         let (wire, icon) = to_wire(n);
-        if !self
-            .shared
-            .notify_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if !notify_wanted(&self.shared) {
             // Kept track of, so a later sync is right; nothing is sent.
             self.shared.notify.note(wire);
             return;
@@ -2327,11 +2337,7 @@ impl PbNode {
     }
 
     pub fn notify_removed(&self, key: String) {
-        if !self
-            .shared
-            .notify_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        if !notify_wanted(&self.shared) {
             self.shared.notify.forget(&key);
             return;
         }
@@ -2767,6 +2773,21 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn any_pc_listed_means_notifications_are_wanted_even_with_the_global_off() {
+        use std::sync::atomic::AtomicBool;
+        let off = AtomicBool::new(false);
+        let set = PeerSet::default();
+        assert!(!set.any(&off));
+        set.set(vec!["a".to_owned()]);
+        assert!(set.any(&off), "a PC with its own switch on is enough");
+        set.set(Vec::new());
+        assert!(
+            !set.any(&AtomicBool::new(true)),
+            "an empty list means nobody"
+        );
     }
 
     #[test]

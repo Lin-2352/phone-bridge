@@ -566,26 +566,25 @@ fn globals_of(s: &crate::settings::Settings) -> crate::devices::Globals {
     }
 }
 
-/// This phone's permissions. A phone paired before per-phone permissions existed inherits today's switches once;
-/// a phone paired since starts from fresh defaults (see [`crate::devices::DeviceStore::mark_new`]).
-pub fn perms_of(settings: &SharedSettings, id: &str) -> crate::devices::DevicePerms {
-    let g = settings
-        .lock()
-        .map(|s| globals_of(&s))
-        .unwrap_or(crate::devices::Globals {
-            allow_control: false,
-            audio_skip_confirm: false,
-            clipboard: false,
-            notifications: false,
-            auto_accept: false,
-        });
-    let mut out = crate::devices::DevicePerms::default();
-    update_devices(|d| {
-        let changed = d.migrate(&[id.to_owned()], &g);
-        out = d.perms(id);
-        changed
-    });
-    out
+/// Gives every phone paired before per-phone permissions existed the old global switches, once, as the core
+/// starts and before anything mirrors the globals (after that the globals mean "some phone has it", not the old
+/// value). A phone that is still unmarked after this reads as closed.
+pub fn migrate_paired_at_start(settings: &SharedSettings, paired: &[String]) {
+    let Ok(g) = settings.lock().map(|s| globals_of(&s)) else {
+        return;
+    };
+    update_devices(|d| d.migrate(paired, &g));
+    sync_mirror(settings);
+}
+
+/// This phone's permissions. Read only: a phone paired before M8 was migrated at start, a phone paired since was
+/// marked with fresh defaults, and anything else reads as closed.
+pub fn perms_of(_settings: &SharedSettings, id: &str) -> crate::devices::DevicePerms {
+    DEVICES
+        .get()
+        .and_then(|(d, _)| d.lock().ok())
+        .map(|d| d.perms(id))
+        .unwrap_or_default()
 }
 
 /// Keeps the global "control" and "auto-accept" switches (shown in the menu and Settings) equal to "some phone has
@@ -614,33 +613,65 @@ pub fn set_all_perms(
     paired: &[String],
     f: impl Fn(&mut crate::devices::DevicePerms),
 ) {
-    let g = settings.lock().map(|s| globals_of(&s)).ok();
-    if let Some(g) = g {
-        update_devices(|d| {
-            let mut changed = d.migrate(paired, &g);
-            for id in paired {
-                let mut p = d.perms(id);
-                f(&mut p);
-                changed |= d.set_perms(id, &p);
-            }
-            changed
-        });
-    }
+    update_devices(|d| {
+        let mut changed = false;
+        for id in paired {
+            changed |= d.mark_new(id);
+            let mut p = d.perms(id);
+            f(&mut p);
+            changed |= d.set_perms(id, &p);
+        }
+        changed
+    });
     sync_mirror(settings);
 }
 
 /// The phone chosen in the "Send to" menu for the next send only (consumed by the next command that needs a target).
-static NEXT_TARGET: Mutex<Option<String>> = Mutex::new(None);
+static NEXT_TARGET: Mutex<Option<(String, SendKind, Instant)>> = Mutex::new(None);
 
-/// Makes the next send go to the phone with this id (hex), once.
-pub fn send_next_to(id: String) {
-    *NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+/// Which command a "Send to" choice is for, so a different command never picks it up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SendKind {
+    Files,
+    Clipboard,
+}
+
+/// How long a "Send to" choice waits for its command (a file dialog can stay open for a while).
+const NEXT_TARGET_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Makes the next send of this kind go to the phone with this id (hex), once.
+pub fn send_next_to(id: String, kind: SendKind) {
+    *NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner()) = Some((id, kind, Instant::now()));
+}
+
+/// The send did not happen (the file dialog was cancelled, the clipboard had nothing): the choice is dropped.
+pub fn clear_next_target() {
+    NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner()).take();
+}
+
+/// Takes the pending choice if it is for `kind` and still fresh. A choice for another kind stays where it is.
+fn take_next_target(kind: Option<SendKind>, now: Instant) -> Option<String> {
+    let mut g = NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner());
+    let (id, k, at) = g.clone()?;
+    if now.duration_since(at) > NEXT_TARGET_TTL {
+        g.take();
+        return None;
+    }
+    if Some(k) != kind {
+        return None;
+    }
+    g.take();
+    Some(id)
 }
 
 /// The phone sends go to when none is chosen: the one picked for this send, else the saved default while it is
 /// still paired, otherwise the first.
-fn default_target(peers: &Peers, settings: &SharedSettings) -> Option<(PeerId, String)> {
-    let once = NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner()).take();
+fn default_target(
+    peers: &Peers,
+    settings: &SharedSettings,
+    kind: Option<SendKind>,
+) -> Option<(PeerId, String)> {
+    let once = take_next_target(kind, Instant::now());
     if let Some(once) = once {
         if let Ok(g) = peers.lock() {
             if let Some(p) = g.iter().find(|(id, _)| id.to_string() == once) {
@@ -765,6 +796,13 @@ pub async fn run(
         node.discovery_active()
     ));
     refresh(&node, &peers);
+    {
+        let ids: Vec<String> = peers
+            .lock()
+            .map(|g| g.iter().map(|(i, _)| i.to_string()).collect())
+            .unwrap_or_default();
+        migrate_paired_at_start(&settings, &ids);
+    }
     // Retry in the transfer window restarts a failed or cancelled send.
     {
         let (node, log, ui, settings, peers, rt) = (
@@ -993,7 +1031,7 @@ pub async fn run(
                 Some(Cmd::SendFiles(paths)) => {
                     let (node, log, ui, settings) =
                         (node.clone(), log.clone(), ui.clone(), settings.clone());
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, Some(SendKind::Files));
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
                             ui(UiEvent::Info("Pair a phone first".into()));
@@ -1085,7 +1123,7 @@ pub async fn run(
                     });
                 }
                 Some(Cmd::ShowScreen) => {
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, None);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1111,7 +1149,7 @@ pub async fn run(
                     }
                 }
                 Some(Cmd::StartCamera) => {
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, None);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1134,14 +1172,14 @@ pub async fn run(
                     }
                     log.line("CAMERA stopped by the user");
                     if crate::camera::is_streaming() {
-                        if let Some((id, _)) = default_target(&peers, &settings) {
+                        if let Some((id, _)) = default_target(&peers, &settings, None) {
                             touch(&id);
                         }
                     }
                     tokio::task::spawn_blocking(crate::camera::stop);
                 }
                 Some(Cmd::StartAudio(d)) => {
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, None);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1181,7 +1219,7 @@ pub async fn run(
                         }
                     }
                     let (node, log, ui) = (node.clone(), log.clone(), ui.clone());
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, None);
                     let Some((id, name)) = target else {
                         ui(UiEvent::Info("Pair a phone first".into()));
                         continue;
@@ -1225,7 +1263,7 @@ pub async fn run(
                 Some(Cmd::SendText { text, link }) => {
                     let (node, log, ui, settings) =
                         (node.clone(), log.clone(), ui.clone(), settings.clone());
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, None);
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
                             ui(UiEvent::Info("Pair a device first".into()));
@@ -1253,7 +1291,7 @@ pub async fn run(
                 Some(Cmd::SendClipboard(text)) => {
                     let (node, log, ui, settings) =
                         (node.clone(), log.clone(), ui.clone(), settings.clone());
-                    let target = default_target(&peers, &settings);
+                    let target = default_target(&peers, &settings, Some(SendKind::Clipboard));
                     tokio::spawn(async move {
                         let Some((id, name)) = target else {
                             ui(UiEvent::Info("Pair a device first".into()));
@@ -2329,6 +2367,36 @@ fn pb_platform_win_wrapper() -> pb_platform_win::Dpapi {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_send_to_choice_is_only_taken_by_its_own_command_and_expires() {
+        clear_next_target();
+        send_next_to("a".repeat(64), SendKind::Files);
+        let now = Instant::now();
+        assert_eq!(
+            take_next_target(None, now),
+            None,
+            "a screen request never takes it"
+        );
+        assert_eq!(
+            take_next_target(Some(SendKind::Clipboard), now),
+            None,
+            "nor does the other kind"
+        );
+        assert_eq!(
+            take_next_target(Some(SendKind::Files), now),
+            Some("a".repeat(64))
+        );
+        assert_eq!(take_next_target(Some(SendKind::Files), now), None, "once");
+        send_next_to("b".repeat(64), SendKind::Clipboard);
+        let late = now + NEXT_TARGET_TTL + std::time::Duration::from_secs(1);
+        assert_eq!(
+            take_next_target(Some(SendKind::Clipboard), late),
+            None,
+            "a stale choice is dropped"
+        );
+        clear_next_target();
+    }
+
     use super::*;
 
     #[tokio::test]

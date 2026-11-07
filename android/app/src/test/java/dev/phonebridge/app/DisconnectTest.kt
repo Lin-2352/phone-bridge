@@ -22,7 +22,8 @@ class DisconnectTest {
         for (key in alwaysAllowKeysToClear()) {
             assertFalse("$key is gone", after.containsKey(key))
         }
-        assertEquals(5, alwaysAllowKeysToClear().size)
+        assertEquals(7, alwaysAllowKeysToClear().size)
+        assertEquals("the global automatic accept shows off too", false, after["auto_accept"])
         // Other settings are left alone.
         assertEquals(2, after["theme"])
         assertEquals(true, after["clipboard_sync"])
@@ -44,6 +45,14 @@ class DisconnectTest {
         // Never and the clipboard switch are not "always allow": they stay.
         assertEquals(true, after["pc1/never_screen"])
         assertEquals(true, after["pc1/clipboard_sync"])
+    }
+
+    @Test
+    fun a_revocation_also_clears_the_legacy_key() {
+        val m = before + mapOf("allow_control" to true, "allow_screen" to true)
+        val after = afterDisconnect(m)
+        assertFalse(after.containsKey("allow_control"))
+        assertFalse(after.containsKey("allow_screen"))
     }
 
     @Test

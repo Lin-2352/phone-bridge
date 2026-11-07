@@ -120,6 +120,22 @@ pub struct Globals {
     pub auto_accept: bool,
 }
 
+/// A label for each phone: its name, with the start of its fingerprint added when two share a name, so a menu or
+/// a question never shows the same text twice. `peers` is (name, fingerprint); the result has the same order.
+pub fn unique_labels(peers: &[(String, String)]) -> Vec<String> {
+    peers
+        .iter()
+        .map(|(name, fp)| {
+            let same = peers.iter().filter(|(n, _)| n == name).count();
+            if same > 1 {
+                format!("{name} ({})", fp.chars().take(4).collect::<String>())
+            } else {
+                name.clone()
+            }
+        })
+        .collect()
+}
+
 /// Where a send goes: straight to one phone, to a choice among several, or nowhere because none is paired.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendTarget {
@@ -629,6 +645,16 @@ mod tests {
         );
         assert_eq!(default_position(&ids, ""), Some(0));
         assert_eq!(default_position(&[], C), None);
+    }
+
+    #[test]
+    fn two_phones_with_one_name_get_a_fingerprint_suffix() {
+        let l = unique_labels(&[
+            ("Pixel 8".into(), "AB12CD".into()),
+            ("Pixel 8".into(), "EF34GH".into()),
+            ("Galaxy".into(), "0000".into()),
+        ]);
+        assert_eq!(l, vec!["Pixel 8 (AB12)", "Pixel 8 (EF34)", "Galaxy"]);
     }
 
     #[test]

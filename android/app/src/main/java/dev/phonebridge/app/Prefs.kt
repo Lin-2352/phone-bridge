@@ -5,6 +5,8 @@ import android.net.Uri
 import dev.phonebridge.app.devices.Allow
 import dev.phonebridge.app.devices.ConsentKind
 import dev.phonebridge.app.devices.cleanNickname
+import dev.phonebridge.app.devices.defaultIfStillPaired
+import dev.phonebridge.app.devices.keysOfUnpaired
 import dev.phonebridge.app.devices.migrateToPerPc as migratePrefsToPerPc
 import dev.phonebridge.app.devices.defaultAfterRemoval
 
@@ -63,8 +65,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("enabled", true)
         set(v) = sp.edit().putBoolean("enabled", v).apply()
 
+    /** The Settings value for a per-PC switch: on when any paired PC has it on (the stored value while Relay is off). */
+    private fun anyPc(key: String, stored: Boolean): Boolean {
+        val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
+        return if (ids.isEmpty()) stored else ids.any { pcFlag(it, key) }
+    }
+
     var clipboardSync: Boolean
-        get() = sp.getBoolean("clipboard_sync", false)
+        get() = anyPc("clipboard_sync", sp.getBoolean("clipboard_sync", false))
         set(v) {
             sp.edit().putBoolean("clipboard_sync", v).apply()
             setForAllPcs("clipboard_sync", v)
@@ -137,7 +145,14 @@ class Prefs(context: Context) {
         allowedCameraPcs = pruneAllowed(allowedCameraPcs, pairedIds)
         allowedControlPcs = pruneAllowed(allowedControlPcs, pairedIds)
         allowedScreenPcs = pruneAllowed(allowedScreenPcs, pairedIds)
-        sp.edit().remove("allow_control").remove("allow_screen").apply()
+        val audio = sp.getStringSet("allow_audio_pcs", emptySet()).orEmpty()
+        val e = sp.edit().remove("allow_control").remove("allow_screen")
+        e.putStringSet("allow_audio_pcs", pruneAllowed(audio, pairedIds))
+        // Everything stored for a PC that is gone (Never answers, switches, nickname) goes with it, so pairing it
+        // again starts from the fresh defaults.
+        keysOfUnpaired(sp.all.keys, pairedIds).forEach { e.remove(it) }
+        defaultIfStillPaired(defaultPc, pairedIds).let { e.putString("default_pc", it ?: "") }
+        e.apply()
     }
 
     /** The Keystore can no longer open this phone's identity (M3.7, B5): Relay stays off until it is reset. */
@@ -269,7 +284,7 @@ class Prefs(context: Context) {
 
 
     var autoAccept: Boolean
-        get() = sp.getBoolean("auto_accept", true)
+        get() = anyPc("auto_accept", sp.getBoolean("auto_accept", true))
         set(v) {
             sp.edit().putBoolean("auto_accept", v).apply()
             setForAllPcs("auto_accept", v)
@@ -327,7 +342,7 @@ class Prefs(context: Context) {
 
     /** Phone notifications are shown on paired PCs (once access is granted). */
     var notifyToPc: Boolean
-        get() = sp.getBoolean("notify_to_pc", true)
+        get() = anyPc("notifications", sp.getBoolean("notify_to_pc", true))
         set(v) {
             sp.edit().putBoolean("notify_to_pc", v).apply()
             setForAllPcs("notifications", v)
@@ -421,6 +436,8 @@ class Prefs(context: Context) {
     /** Every "always allow" answer goes (Disconnect everything); Never answers and plain switches stay. */
     fun removeAlwaysAllow() {
         removeKeys(sp.all.keys.filter { isAlwaysAllowKey(it) })
+        // The all-PCs automatic accept reads off too (the key must not vanish: its default is on).
+        sp.edit().putBoolean("auto_accept", false).commit()
     }
 
     /** Copies today's global switches to every paired PC, once; a PC paired later starts from fresh defaults. */
