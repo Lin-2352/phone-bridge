@@ -749,6 +749,12 @@ fun SettingsTab(onDone: () -> Unit) {
                                     checked = gateOn,
                                     onChecked = { if (secure) { gateOn = it; prefs.unlockGate = it } },
                                 )
+                                RowDivider()
+                                RelayRow(
+                                    title = "Disconnect everything",
+                                    supporting = "Closes every connection, stops every share, turns every \"always allow\" off and pauses Relay until you turn it on again",
+                                    onClick = { dev.phonebridge.app.disconnectEverything(ctx) },
+                                )
                             }
                         }
                         item { SectionHeader("Clipboard") }

@@ -126,6 +126,15 @@ impl Default for Settings {
     }
 }
 
+/// Turns every PC-side "always allow" off (the "Disconnect everything" action): the phone may no longer control
+/// this PC, and PC audio to the phone asks again. Returns whether anything changed. Nothing else is touched.
+pub fn always_allow_off(s: &mut Settings) -> bool {
+    let changed = s.allow_control || s.audio_skip_confirm_pc_to_phone;
+    s.allow_control = false;
+    s.audio_skip_confirm_pc_to_phone = false;
+    changed
+}
+
 /// The settings file's format version. 1 introduced `version=` and pinned the save folder of
 /// installs that existed before the default changed. 2 added `look=` (nothing to rewrite: an
 /// install that never chose gets the native look, and the file is saved at version 2).
@@ -404,6 +413,29 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn always_allow_off_clears_every_switch() {
+        let mut s = Settings {
+            allow_control: true,
+            audio_skip_confirm_pc_to_phone: true,
+            ..Settings::default()
+        };
+        assert!(
+            always_allow_off(&mut s),
+            "something was on, so something changed"
+        );
+        assert!(!s.allow_control && !s.audio_skip_confirm_pc_to_phone);
+        assert!(!always_allow_off(&mut s), "already off: nothing to change");
+        // The other settings are left alone.
+        let before = Settings {
+            auto_accept: true,
+            ..Settings::default()
+        };
+        let mut s = before.clone();
+        always_allow_off(&mut s);
+        assert_eq!(s.auto_accept, before.auto_accept);
+    }
+
     use super::*;
 
     fn mig_dir(name: &str) -> PathBuf {

@@ -191,6 +191,36 @@ async fn revoked_peer_can_no_longer_connect() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn close_all_closes_every_live_connection() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone_a, _a_ev, _) = node(2, "PhoneA").await;
+    let (phone_b, _b_ev, _) = node(3, "PhoneB").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone_a, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone_b, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let sa = phone_a.connect(&pc.peer_id()).await.unwrap();
+    let sb = phone_b.connect(&pc.peer_id()).await.unwrap();
+    let _pa = pc_ev.sessions.recv().await.unwrap();
+    let _pb = pc_ev.sessions.recv().await.unwrap();
+    assert!(pc.live_count() >= 2);
+    pc.close_all(b"disconnect").await;
+    // Both phones see their session end, and the PC keeps nothing open.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        sa.closed().await;
+        sb.closed().await;
+    })
+    .await
+    .expect("both sessions were closed");
+    assert_eq!(pc.live_count(), 0);
+    // Pairing is untouched: disconnecting is not unpairing.
+    assert!(
+        phone_a.connect(&pc.peer_id()).await.is_ok(),
+        "the phone can connect again later"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_ninth_session_from_one_peer_is_refused_as_busy() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (phone, _pev, _) = node(2, "Phone").await;

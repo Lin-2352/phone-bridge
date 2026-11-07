@@ -67,6 +67,8 @@ const CLOSE_NOT_PAIRED: u32 = 403;
 const CLOSE_PAIR_FAILED: u32 = 400;
 /// A paired peer opened more sessions than its quota allows (M7.8).
 const CLOSE_BUSY: u32 = 429;
+/// This device closed every connection ("Disconnect everything"); the pairing is untouched.
+const CLOSE_DISCONNECTED: u32 = 410;
 /// The joiner could not save the pairing: the host takes its own back.
 const CLOSE_PAIR_NOT_SAVED: u32 = 500;
 /// The peer's `Hello` names a protocol version this build does not speak.
@@ -505,6 +507,18 @@ impl Node {
     /// and anything it has open now (a transfer, a control session) ends.
     /// False when it was not paired, and also when the removal could not be
     /// saved (it is then still paired); [`Self::try_unpair`] tells them apart.
+    /// Closes every open connection with `reason` (the "Disconnect everything" action). Pairing is untouched:
+    /// the peers can connect again whenever this device allows it.
+    pub async fn close_all(&self, reason: &[u8]) {
+        let conns: Vec<_> = lock(&self.inner.live)
+            .drain(..)
+            .filter_map(|(_, w)| w.upgrade())
+            .collect();
+        for c in &conns {
+            c.close(CLOSE_DISCONNECTED.into(), reason);
+        }
+    }
+
     /// Admits a file offer from `peer` against its quota (at most 30 a minute, and its in-flight bytes plus this
     /// one must fit in `free`, the free space on the disk). Hold the permit while the file is received; dropping
     /// it releases the reservation. A refusal is the answer to send back (too many requests, or no space).

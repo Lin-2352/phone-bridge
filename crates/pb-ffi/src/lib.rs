@@ -2029,6 +2029,12 @@ impl PbNode {
         self.shared.control_refused.get()
     }
 
+    /// "Disconnect everything": closes every connection to a paired PC. Pairing is untouched; the app also clears
+    /// every "always allow" and pauses itself (Kotlin side).
+    pub async fn disconnect_all(&self) {
+        self.node.close_all(b"disconnect").await;
+    }
+
     pub fn unpair(&self, peer_id: String) -> bool {
         self.node
             .paired_peers()

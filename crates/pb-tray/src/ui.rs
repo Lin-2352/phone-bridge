@@ -2098,6 +2098,22 @@ fn show_menu(hwnd: HWND) {
 }
 
 /// Pause or resume Relay: saved, logged, and what is open is closed.
+/// "Disconnect everything": every "always allow" goes off, then Relay pauses (which closes every session,
+/// transfer, share and audio stream). It stays paused until the person resumes it.
+fn disconnect_everything(hwnd: HWND, st: &State) {
+    let changed = st
+        .settings
+        .lock()
+        .map(|mut s| crate::settings::always_allow_off(&mut s))
+        .unwrap_or(false);
+    if changed {
+        save_settings(st);
+    }
+    st.log
+        .line("DISCONNECT everything: always-allow off, Relay paused");
+    set_paused(hwnd, st, true);
+}
+
 fn set_paused(hwnd: HWND, st: &State, on: bool) {
     let was = st
         .settings
@@ -2624,6 +2640,8 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             let now = st.settings.lock().map(|s| s.paused).unwrap_or(false);
             set_paused(hwnd, st, !now);
         }
+        // Takes access away and asks nothing: no confirmation and no unlock (it only removes access).
+        crate::menu_model::ID_DISCONNECT => disconnect_everything(hwnd, st),
         // The menu's quick settings run the Settings page's own setters.
         crate::menu_model::ID_TOGGLE_ALLOW_CONTROL => apply_settings_action(
             hwnd,

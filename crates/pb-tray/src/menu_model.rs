@@ -10,6 +10,8 @@ pub const ID_PAUSE: usize = 26;
 pub const ID_TOGGLE_ALLOW_CONTROL: usize = 28;
 pub const ID_AUDIO_PHONE: usize = 30;
 pub const ID_AUDIO_PC: usize = 31;
+/// "Disconnect everything": close every session, stop every share, turn every "always allow" off, and pause.
+pub const ID_DISCONNECT: usize = 32;
 
 /// The ids the actions already had in the tray's command table.
 pub struct Ids {
@@ -109,6 +111,7 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
             ID_TOGGLE_ALLOW_CONTROL,
             s.allow_control,
         ),
+        Item::new(glyph::CLOSE, "Disconnect everything", ID_DISCONNECT),
         Item::separator(),
         Item::new(glyph::SETTINGS, "Settings", ids.settings),
         Item::new(glyph::POWER, "Quit Relay", ids.quit),
@@ -181,12 +184,13 @@ mod tests {
         items.iter().find(|i| i.label == label).expect(label)
     }
 
-    const IDLE: [&str; 7] = [
+    const IDLE: [&str; 8] = [
         "Open Relay",
         "Send files\u{2026}",
         "Send clipboard now",
         "Pause Relay",
         "Let my phone control this PC",
+        "Disconnect everything",
         "Settings",
         "Quit Relay",
     ];
