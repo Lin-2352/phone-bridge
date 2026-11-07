@@ -647,6 +647,50 @@ fn redraw_bars() {
     }
 }
 
+/// One of the two toggles in the top bar. Its glyph (Segoe Fluent Icons) is what a narrow bar shows
+/// alone; a wide bar writes `label` beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BarItem {
+    pub glyph: char,
+    pub label: &'static str,
+    /// Stays at every width (nothing is dropped from the bar, it only loses its words).
+    pub essential: bool,
+}
+
+/// Pin (E718) and Brightness (E706) from Segoe Fluent Icons.
+const PIN_GLYPH: char = '\u{E718}';
+const DIM_GLYPH: char = '\u{E706}';
+
+/// The top bar's toggles at a bar `width` in pixels, each with the words it can afford. Below 60 px a
+/// button shows only its icon (the old emoji labels are gone).
+pub fn bar_labels(button_width: f32, pinned: bool, dimmed: bool) -> Vec<BarItem> {
+    let narrow = button_width < 60.0;
+    vec![
+        BarItem {
+            glyph: PIN_GLYPH,
+            label: if narrow {
+                ""
+            } else if pinned {
+                "Pinned"
+            } else {
+                "Pin"
+            },
+            essential: true,
+        },
+        BarItem {
+            glyph: DIM_GLYPH,
+            label: if narrow {
+                ""
+            } else if dimmed {
+                "Dimmed"
+            } else {
+                "Dim"
+            },
+            essential: true,
+        },
+    ]
+}
+
 /// What the bars show.
 #[derive(Default)]
 struct BarView {
@@ -670,17 +714,34 @@ fn draw_bars(cv: &mut Canvas, c: RECT, v: &BarView) {
     let tr = rectf(px(s, 12) as f32, 0.0, right as f32, px(s, TOP) as f32);
     fluent::text(cv, Font::Body, &line, tr, p.text, Align::Left);
     for (r, t) in targets(c, s) {
-        let narrow = r.right - r.left < px(s, 60);
-        let (label, on) = match t {
-            Target::Pin if narrow => ("\u{1F4CC}", v.pinned),
-            Target::Pin => (if v.pinned { "Pinned" } else { "Pin" }, v.pinned),
-            Target::Dim if narrow => ("\u{1F505}", v.dim),
-            Target::Dim => (if v.dim { "Dimmed" } else { "Dim" }, v.dim),
-            Target::Back => ("Back", false),
-            Target::Home => ("Home", false),
-            Target::Recents => ("Recents", false),
+        let width = (r.right - r.left) as f32 / s;
+        let items = bar_labels(width, v.pinned, v.dim);
+        let (item, on) = match t {
+            Target::Pin => (Some(items[0]), v.pinned),
+            Target::Dim => (Some(items[1]), v.dim),
+            Target::Back => (None, false),
+            Target::Home => (None, false),
+            Target::Recents => (None, false),
         };
-        fluent::button(cv, from_rect(r), label, on);
+        let rect = from_rect(r);
+        match item {
+            // Icon and words when there is room, the icon alone when there is not.
+            Some(item) if item.label.is_empty() => {
+                fluent::button(cv, rect, "", on);
+                fluent::icon(cv, item.glyph, rect, if on { p.on_primary } else { p.text });
+            }
+            Some(item) => fluent::button(cv, rect, item.label, on),
+            None => fluent::button(
+                cv,
+                rect,
+                match t {
+                    Target::Back => "Back",
+                    Target::Home => "Home",
+                    _ => "Recents",
+                },
+                false,
+            ),
+        }
     }
 }
 
@@ -1160,5 +1221,41 @@ extern "system" fn video_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             WM_ERASEBKGND => LRESULT(1),
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod bar_tests {
+    use super::*;
+
+    #[test]
+    fn no_emoji_in_bar_labels() {
+        for w in [20.0, 36.0, 59.0, 60.0, 72.0, 200.0] {
+            for (pinned, dimmed) in [(false, false), (true, true)] {
+                for item in bar_labels(w, pinned, dimmed) {
+                    for ch in item.label.chars().chain([item.glyph]) {
+                        assert!((ch as u32) < 0x1F000, "{ch:?} at width {w}");
+                    }
+                    // The glyph is a Segoe Fluent Icons code point (private use area).
+                    assert!(('\u{E000}'..='\u{F8FF}').contains(&item.glyph));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_bars_keep_stop_visible() {
+        // Stopping the share is the window's own close button in the system frame, which a bar width never
+        // touches. What the bar itself must not do at 240 px is drop a control: both toggles stay, as icons.
+        let items = bar_labels(240.0 / 6.0, false, false);
+        assert_eq!(items.len(), 2);
+        for item in items {
+            assert!(item.essential);
+            assert!(item.label.is_empty(), "icon only when narrow");
+            assert_ne!(item.glyph, '\0');
+        }
+        // Wide: the words come back.
+        assert_eq!(bar_labels(72.0, false, false)[0].label, "Pin");
+        assert_eq!(bar_labels(72.0, true, true)[1].label, "Dimmed");
     }
 }
