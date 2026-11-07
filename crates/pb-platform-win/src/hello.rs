@@ -3,6 +3,7 @@
 //! call it from a worker thread only, never from a window thread.
 #![allow(unsafe_code)]
 
+#[cfg(windows)]
 use windows::{
     core::{factory, HSTRING},
     Security::Credentials::UI::{
@@ -13,6 +14,7 @@ use windows::{
         System::WinRT::{IUserConsentVerifierInterop, RoInitialize, RO_INIT_MULTITHREADED},
     },
 };
+#[cfg(windows)]
 use windows_future::IAsyncOperation;
 
 /// What Windows reports about Hello (`UserConsentVerifierAvailability`).
@@ -25,11 +27,13 @@ pub enum HelloState {
     Unavailable,
 }
 
+#[cfg(windows)]
 fn io(e: windows::core::Error) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
 /// Whether Windows Hello can verify the user now.
+#[cfg(windows)]
 pub fn hello_state() -> HelloState {
     // A worker thread has no WinRT apartment yet; an error here means one already exists, which is fine.
     // SAFETY: plain apartment initialisation for this thread.
@@ -45,6 +49,7 @@ pub fn hello_state() -> HelloState {
 
 /// Shows the Hello prompt over `hwnd` with `message` and waits: true only when the person verified. Blocks: worker
 /// threads only.
+#[cfg(windows)]
 pub fn verify(hwnd: isize, message: &str) -> std::io::Result<bool> {
     // SAFETY: plain apartment initialisation for this thread (an error means one exists).
     let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
@@ -55,6 +60,18 @@ pub fn verify(hwnd: isize, message: &str) -> std::io::Result<bool> {
     }
     .map_err(io)?;
     Ok(op.join().map_err(io)? == UserConsentVerificationResult::Verified)
+}
+
+/// Not Windows: there is no Hello.
+#[cfg(not(windows))]
+pub fn hello_state() -> HelloState {
+    HelloState::Unavailable
+}
+
+/// Not Windows: nothing can verify.
+#[cfg(not(windows))]
+pub fn verify(_hwnd: isize, _message: &str) -> std::io::Result<bool> {
+    Ok(false)
 }
 
 #[cfg(test)]
