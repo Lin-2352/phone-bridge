@@ -260,6 +260,21 @@ class Prefs(context: Context) {
         get() = sp.getInt("theme", 0)
         set(v) = sp.edit().putInt("theme", v).apply()
 
+    /** The glass look: 0 = Native glass (the default on first run), 1 = Relay glass. */
+    var themeLook: Int
+        get() = sp.getInt("theme_look", 0)
+        set(v) = sp.edit().putInt("theme_look", v).apply()
+
+    /** Solid panels instead of see-through ones. */
+    var reduceTransparency: Boolean
+        get() = sp.getBoolean("reduce_transparency", false)
+        set(v) = sp.edit().putBoolean("reduce_transparency", v).apply()
+
+    /** The manual lite switch: it can force lite on; automatic reasons still apply. */
+    var liteForced: Boolean
+        get() = sp.getBoolean("lite_forced", false)
+        set(v) = sp.edit().putBoolean("lite_forced", v).apply()
+
     /** Apps the user does not want mirrored to the PC (package names). */
     var notifyBlocked: Set<String>
         get() = sp.getStringSet("notify_blocked", emptySet()).orEmpty().toSet()

@@ -1,0 +1,51 @@
+package dev.phonebridge.app.ui
+
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onRoot
+import dev.phonebridge.app.ui.components.GlassSurface
+import dev.phonebridge.app.ui.components.SolidPanel
+import com.github.takahirom.roborazzi.captureRoboImage
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+
+/**
+ * Roborazzi captures of the glass components (M6.1). Goldens live in src/test/screenshots; record them with
+ * `./gradlew :app:testDebugUnitTest --tests '*GlassScreenshotTest*' -Proborazzi.test.record=true`.
+ */
+@RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.LEGACY)
+@Config(qualifiers = "w412dp-h915dp")
+class GlassScreenshotTest {
+    @get:Rule
+    val compose = createComposeRule()
+
+    private fun shot(name: String, look: Int, mode: Int) {
+        ThemeChoice.look.intValue = look
+        ThemeChoice.mode.intValue = mode
+        compose.setContent {
+            RelayTheme {
+                GlassSurface(modifier = Modifier.fillMaxSize()) {
+                    SolidPanel(modifier = Modifier.padding(24.dp)) {
+                        Text("Connected to Pixel 8")
+                    }
+                }
+            }
+        }
+        compose.onRoot().captureRoboImage("src/test/screenshots/$name.png")
+    }
+
+    @Test
+    fun relay_glass_light() = shot("glass-relay-light", look = 1, mode = 1)
+
+    @Test
+    fun relay_glass_dark() = shot("glass-relay-dark", look = 1, mode = 2)
+}

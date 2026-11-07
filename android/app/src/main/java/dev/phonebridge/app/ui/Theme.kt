@@ -7,9 +7,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.platform.LocalContext
+import android.os.Build
+import dev.phonebridge.app.Prefs
+import dev.phonebridge.app.ui.components.LocalGlass
+import dev.phonebridge.app.ui.components.LocalModes
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.TextStyle
@@ -105,9 +114,23 @@ val RelayShapes = Shapes(
     large = RoundedCornerShape(Tokens.Radius[3]),
 )
 
-/** App-wide theme choice (Prefs.theme: 0 system, 1 light, 2 dark), observable so a change applies at once. */
+/**
+ * App-wide theme choice, observable so a change applies at once: the mode (Prefs.theme: 0 system, 1 light,
+ * 2 dark), the glass look (Prefs.themeLook), reduced transparency and the manual lite switch.
+ */
 object ThemeChoice {
     val mode = mutableIntStateOf(0)
+    val look = mutableIntStateOf(0)
+    val reduceTransparency = mutableStateOf(false)
+    val liteForced = mutableStateOf(false)
+}
+
+/** Copies the saved appearance into the observable choice (call where the app starts or resumes). */
+fun ThemeChoice.loadFrom(p: Prefs) {
+    mode.intValue = p.theme
+    look.intValue = p.themeLook
+    reduceTransparency.value = p.reduceTransparency
+    liteForced.value = p.liteForced
 }
 
 @Composable
@@ -117,12 +140,27 @@ fun isDark(choice: ThemeChoice = ThemeChoice): Boolean = when (choice.mode.intVa
     else -> isSystemInDarkTheme()
 }
 
+/**
+ * The app's theme: the colour scheme for the chosen look (Native glass takes the system's dynamic colour from
+ * Android 12), and the glass material and modes the components read through `LocalGlass` and `LocalModes`.
+ */
 @Composable
 fun RelayTheme(choice: ThemeChoice = ThemeChoice, content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isDark(choice)) relayDarkScheme() else relayLightScheme(),
-        typography = RelayTypography,
-        shapes = RelayShapes,
-        content = content,
-    )
+    val dark = isDark(choice)
+    val look = if (choice.look.intValue == 1) Look.Relay else Look.Native
+    val context = LocalContext.current
+    val scheme = colorSchemeFor(look, dark, Build.VERSION.SDK_INT) { d ->
+        if (Build.VERSION.SDK_INT < 31) null
+        else if (d) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    }
+    val modes = Modes(reducedTransparency = choice.reduceTransparency.value, lite = choice.liteForced.value)
+    val glass = resolve(materialFor(look, dark), modes)
+    CompositionLocalProvider(LocalGlass provides glass, LocalModes provides modes) {
+        MaterialTheme(
+            colorScheme = scheme,
+            typography = RelayTypography,
+            shapes = RelayShapes,
+            content = content,
+        )
+    }
 }

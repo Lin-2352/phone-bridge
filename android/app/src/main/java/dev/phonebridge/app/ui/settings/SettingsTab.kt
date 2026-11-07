@@ -702,6 +702,32 @@ fun SettingsTab(onDone: () -> Unit) {
                                 }
                             }
                         }
+                        item {
+                            RelayCard {
+                                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(16.dp)) {
+                                    listOf("Native glass", "Relay glass").forEachIndexed { i, label ->
+                                        SegmentedButton(
+                                            selected = ThemeChoice.look.intValue == i,
+                                            onClick = { ThemeChoice.look.intValue = i; prefs.themeLook = i },
+                                            shape = SegmentedButtonDefaults.itemShape(i, 2),
+                                            modifier = Modifier.heightIn(min = 48.dp),
+                                        ) { Text(label) }
+                                    }
+                                }
+                                RelayRow(
+                                    title = "Reduce transparency",
+                                    supporting = "Solid panels instead of see-through ones",
+                                    checked = ThemeChoice.reduceTransparency.value,
+                                    onChecked = { ThemeChoice.reduceTransparency.value = it; prefs.reduceTransparency = it },
+                                )
+                                RelayRow(
+                                    title = "Lite mode",
+                                    supporting = "No blur and no idle animation. Turns on by itself on low-memory phones, in battery saver, or with animations off",
+                                    checked = ThemeChoice.liteForced.value,
+                                    onChecked = { ThemeChoice.liteForced.value = it; prefs.liteForced = it },
+                                )
+                            }
+                        }
                         item { SectionHeader("Clipboard") }
                         item {
                             RelayCard {

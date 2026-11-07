@@ -22,6 +22,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.Modifier
 import dev.phonebridge.app.ui.RelayTheme
 import dev.phonebridge.app.ui.ThemeChoice
+import dev.phonebridge.app.ui.loadFrom
 import dev.phonebridge.app.ui.remote.TouchpadPad
 
 /**
@@ -33,7 +34,7 @@ class TouchpadActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        ThemeChoice.mode.intValue = Prefs(this).theme
+        ThemeChoice.loadFrom(Prefs(this))
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             RelayTheme {

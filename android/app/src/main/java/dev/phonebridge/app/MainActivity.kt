@@ -6,6 +6,7 @@ import dev.phonebridge.app.ui.RelayTheme
 import dev.phonebridge.app.ui.TAB_EXTRA
 import dev.phonebridge.app.ui.Tab
 import dev.phonebridge.app.ui.ThemeChoice
+import dev.phonebridge.app.ui.loadFrom
 import dev.phonebridge.app.ui.isDark
 import dev.phonebridge.app.ui.startTab
 import dev.phonebridge.app.ui.pairing.PairPhase
@@ -86,7 +87,7 @@ class MainActivity : ComponentActivity() {
         tabRequest.intValue = savedInstanceState?.getInt(TAB_REQUEST) ?: 0
         if (savedInstanceState == null) requestedTab.value = startTab(intent, debuggable)
         Timeline.init(this)
-        ThemeChoice.mode.intValue = prefs.theme
+        ThemeChoice.loadFrom(prefs)
         Bridge.allowControl.value = prefs.allowControl
         // A process killed without onDestroy left the widget's last state behind: opening the app corrects it.
         RelayWidget.update(this)

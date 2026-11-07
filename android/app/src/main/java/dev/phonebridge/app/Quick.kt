@@ -2,6 +2,7 @@ package dev.phonebridge.app
 
 import dev.phonebridge.app.ui.RelayTheme
 import dev.phonebridge.app.ui.ThemeChoice
+import dev.phonebridge.app.ui.loadFrom
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.ClipDescription
@@ -172,7 +173,7 @@ class QuickPanelActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         SecureWindow.apply(this)
         prefs = Prefs(this)
-        ThemeChoice.mode.intValue = prefs.theme
+        ThemeChoice.loadFrom(prefs)
         if (Build.VERSION.SDK_INT >= 31) {
             window.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
             window.attributes = window.attributes.apply { blurBehindRadius = 80 }

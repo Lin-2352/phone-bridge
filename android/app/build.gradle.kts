@@ -3,6 +3,7 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("io.github.takahirom.roborazzi")
 }
 
 // The release key lives outside the repo (never committed). Without it a
@@ -16,6 +17,10 @@ val releaseKeys = Properties().apply {
 android {
     namespace = "dev.phonebridge.app"
     compileSdk = 36
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 
     defaultConfig {
         applicationId = "dev.phonebridge.app"
@@ -67,6 +72,13 @@ android {
 }
 
 dependencies {
+    // Screenshot tests only (M6.1): Robolectric runs the Android framework on the JVM for Roborazzi.
+    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.77.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.77.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-junit-rule:1.77.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 

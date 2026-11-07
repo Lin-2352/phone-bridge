@@ -75,4 +75,18 @@ class ContrastTest {
         assertEquals(androidx.compose.foundation.shape.RoundedCornerShape(12.dp), RelayShapes.medium)
         assertEquals(androidx.compose.foundation.shape.RoundedCornerShape(20.dp), RelayShapes.large)
     }
+
+    /** Each glass material, resolved as it draws, composited over pure white and pure black: its text is 4.5:1. */
+    @Test fun glass_text_is_aa_on_every_material_over_white_and_black() {
+        for ((i, m) in Tokens.Materials.withIndex()) {
+            val dark = i % 2 == 1
+            val text = if (dark) relayDarkScheme().onSurface else relayLightScheme().onSurface
+            val muted = if (dark) relayDarkScheme().onSurfaceVariant else relayLightScheme().onSurfaceVariant
+            for (page in listOf(Color.White, Color.Black)) {
+                val over = m.tint.copy(alpha = m.opacity).compositeOver(page)
+                assertTrue("material $i text over $page", ratio(text, over) >= 4.5)
+                assertTrue("material $i muted over $page", ratio(muted, over) >= 4.5)
+            }
+        }
+    }
 }

@@ -22,6 +22,9 @@ data class SettingEntry(val group: Group, val title: String, val subtitle: Strin
 
 /** Every individual setting, in page order; mirrors the rows on the pages. */
 val settingEntries: List<SettingEntry> = listOf(
+    SettingEntry(Group.Settings, "Look", "Native glass or Relay glass"),
+    SettingEntry(Group.Settings, "Reduce transparency", "Solid panels instead of see-through ones"),
+    SettingEntry(Group.Settings, "Lite mode", "No blur and no idle animation; turns on by itself when the phone needs it"),
     SettingEntry(Group.Connection, "Paired PCs", "Remove a PC you no longer use"),
     SettingEntry(Group.Connection, "Pair a new PC", "Scan the QR code shown on your PC"),
     SettingEntry(Group.Camera, "PCs always allowed to use the camera", "Skip the question; Android's camera indicator still shows"),

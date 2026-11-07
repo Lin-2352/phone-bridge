@@ -197,4 +197,12 @@ class SettingsStatusTest {
             org.junit.Assert.assertTrue(q, searchSettings(q).any { it.group == Group.Audio })
         }
     }
+
+    @Test
+    fun every_appearance_row_can_be_found_by_search() {
+        assertEquals(listOf("Look"), searchSettings("Relay glass").map { it.title })
+        assertEquals(listOf("Look"), searchSettings("native glass").map { it.title })
+        assertEquals(listOf("Reduce transparency"), searchSettings("transparency").map { it.title })
+        assertEquals(listOf("Lite mode"), searchSettings("lite mode").map { it.title })
+    }
 }
