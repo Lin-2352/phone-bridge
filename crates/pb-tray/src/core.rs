@@ -458,8 +458,8 @@ pub enum UiEvent {
     /// A phone wants to control this PC and the user has not allowed it yet.
     AskControl {
         from: String,
-        /// The asking phone's id (hex), so per-device settings apply to the right one.
-        #[allow(dead_code)] // read by the per-device permissions (M8.4)
+        /// The asking phone's id (hex). The core applies that phone's own permission; the dialog does not need it yet.
+        #[allow(dead_code)]
         peer_id: String,
         reply: oneshot::Sender<bool>,
     },
@@ -537,8 +537,117 @@ pub struct Options {
     pub pair_on_start: bool,
 }
 
-/// The phone sends go to when none is chosen: the saved default while it is still paired, otherwise the first.
+/// What this PC remembers per phone, shared with the UI thread (set once by [`run`]).
+static DEVICES: std::sync::OnceLock<(Arc<Mutex<crate::devices::DeviceStore>>, PathBuf)> =
+    std::sync::OnceLock::new();
+
+/// Runs `f` on the per-phone store and saves it when `f` returns true (something changed).
+pub fn update_devices(f: impl FnOnce(&mut crate::devices::DeviceStore) -> bool) -> bool {
+    let Some((store, path)) = DEVICES.get() else {
+        return false;
+    };
+    let Ok(mut g) = store.lock() else {
+        return false;
+    };
+    let changed = f(&mut g);
+    if changed {
+        let _ = g.save(path);
+    }
+    changed
+}
+
+fn globals_of(s: &crate::settings::Settings) -> crate::devices::Globals {
+    crate::devices::Globals {
+        allow_control: s.allow_control,
+        audio_skip_confirm: s.audio_skip_confirm_pc_to_phone,
+        clipboard: s.universal_clipboard,
+        notifications: s.notify_enabled,
+        auto_accept: s.auto_accept,
+    }
+}
+
+/// This phone's permissions. A phone paired before per-phone permissions existed inherits today's switches once;
+/// a phone paired since starts from fresh defaults (see [`crate::devices::DeviceStore::mark_new`]).
+pub fn perms_of(settings: &SharedSettings, id: &str) -> crate::devices::DevicePerms {
+    let g = settings
+        .lock()
+        .map(|s| globals_of(&s))
+        .unwrap_or(crate::devices::Globals {
+            allow_control: false,
+            audio_skip_confirm: false,
+            clipboard: false,
+            notifications: false,
+            auto_accept: false,
+        });
+    let mut out = crate::devices::DevicePerms::default();
+    update_devices(|d| {
+        let changed = d.migrate(&[id.to_owned()], &g);
+        out = d.perms(id);
+        changed
+    });
+    out
+}
+
+/// Keeps the global "control" and "auto-accept" switches (shown in the menu and Settings) equal to "some phone has
+/// it on", so what the UI shows is what will happen.
+pub fn sync_mirror(settings: &SharedSettings) {
+    let (control, auto) = DEVICES
+        .get()
+        .and_then(|(d, _)| d.lock().ok())
+        .map(|d| {
+            (
+                d.any(|p| p.control == crate::devices::Allow::Always),
+                d.any(|p| p.auto_accept),
+            )
+        })
+        .unwrap_or((false, false));
+    if let Ok(mut s) = settings.lock() {
+        s.allow_control = control;
+        s.auto_accept = auto;
+    }
+}
+
+/// Changes one permission for every paired phone (the global switches in the menu and Settings), then refreshes the
+/// mirror. Phones from before per-phone permissions are migrated first, so none loses what it had.
+pub fn set_all_perms(
+    settings: &SharedSettings,
+    paired: &[String],
+    f: impl Fn(&mut crate::devices::DevicePerms),
+) {
+    let g = settings.lock().map(|s| globals_of(&s)).ok();
+    if let Some(g) = g {
+        update_devices(|d| {
+            let mut changed = d.migrate(paired, &g);
+            for id in paired {
+                let mut p = d.perms(id);
+                f(&mut p);
+                changed |= d.set_perms(id, &p);
+            }
+            changed
+        });
+    }
+    sync_mirror(settings);
+}
+
+/// The phone chosen in the "Send to" menu for the next send only (consumed by the next command that needs a target).
+static NEXT_TARGET: Mutex<Option<String>> = Mutex::new(None);
+
+/// Makes the next send go to the phone with this id (hex), once.
+pub fn send_next_to(id: String) {
+    *NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+}
+
+/// The phone sends go to when none is chosen: the one picked for this send, else the saved default while it is
+/// still paired, otherwise the first.
 fn default_target(peers: &Peers, settings: &SharedSettings) -> Option<(PeerId, String)> {
+    let once = NEXT_TARGET.lock().unwrap_or_else(|p| p.into_inner()).take();
+    if let Some(once) = once {
+        if let Ok(g) = peers.lock() {
+            if let Some(p) = g.iter().find(|(id, _)| id.to_string() == once) {
+                return Some(p.clone());
+            }
+        }
+    }
     let saved = settings
         .lock()
         .map(|s| s.default_device.clone())
@@ -627,6 +736,7 @@ pub async fn run(
     // What this PC remembers per paired device (their Relay version, for now).
     let devices_path = opts.dir.join("devices.txt");
     let devices = Arc::new(Mutex::new(crate::devices::DeviceStore::load(&devices_path)));
+    let _ = DEVICES.set((devices.clone(), devices_path.clone()));
     let identity = pb_identity::vault::open_identity(&opts.dir, &pb_platform_win_wrapper())?;
     let store: SharedStore = Arc::new(Mutex::new(FilePeerStore::open(opts.dir.join("peers.txt"))?));
     // A taken port (another app, or a Windows excluded range) falls back to one the system picks.
@@ -770,6 +880,8 @@ pub async fn run(
                             match p.decide(accept).await {
                                 Ok(peer) => {
                                     log.line(&format!("PAIRED {} \"{}\"", peer.id, peer.name));
+                                    // A phone paired now starts from fresh defaults, never from the old global switches.
+                                    update_devices(|d| d.mark_new(&peer.id.to_string()));
                                     on_paired(&node);
                                     refresh(&node, &peers);
                                     ui(UiEvent::Info(format!("Paired with {}", peer.name)));
@@ -1557,9 +1669,13 @@ async fn pump_session(
             }
             Ok(Some(ControlMsg::InputStart(start))) => {
                 let from = s.peer_name.clone();
-                let mut allow = settings.lock().map(|x| x.allow_control).unwrap_or(false);
-                if !allow {
-                    // First time: ask. "Yes" turns the setting on (Settings can turn it off).
+                let peer_hex = s.peer.to_string();
+                let perm = perms_of(&settings, &peer_hex).control;
+                let mut allow = perm == crate::devices::Allow::Always;
+                if perm == crate::devices::Allow::Never {
+                    log.line(&format!("INPUT from \"{from}\" refused: set to Never"));
+                } else if !allow {
+                    // First time: ask. "Yes" remembers it for this phone only (Settings can turn it off).
                     let (tx, rx) = oneshot::channel();
                     ui(UiEvent::AskControl {
                         from: from.clone(),
@@ -1571,6 +1687,14 @@ async fn pump_session(
                         .ok()
                         .and_then(Result::ok)
                         .unwrap_or(false);
+                    if allow {
+                        update_devices(|d| {
+                            let mut p = d.perms(&peer_hex);
+                            p.control = crate::devices::Allow::Always;
+                            d.set_perms(&peer_hex, &p)
+                        });
+                        sync_mirror(&settings);
+                    }
                 }
                 log.line(&format!("INPUT from \"{from}\" allowed={allow}"));
                 if allow {
@@ -1602,10 +1726,11 @@ async fn pump_session(
                 break;
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
-                let (auto, dir, allow_shortcuts) = settings
+                let auto = perms_of(&settings, &s.peer.to_string()).auto_accept;
+                let (dir, allow_shortcuts) = settings
                     .lock()
-                    .map(|x| (x.auto_accept, x.save_dir.clone(), x.allow_shortcut_files))
-                    .unwrap_or((false, std::env::temp_dir(), false));
+                    .map(|x| (x.save_dir.clone(), x.allow_shortcut_files))
+                    .unwrap_or((std::env::temp_dir(), false));
                 let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
                 let is_file = offer.kind == pb_protocol::control::OfferKind::File as i32;
                 let file_label = pb_transport::files::sanitize_file_name(&offer.name);

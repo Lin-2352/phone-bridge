@@ -74,6 +74,13 @@ fn restart_app(raw: isize) {
 /// The user said yes to "a transfer is running, quit anyway?".
 static QUIT_CONFIRMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const ID_UNPAIR_BASE: usize = 100;
+/// "Send to" menu rows: one id per paired phone, above every other command id.
+const ID_SEND_TO_BASE: usize = 10_000;
+/// The send the "Send to" menu was opened for (clipboard or files), run again once a phone is chosen.
+static PENDING_SEND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Set when the person has chosen the phone for the send now running, so it does not ask again.
+static SEND_TARGET_CHOSEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 struct State {
     cmds: UnboundedSender<Cmd>,
@@ -764,6 +771,14 @@ fn default_index(st: &State) -> Option<usize> {
     crate::devices::default_position(&ids, &saved)
 }
 
+/// The ids (hex) of the paired phones, in the tray's order.
+fn paired_ids(st: &State) -> Vec<String> {
+    st.peers
+        .lock()
+        .map(|g| g.iter().map(|(i, _)| i.to_string()).collect())
+        .unwrap_or_default()
+}
+
 /// What the Timeline model was built from: the store's version, history
 /// on, the local day and the time zone.
 type TimelineKey = (u64, bool, i64, i64);
@@ -1398,14 +1413,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                     "Allow PC control",
                     move |yes| {
                         // An answer after the request timed out changes nothing.
-                        let in_time = reply.send(yes).is_ok();
-                        if yes && in_time {
-                            // Remember the choice; Settings can turn it off again.
-                            if let Some(st) = STATE.get() {
-                                let _ = st.settings.lock().map(|mut s| s.allow_control = true);
-                                save_settings(st);
-                            }
-                        }
+                        // The core remembers a yes for this phone only (Settings can turn it off again).
+                        let _ = reply.send(yes);
                     },
                 ),
             );
@@ -2170,7 +2179,11 @@ fn disconnect_everything(hwnd: HWND, st: &State) {
         .lock()
         .map(|mut s| crate::settings::always_allow_off(&mut s))
         .unwrap_or(false);
-    if changed {
+    // Every phone's own "always" goes too, not only the global switches.
+    let ids = paired_ids(st);
+    crate::core::update_devices(|d| d.always_allow_off());
+    crate::core::sync_mirror(&st.settings);
+    if changed || !ids.is_empty() {
         save_settings(st);
     }
     st.log
@@ -2375,14 +2388,15 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
         Action::Toggle(Key::Auto) => command(hwnd, st, ID_TOGGLE_AUTO),
         Action::Toggle(Key::SendTo) => command(hwnd, st, ID_SENDTO),
         Action::Toggle(Key::Control) => {
-            let now_on = st
-                .settings
-                .lock()
-                .map(|mut s| {
-                    s.allow_control = !s.allow_control;
-                    s.allow_control
-                })
-                .unwrap_or(false);
+            // The switch speaks for every paired phone; each phone's own permission follows it.
+            let now_on = !st.settings.lock().map(|s| s.allow_control).unwrap_or(false);
+            crate::core::set_all_perms(&st.settings, &paired_ids(st), |p| {
+                p.control = if now_on {
+                    crate::devices::Allow::Always
+                } else {
+                    crate::devices::Allow::Ask
+                };
+            });
             save_settings(st);
             if !now_on {
                 crate::core::stop_phone_control();
@@ -2667,8 +2681,60 @@ fn pick_folder() -> Option<std::path::PathBuf> {
     }
 }
 
+/// With several phones paired, a send from the tray, flyout or hotkey asks which phone first (default on top).
+/// True when the menu was shown; the send then continues from [`command`] with the chosen phone.
+fn ask_send_target(hwnd: HWND, st: &State, action: usize) -> bool {
+    let peers: Vec<(String, String)> = st
+        .peers
+        .lock()
+        .map(|g| g.iter().map(|(i, n)| (i.to_string(), n.clone())).collect())
+        .unwrap_or_default();
+    let saved = st
+        .settings
+        .lock()
+        .map(|s| s.default_device.clone())
+        .unwrap_or_default();
+    let crate::devices::SendTarget::Ask(order) = crate::devices::send_target(&peers, None, &saved)
+    else {
+        return false;
+    };
+    let mut items = Vec::new();
+    for id in &order {
+        let Some(k) = peers.iter().position(|(p, _)| p == id) else {
+            continue;
+        };
+        items.push(crate::menu::Item::new(
+            crate::fluent::glyph::PHONE,
+            &peers[k].1,
+            ID_SEND_TO_BASE + k,
+        ));
+    }
+    PENDING_SEND.store(action, std::sync::atomic::Ordering::SeqCst);
+    crate::menu::show(hwnd, items);
+    true
+}
+
 fn command(hwnd: HWND, st: &State, id: usize) {
+    if matches!(id, ID_SEND_CLIPBOARD | ID_SEND_FILES)
+        && !SEND_TARGET_CHOSEN.swap(false, std::sync::atomic::Ordering::SeqCst)
+        && ask_send_target(hwnd, st, id)
+    {
+        return;
+    }
     match id {
+        n if (ID_SEND_TO_BASE..ID_SEND_TO_BASE + 64).contains(&n) => {
+            let phone = st
+                .peers
+                .lock()
+                .ok()
+                .and_then(|g| g.get(n - ID_SEND_TO_BASE).map(|(i, _)| i.to_string()));
+            let action = PENDING_SEND.swap(0, std::sync::atomic::Ordering::SeqCst);
+            if let (Some(phone), true) = (phone, action != 0) {
+                crate::core::send_next_to(phone);
+                SEND_TARGET_CHOSEN.store(true, std::sync::atomic::Ordering::SeqCst);
+                command(hwnd, st, action);
+            }
+        }
         ID_PAIR => {
             let _ = st.cmds.send(Cmd::Pair);
         }
@@ -2742,10 +2808,8 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             save_settings(st);
         }
         ID_TOGGLE_AUTO => {
-            let _ = st
-                .settings
-                .lock()
-                .map(|mut s| s.auto_accept = !s.auto_accept);
+            let now_on = !st.settings.lock().map(|s| s.auto_accept).unwrap_or(false);
+            crate::core::set_all_perms(&st.settings, &paired_ids(st), |p| p.auto_accept = now_on);
             save_settings(st);
         }
         ID_OPEN_FLYOUT => open_flyout(hwnd, st),

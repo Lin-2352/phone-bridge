@@ -69,6 +69,57 @@ pub fn default_position(ids: &[String], saved: &str) -> Option<usize> {
         .or(if ids.is_empty() { None } else { Some(0) })
 }
 
+/// What a phone may do without asking. `Ask` is the default for every new phone; `Never` refuses without a prompt.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Allow {
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
+impl Allow {
+    fn stored(self) -> &'static str {
+        match self {
+            Allow::Ask => "ask",
+            Allow::Always => "always",
+            Allow::Never => "never",
+        }
+    }
+
+    /// Anything unknown reads as Ask: a damaged file never grants.
+    fn read(v: Option<&str>) -> Self {
+        match v {
+            Some("always") => Allow::Always,
+            Some("never") => Allow::Never,
+            _ => Allow::Ask,
+        }
+    }
+}
+
+/// What one phone may do on this PC. A new phone starts with everything off or asking.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DevicePerms {
+    pub control: Allow,
+    pub audio_skip_confirm: bool,
+    pub clipboard: bool,
+    pub notifications: bool,
+    pub auto_accept: bool,
+}
+
+fn flag(v: Option<&str>) -> bool {
+    v == Some("true")
+}
+
+/// The older, global switches a phone's permissions start from (once, at migration).
+pub struct Globals {
+    pub allow_control: bool,
+    pub audio_skip_confirm: bool,
+    pub clipboard: bool,
+    pub notifications: bool,
+    pub auto_accept: bool,
+}
+
 /// Where a send goes: straight to one phone, to a choice among several, or nowhere because none is paired.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SendTarget {
@@ -165,6 +216,93 @@ impl DeviceStore {
                 .get_mut(id)
                 .is_some_and(|kv| kv.remove("nickname").is_some()),
         }
+    }
+
+    /// True when any stored phone satisfies `f` (unpairing forgets a phone, so these are the paired ones).
+    pub fn any(&self, f: impl Fn(&DevicePerms) -> bool) -> bool {
+        self.devices.keys().any(|id| f(&self.perms(id)))
+    }
+
+    /// This phone's permissions (all off or Ask when nothing is stored).
+    pub fn perms(&self, id: &str) -> DevicePerms {
+        DevicePerms {
+            control: Allow::read(self.get(id, "perm_control")),
+            audio_skip_confirm: flag(self.get(id, "perm_audio_skip")),
+            clipboard: flag(self.get(id, "perm_clipboard")),
+            notifications: flag(self.get(id, "perm_notifications")),
+            auto_accept: flag(self.get(id, "perm_auto_accept")),
+        }
+    }
+
+    /// Stores this phone's permissions. True when anything changed.
+    pub fn set_perms(&mut self, id: &str, p: &DevicePerms) -> bool {
+        let b = |v: bool| if v { "true" } else { "false" };
+        let mut changed = false;
+        changed |= self.set(id, "perm_control", p.control.stored());
+        changed |= self.set(id, "perm_audio_skip", b(p.audio_skip_confirm));
+        changed |= self.set(id, "perm_clipboard", b(p.clipboard));
+        changed |= self.set(id, "perm_notifications", b(p.notifications));
+        changed |= self.set(id, "perm_auto_accept", b(p.auto_accept));
+        changed
+    }
+
+    /// Copies today's global switches to every paired phone, once per phone (`migrated=1`). A phone paired later
+    /// finds no `migrated` mark only if it was never saved with one, so new phones are marked with fresh defaults by
+    /// [`Self::mark_new`] and never inherit a global. True when anything changed.
+    pub fn migrate(&mut self, paired: &[String], g: &Globals) -> bool {
+        let mut changed = false;
+        for id in paired {
+            if self.get(id, "migrated") == Some("1") {
+                continue;
+            }
+            let p = DevicePerms {
+                control: if g.allow_control {
+                    Allow::Always
+                } else {
+                    Allow::Ask
+                },
+                audio_skip_confirm: g.audio_skip_confirm,
+                clipboard: g.clipboard,
+                notifications: g.notifications,
+                auto_accept: g.auto_accept,
+            };
+            changed |= self.set_perms(id, &p);
+            changed |= self.set(id, "migrated", "1");
+        }
+        changed
+    }
+
+    /// Marks a phone paired after the migration with fresh defaults, so it never inherits an old global.
+    pub fn mark_new(&mut self, id: &str) -> bool {
+        if self.get(id, "migrated").is_some() {
+            return false;
+        }
+        let a = self.set_perms(id, &DevicePerms::default());
+        let b = self.set(id, "migrated", "1");
+        a | b
+    }
+
+    /// "Disconnect everything": every phone's control goes back to Ask (Never stays), and its always-skip audio
+    /// confirmation and auto-accept go off. Clipboard and notifications are not "always allow" and are left alone.
+    pub fn always_allow_off(&mut self) -> bool {
+        let ids: Vec<String> = self.devices.keys().cloned().collect();
+        let mut changed = false;
+        for id in ids {
+            let mut p = self.perms(&id);
+            if p.control == Allow::Always {
+                p.control = Allow::Ask;
+            }
+            p.audio_skip_confirm = false;
+            p.auto_accept = false;
+            if self
+                .devices
+                .get(&id)
+                .is_some_and(|kv| kv.contains_key("perm_control"))
+            {
+                changed |= self.set_perms(&id, &p);
+            }
+        }
+        changed
     }
 
     /// Forgets a device (it was unpaired).
@@ -337,6 +475,147 @@ mod tests {
             send_target(&two(), Some(A), ""),
             SendTarget::Ask(vec![C.to_owned(), B.to_owned()])
         );
+    }
+
+    #[test]
+    fn perms_round_trip_through_devices_txt() {
+        let mut s = DeviceStore::default();
+        let p = DevicePerms {
+            control: Allow::Always,
+            audio_skip_confirm: true,
+            clipboard: true,
+            notifications: false,
+            auto_accept: true,
+        };
+        assert!(s.set_perms(A, &p));
+        assert!(!s.set_perms(A, &p), "same values: no change");
+        let back = DeviceStore::parse(&s.to_text());
+        assert_eq!(back.perms(A), p);
+        assert_eq!(
+            back.perms(B),
+            DevicePerms::default(),
+            "another phone is untouched"
+        );
+    }
+
+    #[test]
+    fn unknown_values_read_as_ask() {
+        let mut s = DeviceStore::default();
+        s.set(A, "perm_control", "sometimes");
+        s.set(A, "perm_auto_accept", "yes");
+        assert_eq!(s.perms(A).control, Allow::Ask);
+        assert!(
+            !s.perms(A).auto_accept,
+            "only the exact word true turns a switch on"
+        );
+    }
+
+    #[test]
+    fn allow_control_is_per_phone() {
+        let mut s = DeviceStore::default();
+        s.set_perms(
+            A,
+            &DevicePerms {
+                control: Allow::Always,
+                ..DevicePerms::default()
+            },
+        );
+        assert_eq!(s.perms(A).control, Allow::Always);
+        assert_eq!(
+            s.perms(B).control,
+            Allow::Ask,
+            "a yes from one phone allows no other"
+        );
+    }
+
+    #[test]
+    fn auto_accept_is_per_phone() {
+        let mut s = DeviceStore::default();
+        s.set_perms(
+            A,
+            &DevicePerms {
+                auto_accept: true,
+                ..DevicePerms::default()
+            },
+        );
+        assert!(s.perms(A).auto_accept && !s.perms(B).auto_accept);
+    }
+
+    fn globals(on: bool) -> Globals {
+        Globals {
+            allow_control: on,
+            audio_skip_confirm: on,
+            clipboard: on,
+            notifications: on,
+            auto_accept: on,
+        }
+    }
+
+    #[test]
+    fn old_settings_become_each_phones() {
+        let mut s = DeviceStore::default();
+        assert!(s.migrate(&[A.to_owned(), B.to_owned()], &globals(true)));
+        for id in [A, B] {
+            let p = s.perms(id);
+            assert_eq!(p.control, Allow::Always);
+            assert!(p.audio_skip_confirm && p.clipboard && p.notifications && p.auto_accept);
+        }
+    }
+
+    #[test]
+    fn migrate_devices_runs_once() {
+        let mut s = DeviceStore::default();
+        assert!(s.migrate(&[A.to_owned()], &globals(true)));
+        // The person turned things off afterwards; a second start must not copy the globals again.
+        s.set_perms(A, &DevicePerms::default());
+        assert!(!s.migrate(&[A.to_owned()], &globals(true)));
+        assert_eq!(s.perms(A), DevicePerms::default());
+    }
+
+    #[test]
+    fn a_phone_paired_later_gets_fresh_defaults() {
+        let mut s = DeviceStore::default();
+        s.migrate(&[A.to_owned()], &globals(true));
+        assert!(s.mark_new(B));
+        assert_eq!(s.perms(B), DevicePerms::default());
+        assert!(
+            !s.migrate(&[B.to_owned()], &globals(true)),
+            "marked: never inherits a global"
+        );
+        assert_eq!(s.perms(B), DevicePerms::default());
+    }
+
+    #[test]
+    fn disconnect_everything_clears_every_phones_always() {
+        let mut s = DeviceStore::default();
+        for id in [A, B] {
+            s.set_perms(
+                id,
+                &DevicePerms {
+                    control: Allow::Always,
+                    audio_skip_confirm: true,
+                    clipboard: true,
+                    notifications: true,
+                    auto_accept: true,
+                },
+            );
+        }
+        s.set_perms(
+            C,
+            &DevicePerms {
+                control: Allow::Never,
+                ..DevicePerms::default()
+            },
+        );
+        assert!(s.always_allow_off());
+        for id in [A, B] {
+            let p = s.perms(id);
+            assert_eq!(p.control, Allow::Ask);
+            assert!(!p.audio_skip_confirm && !p.auto_accept);
+            assert!(p.clipboard && p.notifications, "not always-allow switches");
+        }
+        assert_eq!(s.perms(C).control, Allow::Never, "Never stays");
+        assert!(!s.always_allow_off(), "already clear");
     }
 
     #[test]
