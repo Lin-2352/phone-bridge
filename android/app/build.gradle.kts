@@ -91,6 +91,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     // Backdrop blur for glass panels (M6.2; Apache-2.0, pinned).
     implementation("dev.chrisbanes.haze:haze:1.6.10")
+    // Unlock gate (M7.1): BiometricPrompt needs a FragmentActivity.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.9.1")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 

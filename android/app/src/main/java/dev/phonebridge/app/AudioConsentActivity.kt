@@ -10,7 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,7 +36,7 @@ private const val ASK_MS = 30_000L
  * skipped by the "don't ask" setting, and Android's capture dialog is only skipped when the audio
  * helper does the capture, or when the user allowed it outside Relay.
  */
-class AudioConsentActivity : ComponentActivity() {
+class AudioConsentActivity : FragmentActivity() {
     private var ask: AudioAsk? = null
     private val steps = ArrayDeque<ConsentStep>()
     private var finished = false

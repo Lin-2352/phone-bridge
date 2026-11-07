@@ -16,7 +16,7 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -166,7 +166,7 @@ class StarterActivity : Activity() {
  * MORE. Opening it also shares the clipboard: Android lets only a focused
  * app read it, and this panel is focused.
  */
-class QuickPanelActivity : ComponentActivity() {
+class QuickPanelActivity : FragmentActivity() {
     private lateinit var prefs: Prefs
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -2,7 +2,7 @@ package dev.phonebridge.app
 
 import dev.phonebridge.app.ui.RelayTheme
 import android.Manifest
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import android.app.NotificationManager
 import android.content.pm.PackageManager
@@ -26,7 +26,7 @@ private const val ASK_MS = 30_000L
  * service takes the camera type while this window is visible: Android lets
  * a foreground service open the camera only then.
  */
-class CameraConsentActivity : ComponentActivity() {
+class CameraConsentActivity : FragmentActivity() {
     companion object {
         /** The window kept in front while the camera streams. */
         @Volatile private var current: CameraConsentActivity? = null

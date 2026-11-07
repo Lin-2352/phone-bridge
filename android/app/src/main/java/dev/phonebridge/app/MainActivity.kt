@@ -22,7 +22,7 @@ import android.graphics.Color as AColor
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -65,7 +65,7 @@ private const val TAG = "PhoneBridge"
  * `send_text`. They drive exactly the same code paths as the UI. `tab` (a [Tab] route)
  * opens that tab, at launch or on a new intent.
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private val sas = Bridge.sas
     private val message = Bridge.pairMessage
     private lateinit var prefs: Prefs

@@ -1,7 +1,7 @@
 package dev.phonebridge.app
 
 import dev.phonebridge.app.ui.RelayTheme
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,7 +25,7 @@ private const val ASK_MS = 30_000L
  * own capture prompt, which Android shows every session. On success the
  * capture starts and the PC gets its answer.
  */
-class ScreenConsentActivity : ComponentActivity() {
+class ScreenConsentActivity : FragmentActivity() {
     companion object {
         /** The question window on screen now (not the streaming one). */
         @Volatile private var showing: ScreenConsentActivity? = null

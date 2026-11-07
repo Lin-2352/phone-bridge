@@ -1,7 +1,7 @@
 package dev.phonebridge.app
 
 import dev.phonebridge.app.ui.RelayTheme
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +19,7 @@ private const val TAG = "PhoneBridge"
  * user has not set "Let my PC control this phone". Allow once, always allow,
  * or deny; no answer within 30 s counts as deny (the request times out).
  */
-class ControlRequestActivity : ComponentActivity() {
+class ControlRequestActivity : FragmentActivity() {
     private var answered = false
     private var id = -1L
     private var peerId = ""

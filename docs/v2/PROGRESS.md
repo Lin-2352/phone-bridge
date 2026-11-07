@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M6.14. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M6.8 (Timeline; see the plan in [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md)).
+- **Last finished task:** M7.1. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M7.2 (PC unlock gate with Windows Hello; see the plan in [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -164,7 +164,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## M7 Security shield
 - [x] M7.0 Plan: [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md) (written ahead of M4.9/M4.R; Task M7.0a refreshes it at start)
-- [ ] M7.1 Android unlock gate (BiometricPrompt per API level; `FragmentActivity` hosts)
+- [x] M7.1 Android unlock gate (BiometricPrompt per API level; `FragmentActivity` hosts) (unlock gate rules, BiometricPrompt, FragmentActivity, unlock_gate pref and Settings row; the prompt itself is on the device checklist)
 - [ ] M7.2 PC unlock gate (Windows Hello interop on Windows 11; unavailable with a reason elsewhere)
 - [ ] M7.3 Gate wired to every guarded action, with a 60 s grace
 - [ ] M7.4 "Disconnect everything" in the tray, flyout, tile, notification and Home

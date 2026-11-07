@@ -8,6 +8,8 @@ private const val NL = "\n"
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    /** The app's own debuggable flag (the build config is not generated in this project). */
+    private val debugBuild = context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     init {
         migrateOnce()
@@ -264,6 +266,11 @@ class Prefs(context: Context) {
     var themeLook: Int
         get() = sp.getInt("theme_look", 0)
         set(v) = sp.edit().putInt("theme_look", v).apply()
+
+    /** Ask for unlock before sensitive actions (M7.1). Default: on in release and qa, off in debug. */
+    var unlockGate: Boolean
+        get() = sp.getBoolean("unlock_gate", dev.phonebridge.app.security.gateDefault(debugBuild))
+        set(v) = sp.edit().putBoolean("unlock_gate", v).apply()
 
     /** Solid panels instead of see-through ones. */
     var reduceTransparency: Boolean

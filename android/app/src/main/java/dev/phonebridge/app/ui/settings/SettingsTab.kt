@@ -736,6 +736,21 @@ fun SettingsTab(onDone: () -> Unit) {
                                 )
                             }
                         }
+                        item { SectionHeader("Security") }
+                        item {
+                            RelayCard {
+                                // An unlock needs a screen lock; without one the switch says so and stays off.
+                                val secure = remember { ctx.getSystemService(android.app.KeyguardManager::class.java)?.isDeviceSecure == true }
+                                var gateOn by remember { mutableStateOf(prefs.unlockGate && secure) }
+                                RelayRow(
+                                    title = "Ask for unlock before sensitive actions",
+                                    supporting = if (secure) "Allowing, always-allow and pairing ask for your fingerprint or screen lock"
+                                    else "Set a screen lock first",
+                                    checked = gateOn,
+                                    onChecked = { if (secure) { gateOn = it; prefs.unlockGate = it } },
+                                )
+                            }
+                        }
                         item { SectionHeader("Clipboard") }
                         item {
                             RelayCard {
