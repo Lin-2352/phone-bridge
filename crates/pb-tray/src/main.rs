@@ -142,6 +142,7 @@ mod tokens;
 mod tokens_rules;
 #[cfg(windows)]
 mod ui;
+mod unlock;
 #[cfg(windows)]
 // Used from Task 8 on (the pages).
 #[allow(dead_code)]
