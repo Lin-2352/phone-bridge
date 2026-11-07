@@ -138,3 +138,11 @@ No change to the threat model. M4 adds design tokens, a code generator (`tools/g
 - **Keyed discovery, PBD2 (M7.5, M7.6):** see row 4. A paired pair derives a key from its two identities; probes and answers carry a 16-byte HMAC over the exact packet, a replay cache that only authenticated packets enter, strict parsing (256 bytes, at most 6 addresses) and padding to at least 4 probes. A LAN host that holds no pairing cannot make a node dial an address of its choosing or learn which peers are paired. An attacker who floods PBD2 packets makes a node try up to 64 keys over 3 windows per packet; that is the same class as any UDP flood on the LAN.
 - **Pairing limits (M7.7):** wrong tokens are counted per source (the remote IP: 3 in 10 minutes blocks that source) and all together (10 burn the code); the per-source count survives a code rotation, so rotating the code does not reset an attacker, and one source can block only itself. At most 2 pairing handshakes run at once, each cut off at 150 s. Residual risk: two devices behind one NAT share a source.
 - **Per-peer quotas (M7.8):** see row 14.
+
+## Mitigations added in v2, milestone M8 (2026-11-07)
+
+- **Never is a refusal, not a grant.** A device set to Never gets its control, screen, camera and audio requests refused without a prompt. This removes a prompt and adds no access.
+- **Per-device permissions limit what one paired device can do.** Before, a "yes" or an "Always" from one device applied to all; now a device that was not allowed asks (or is refused). A compromised or misbehaving paired device cannot use a permission the person gave to another.
+- **Disconnect everything clears each device's Always and automatic accept.** Residual risk: Never answers and clipboard and notification switches are left in place, because they do not grant access to the screen, camera, audio or input.
+- **Fresh devices start closed.** A device paired after the migration starts at Ask / off and never inherits an old global switch.
+- **Residual risk:** until the PC reads the audio, clipboard and notification switches per device, those three are still all-devices on the PC.

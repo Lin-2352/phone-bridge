@@ -1,5 +1,16 @@
 package dev.phonebridge.app.devices
 
+/** The kinds of request a PC can make that have an Ask / Always / Never answer. */
+enum class ConsentKind(val key: String, val label: String) {
+    Control("control", "control of this phone"),
+    Screen("screen", "a screen share"),
+    Camera("camera", "a camera request"),
+    Audio("audio", "an audio share"),
+}
+
+/** The note shown when a request was refused without a prompt because the PC is set to Never. */
+fun blockedText(kind: ConsentKind, pc: String): String = "Blocked ${kind.label} from $pc (set to Never)"
+
 /** What a request from one PC does: go ahead without asking, ask the person, or refuse without asking. */
 enum class ConsentStep { AutoAllow, Ask, AutoDeny }
 

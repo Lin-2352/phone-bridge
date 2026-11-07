@@ -2,13 +2,17 @@ package dev.phonebridge.app
 
 import android.content.Context
 import android.net.Uri
+import dev.phonebridge.app.devices.Allow
+import dev.phonebridge.app.devices.ConsentKind
 import dev.phonebridge.app.devices.cleanNickname
+import dev.phonebridge.app.devices.migrateToPerPc as migratePrefsToPerPc
 import dev.phonebridge.app.devices.defaultAfterRemoval
 
 /** User settings. Share clipboard is off until the user turns it on. */
 private const val NL = "\n"
 
 class Prefs(context: Context) {
+    private val appCtx = context.applicationContext
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     /** The app's own debuggable flag (the build config is not generated in this project). */
     private val debugBuild = context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
@@ -61,7 +65,10 @@ class Prefs(context: Context) {
 
     var clipboardSync: Boolean
         get() = sp.getBoolean("clipboard_sync", false)
-        set(v) = sp.edit().putBoolean("clipboard_sync", v).apply()
+        set(v) {
+            sp.edit().putBoolean("clipboard_sync", v).apply()
+            setForAllPcs("clipboard_sync", v)
+        }
 
     /** Also sync text an app marked sensitive (passwords, codes). Off by default. */
     var sendSensitive: Boolean
@@ -252,12 +259,21 @@ class Prefs(context: Context) {
 
     var audioSkipConfirmPhoneToPc: Boolean
         get() = sp.getBoolean("audio_skip_confirm_phone_to_pc", false)
-        set(v) = sp.edit().putBoolean("audio_skip_confirm_phone_to_pc", v).apply()
+        set(v) {
+            sp.edit().putBoolean("audio_skip_confirm_phone_to_pc", v).apply()
+            // The switch speaks for every paired PC: each one's own "Always" for audio follows it.
+            val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
+            val cur = sp.getStringSet("allow_audio_pcs", emptySet()).orEmpty()
+            sp.edit().putStringSet("allow_audio_pcs", if (v) cur + ids else cur - ids.toSet()).apply()
+        }
 
 
     var autoAccept: Boolean
         get() = sp.getBoolean("auto_accept", true)
-        set(v) = sp.edit().putBoolean("auto_accept", v).apply()
+        set(v) {
+            sp.edit().putBoolean("auto_accept", v).apply()
+            setForAllPcs("auto_accept", v)
+        }
 
     /** 0 = follow system, 1 = light, 2 = dark. */
     var theme: Int
@@ -312,7 +328,10 @@ class Prefs(context: Context) {
     /** Phone notifications are shown on paired PCs (once access is granted). */
     var notifyToPc: Boolean
         get() = sp.getBoolean("notify_to_pc", true)
-        set(v) = sp.edit().putBoolean("notify_to_pc", v).apply()
+        set(v) {
+            sp.edit().putBoolean("notify_to_pc", v).apply()
+            setForAllPcs("notifications", v)
+        }
 
     /** Ringer mode before a PC silenced a call, or -1: restored after the call. */
     var savedRinger: Int
@@ -356,6 +375,67 @@ class Prefs(context: Context) {
     var lastPcName: String?
         get() = sp.getString("last_pc_name", null)
         set(v) = sp.edit().putString("last_pc_name", v).apply()
+
+    private fun allowSetKey(kind: ConsentKind) = when (kind) {
+        ConsentKind.Control -> "allow_control_pcs"
+        ConsentKind.Screen -> "allow_screen_pcs"
+        ConsentKind.Camera -> "allow_camera_pcs"
+        ConsentKind.Audio -> "allow_audio_pcs"
+    }
+
+    /** What this PC may do without asking: Never if refused, Always if on the allow list, otherwise Ask. */
+    fun pcAllow(id: String, kind: ConsentKind): Allow = when {
+        id.isEmpty() -> Allow.Ask
+        sp.getBoolean("$id/never_${kind.key}", false) -> Allow.Never
+        id in sp.getStringSet(allowSetKey(kind), emptySet()).orEmpty() -> Allow.Always
+        else -> Allow.Ask
+    }
+
+    fun setPcAllow(id: String, kind: ConsentKind, allow: Allow) {
+        if (id.isEmpty()) return
+        val set = sp.getStringSet(allowSetKey(kind), emptySet()).orEmpty()
+        sp.edit()
+            .putStringSet(allowSetKey(kind), if (allow == Allow.Always) set + id else set - id)
+            .apply { if (allow == Allow.Never) putBoolean("$id/never_${kind.key}", true) else remove("$id/never_${kind.key}") }
+            .apply()
+    }
+
+    /** The all-PCs switches in Settings speak for every paired PC; each PC's own switch follows them. */
+    private fun setForAllPcs(key: String, on: Boolean) {
+        val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
+        if (ids.isEmpty()) return
+        sp.edit().apply { ids.forEach { putBoolean("$it/$key", on) } }.apply()
+        Bridge.applyPeerSwitches(appCtx)
+    }
+
+    /** A per-PC switch: "clipboard_sync", "notifications" or "auto_accept". Off for a PC that never had it set. */
+    fun pcFlag(id: String, key: String): Boolean = id.isNotEmpty() && sp.getBoolean("$id/$key", false)
+
+    fun setPcFlag(id: String, key: String, on: Boolean) {
+        if (id.isNotEmpty()) sp.edit().putBoolean("$id/$key", on).apply()
+    }
+
+    /** The paired PCs that have this switch on. */
+    fun pcsWithFlag(key: String, pairedIds: List<String>): List<String> = pairedIds.filter { pcFlag(it, key) }
+
+    /** Every "always allow" answer goes (Disconnect everything); Never answers and plain switches stay. */
+    fun removeAlwaysAllow() {
+        removeKeys(sp.all.keys.filter { isAlwaysAllowKey(it) })
+    }
+
+    /** Copies today's global switches to every paired PC, once; a PC paired later starts from fresh defaults. */
+    fun migrateToPerPc(pairedIds: List<String>) {
+        val before = sp.all
+        val after = migratePrefsToPerPc(before, pairedIds)
+        if (after == before) return
+        val e = sp.edit()
+        for ((k, v) in after) if (before[k] != v) when (v) {
+            is Boolean -> e.putBoolean(k, v)
+            is String -> e.putString(k, v)
+            is Set<*> -> e.putStringSet(k, v.filterIsInstance<String>().toSet())
+        }
+        e.commit()
+    }
 
     /** The PC that sends go to when none is chosen (its peer id), or null when none is paired. */
     var defaultPc: String?

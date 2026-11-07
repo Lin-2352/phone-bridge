@@ -871,12 +871,34 @@ pub struct PbNode {
     spawner: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
+/// Which PCs a switch applies to: everyone (the global switch decides) or only the listed ids.
+#[derive(Default)]
+struct PeerSet(Mutex<Option<std::collections::HashSet<String>>>);
+
+impl PeerSet {
+    fn set(&self, ids: Vec<String>) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(ids.into_iter().collect());
+    }
+
+    /// True when `peer` may use the feature: it is listed, or no list was set and the global switch is on.
+    fn allows(&self, global: &std::sync::atomic::AtomicBool, peer: &str) -> bool {
+        match &*self.0.lock().unwrap_or_else(|p| p.into_inner()) {
+            Some(ids) => ids.contains(peer),
+            None => global.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
 /// State shared between the node object and the session pumps.
 struct Shared {
     events: Events,
     incoming_dir: std::path::PathBuf,
     auto_accept: std::sync::atomic::AtomicBool,
     clipboard_sync: std::sync::atomic::AtomicBool,
+    /// Per-device switches. `None` means "use the global switch above"; `Some(ids)` means only these PCs.
+    auto_accept_peers: PeerSet,
+    clipboard_peers: PeerSet,
+    notify_peers: PeerSet,
     /// Apply pictures copied on the PC ("Share copied images").
     clipboard_images: std::sync::atomic::AtomicBool,
     pending: Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<bool>>>,
@@ -1174,6 +1196,9 @@ pub async fn start_node(
         incoming_dir: dir.join("incoming"),
         auto_accept: std::sync::atomic::AtomicBool::new(true),
         clipboard_sync: std::sync::atomic::AtomicBool::new(false),
+        auto_accept_peers: PeerSet::default(),
+        clipboard_peers: PeerSet::default(),
+        notify_peers: PeerSet::default(),
         clipboard_images: std::sync::atomic::AtomicBool::new(false),
         pending: Mutex::default(),
         last_remote_clip: Mutex::new([0; 32]),
@@ -1259,7 +1284,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             }
             Ok(Some(ControlMsg::NotifySyncRequest(_))) => {
                 // Off: an empty list, so the PC clears what it still shows.
-                let answered = if sh.notify_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+                let answered = if sh.notify_peers.allows(&sh.notify_enabled, &pid) {
                     sh.notify.answer_sync_request(&s).await
                 } else {
                     s.send(ControlMsg::NotifySync(Default::default())).await
@@ -1276,7 +1301,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     break "action flood".to_owned();
                 }
                 let id = a.id;
-                let (ok, reason) = match run_notify_action(&sh, a).await {
+                let (ok, reason) = match run_notify_action(&sh, &pid, a).await {
                     Ok(()) => (true, String::new()),
                     Err(e) => (false, e.to_string()),
                 };
@@ -1295,7 +1320,7 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 },
             ),
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
-                if sh.clipboard_sync.load(std::sync::atomic::Ordering::Relaxed) {
+                if sh.clipboard_peers.allows(&sh.clipboard_sync, &pid) {
                     *sh.last_remote_clip
                         .lock()
                         .unwrap_or_else(|p| p.into_inner()) = clip_hash(&u.text);
@@ -1422,11 +1447,11 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                 let accept = if is_image {
                     // Governed by the clipboard switches, never by the file prompt.
                     image_accepted(
-                        sh.clipboard_sync.load(std::sync::atomic::Ordering::Relaxed),
+                        sh.clipboard_peers.allows(&sh.clipboard_sync, &pid),
                         sh.clipboard_images
                             .load(std::sync::atomic::Ordering::Relaxed),
                     )
-                } else if sh.auto_accept.load(std::sync::atomic::Ordering::Relaxed) {
+                } else if sh.auto_accept_peers.allows(&sh.auto_accept, &pid) {
                     true
                 } else {
                     let ask = sh
@@ -1924,11 +1949,12 @@ fn forward_screen_input(l: &dyn ScreenListener, e: pb_protocol::InputEvent) {
 /// sends Android intents).
 async fn run_notify_action(
     sh: &Shared,
+    peer: &str,
     a: pb_protocol::control::NotifyAction,
 ) -> Result<(), PbError> {
     use pb_protocol::control::{NotifyActionKind as K, MAX_REPLY_TEXT};
     let off = || fail("Notifications on PC is off on the phone");
-    if !sh.notify_enabled.load(std::sync::atomic::Ordering::Relaxed) {
+    if !sh.notify_peers.allows(&sh.notify_enabled, peer) {
         return Err(off());
     }
     let handler = sh
@@ -2205,6 +2231,11 @@ impl PbNode {
             .node
             .paired_peers()
             .into_iter()
+            .filter(|p| {
+                self.shared
+                    .clipboard_peers
+                    .allows(&self.shared.clipboard_sync, &p.id.to_string())
+            })
             .map(|p| {
                 let node = self.node.clone();
                 let update = pb_protocol::control::ClipboardUpdate {
@@ -2255,6 +2286,21 @@ impl PbNode {
         {
             c.close(b"stopped on the phone");
         }
+    }
+
+    /// Which PCs may send files without a prompt. Replaces the global switch for the PCs it names.
+    pub fn set_auto_accept_peers(&self, ids: Vec<String>) {
+        self.shared.auto_accept_peers.set(ids);
+    }
+
+    /// Which PCs share the clipboard with this phone (both directions).
+    pub fn set_clipboard_peers(&self, ids: Vec<String>) {
+        self.shared.clipboard_peers.set(ids);
+    }
+
+    /// Which PCs get this phone's notifications and may act on them.
+    pub fn set_notify_peers(&self, ids: Vec<String>) {
+        self.shared.notify_peers.set(ids);
     }
 
     pub fn set_auto_accept(&self, on: bool) {
@@ -2721,6 +2767,27 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn a_peer_list_overrides_the_global_switch() {
+        use std::sync::atomic::AtomicBool;
+        let on = AtomicBool::new(true);
+        let off = AtomicBool::new(false);
+        let set = PeerSet::default();
+        assert!(set.allows(&on, "a"), "no list: the global switch decides");
+        assert!(!set.allows(&off, "a"));
+        set.set(vec!["a".to_owned()]);
+        assert!(
+            set.allows(&off, "a"),
+            "listed: allowed whatever the global says"
+        );
+        assert!(
+            !set.allows(&on, "b"),
+            "not listed: refused even with the global on"
+        );
+        set.set(Vec::new());
+        assert!(!set.allows(&on, "a"), "an empty list means no PC");
     }
 
     #[test]

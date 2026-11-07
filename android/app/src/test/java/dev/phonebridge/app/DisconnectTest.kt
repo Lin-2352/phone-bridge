@@ -22,10 +22,28 @@ class DisconnectTest {
         for (key in alwaysAllowKeysToClear()) {
             assertFalse("$key is gone", after.containsKey(key))
         }
-        assertEquals(4, alwaysAllowKeysToClear().size)
+        assertEquals(5, alwaysAllowKeysToClear().size)
         // Other settings are left alone.
         assertEquals(2, after["theme"])
         assertEquals(true, after["clipboard_sync"])
+    }
+
+    @Test
+    fun disconnect_clears_every_pcs_auto_accept_and_audio_always() {
+        val m = before + mapOf(
+            "allow_audio_pcs" to setOf("pc1"),
+            "pc1/auto_accept" to true,
+            "pc2/auto_accept" to true,
+            "pc1/never_screen" to true,
+            "pc1/clipboard_sync" to true,
+        )
+        val after = afterDisconnect(m)
+        assertFalse(after.containsKey("allow_audio_pcs"))
+        assertFalse(after.containsKey("pc1/auto_accept"))
+        assertFalse(after.containsKey("pc2/auto_accept"))
+        // Never and the clipboard switch are not "always allow": they stay.
+        assertEquals(true, after["pc1/never_screen"])
+        assertEquals(true, after["pc1/clipboard_sync"])
     }
 
     @Test

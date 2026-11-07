@@ -1,5 +1,8 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.devices.ConsentKind
+import dev.phonebridge.app.devices.ConsentStep
+import dev.phonebridge.app.devices.consentStep
 import dev.phonebridge.app.security.gated
 import dev.phonebridge.app.security.Guarded
 import dev.phonebridge.app.ui.RelayTheme
@@ -87,7 +90,7 @@ class CameraConsentActivity : FragmentActivity() {
             decline()
             return
         }
-        if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedCameraPcs), keyguardLocked())) {
+        if (consentStep(Prefs(this).pcAllow(peerId, ConsentKind.Camera), keyguardLocked()) == ConsentStep.AutoAllow) {
             ensurePermission()
             return
         }

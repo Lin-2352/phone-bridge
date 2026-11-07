@@ -523,6 +523,72 @@ fun SettingsTab(onDone: () -> Unit) {
     var removing by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
     var renaming by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
     var pcPrefsTick by remember { mutableStateOf(0) }
+    var permsFor by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
+    permsFor?.let { p ->
+        val kinds = dev.phonebridge.app.devices.ConsentKind.entries
+        val shown = prefs.pcNickname(p.id) ?: p.name
+        RelayDialog(
+            title = "$shown permissions",
+            onDismissRequest = { permsFor = null; pcPrefsTick++ },
+            confirmText = "Done",
+            onConfirm = { permsFor = null; pcPrefsTick++ },
+            dismissText = "",
+        ) {
+            var tick by remember { mutableStateOf(0) }
+            val gateActivity = ctx as? androidx.fragment.app.FragmentActivity
+            fun guarded(g: Guarded, why: String, change: () -> Unit) {
+                if (gateActivity != null) gateActivity.gated(g, why) { change(); tick++ } else { change(); tick++ }
+            }
+            Column {
+                Text(
+                    "Ask each time, always allow, or never ask (refuse without a prompt).",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                for (k in kinds) {
+                    val cur = remember(tick) { prefs.pcAllow(p.id, k) }
+                    val label = when (k) {
+                        dev.phonebridge.app.devices.ConsentKind.Control -> "Control this phone"
+                        dev.phonebridge.app.devices.ConsentKind.Screen -> "See the screen"
+                        dev.phonebridge.app.devices.ConsentKind.Camera -> "Use the camera"
+                        dev.phonebridge.app.devices.ConsentKind.Audio -> "Hear the audio"
+                    }
+                    RelayRow(
+                        title = label,
+                        supporting = when (cur) {
+                            dev.phonebridge.app.devices.Allow.Ask -> "Ask each time"
+                            dev.phonebridge.app.devices.Allow.Always -> "Always allow"
+                            dev.phonebridge.app.devices.Allow.Never -> "Never ask, refuse"
+                        },
+                        onClick = {
+                            val next = when (cur) {
+                                dev.phonebridge.app.devices.Allow.Ask -> dev.phonebridge.app.devices.Allow.Always
+                                dev.phonebridge.app.devices.Allow.Always -> dev.phonebridge.app.devices.Allow.Never
+                                dev.phonebridge.app.devices.Allow.Never -> dev.phonebridge.app.devices.Allow.Ask
+                            }
+                            if (next == dev.phonebridge.app.devices.Allow.Always) {
+                                guarded(Guarded.AlwaysAllow, "Always allow: $label") { prefs.setPcAllow(p.id, k, next) }
+                            } else {
+                                prefs.setPcAllow(p.id, k, next)
+                                tick++
+                            }
+                        },
+                    )
+                }
+                for ((key, name) in listOf("clipboard_sync" to "Share the clipboard", "notifications" to "Show phone notifications", "auto_accept" to "Accept files automatically")) {
+                    val on = remember(tick) { prefs.pcFlag(p.id, key) }
+                    RelayRow(
+                        title = name,
+                        trailing = {
+                            androidx.compose.material3.Switch(checked = on, onCheckedChange = { v ->
+                                val apply = { prefs.setPcFlag(p.id, key, v); Bridge.applyPeerSwitches(ctx) }
+                                if (v && key == "auto_accept") guarded(Guarded.AutoAccept, "Accept files automatically") { apply() } else { apply(); tick++ }
+                            })
+                        },
+                    )
+                }
+            }
+        }
+    }
     renaming?.let { p ->
         var text by remember(p.id) { mutableStateOf(prefs.pcNickname(p.id).orEmpty()) }
         RelayDialog(
@@ -675,6 +741,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                         paired = true,
                                     )
                                     RelayRow(
+                                        onClick = { permsFor = p },
                                         title = names[p.id] ?: p.name,
                                         supporting = (if (p.id == defaultId) "Default \u00B7 " else "") + status +
                                             " \u00B7 Fingerprint ${p.fingerprint.take(9)}",

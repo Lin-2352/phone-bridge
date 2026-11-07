@@ -1,5 +1,8 @@
 package dev.phonebridge.app
 
+import dev.phonebridge.app.devices.ConsentKind
+import dev.phonebridge.app.devices.ConsentStep
+import dev.phonebridge.app.devices.consentStep
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -162,6 +165,16 @@ object Bridge {
     @Volatile var stopping: kotlinx.coroutines.Job? = null
 
     fun firstPeer() = node?.peers()?.firstOrNull()
+
+    /** Tells the node which PCs have clipboard sync, notifications and automatic accept on (each PC's own switch). */
+    fun applyPeerSwitches(ctx: android.content.Context, n: PbNode? = node) {
+        val node = n ?: return
+        val prefs = Prefs(ctx)
+        val ids = node.peers().map { it.id }
+        node.setClipboardPeers(prefs.pcsWithFlag("clipboard_sync", ids))
+        node.setNotifyPeers(prefs.pcsWithFlag("notifications", ids))
+        node.setAutoAcceptPeers(prefs.pcsWithFlag("auto_accept", ids))
+    }
 
     /** What to call the default PC (its nickname, with a suffix when two share a name), or null when none is paired. */
     fun defaultLabel(ctx: android.content.Context): String? {
@@ -514,6 +527,8 @@ class PbService : Service() {
         n.setClipboardImages(prefs.clipboardImages)
         n.setAutoAccept(prefs.autoAccept)
         prefs.migrateAllowances(n.peers().map { it.id })
+        prefs.migrateToPerPc(n.peers().map { it.id })
+        Bridge.applyPeerSwitches(this, n)
         n.setAllowControl(false) // per-PC "Always allow" is applied in askControl
         n.setNotifyEnabled(prefs.notifyToPc)
         n.setNotifyHandler(NotifyActions)
@@ -793,7 +808,11 @@ class PbService : Service() {
     private fun askScreen(e: PbEvent.ScreenRequest) {
         if (e.resume && ScreenShare.resume(e.id)) return
         val peerId = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
-        if (ScreenShare.armed != null && shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedScreenPcs), keyguardLocked())) {
+        if (blockedByNever(ConsentKind.Screen, peerId, e.peerName)) {
+            Bridge.node?.answerScreen(e.id, null)
+            return
+        }
+        if (ScreenShare.armed != null && allowsUnasked(ConsentKind.Screen, peerId)) {
             val a = ScreenAsk(
                 e.id, e.peerName, e.maxLongSide.toInt(), e.sharp, e.dim,
                 List(e.codecs.size) { e.codecs[it].toInt() and 0xff },
@@ -835,6 +854,10 @@ class PbService : Service() {
     /** A PC asks to use this camera: resume within the grace, else ask. */
     private fun askCamera(e: PbEvent.CameraRequest) {
         if (e.resume && CameraShare.resume(e.id)) return
+        if (blockedByNever(ConsentKind.Camera, askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty()), e.peerName)) {
+            Bridge.node?.answerCamera(e.id, null)
+            return
+        }
         askNotes[e.id] = CAMERA_ASK_ID
         val ask = Intent(this, CameraConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
@@ -882,6 +905,12 @@ class PbService : Service() {
     }
 
     private fun answerAudio(e: PbEvent.AudioRequest, mic: Boolean) {
+        val audioPeer = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
+        if (blockedByNever(ConsentKind.Audio, audioPeer, e.peerName)) {
+            val src = if (mic) dev.phonebridge.app.audio.AudioSource.MICROPHONE else dev.phonebridge.app.audio.AudioSource.PLAYBACK
+            AudioShare.abort(AudioAsk(e.id, e.peerName, src, e.sampleRate.toInt(), e.channels.toInt()), dev.phonebridge.app.audio.AudioReason.DECLINED, teardown = false)
+            return
+        }
         if (AudioShare.debugTone && applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             val src = dev.phonebridge.app.audio.AudioSource.PLAYBACK
             AudioShare.launchTone(this, AudioAsk(e.id, e.peerName, src, e.sampleRate.toInt(), e.channels.toInt()))
@@ -892,7 +921,7 @@ class PbService : Service() {
             val kind = dev.phonebridge.app.audio.chooseCapture(
                 dev.phonebridge.app.audio.AudioSource.PLAYBACK, prefs.audioSilencePhone, HelperAudio.alive(this),
             )
-            if (dev.phonebridge.app.audio.startsWithoutWindow(kind, shouldAutoAccept(prefs.audioSkipConfirmPhoneToPc, keyguardLocked()))) {
+            if (dev.phonebridge.app.audio.startsWithoutWindow(kind, allowsUnasked(ConsentKind.Audio, audioPeer))) {
                 val a = AudioAsk(e.id, e.peerName, dev.phonebridge.app.audio.AudioSource.PLAYBACK, e.sampleRate.toInt(), e.channels.toInt())
                 val reason = AudioShare.prepareHelper()
                 if (reason != null) AudioShare.abort(a, reason, teardown = false) else AudioShare.launch(this, a, null, helper = true)
@@ -1008,9 +1037,25 @@ class PbService : Service() {
         runCatching { startActivity(settings) }.onFailure { Log.i(TAG, "CONTROL settings not opened: $it") }
     }
 
+    /** True (and the person is told) when this PC is set to Never for this kind of request: it is refused unasked. */
+    private fun blockedByNever(kind: dev.phonebridge.app.devices.ConsentKind, peerId: String, peerName: String): Boolean {
+        if (consentStep(Prefs(this).pcAllow(peerId, kind), keyguardLocked()) != ConsentStep.AutoDeny) return false
+        Log.i(TAG, "${kind.key.uppercase()} request from $peerName blocked: set to Never")
+        AppLog.event("events", "consent_blocked", "kind" to kind.key)
+        notifyInfo(this, "Request blocked", dev.phonebridge.app.devices.blockedText(kind, peerName))
+        return true
+    }
+
+    private fun allowsUnasked(kind: dev.phonebridge.app.devices.ConsentKind, peerId: String): Boolean =
+        consentStep(Prefs(this).pcAllow(peerId, kind), keyguardLocked()) == ConsentStep.AutoAllow
+
     private fun askControl(e: PbEvent.ControlRequest) {
         val peerId = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
-        if (shouldAutoAccept(allowedFor(peerId, Prefs(this).allowedControlPcs), keyguardLocked())) {
+        if (blockedByNever(ConsentKind.Control, peerId, e.peerName)) {
+            Bridge.node?.answerOffer(e.id, false)
+            return
+        }
+        if (allowsUnasked(ConsentKind.Control, peerId)) {
             Bridge.node?.answerOffer(e.id, true)
             Log.i(TAG, "CONTROL request from ${e.peerName}: always allowed")
             return

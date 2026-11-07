@@ -11,12 +11,16 @@ fun alwaysAllowKeysToClear(): List<String> = listOf(
     "allow_control_pcs",
     "allow_screen_pcs",
     "allow_camera_pcs",
+    "allow_audio_pcs",
     "audio_skip_confirm_phone_to_pc",
 )
 
+/** True for a key that holds an "always allow" answer: one of the fixed keys, or a PC's automatic file accept. */
+fun isAlwaysAllowKey(key: String): Boolean = key in alwaysAllowKeysToClear() || key.endsWith("/auto_accept")
+
 /** The preferences after "Disconnect everything": every always-allow answer removed, and Relay off until resumed. */
 fun afterDisconnect(all: Map<String, Any?>): Map<String, Any?> =
-    (all - alwaysAllowKeysToClear().toSet()) + ("enabled" to false)
+    all.filterKeys { !isAlwaysAllowKey(it) } + ("enabled" to false)
 
 /** The preferences after the person resumes Relay: it is on again; the removed answers are not restored. */
 fun afterResume(all: Map<String, Any?>): Map<String, Any?> = all + ("enabled" to true)
@@ -27,7 +31,7 @@ fun afterResume(all: Map<String, Any?>): Map<String, Any?> = all + ("enabled" to
  */
 fun disconnectEverything(ctx: Context) {
     val prefs = Prefs(ctx)
-    prefs.removeKeys(alwaysAllowKeysToClear())
+    prefs.removeAlwaysAllow()
     prefs.enabled = false
     // Close every connection first (the node is only there while the service runs), then stop the service.
     val node = Bridge.node

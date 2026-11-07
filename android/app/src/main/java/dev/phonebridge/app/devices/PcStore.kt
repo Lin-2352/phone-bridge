@@ -106,6 +106,32 @@ fun pcStatus(live: Boolean, lastSeenMs: Long, nowMs: Long, paired: Boolean): Str
     }
 }
 
+/**
+ * Gives every paired PC today's global switches, once (marked `pcs_migrated`). Always stays in the allow sets, so
+ * a PC already in one keeps it; the audio, clipboard, notification and automatic-accept switches become each PC's
+ * own. Old global keys are kept for one release (a downgrade still finds them). A PC paired later finds no
+ * entries and starts from [freshDefaults]. Running it twice changes nothing.
+ */
+fun migrateToPerPc(all: Map<String, Any?>, pairedIds: List<String>): Map<String, Any?> {
+    if (all["pcs_migrated"] == true) return all
+    val out = all.toMutableMap()
+    val audioOn = all["audio_skip_confirm_phone_to_pc"] == true
+    val audio = (all["allow_audio_pcs"] as? Set<*>)?.filterIsInstance<String>()?.toSet().orEmpty()
+    if (audioOn) out["allow_audio_pcs"] = audio + pairedIds
+    for (id in pairedIds) {
+        if (all["clipboard_sync"] == true) out["$id/clipboard_sync"] = true
+        // These two are on unless the person turned them off: an install that never chose keeps what it had.
+        if (all["notify_to_pc"] != false) out["$id/notifications"] = true
+        if (all["auto_accept"] != false) out["$id/auto_accept"] = true
+    }
+    pairedIds.firstOrNull()?.let { first ->
+        (all["last_seen_ms"] as? Long)?.let { out["$first/last_seen_ms"] = it }
+        if (all["default_pc"] == null) out["default_pc"] = first
+    }
+    out["pcs_migrated"] = true
+    return out
+}
+
 /** Where a send goes: to one PC, to a choice among several, or nowhere because none is paired. */
 sealed interface SendTarget {
     data class One(val id: String) : SendTarget
