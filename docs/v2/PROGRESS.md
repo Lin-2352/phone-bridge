@@ -5,7 +5,7 @@ The single place that says what is done, what is in progress and what is left in
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M5.9. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M5.10 (offscreen snapshot CI job; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
+- **Next task:** M5.10 (the offscreen renderer, goldens and `snapshots` CI job; the pure parts and the diff tool are done). M5.11 budget run waits for the owner to close Relay. Earlier: M5.10 (offscreen snapshot CI job; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
