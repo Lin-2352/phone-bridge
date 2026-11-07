@@ -71,6 +71,16 @@ android {
     }
 }
 
+// Haze's dependencies pull a newer Kotlin standard library than this project's compiler (2.2.10) can
+// optimise; keep the standard library on the compiler's version.
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlin" && requested.name.startsWith("kotlin-stdlib")) {
+            useVersion("2.2.10")
+        }
+    }
+}
+
 dependencies {
     // Screenshot tests only (M6.1): Robolectric runs the Android framework on the JVM for Roborazzi.
     testImplementation("org.robolectric:robolectric:4.17")
@@ -79,6 +89,8 @@ dependencies {
     testImplementation("io.github.takahirom.roborazzi:roborazzi-junit-rule:1.77.0")
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    // Backdrop blur for glass panels (M6.2; Apache-2.0, pinned).
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 

@@ -14,10 +14,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import androidx.compose.ui.platform.LocalContext
 import android.os.Build
 import dev.phonebridge.app.Prefs
 import dev.phonebridge.app.ui.components.LocalGlass
+import dev.phonebridge.app.ui.components.LocalHazeState
 import dev.phonebridge.app.ui.components.LocalModes
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -155,12 +162,15 @@ fun RelayTheme(choice: ThemeChoice = ThemeChoice, content: @Composable () -> Uni
     }
     val modes = Modes(reducedTransparency = choice.reduceTransparency.value, lite = choice.liteForced.value)
     val glass = resolve(materialFor(look, dark), modes)
-    CompositionLocalProvider(LocalGlass provides glass, LocalModes provides modes) {
+    val haze = remember { HazeState() }
+    CompositionLocalProvider(LocalGlass provides glass, LocalModes provides modes, LocalHazeState provides haze) {
         MaterialTheme(
             colorScheme = scheme,
             typography = RelayTypography,
             shapes = RelayShapes,
-            content = content,
-        )
+        ) {
+            // The whole app is the backdrop that glass blurs.
+            Box(Modifier.fillMaxSize().hazeSource(haze)) { content() }
+        }
     }
 }

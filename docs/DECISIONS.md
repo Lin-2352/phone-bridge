@@ -520,3 +520,12 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Narrator.** The flyout publishes its tiles as a UI Automation tree (one toggle per tile). The UIA snapshot is per window.
 - **Not done in M5.** The Segoe UI Variable fallback to Segoe UI in the product (only the snapshot font check exists), the offscreen snapshot renderer, the snapshot goldens and CI job (M5.10), the M5.R reviewer pass, and the budget run (M5.11, needs the owner's Relay closed). Tabular numerals on the transfer progress line.
 - **Glass checks.** Mica, Acrylic and Relay glass are not verified visually on a PC with transparency effects on; `docs/v2/DEVICE-CHECKS.md` lists the checks.
+
+## Haze for backdrop blur (v2 M6.2, 2026-11-07)
+
+- **Haze 1.6.10** (Apache-2.0) draws the blur for glass panels on API 31 and up, outside lite mode. Below API 31, and in lite mode, a tinted scrim; with reduced transparency or high contrast, an opaque panel.
+- **Why 1.6.10:** Haze 1.7.x needs compile API 37 (this project compiles against 36, and the plan raises it only for a stable library that needs it). Haze 2.x is built with Kotlin 2.4, which this project's compiler (2.2.10) cannot read.
+- **Standard library pin:** Haze's dependencies pull `kotlin-stdlib` 2.3.x, which the Kotlin 2.2.10 compiler cannot optimise (a compile crash in the IR interpreter). The app pins `kotlin-stdlib` to 2.2.10 in its configurations. Remove the pin when the compiler moves to 2.3.x.
+- **Verification:** the Gradle verification trust regex covers `dev.chrisbanes.haze`; the sha256 entries are not pinned yet (open item for M6.R).
+- **Frame budget:** `FrameBudget` (more than a quarter of the last 120 frames over 1.5 intervals) trips to lite on its own. Wiring it to the frames on screen is open in M6.2.
+
