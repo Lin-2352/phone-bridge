@@ -234,8 +234,10 @@ private fun AudioToPc() {
         supporting = if (skip) "On. $APP_NAME's own question is skipped. The microphone is never skipped" else "Off. This phone asks you first, then Android asks to capture",
         checked = skip,
         onChecked = { v ->
-            skip = v
-            prefs.audioSkipConfirmPhoneToPc = v
+            val apply = { skip = v; prefs.audioSkipConfirmPhoneToPc = v }
+            val a = (ctx as? androidx.fragment.app.FragmentActivity)
+            // Skipping the question lets a PC start listening without asking: turning it on is guarded; off only removes access.
+            if (v && a != null) a.gated(Guarded.AlwaysAllow, "Share audio without asking") { apply() } else apply()
         },
     )
     if (dev.phonebridge.app.audio.HELPER_OFFERED) HelperRow()
@@ -899,7 +901,12 @@ fun SettingsTab(onDone: () -> Unit) {
                                     title = "Share clipboard",
                                     supporting = "Share what you copy with your paired PC",
                                     checked = clipOn,
-                                    onChecked = { clipOn = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) },
+                                    onChecked = { on ->
+                                        val apply = { clipOn = on; prefs.clipboardSync = on; Bridge.node?.setClipboardSync(on) }
+                                        val a = (ctx as? androidx.fragment.app.FragmentActivity)
+                                        // Turning it on sends what you copy to a PC without asking: guarded; off only removes access.
+                                        if (on && a != null) a.gated(Guarded.AlwaysAllow, "Share clipboard") { apply() } else apply()
+                                    },
                                 )
                                 RowDivider()
                                 RelayRow(

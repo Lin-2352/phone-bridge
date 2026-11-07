@@ -806,12 +806,13 @@ class PbService : Service() {
      */
     /** A PC asks to see this screen: resume within the grace, else ask. */
     private fun askScreen(e: PbEvent.ScreenRequest) {
-        if (e.resume && ScreenShare.resume(e.id)) return
         val peerId = askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty())
+        // Never is checked before the grace resume: a PC set to Never must not slip back in through it.
         if (blockedByNever(ConsentKind.Screen, peerId, e.peerName)) {
             Bridge.node?.answerScreen(e.id, null)
             return
         }
+        if (e.resume && ScreenShare.resume(e.id)) return
         if (ScreenShare.armed != null && allowsUnasked(ConsentKind.Screen, peerId)) {
             val a = ScreenAsk(
                 e.id, e.peerName, e.maxLongSide.toInt(), e.sharp, e.dim,
@@ -853,11 +854,11 @@ class PbService : Service() {
 
     /** A PC asks to use this camera: resume within the grace, else ask. */
     private fun askCamera(e: PbEvent.CameraRequest) {
-        if (e.resume && CameraShare.resume(e.id)) return
         if (blockedByNever(ConsentKind.Camera, askPeerId(e.peerId, Bridge.node?.peers()?.map { it.id }.orEmpty()), e.peerName)) {
             Bridge.node?.answerCamera(e.id, null)
             return
         }
+        if (e.resume && CameraShare.resume(e.id)) return
         askNotes[e.id] = CAMERA_ASK_ID
         val ask = Intent(this, CameraConsentActivity::class.java)
             .putExtra("id", e.id.toLong())
