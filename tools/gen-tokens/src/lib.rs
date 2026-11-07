@@ -72,6 +72,8 @@ pub struct Tokens {
     pub dark: Palette,
     pub space: Vec<u32>,
     pub radius: Vec<u32>,
+    /// Android card and sheet corner radii, dp: [card, sheet].
+    pub android_shape: [u32; 2],
     pub types: [u32; 5],
     pub motion: [u32; 3],
     pub materials: [Material; 4],
@@ -250,6 +252,13 @@ pub fn load(src: &str) -> Result<Tokens, String> {
         dark,
         space: steps(&root, "space", 6)?,
         radius: steps(&root, "radius", 4)?,
+        android_shape: {
+            let s = table(&root, "shape_android")?;
+            [
+                int(s, "shape_android", "card")?,
+                int(s, "shape_android", "sheet")?,
+            ]
+        },
         types,
         motion,
     })
@@ -429,6 +438,10 @@ pub fn render_kotlin(t: &Tokens) -> String {
         "    val Radius: List<Dp> = listOf({})\n\n",
         join(&t.radius, ".dp")
     ));
+    s.push_str(&format!(
+        "    object Shape {{\n        val Card: Dp = {}.dp\n        val Sheet: Dp = {}.dp\n    }}\n\n",
+        t.android_shape[0], t.android_shape[1]
+    ));
     s.push_str("    object Type {\n");
     for (n, v) in TYPE_NAMES.iter().zip(t.types) {
         s.push_str(&format!("        val {} = {v}.sp\n", pascal(n)));
@@ -542,6 +555,10 @@ pub fn render_css(t: &Tokens) -> String {
     for (i, v) in t.radius.iter().enumerate() {
         s.push_str(&format!("  --radius-{}: {v}px;\n", i + 1));
     }
+    s.push_str(&format!(
+        "  --shape-card: {}px;\n  --shape-sheet: {}px;\n",
+        t.android_shape[0], t.android_shape[1]
+    ));
     for (n, v) in TYPE_NAMES.iter().zip(t.types) {
         s.push_str(&format!("  --type-{n}: {v}px;\n"));
     }
@@ -612,6 +629,16 @@ mod tests {
     /// Checkouts with `core.autocrlf` turn `\n` into `\r\n`; compare without that.
     fn lf(s: &str) -> String {
         s.replace("\r\n", "\n")
+    }
+
+    #[test]
+    fn android_shapes_are_card_16_and_sheet_28() {
+        let t = load(include_str!("../../../design/tokens.toml")).unwrap();
+        assert_eq!(t.android_shape, [16, 28]);
+        let kt = render_kotlin(&t);
+        assert!(kt.contains("val Card: Dp = 16.dp"), "{kt}");
+        assert!(kt.contains("val Sheet: Dp = 28.dp"), "{kt}");
+        assert!(render_css(&t).contains("--shape-card: 16px;"));
     }
 
     #[test]

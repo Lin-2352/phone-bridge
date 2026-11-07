@@ -77,6 +77,11 @@ object Tokens {
     val Space: List<Dp> = listOf(4.dp, 8.dp, 12.dp, 16.dp, 24.dp, 32.dp)
     val Radius: List<Dp> = listOf(4.dp, 8.dp, 12.dp, 20.dp)
 
+    object Shape {
+        val Card: Dp = 16.dp
+        val Sheet: Dp = 28.dp
+    }
+
     object Type {
         val Caption = 12.sp
         val Body = 14.sp

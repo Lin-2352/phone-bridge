@@ -42,6 +42,11 @@ steps = [4, 8, 12, 16, 24, 32]
 [radius]
 steps = [4, 8, 12, 20]
 
+[shape_android]
+# Android corner radii in dp: cards 16, sheets and dialogs 28 (PRINCIPLES).
+card = 16
+sheet = 28
+
 [type]
 caption = 12
 body = 14
