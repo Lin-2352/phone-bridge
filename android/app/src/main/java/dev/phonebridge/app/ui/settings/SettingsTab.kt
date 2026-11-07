@@ -521,6 +521,30 @@ fun SettingsTab(onDone: () -> Unit) {
     var tree by remember { mutableStateOf(prefs.saveTree) }
     val peers = remember(resumed, Bridge.linked.value, Bridge.nodeReady.value) { Bridge.node?.peers().orEmpty() }
     var removing by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
+    var renaming by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
+    var pcPrefsTick by remember { mutableStateOf(0) }
+    renaming?.let { p ->
+        var text by remember(p.id) { mutableStateOf(prefs.pcNickname(p.id).orEmpty()) }
+        RelayDialog(
+            title = "Rename ${p.name}",
+            onDismissRequest = { renaming = null },
+            confirmText = "Save",
+            onConfirm = {
+                prefs.setPcNickname(p.id, text)
+                renaming = null
+                pcPrefsTick++
+            },
+            dismissText = "Cancel",
+        ) {
+            androidx.compose.material3.OutlinedTextField(
+                value = text,
+                onValueChange = { text = it.take(dev.phonebridge.app.devices.MAX_NICKNAME) },
+                singleLine = true,
+                label = { Text("Name on this phone") },
+                supportingText = { Text("Only you see it. Leave it empty to use ${p.name}.") },
+            )
+        }
+    }
     removing?.let { p ->
         RelayDialog(
             title = "Remove ${p.name}?",
@@ -535,6 +559,7 @@ fun SettingsTab(onDone: () -> Unit) {
                         notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
                     }
                     Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
+                    Prefs(ctx).forgetPc(p.id, Bridge.node?.peers().orEmpty())
                     Bridge.linked.value = Bridge.node?.peers()?.firstOrNull()?.name
                     PbService.refresh(ctx)
                     onDone()
@@ -634,14 +659,39 @@ fun SettingsTab(onDone: () -> Unit) {
                             RelayCard {
                                 // The row below says how to pair; this one only states the fact.
                                 if (peers.isEmpty()) RelayRow("No PC paired yet")
+                                val live = remember(resumed, peers) { Bridge.node?.connectedPeers().orEmpty().toSet() }
+                                val names = remember(peers, pcPrefsTick) {
+                                    dev.phonebridge.app.devices.labels(peers, peers.associate { it.id to prefs.pcNickname(it.id) })
+                                }
+                                val defaultId = remember(peers, pcPrefsTick) {
+                                    prefs.defaultPc?.takeIf { d -> peers.any { it.id == d } } ?: peers.firstOrNull()?.id
+                                }
                                 peers.forEachIndexed { i, p ->
                                     if (i > 0) RowDivider()
+                                    val status = dev.phonebridge.app.devices.pcStatus(
+                                        live = p.id in live,
+                                        lastSeenMs = prefs.pcLastSeenMs(p.id).takeIf { it > 0 } ?: prefs.lastSeenMs,
+                                        nowMs = System.currentTimeMillis(),
+                                        paired = true,
+                                    )
                                     RelayRow(
-                                        title = p.name,
-                                        supporting = "Fingerprint ${p.fingerprint.take(9)}",
+                                        title = names[p.id] ?: p.name,
+                                        supporting = (if (p.id == defaultId) "Default \u00B7 " else "") + status +
+                                            " \u00B7 Fingerprint ${p.fingerprint.take(9)}",
                                         trailing = {
-                                            TextButton(onClick = { removing = p }, modifier = Modifier.heightIn(min = 48.dp)) {
-                                                Text("Remove", color = MaterialTheme.colorScheme.error)
+                                            Row {
+                                                if (peers.size > 1 && p.id != defaultId) {
+                                                    TextButton(
+                                                        onClick = { prefs.defaultPc = p.id; pcPrefsTick++ },
+                                                        modifier = Modifier.heightIn(min = 48.dp),
+                                                    ) { Text("Make default") }
+                                                }
+                                                TextButton(onClick = { renaming = p }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                                    Text("Rename")
+                                                }
+                                                TextButton(onClick = { removing = p }, modifier = Modifier.heightIn(min = 48.dp)) {
+                                                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                                                }
                                             }
                                         },
                                     )
