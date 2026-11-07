@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M5.5. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M5.6 (consent dialogs on the tokens; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
+- **Last finished task:** M5.6. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M5.7 (screen-window chrome without emoji; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -134,7 +134,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M5.3 Tray flyout on the tokens: the header sits on an opaque band, tile boundaries use `outline_strong` (3:1), the cards take their opacity from the material rules, the off toggle's edge and knob are 3:1; Tray flyout
 - [x] M5.4 Main window pages including a new Transfers page (rail: Home, Devices, Transfers, Timeline, Settings; Cancel and Retry per row; the content pane is opaque and the glass shows behind the rail and title bar). Tabular numerals on live counters are not done: see the note under Notes per session.
 - [x] M5.5 Pairing and QR (the QR colours and geometry are pure functions and pinned)
-- [ ] M5.6 Consent dialogs
+- [x] M5.6 Consent dialogs (button boundaries are outline_strong; the dialog stays Solid until it is created through make_window)
 - [ ] M5.7 Screen-window chrome
 - [ ] M5.8 Toasts
 - [ ] M5.9 Narrator UIA for the quick panel

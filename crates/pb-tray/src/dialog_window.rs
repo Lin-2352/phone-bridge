@@ -374,21 +374,7 @@ fn paint_dialog(c: &mut Canvas, v: &View) {
         let r = from_rect(r);
         let t = v.hover[idx(b)];
         let down = v.pressed == Some(b);
-        let (fill, stroke, ink) = if accent {
-            let fill = if down {
-                mix(p.primary, p.on_primary, 0.25)
-            } else {
-                mix(p.primary, p.on_primary, t * 0.12)
-            };
-            (fill, None, p.on_primary)
-        } else {
-            let fill = if down {
-                mix(p.hover, p.stroke, 0.5)
-            } else {
-                mix(p.card, p.hover, t)
-            };
-            (fill, Some(p.stroke), p.text)
-        };
+        let (fill, stroke, ink) = button_style(&p, accent, t, down);
         if v.focus == Some(b) {
             // A ring 2 px outside the button.
             let g = 2.0 * s;
@@ -515,6 +501,32 @@ fn check_alive(hwnd: HWND) {
 fn wake_frames(hwnd: HWND) {
     // SAFETY: our own timer on our own window.
     let _ = unsafe { SetTimer(Some(hwnd), TIMER_ANIM, TICK_MS, None) };
+}
+
+/// A button's fill, boundary and label colour. The primary button is the only one filled with the accent;
+/// a secondary button has a control boundary (`outline_strong`, 3:1 on the dialog surface) and its label
+/// in the text colour. `hover` is 0..=1; `down` while pressed.
+fn button_style(
+    p: &fluent::Palette,
+    accent: bool,
+    hover: f32,
+    down: bool,
+) -> (u32, Option<u32>, u32) {
+    if accent {
+        let fill = if down {
+            mix(p.primary, p.on_primary, 0.25)
+        } else {
+            mix(p.primary, p.on_primary, hover * 0.12)
+        };
+        (fill, None, p.on_primary)
+    } else {
+        let fill = if down {
+            mix(p.hover, p.stroke, 0.5)
+        } else {
+            mix(p.card, p.hover, hover)
+        };
+        (fill, Some(p.outline_strong), p.text)
+    }
 }
 
 fn tick(hwnd: HWND) {
@@ -860,6 +872,43 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    fn lum(rgb: u32) -> f64 {
+        let ch = |sh: u32| {
+            let c = ((rgb >> sh) & 0xFF) as f64 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    }
+
+    fn contrast(a: u32, b: u32) -> f64 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn dialog_buttons_have_3_to_1_boundaries() {
+        for dark in [false, true] {
+            let p = fluent::palette_for(dark);
+            for hover in [0.0, 1.0] {
+                // The secondary button: a boundary in the control colour, 3:1 on the dialog surface.
+                let (fill, stroke, ink) = button_style(&p, false, hover, false);
+                let stroke = stroke.expect("a secondary button has a boundary");
+                assert_eq!(stroke, p.outline_strong);
+                assert!(contrast(stroke, p.bg) >= 3.0, "dark {dark}");
+                assert!(contrast(ink, fill) >= 4.5, "label on its fill, dark {dark}");
+                assert_ne!(fill, p.primary, "only the primary button is primary-filled");
+            }
+            // The primary button is filled with the accent and needs no boundary.
+            let (fill, stroke, ink) = button_style(&p, true, 0.0, false);
+            assert_eq!((fill, stroke, ink), (p.primary, None, p.on_primary));
+            assert!(contrast(ink, fill) >= 4.5, "dark {dark}");
+        }
+    }
 
     #[test]
     fn the_dialog_timer_stops_when_settled() {
