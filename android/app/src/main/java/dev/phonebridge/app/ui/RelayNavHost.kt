@@ -1,8 +1,8 @@
 package dev.phonebridge.app.ui
 
 import android.content.Intent
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
+import dev.phonebridge.app.ui.components.LocalModes
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -102,13 +102,14 @@ fun RelayNavHost(start: Tab, startKey: Int = 0) {
             }
         },
     ) { pad ->
+        val modes = LocalModes.current
         NavHost(
             nav,
             startDestination = Tab.Home.route,
             // The bar's height (with the gesture inset) is consumed, so the tabs do not pad for it twice.
             modifier = Modifier.padding(pad).consumeWindowInsets(pad),
-            enterTransition = { fadeIn(tween(150)) },
-            exitTransition = { fadeOut(tween(150)) },
+            enterTransition = { fadeIn(tokenSpec(Tokens.Springs.Standard, modes)) },
+            exitTransition = { fadeOut(tokenSpec(Tokens.Springs.Standard, modes)) },
         ) {
             composable(Tab.Home.route) { HomeTab(onTimeline = { go(Tab.Timeline) }) }
             composable(Tab.Timeline.route) { TimelineTab() }
