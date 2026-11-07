@@ -10,6 +10,9 @@ pub const KEEP_LOGS: &str = "Keep logs";
 pub const NO_PEER: &str = "Pair a phone first";
 pub const PAIR_DEVICE: &str = "Pair device";
 pub const PAUSED: &str = "Relay is paused";
+pub const TRANSFERS_EMPTY: &str = "No transfers yet";
+pub const TRANSFERS_EMPTY_HINT: &str =
+    "Files you send to or receive from a paired phone show up here while they move.";
 
 #[cfg(all(test, windows))]
 mod tests {

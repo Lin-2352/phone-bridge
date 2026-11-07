@@ -9,6 +9,7 @@ pub mod home;
 pub mod settings;
 pub mod timeline;
 pub mod timeline_view;
+pub mod transfers;
 
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ pub struct Model {
     /// Shared: the paint snapshot clones the model every frame.
     pub timeline: Arc<timeline::TimelineModel>,
     pub devices: devices::DevicesModel,
+    pub transfers: transfers::TransfersModel,
     /// The tray fills `rows`; the window keeps the sub-page and the query
     /// (they are its own state) and copies them in.
     pub settings: settings::SettingsModel,
@@ -58,6 +60,9 @@ pub enum Action {
     Stop(home::SessionKind),
     /// Remove the paired device at this index (the tray asks first).
     Unpair(usize),
+    /// Cancel or retry the transfer with this id (the registry's own cancel and retry).
+    TransferCancel(u64),
+    TransferRetry(u64),
     /// Open a received or sent file, or show it in Explorer; the tray
     /// checks first that it is still there.
     OpenFile(String),
@@ -125,6 +130,7 @@ pub fn describe(page: Page, hit: &Hit, m: &Model) -> Option<Desc> {
         Page::Home => home::describe(hit, &m.home),
         Page::Timeline => timeline::describe(hit, &m.timeline),
         Page::Devices => devices::describe(hit, &m.devices),
+        Page::Transfers => transfers::describe(hit, &m.transfers),
         Page::Settings => settings::describe(hit, &m.settings),
     }
 }
@@ -146,6 +152,7 @@ pub fn layout(page: Page, r: RectF, view: RectF, s: f32, m: &Model) -> Vec<Hit> 
         Page::Home => home::layout(r, s, &m.home),
         Page::Timeline => timeline::layout(r, view, s, &m.timeline),
         Page::Devices => devices::layout(r, s, &m.devices),
+        Page::Transfers => transfers::layout(r, s, &m.transfers),
         Page::Settings => settings::layout(r, view, s, &m.settings),
     }
 }
@@ -157,6 +164,7 @@ pub fn content_height(page: Page, width: f32, s: f32, m: &Model) -> f32 {
         Page::Home => home::content_height(width, s, &m.home),
         Page::Timeline => timeline::content_height(width, s, &m.timeline),
         Page::Devices => devices::content_height(width, s, &m.devices),
+        Page::Transfers => transfers::content_height(width, s, &m.transfers),
         Page::Settings => settings::content_height(width, s, &m.settings),
     }
 }
@@ -169,6 +177,7 @@ pub fn draw(page: Page, c: &mut Canvas, r: RectF, view: RectF, m: &Model, hits: 
         Page::Home => home::draw(c, r, &m.home, hits),
         Page::Timeline => timeline::draw(c, r, view, &m.timeline, hits),
         Page::Devices => devices::draw(c, r, &m.devices),
+        Page::Transfers => transfers::draw(c, r, &m.transfers),
         Page::Settings => settings::draw(c, r, view, &m.settings, hits),
     }
 }
@@ -179,6 +188,7 @@ pub fn click(page: Page, hit: &Hit, m: &Model) -> Option<Action> {
         Page::Home => home::click(hit, &m.home),
         Page::Timeline => timeline::click(hit, &m.timeline),
         Page::Devices => devices::click(hit, &m.devices),
+        Page::Transfers => transfers::click(hit, &m.transfers),
         Page::Settings => settings::click(hit, &m.settings),
     }
 }

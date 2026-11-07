@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M5.3 (tray flyout on the tokens). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M5.4 (main window pages including a new Transfers page; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
+- **Last finished task:** M5.4 (main window pages, new Transfers page). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M5.5 (pairing and QR; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -132,7 +132,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M5.1 Materials: Mica, Acrylic, Relay glass, and fallbacks keyed on DWM failure, transparency off or high contrast (look.rs rules, Look setting and Appearance page, system state and high-contrast palette, glass windows always on the composition path so a toggle never rebuilds a window, cached grain tile; menus and dialogs stay Solid until M5.6; the visual check is on [DEVICE-CHECKS.md](DEVICE-CHECKS.md))
 - [x] M5.2 Springs in `ease.rs` (only while animating; off when Windows animations are off): `SpringAnim` and `spring_anim` (none under reduced motion), `ease::STANDARD` from the token curve, the dialog's frame timer stops when hover settles (a slow 500 ms timer checks the question is still wanted), the skeleton is still under reduced motion
 - [x] M5.3 Tray flyout on the tokens: the header sits on an opaque band, tile boundaries use `outline_strong` (3:1), the cards take their opacity from the material rules, the off toggle's edge and knob are 3:1; Tray flyout
-- [ ] M5.4 Main window: Home, Devices, Transfers, Timeline, Settings
+- [x] M5.4 Main window pages including a new Transfers page (rail: Home, Devices, Transfers, Timeline, Settings; Cancel and Retry per row; the content pane is opaque and the glass shows behind the rail and title bar). Tabular numerals on live counters are not done: see the note under Notes per session.
 - [ ] M5.5 Pairing and QR
 - [ ] M5.6 Consent dialogs
 - [ ] M5.7 Screen-window chrome
@@ -244,3 +244,5 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] Minors R-12 to R-20 in `design/REVIEW.md` (destination on transfer rows, repeated labels, one elevation style, Windows durations 83/167/250/333, motion page layout, real nav controls, off-grid paddings, icon families, disabled-button status)
 - 2026-11-07 (M4 review): a fresh reviewer read the M4 diff against the Review Focus. Deferred minors: the CSS `--spring-*-damping` name holds a damping ratio (web libraries read a coefficient); one CSS selector does nothing and the explicit reduce-transparency switch reaches only the root element (both prototype only); `TokenSpring(stiffness, dampingRatio)` is the reverse of Compose's `spring(dampingRatio, stiffness)` (M6.4 uses named arguments); `icons_are_3_to_1` does not cover the four status icon colours (they pass today); two code comments are inaccurate.
 - 2026-11-07: the owner reviewed the plans for M5 to M8, supplied an enhanced version (crisp text and hairlines, a baked grain tile, a passive frame-metrics monitor with warmup, Back as deny on the Android consent sheet, biometric lockout and a busy Windows Hello verifier treated as failures, PBD2 address validation, overflow-safe quotas, unpair purges per-device permissions) and told me to follow it with monitors and the advisor. The enhancements are merged into the four plan files; the plans are approved. Next: Task M5.0a, then M5.1.
+
+- 2026-11-07 (M5.4): tabular numerals (`tnum`) on the Transfers progress line are not applied: DirectWrite needs a typography feature on the text layout, which `fluent::text` does not expose; the progress text keeps one fixed field order. Revisit with the M5.8 polish. The `fmt_bytes` wording drops decimals from 10 up ("12 MB"), so the plan's "12.4 MB" example reads "12 MB".

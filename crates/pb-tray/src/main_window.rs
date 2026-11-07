@@ -88,10 +88,10 @@ const RAIL_W: f32 = 80.0;
 /// Frame timer: about 60 fps, only while something animates.
 const FRAME_TIMER: usize = 1;
 const FRAME_MS: u32 = 16;
-/// Focus ids: nav items are 1..=4, the Settings search box `SEARCH_FOCUS`,
+/// Focus ids: nav items are 1..=5, the Settings search box `SEARCH_FOCUS`,
 /// page hits `HIT_BASE + id`.
 const HIT_BASE: u32 = 100;
-const SEARCH_FOCUS: u32 = 5;
+const SEARCH_FOCUS: u32 = 6;
 /// A saved rect must show this much of its caption strip on one monitor.
 const MIN_VISIBLE_W: i32 = 64;
 const MIN_VISIBLE_H: i32 = 20;
@@ -105,14 +105,21 @@ pub type SavedRect = (i32, i32, i32, i32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Home,
-    Timeline,
     Devices,
+    Transfers,
+    Timeline,
     Settings,
 }
 
 impl Page {
     /// Nav rail order.
-    pub const ALL: [Page; 4] = [Page::Home, Page::Timeline, Page::Devices, Page::Settings];
+    pub const ALL: [Page; 5] = [
+        Page::Home,
+        Page::Devices,
+        Page::Transfers,
+        Page::Timeline,
+        Page::Settings,
+    ];
 
     fn index(self) -> usize {
         self as usize
@@ -121,8 +128,9 @@ impl Page {
     fn label(self) -> &'static str {
         match self {
             Page::Home => "Home",
-            Page::Timeline => "Timeline",
             Page::Devices => "Devices",
+            Page::Transfers => "Transfers",
+            Page::Timeline => "Timeline",
             Page::Settings => "Settings",
         }
     }
@@ -130,8 +138,9 @@ impl Page {
     fn glyph(self) -> char {
         match self {
             Page::Home => '\u{E80F}',
-            Page::Timeline => '\u{E81C}',
             Page::Devices => '\u{E8EA}',
+            Page::Transfers => '\u{E8AB}',
+            Page::Timeline => '\u{E81C}',
             Page::Settings => '\u{E713}',
         }
     }
@@ -176,7 +185,7 @@ fn focus_id(t: Target) -> u32 {
 
 fn target_of(id: u32) -> Option<Target> {
     match id {
-        1..=4 => Some(Target::Nav(Page::ALL[id as usize - 1])),
+        1..=5 => Some(Target::Nav(Page::ALL[id as usize - 1])),
         n if n >= HIT_BASE => Some(Target::Hit(n - HIT_BASE)),
         _ => None,
     }
@@ -316,11 +325,11 @@ struct State {
     tracking: bool,
     nav_hover: Option<Page>,
     /// Hover fade per nav item, indexed like `Page::ALL`.
-    nav_fade: [Anim; 4],
+    nav_fade: [Anim; 5],
     pressed: Option<Target>,
     /// Keyboard focus (a focus id); shown as a ring, cleared by the mouse.
     focus: Option<u32>,
-    scroll: [Scroll; 4],
+    scroll: [Scroll; 5],
     /// The pointer is over the scrollbar's hit area; its fade (0 = thin).
     bar_hover: bool,
     bar_fade: Anim,
@@ -1152,7 +1161,7 @@ struct Snapshot {
     maximized: bool,
     cap_hover: Option<u32>,
     cap_pressed: Option<u32>,
-    nav_t: [f32; 4],
+    nav_t: [f32; 5],
     focus: Option<u32>,
     scroll: Scroll,
     /// Scrollbar fade (0 = thin) and whether the thumb is being dragged.
@@ -1207,10 +1216,7 @@ fn paint(hwnd: HWND) {
         let mut slot = cell.borrow_mut();
         match (snap.as_ref(), slot.as_mut()) {
             (Some(snap), Some((h, surface))) if *h == hwnd.0 as isize => {
-                // Sync first: the backdrop decides how the content layer is drawn.
-                surface.sync_material(fluent::look(), fluent::sys_cached());
-                let mica = surface.translucent();
-                fluent::paint_with(surface, hwnd, |c, area| draw(c, area, snap, mica));
+                fluent::paint_with(surface, hwnd, |c, area| draw(c, area, snap));
                 true
             }
             _ => false,
@@ -1244,7 +1250,7 @@ fn focus_ring(c: &Canvas, r: RectF) {
     }
 }
 
-fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
+fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot) {
     let (s, p) = (c.s, c.p);
     let f = frame(area.right, area.bottom, s);
 
@@ -1257,20 +1263,12 @@ fn draw(c: &mut Canvas, area: RectF, snap: &Snapshot, mica: bool) {
         f.pane.right + over,
         f.pane.bottom + over,
     );
-    let alpha = if mica {
-        crate::look::surface_glass(
-            crate::look::SurfaceKind::MainWindow,
-            fluent::look(),
-            fluent::sys_cached(),
-        )
-        .opacity
-    } else {
-        1.0
-    };
+    // The glass (Mica or Relay glass) shows behind the title bar and the rail; the pane is opaque, so
+    // every page's text sits on a solid card.
     round_rect(
         c,
         &layer,
-        Some((p.card, alpha)),
+        Some((p.card, 1.0)),
         Some(p.stroke),
         RADIUS[1] * s,
         false,
@@ -2259,7 +2257,7 @@ fn create(page: Page, opened: Instant) {
             nc_tracking: false,
             tracking: false,
             nav_hover: None,
-            nav_fade: [Anim::new(0.0, 0.0, now, 0); 4],
+            nav_fade: [Anim::new(0.0, 0.0, now, 0); 5],
             pressed: None,
             focus: None,
             scroll: std::array::from_fn(|_| Scroll::new(0.0, 0.0)),
@@ -2470,7 +2468,7 @@ mod tests {
         let f = frame(1000.0, 700.0, 1.0);
         assert_eq!(f.pane.top, f.cap.close.bottom);
         assert_eq!(f.pane.left, RAIL_W);
-        assert_eq!(f.nav.len(), 4);
+        assert_eq!(f.nav.len(), Page::ALL.len());
         assert!(f
             .nav
             .iter()
@@ -2492,7 +2490,7 @@ mod tests {
         let (r, _) = f.nav[1];
         assert_eq!(
             target_at(&f, &[], r.left + 2.0, r.top + 2.0),
-            Some(Target::Nav(Page::Timeline))
+            Some(Target::Nav(Page::Devices))
         );
         let hit = Hit {
             id: 7,
@@ -2511,14 +2509,14 @@ mod tests {
         let order = focus_order(&[hit(1), hit(2)], true);
         assert_eq!(
             order,
-            [1, 2, 3, 4, SEARCH_FOCUS, HIT_BASE + 1, HIT_BASE + 2]
+            [1, 2, 3, 4, 5, SEARCH_FOCUS, HIT_BASE + 1, HIT_BASE + 2]
         );
         assert_eq!(target_of(SEARCH_FOCUS), None, "not a click target");
         // Tab from the last nav item enters the box; from the box, the
         // first page link; Shift+Tab from that link goes back to the box.
-        assert_eq!(tab(&order, Some(4), false, false), Some(SEARCH_FOCUS));
+        assert_eq!(tab(&order, Some(5), false, false), Some(SEARCH_FOCUS));
         assert_eq!(tab(&order, None, true, false), Some(HIT_BASE + 1));
-        assert_eq!(tab(&order, None, true, true), Some(4));
+        assert_eq!(tab(&order, None, true, true), Some(5));
         assert_eq!(
             tab(&order, Some(HIT_BASE + 1), false, true),
             Some(SEARCH_FOCUS)
@@ -2528,14 +2526,28 @@ mod tests {
     }
 
     #[test]
+    fn rail_has_five_pages_in_order() {
+        assert_eq!(
+            Page::ALL.map(Page::label),
+            ["Home", "Devices", "Transfers", "Timeline", "Settings"]
+        );
+        // The rail's ids and the scroll and fade arrays line up with the pages.
+        for (i, p) in Page::ALL.into_iter().enumerate() {
+            assert_eq!(p.index(), i);
+            assert_eq!(target_of(i as u32 + 1), Some(Target::Nav(p)));
+        }
+        assert_eq!(target_of(SEARCH_FOCUS), None);
+    }
+
+    #[test]
     fn tab_order_is_the_rail_then_the_page() {
         let hit = |id| Hit {
             id,
             r: rectf(0.0, 0.0, 1.0, 1.0),
         };
         let order = focus_order(&[hit(0), hit(3)], false);
-        assert_eq!(order, [1, 2, 3, 4, HIT_BASE, HIT_BASE + 3]);
-        assert_eq!(target_of(2), Some(Target::Nav(Page::Timeline)));
+        assert_eq!(order, [1, 2, 3, 4, 5, HIT_BASE, HIT_BASE + 3]);
+        assert_eq!(target_of(2), Some(Target::Nav(Page::Devices)));
         assert_eq!(target_of(HIT_BASE + 3), Some(Target::Hit(3)));
         assert_eq!(target_of(0), None);
         // Shift+Tab from nothing lands on the page's last hit.
@@ -2585,7 +2597,7 @@ mod tests {
                 maximized: false,
                 cap_hover: None,
                 cap_pressed: None,
-                nav_t: [0.0; 4],
+                nav_t: [0.0; 5],
                 focus: None,
                 scroll: Scroll::new(0.0, 0.0),
                 bar_t: 0.0,
@@ -2604,7 +2616,7 @@ mod tests {
                         s: 1.0,
                         p: fluent::palette(),
                     };
-                    draw(&mut c, rectf(0.0, 0.0, w, h), &snap, false);
+                    draw(&mut c, rectf(0.0, 0.0, w, h), &snap);
                 })
                 .expect("draw");
             let draw_ms = t1.elapsed().as_millis();
@@ -2632,7 +2644,7 @@ mod tests {
                 maximized: false,
                 cap_hover: None,
                 cap_pressed: None,
-                nav_t: [0.0; 4],
+                nav_t: [0.0; 5],
                 focus: None,
                 scroll: sc.clone(),
                 bar_t: t,
@@ -2650,7 +2662,7 @@ mod tests {
                         s: 1.0,
                         p: fluent::palette(),
                     };
-                    draw(&mut c, rectf(0.0, 0.0, w, h), &snap, false);
+                    draw(&mut c, rectf(0.0, 0.0, w, h), &snap);
                 })
                 .expect("draw");
         }

@@ -558,6 +558,15 @@ fn page_action(a: crate::pages::Action) {
         }
         // The tray's own Remove: it asks first, then unpairs.
         Action::Unpair(i) => post_command(raw, ID_UNPAIR_BASE + i),
+        // The registry's own cancel and retry, off the window thread (retry starts a send).
+        Action::TransferCancel(id) => {
+            std::thread::spawn(move || {
+                crate::transfers::cancel(id, crate::transfers::CancelBy::User);
+            });
+        }
+        Action::TransferRetry(id) => {
+            std::thread::spawn(move || crate::transfers::retry(id));
+        }
         // On a worker: the check and the shell may wait on a slow share.
         Action::OpenFile(path) => page_file(raw, path, true),
         Action::ShowInFolder(path) => page_file(raw, path, false),
@@ -819,6 +828,7 @@ fn page_model(st: &State) -> crate::pages::Model {
         devices: crate::pages::devices::DevicesModel {
             devices: paired_devices(st),
         },
+        transfers: crate::pages::transfers::TransfersModel::from_registry(),
         // The window adds its own sub-page and query. The rows (a registry
         // read and two file checks) are built only while Settings shows.
         settings: crate::pages::settings::SettingsModel {
