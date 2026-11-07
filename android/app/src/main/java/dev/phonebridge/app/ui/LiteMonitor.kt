@@ -15,6 +15,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 
 /** The phone's current lite signals, read from the system (the power-save state is kept live while the UI shows). */
 @Composable
@@ -56,3 +58,25 @@ private fun totalMemory(context: Context): Long {
 /** The animator duration scale; 0 when the user turned animations off. */
 private fun animatorScale(context: Context): Float =
     Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+
+/**
+ * Whether the frames on screen have been too slow for blur (FrameBudget). It watches frames only while blur is
+ * in use, and once it trips it stays tripped for this run of the app (the lite mode it turns on is the answer).
+ */
+@Composable
+fun rememberSlowFrames(blurActive: Boolean): Boolean {
+    var slow by remember { mutableStateOf(false) }
+    LaunchedEffect(blurActive) {
+        if (!blurActive || slow) return@LaunchedEffect
+        val budget = FrameBudget(intervalNs = 16_666_667L)
+        var last = 0L
+        while (true) {
+            withFrameNanos { now ->
+                if (last != 0L && budget.onFrame(now - last)) slow = true
+                last = now
+            }
+            if (slow) break
+        }
+    }
+    return slow
+}

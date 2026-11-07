@@ -26,6 +26,7 @@ import dev.phonebridge.app.Prefs
 import dev.phonebridge.app.ui.components.LocalGlass
 import dev.phonebridge.app.ui.components.LocalHazeState
 import dev.phonebridge.app.ui.components.LocalModes
+import dev.phonebridge.app.ui.rememberSlowFrames
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.TextStyle
@@ -160,7 +161,9 @@ fun RelayTheme(choice: ThemeChoice = ThemeChoice, content: @Composable () -> Uni
         if (Build.VERSION.SDK_INT < 31) null
         else if (d) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     }
-    val signals = rememberLiteSignals(forced = choice.liteForced.value, slowFrames = false)
+    // Blur is in use while glass is Relay glass and the phone is not already lite; slow frames then turn lite on.
+    val blurActive = look == Look.Relay && !choice.liteForced.value && blurMode(Build.VERSION.SDK_INT, Modes()) == BlurMode.Haze
+    val signals = rememberLiteSignals(forced = choice.liteForced.value, slowFrames = rememberSlowFrames(blurActive))
     val modes = Modes(
         reducedTransparency = choice.reduceTransparency.value,
         lite = liteReason(signals) != null,
