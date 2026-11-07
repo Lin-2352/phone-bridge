@@ -166,6 +166,31 @@ fn lines(new_code_in: Duration, closes_in: Duration) -> [String; 3] {
     ]
 }
 
+/// The card's fill and the modules' ink: dark on white in both themes (phone scanners expect it).
+fn qr_colours(_dark: bool) -> (u32, u32) {
+    (0xFFFFFF, 0x000000)
+}
+
+/// Where the code goes: whole pixels per module, the white card (modules plus the quiet zone on every
+/// side) centred in `width`.
+struct QrBox {
+    scale: i32,
+    off_x: i32,
+    side: i32,
+}
+
+fn qr_box(width: i32, height: i32, text_h: i32, modules: usize) -> QrBox {
+    let avail = width.min(height - text_h).max(1) as usize;
+    let total = modules + 2 * QUIET;
+    let scale = (avail / total).max(1) as i32;
+    let side = scale * total as i32;
+    QrBox {
+        scale,
+        off_x: (width - side) / 2,
+        side,
+    }
+}
+
 fn draw(c: &mut Canvas, client: RectF) {
     let Ok(guard) = CURRENT.lock() else { return };
     let Some(s) = guard.as_ref() else { return };
@@ -173,22 +198,18 @@ fn draw(c: &mut Canvas, client: RectF) {
     c.s = sys_scale();
     let width = client.right as i32;
     let text_h = (TEXT_H as f32 * c.s) as i32;
-    let avail = width.min(client.bottom as i32 - text_h).max(1) as usize;
-    let total = s.matrix.size + 2 * QUIET;
-    let scale = (avail / total).max(1) as i32;
-    let off_x = (width - scale * total as i32) / 2;
-    let side = scale * total as i32;
+    let QrBox { scale, off_x, side } = qr_box(width, client.bottom as i32, text_h, s.matrix.size);
+    let (fill, ink) = qr_colours(fluent::dark());
     let px = |v: i32| v as f32;
     // SAFETY: drawing calls inside the surface's BeginDraw/EndDraw.
     unsafe {
-        // Always dark on white with its quiet zone, whatever the theme:
-        // phone scanners expect that. Aliased on whole pixels, so the
-        // modules meet without seams.
+        // Always dark on white with its quiet zone, whatever the theme (`qr_colours`). Aliased on whole
+        // pixels, so the modules meet without seams.
         c.dc.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-        if let Ok(white) = c.dc.CreateSolidColorBrush(&color(0xFFFFFF, 1.0), None) {
+        if let Ok(white) = c.dc.CreateSolidColorBrush(&color(fill, 1.0), None) {
             c.dc.FillRectangle(&rectf(px(off_x), 0.0, px(off_x + side), px(side)), &white);
         }
-        if let Ok(black) = c.dc.CreateSolidColorBrush(&color(0x000000, 1.0), None) {
+        if let Ok(black) = c.dc.CreateSolidColorBrush(&color(ink, 1.0), None) {
             for y in 0..s.matrix.size {
                 for x in 0..s.matrix.size {
                     if s.matrix.is_dark(x, y) {
@@ -318,6 +339,29 @@ mod tests {
         // SAFETY: our own test window, made above on this thread.
         unsafe {
             let _ = DestroyWindow(hwnd);
+        }
+    }
+
+    #[test]
+    fn qr_keeps_a_white_quiet_zone_in_dark_mode() {
+        for dark in [false, true] {
+            // Phone scanners need dark modules on white, whatever the theme.
+            assert_eq!(qr_colours(dark), (0xFFFFFF, 0x000000), "dark {dark}");
+        }
+        // The quiet zone is at least 4 modules on every side.
+        const _: () = assert!(QUIET >= 4);
+        for (w, h, modules) in [
+            (460, 700, 29),
+            (460, 700, 41),
+            (300, 420, 33),
+            (460, 700, 57),
+        ] {
+            let b = qr_box(w, h, 120, modules);
+            assert_eq!(b.side, b.scale * (modules + 2 * QUIET) as i32);
+            assert!(b.scale >= 1);
+            // The first module starts a full quiet zone inside the white card.
+            assert!(b.scale * QUIET as i32 >= 4 * b.scale);
+            assert!(b.off_x >= 0 && b.off_x + b.side <= w.max(b.side));
         }
     }
 
