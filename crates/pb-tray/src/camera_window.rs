@@ -180,13 +180,13 @@ fn button_label(b: Button, streaming: bool, pending: bool) -> &'static str {
     }
 }
 
-fn mark_glyph(m: Mark, idle: u32) -> (char, u32) {
-    // 0xRRGGBB.
+/// The glyph and colour of a camera status mark, from the palette's status colours (never literals).
+fn mark_glyph(m: Mark, p: &fluent::Palette) -> (char, u32) {
     match m {
-        Mark::Ok => ('\u{E73E}', 0x00B050),
-        Mark::Bad => (glyph::CLOSE, 0xE81123),
-        Mark::Wait => ('\u{E916}', 0xFFB900),
-        Mark::Idle => ('\u{E739}', idle),
+        Mark::Ok => ('\u{E73E}', p.success),
+        Mark::Bad => (glyph::CLOSE, p.danger),
+        Mark::Wait => ('\u{E916}', p.attention),
+        Mark::Idle => ('\u{E739}', p.text2),
     }
 }
 
@@ -302,7 +302,7 @@ fn draw(c: &mut Canvas, v: &View) {
     for (i, r) in v.rows.iter().enumerate() {
         let top = (l.rows.top + i as i32 * px(s, ROW_H)) as f32;
         let bottom = top + f(ROW_H);
-        let (g, color) = mark_glyph(r.mark, p.text2);
+        let (g, color) = mark_glyph(r.mark, &p);
         fluent::icon(c, g, rectf(left, top, left + f(28), bottom), color);
         fluent::text(
             c,
@@ -318,7 +318,7 @@ fn draw(c: &mut Canvas, v: &View) {
             &r.detail,
             rectf(left + f(204), top, right, bottom),
             if r.mark == Mark::Bad {
-                0xE81123
+                p.danger
             } else {
                 p.text2
             },
@@ -797,6 +797,20 @@ mod tests {
         // SAFETY: our own test window, made above on this thread.
         unsafe {
             let _ = DestroyWindow(hwnd);
+        }
+    }
+}
+
+#[cfg(test)]
+mod colour_tests {
+    /// The camera window draws its status colours from the palette, so a theme change reaches it. The
+    /// forbidden literals are split so this test does not match itself.
+    #[test]
+    fn camera_window_has_no_literal_colours() {
+        let src = include_str!("camera_window.rs");
+        for lit in [["0x00B0", "50"], ["0xE811", "23"], ["0xFFB9", "00"]] {
+            let lit = lit.concat();
+            assert!(!src.contains(&lit), "{lit} is a literal colour");
         }
     }
 }

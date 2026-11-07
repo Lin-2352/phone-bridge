@@ -232,6 +232,29 @@ pub fn close() {
 mod tests {
     use super::*;
 
+    /// The pill's fill and text come from the palette (the text is `Palette.text`; the fill is the window's
+    /// token background), so a theme change reaches it. No colour literal is in the drawing code.
+    #[test]
+    fn status_pill_uses_token_colours() {
+        let src = include_str!("status.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(
+            !code.contains("0x"),
+            "a colour literal in the pill's drawing code"
+        );
+        for dark in [false, true] {
+            let p = fluent::palette_for(dark);
+            assert_eq!(
+                p.text,
+                if dark {
+                    crate::tokens::DARK.text
+                } else {
+                    crate::tokens::LIGHT.text
+                }
+            );
+        }
+    }
+
     #[test]
     fn only_an_asking_pill_is_closed_by_a_finished_request() {
         assert!(is_asking(Some("Asking Phone to share its screen…")));

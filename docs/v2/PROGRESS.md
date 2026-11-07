@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M5.7. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M5.8 (toasts, status pill, camera window colours on tokens; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
+- **Last finished task:** M5.8. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M5.9 (Narrator support for the flyout; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -136,7 +136,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M5.5 Pairing and QR (the QR colours and geometry are pure functions and pinned)
 - [x] M5.6 Consent dialogs (button boundaries are outline_strong; the dialog stays Solid until it is created through make_window)
 - [x] M5.7 Screen-window chrome (emoji replaced by Segoe Fluent Icons glyphs; no emoji above U+1F000)
-- [ ] M5.8 Toasts
+- [x] M5.8 Toasts (camera colours and the pill are on tokens; the XML toast copy audit is open for M5.R)
 - [ ] M5.9 Narrator UIA for the quick panel
 - [ ] M5.10 CI snapshot job (offscreen Direct2D, both themes, light and dark)
 - [ ] M5.11 Memory and CPU budgets re-measured and recorded
