@@ -32,7 +32,8 @@ const LEN_PREFIX: usize = 4;
 /// `Hello.capabilities` entry: the clipboard messages.
 pub const CAP_CLIPBOARD: &str = "clipboard";
 
-/// Reserved for keyed discovery (PBD2, milestone M7): advertised only by a build that has it.
+/// Keyed discovery (PBD2, M7.6): this build sends and answers PBD2 probes. Once a peer lists it, PBD1 is no
+/// longer sent to it or answered from it. An older peer ignores the name.
 pub const CAP_DISCOVERY2: &str = "discovery2";
 
 /// Reserved for resumable transfers (offer resume token, queue pause and resume, milestone M9).
@@ -41,11 +42,15 @@ pub const CAP_RESUME: &str = "resume";
 /// Names kept for features not built yet. A build advertises one only once it implements it.
 /// The other planned features (unlock gate, Disconnect everything, pairing limits, quotas,
 /// several devices, history, drag-and-drop) change nothing on the wire.
-pub const RESERVED_CAPS: &[&str] = &[CAP_DISCOVERY2, CAP_RESUME];
+pub const RESERVED_CAPS: &[&str] = &[CAP_RESUME];
 
 /// What this build puts in `Hello.capabilities`.
 pub fn local_capabilities() -> Vec<String> {
-    vec![CAP_CLIPBOARD.into(), CAP_AUDIO.into()]
+    vec![
+        CAP_CLIPBOARD.into(),
+        CAP_AUDIO.into(),
+        CAP_DISCOVERY2.into(),
+    ]
 }
 
 /// `Hello.capabilities` entry: this build understands the audio messages
@@ -347,6 +352,9 @@ mod tests {
         assert_eq!(old.protocol_version, 0);
         assert_eq!(old.device_name, "PC");
         assert_eq!(old.capabilities, local_capabilities());
+        // A 0.2.0 reader decodes a Hello that lists discovery2 (an unknown name in a repeated string field is
+        // ignored), so advertising it breaks no old peer.
+        assert!(old.capabilities.iter().any(|c| c == CAP_DISCOVERY2));
     }
 
     #[test]
@@ -455,14 +463,22 @@ mod tests {
     #[test]
     fn reserved_capabilities_are_not_advertised_yet() {
         let local = local_capabilities();
-        assert_eq!(local, vec!["clipboard".to_string(), "audio".to_string()]);
+        // discovery2 ships with M7 (keyed discovery); only resume is still reserved.
+        assert_eq!(
+            local,
+            vec![
+                "clipboard".to_string(),
+                "audio".to_string(),
+                "discovery2".to_string()
+            ]
+        );
         for r in RESERVED_CAPS {
             assert!(
                 !local.iter().any(|c| c == r),
                 "{r} is advertised before it exists"
             );
         }
-        assert!(RESERVED_CAPS.contains(&CAP_DISCOVERY2) && RESERVED_CAPS.contains(&CAP_RESUME));
+        assert_eq!(RESERVED_CAPS, &[CAP_RESUME]);
     }
 
     #[test]

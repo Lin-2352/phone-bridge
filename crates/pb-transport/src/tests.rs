@@ -1527,6 +1527,246 @@ mod rediscovery {
     }
 }
 
+mod discovery2_wire {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::discovery2::{self as d2, ANSWER2};
+
+    /// Node A answers probes on a free port; B is paired with A, both marked as speaking PBD2, and a raw socket
+    /// plays B with the pair's key.
+    struct Rig {
+        a: Node,
+        _a_ev: NodeEvents,
+        b: Node,
+        probe_port: u16,
+        key: pb_identity::DiscoveryKey,
+        sock: tokio::net::UdpSocket,
+    }
+
+    async fn rig(seed_a: u8, seed_b: u8) -> Rig {
+        let probe_port = {
+            let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            s.local_addr().unwrap().port()
+        };
+        let id_a = Identity::from_seed([seed_a; 32]);
+        let id_b = Identity::from_seed([seed_b; 32]);
+        let store_a: SharedStore = Arc::new(Mutex::new(MemoryPeerStore::default()));
+        let (a, mut a_ev) = Node::bind(
+            &id_a,
+            store_a,
+            NodeConfig {
+                device_name: "PC".into(),
+                port: None,
+                discovery_port: Some(probe_port),
+                tuning: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let (b, _b_ev, _) = node(seed_b, "Phone").await;
+        let (h, j, _, _) = pair(&a, &mut a_ev, &b, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        a.test_mark_discovery2(b.peer_id());
+        let key = id_b.discovery_key(&id_a.peer_id()).unwrap();
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        Rig {
+            a,
+            _a_ev: a_ev,
+            b,
+            probe_port,
+            key,
+            sock,
+        }
+    }
+
+    impl Rig {
+        async fn send(&self, pkt: &[u8]) {
+            self.sock
+                .send_to(pkt, ("127.0.0.1", self.probe_port))
+                .await
+                .unwrap();
+        }
+
+        async fn answer(&self, wait: Duration) -> Option<Vec<u8>> {
+            let mut buf = [0u8; 256];
+            let (n, _) = tokio::time::timeout(wait, self.sock.recv_from(&mut buf))
+                .await
+                .ok()?
+                .ok()?;
+            Some(buf[..n].to_vec())
+        }
+    }
+
+    fn windows() -> [u64; 3] {
+        let w = crate::discovery::test_window();
+        [w - 1, w, w + 1]
+    }
+
+    #[tokio::test]
+    async fn a_pbd2_probe_gets_a_maced_answer_and_teaches_nothing() {
+        let r = rig(41, 42).await;
+        let nonce = [3u8; 16];
+        let probe = d2::build_probe(&r.key, 40555, nonce, crate::discovery::test_window());
+        r.send(&probe).await;
+        let got = r.answer(Duration::from_secs(3)).await.expect("an answer");
+        let p = d2::parse2(&got).expect("a PBD2 answer");
+        assert_eq!(p.kind, ANSWER2);
+        assert_eq!(p.probe_nonce, Some(nonce), "it answers this probe");
+        let ring = vec![(r.b.peer_id(), &r.key)];
+        assert_eq!(
+            d2::authenticate(&ring, &windows(), &p),
+            Some(r.b.peer_id()),
+            "the answer carries the pair's mac"
+        );
+        // The probe's source address is not authenticated, so it is not learned.
+        assert!(r.a.candidates(&r.b.peer_id()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_replayed_pbd2_probe_gets_no_second_answer() {
+        let r = rig(43, 44).await;
+        let probe = d2::build_probe(&r.key, 40555, [4u8; 16], crate::discovery::test_window());
+        r.send(&probe).await;
+        assert!(
+            r.answer(Duration::from_secs(3)).await.is_some(),
+            "the first is answered"
+        );
+        // Past the one-answer-a-second limit, so only the replay check can refuse it.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        r.send(&probe).await;
+        assert!(
+            r.answer(Duration::from_millis(800)).await.is_none(),
+            "a replayed probe is ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pbd2_probe_with_the_wrong_key_gets_no_answer() {
+        let r = rig(45, 46).await;
+        let stranger = Identity::from_seed([99; 32]);
+        let id_a = Identity::from_seed([45; 32]);
+        let wrong = stranger.discovery_key(&id_a.peer_id()).unwrap();
+        r.send(&d2::build_probe(
+            &wrong,
+            40555,
+            [5u8; 16],
+            crate::discovery::test_window(),
+        ))
+        .await;
+        assert!(r.answer(Duration::from_millis(800)).await.is_none());
+        // A dummy probe (random mac) is ignored too.
+        r.send(&d2::build_dummy_probe(40555, [6u8; 16], [7u8; 16]))
+            .await;
+        assert!(r.answer(Duration::from_millis(800)).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_authentic_answer_adds_only_its_maced_addresses_as_candidates() {
+        let r = rig(47, 48).await;
+        let good: SocketAddr = "127.0.0.1:40777".parse().unwrap();
+        let w = crate::discovery::test_window();
+        // An attacker rewrites an address in a real answer; the mac no longer fits.
+        let mut tampered = d2::build_answer(&r.key, 47100, [1u8; 16], [2u8; 16], &[good], w);
+        let at = tampered.len() - 16 - 1;
+        tampered[at] ^= 0x01;
+        r.send(&tampered).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            r.a.candidates(&r.b.peer_id()).is_empty(),
+            "a tampered address is never a candidate"
+        );
+        // The real one is.
+        r.send(&d2::build_answer(
+            &r.key,
+            47100,
+            [1u8; 16],
+            [3u8; 16],
+            &[good],
+            w,
+        ))
+        .await;
+        for _ in 0..30 {
+            if r.a.candidates(&r.b.peer_id()).contains(&good) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(r.a.candidates(&r.b.peer_id()).contains(&good));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_marks_a_pbd2_peer_and_a_0_2_0_peer_stays_unmarked() {
+        // Two current builds: each sees discovery2 in the other's Hello and marks it.
+        let (pc, mut pc_ev, _) = node(61, "PC").await;
+        let (phone, _pev, _) = node(62, "Phone").await;
+        let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        assert!(
+            !pc.test_is_marked(&phone.peer_id()),
+            "pairing alone marks nothing"
+        );
+        let s = phone.connect(&pc.peer_id()).await.unwrap();
+        let _inc = pc_ev.sessions.recv().await.unwrap();
+        assert!(
+            pc.test_is_marked(&phone.peer_id()),
+            "the PC saw discovery2 in the phone's Hello"
+        );
+        assert!(
+            phone.test_is_marked(&pc.peer_id()),
+            "and the phone in the PC's"
+        );
+        drop(s);
+
+        // A 0.2.0 phone's Hello does not list it: it stays unmarked, so PBD1 still finds it.
+        let (pc2, mut pc2_ev, _) = node(63, "PC").await;
+        let (old, _oev, _) = node(64, "Old").await;
+        let (h, j, _, _) = pair(&pc2, &mut pc2_ev, &old, true, true).await;
+        assert!(h.is_ok() && j.is_ok());
+        let conn = old
+            .dial(pc2.peer_id(), &loopback(&pc2), SESSION_ALPN)
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        let old_hello = Hello {
+            protocol_version: 0,
+            device_name: "Old".into(),
+            capabilities: vec!["clipboard".into(), pb_protocol::CAP_AUDIO.into()],
+            min_compatible: 0,
+            app_version: String::new(),
+        };
+        write_frame(&mut send, &Control::from(ControlMsg::Hello(old_hello)))
+            .await
+            .unwrap();
+        let _inc = tokio::time::timeout(Duration::from_secs(5), pc2_ev.sessions.recv())
+            .await
+            .expect("the PC accepts the 0.2.0 phone")
+            .unwrap();
+        assert!(
+            !pc2.test_is_marked(&old.peer_id()),
+            "a 0.2.0 Hello does not list discovery2"
+        );
+    }
+
+    #[tokio::test]
+    async fn after_discovery2_a_pbd1_probe_from_that_peer_is_ignored() {
+        let r = rig(49, 50).await;
+        let mut pbd1 = Vec::from(*b"PBD1");
+        pbd1.push(1);
+        pbd1.extend_from_slice(&40555u16.to_le_bytes());
+        pbd1.extend_from_slice(&crate::discovery::test_tag(&r.b.peer_id()));
+        r.send(&pbd1).await;
+        assert!(
+            r.answer(Duration::from_millis(800)).await.is_none(),
+            "PBD1 is not answered"
+        );
+        assert!(
+            r.a.candidates(&r.b.peer_id()).is_empty(),
+            "and teaches nothing"
+        );
+    }
+}
+
 mod notify {
     use std::time::Duration;
 

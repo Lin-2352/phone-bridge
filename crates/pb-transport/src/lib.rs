@@ -9,6 +9,7 @@ pub mod addr_rank;
 pub mod audio;
 pub mod camera;
 pub mod discovery;
+pub mod discovery2;
 pub mod files;
 pub mod input;
 pub mod notify;
@@ -277,6 +278,14 @@ struct Inner {
     bad_tokens: Mutex<pairing::BadTokenLimits>,
     /// Per-peer limits on open sessions and file offers.
     quotas: quota::PeerQuotas,
+    /// This device's identity, for the per-pair discovery keys (PBD2).
+    identity: Identity,
+    /// Peers known to speak PBD2 (a file next to the peer list, never a field of it).
+    marks: Mutex<discovery2::Marks>,
+    /// Derived discovery keys of paired peers, so a packet costs hashing and not a key agreement.
+    dkeys: Mutex<HashMap<PeerId, Arc<pb_identity::DiscoveryKey>>>,
+    /// `(peer, nonce)` pairs of authenticated PBD2 packets, to refuse replays.
+    replay: Mutex<discovery2::ReplayCache>,
     pairings: mpsc::Sender<PendingPairing>,
     sessions: mpsc::Sender<Session>,
     discovery: Mutex<Option<discovery::Discovery>>,
@@ -396,6 +405,10 @@ impl Node {
                 ticket: Mutex::new(None),
                 bad_tokens: Mutex::default(),
                 quotas: quota::PeerQuotas::default(),
+                identity: Identity::from_seed(identity.seed()),
+                marks: Mutex::default(),
+                dkeys: Mutex::default(),
+                replay: Mutex::default(),
                 pairings: pair_tx,
                 sessions: sess_tx,
                 discovery: Mutex::new(None),
@@ -547,6 +560,9 @@ impl Node {
         self.forget_changed(peer);
         lock(&self.inner.candidates).remove(peer);
         self.inner.quotas.forget(peer);
+        // No discovery key or PBD2 mark outlives a pairing.
+        lock(&self.inner.marks).unmark(peer);
+        lock(&self.inner.dkeys).remove(peer);
         lock(&self.inner.live).retain(|(p, w)| {
             if p != peer {
                 return true;
@@ -726,7 +742,9 @@ impl Node {
         }
         .await;
         // Whichever step noticed the peer's close, report why it closed.
-        started.map_err(|e| closed_by_peer(&conn, e))
+        let session = started.map_err(|e| closed_by_peer(&conn, e))?;
+        self.note_peer_capabilities(*peer, &session.remote_hello);
+        Ok(session)
     }
 
     /// Tell the node the device's network changed (a roam, another band, a new address). iroh can't
@@ -926,6 +944,7 @@ impl Node {
         if let Ok(session) =
             Session::start(conn, peer, send, recv, &self.inner.device_name, &known.name).await
         {
+            self.note_peer_capabilities(peer, &session.remote_hello);
             let _ = self.inner.sessions.send(session).await;
         }
     }

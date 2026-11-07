@@ -5,7 +5,7 @@ Status: draft. Matches the `pb-protocol` crate at protocol version 0. Two device
 ## Layers
 1. **QUIC** (iroh 1.3.0 / noq) provides encryption, authentication of the peer's Ed25519 key, streams and unreliable datagrams.
 2. **ALPN** `pb/0` for sessions, `pb-pair/0` for pairing. (Spikes used `pb-spike/0`.) Session connections from peers not in the paired-peer store are closed with application code 403 before any stream is read.
-   Application close codes: 0 bye, 200 file saved, 300 transfer cancelled, 400 pairing refused or transfer failed, 403 not paired, 426 incompatible protocol version (`Hello`), 500 the joiner could not save the pairing.
+   Application close codes: 0 bye, 200 file saved, 300 transfer cancelled, 400 pairing refused or transfer failed, 403 not paired, 410 this device closed every connection ("Disconnect everything"; the pairing is untouched), 426 incompatible protocol version (`Hello`), 429 busy (the paired peer already has the most sessions it may keep open, 8), 500 the joiner could not save the pairing.
 3. **Control stream**: the first bidirectional stream opened by the connecting side. Carries length-prefixed protobuf frames.
 4. **Feature streams**: one bidirectional stream per transfer (files, clipboard payloads, camera). Each begins with a frame naming the feature.
 5. **Datagrams**: unreliable, unordered, small. Used for audio PCM only (input travels on a reliable stream).
@@ -45,6 +45,22 @@ Pairing code shown by the host: `pb1:<host id hex>:<16-byte token hex>:<addr>,<a
 4. both show `SAS = 6 digits of SHA-256("phone-bridge/sas/v0" || sorted(id, nonce) pairs)`; each side sends `PairConfirm { accepted }`. The joiner sends its confirm first; the host reads it before sending its own and answers `accepted: true` only when both users accepted and it has saved the pairing. A joiner that declines closes at once (400); the host then stops waiting for its own user.
 5. Close order: joiner finishes its stream, host finishes after its confirm, joiner closes after the host's end-of-stream (closing earlier can discard an unread confirm): code 0 once it saved the pairing, 500 when it could not, and the host then removes its own entry.
 6. Peer-supplied values are checked on receipt: only addresses that parse as `ip:port` are kept (canonical form, at most 6; the same for the addresses in a pasted code), and device names lose control and hidden bidi/zero-width characters and are cut to 64 characters.
+
+### Discovery (UDP port 47199, no QUIC)
+
+A device that moved network finds its paired peers again with small UDP probes: broadcast on each interface plus every last known peer address. A probe or answer only adds an in-memory *candidate* address; an address is saved only after an authenticated QUIC connection to the peer's key succeeded through it. Probes go out on demand (start, network change, failed dial), never periodically; at most one answer per peer per second.
+
+**PBD1** (Relay 0.2.0 and later, 23 bytes, unkeyed): `"PBD1" | kind u8 (1 probe, 2 answer) | quic port u16 LE | tag[16]`, `tag = SHA-256("pb-discovery/1" || sender id || 30-minute window u64 LE)[..16]` (windows -1, 0 and +1 are accepted). Anyone who knows a device's public key can compute the tag.
+
+**PBD2** (capability `discovery2`, from the build that adds keyed discovery): authenticated with a per-pair key, so only a device that holds the pairing can ask or answer. The key is `k = HKDF-SHA256(salt = "pb-discovery/2", ikm = X25519(own, peer), info = min(id) || max(id))`, with the X25519 keys taken from the two paired Ed25519 identities; an all-zero shared secret is refused. All integers are little-endian, `mac` is 16 bytes.
+
+- probe, 39 bytes: `"PBD2" | 1 | quic port u16 | nonce[16] | mac`
+- answer, 56 to 170 bytes: `"PBD2" | 2 | quic port u16 | probe_nonce[16] | nonce[16] | n u8 (at most 6) | n x (family u8 4 or 6 | ip 4 or 16 | port u16) | mac`
+- `mac = HMAC-SHA256(k, label || window u64 || every byte before the mac)[..16]`, `label` being `"pb-discovery/2 probe"` or `"pb-discovery/2 answer"`. The mac covers the exact bytes on the wire (the plan listed named fields; covering the whole prefix means the encoding cannot drift from what is authenticated), and the window is the 30-minute window as in PBD1.
+- Receive order: at most 256 bytes and a strict parse (exact length, at most 6 addresses, family 4 or 6) first; then the cached keys of the marked peers are tried over windows -1, 0 and +1; only a packet whose mac verified enters the `(peer, nonce)` replay cache (1024 entries), so unauthenticated packets cannot flush it. A probe is answered with this device's addresses under the pair's mac; the source address of a probe is not authenticated and is not learned. Only the MACed addresses of an answer become candidates.
+- A probe round sends one PBD2 probe per marked peer, padded with random-mac dummies to at least 4, so the count does not show how many peers are paired. PBD1 probes are still sent while any paired peer is not marked.
+- Marking: a peer is marked when a session's `Hello` lists `discovery2`, and unmarked when a later `Hello` does not or when it is unpaired. Marks live in `discovery2.txt` in the data folder (one lowercase hex id per line, at most 64, written atomically), never as a field of `peers.txt`: Relay 0.2.0 drops a `peers.txt` line with an extra column and would lose the pairing. Once a peer is marked, PBD1 is neither sent to it nor answered from it. PBD1 is removed in the next minor release.
+- A downgrade that is also a network change: a peer that went back to 0.2.0 and then moved IP is found only through PBD1, which is no longer sent to it while its old mark stands; its mark is cleared the next time it connects (its `Hello` no longer lists `discovery2`), after which PBD1 works again.
 
 ### Sharing (AirDrop-style), one session per transfer
 1. sender -> `Offer { id: u64 random, kind: File|Text|Link|ClipboardImage, name, size, mime, text }` (text/links inline, max 60 KiB)

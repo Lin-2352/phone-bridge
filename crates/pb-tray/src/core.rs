@@ -624,6 +624,8 @@ pub async fn run(
         },
     )
     .await?;
+    // Which peers speak keyed discovery lives next to the peer list (never inside it).
+    node.set_discovery2_path(opts.dir.join("discovery2.txt"));
     // Peers may have moved to a new network since we last saw them.
     tokio::spawn({
         let node = node.clone();

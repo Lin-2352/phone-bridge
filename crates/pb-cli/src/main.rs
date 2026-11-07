@@ -187,6 +187,7 @@ async fn run(o: Opts) -> Res<()> {
         tuning: Default::default(),
     };
     let (node, mut ev): (Node, NodeEvents) = Node::bind(&identity, store.clone(), config).await?;
+    node.set_discovery2_path(o.dir.join("discovery2.txt"));
     println!(
         "ME={} fingerprint={}",
         node.peer_id(),

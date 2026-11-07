@@ -31,7 +31,10 @@ use pb_identity::PeerId;
 use sha2::{Digest, Sha256};
 use tokio::{net::UdpSocket, task::JoinHandle};
 
-use crate::{lock, Node};
+use crate::{
+    discovery2::{self, ANSWER2, PROBE2},
+    lock, Node,
+};
 
 /// UDP port for probes on every device.
 pub const DISCOVERY_PORT: u16 = 47199;
@@ -207,7 +210,7 @@ impl Node {
         let node = self.clone();
         let rx = sock.clone();
         let task = tokio::spawn(async move {
-            let mut buf = [0u8; 64];
+            let mut buf = [0u8; discovery2::MAX_PACKET2];
             // At most one answer per peer per second (no reflection floods).
             let mut answered: Vec<(PeerId, Instant)> = Vec::new();
             loop {
@@ -221,12 +224,21 @@ impl Node {
                         continue;
                     }
                 };
+                // Keyed discovery (PBD2): bounds first, then the keys of marked peers, then the replay check.
+                if buf[..n].starts_with(discovery2::MAGIC2) {
+                    node.handle_v2(&rx, from, &buf[..n], &mut answered).await;
+                    continue;
+                }
                 let Some((kind, quic_port, t)) = parse(&buf[..n]) else {
                     continue;
                 };
                 let Some(peer) = node.peer_for_tag(&t) else {
                     continue;
                 };
+                // Once a peer has announced PBD2, its PBD1 probes are not answered and teach nothing.
+                if lock(&node.inner.marks).contains(&peer) {
+                    continue;
+                }
                 node.add_candidate(peer, SocketAddr::new(from.ip(), quic_port));
                 if kind == PROBE {
                     answered.retain(|(_, at)| at.elapsed() < Duration::from_secs(1));
@@ -267,7 +279,21 @@ impl Node {
         if my_port == 0 {
             return;
         }
-        let probe = packet(PROBE, my_port, tag(&self.inner.me, window(0)));
+        // One PBD2 probe per marked peer (padded with dummies); PBD1 only while some peer is not marked.
+        let paired = lock(&self.inner.store).list().len();
+        let keys = self.marked_keys();
+        let plan = discovery2::probe_plan(paired, keys.len());
+        let mut packets: Vec<Vec<u8>> = Vec::new();
+        for i in 0..plan.v2 {
+            let nonce = random16();
+            match keys.get(i) {
+                Some((_, k)) => packets.push(discovery2::build_probe(k, my_port, nonce, window(0))),
+                None => packets.push(discovery2::build_dummy_probe(my_port, nonce, random16())),
+            }
+        }
+        if plan.v1 {
+            packets.push(packet(PROBE, my_port, tag(&self.inner.me, window(0))).to_vec());
+        }
         let saved: Vec<String> = lock(&self.inner.store)
             .list()
             .into_iter()
@@ -279,7 +305,99 @@ impl Node {
             .unwrap_or_default();
         let targets = probe_targets(port, &ifaces, &self.addrs(), &saved);
         for t in targets {
-            let _ = sock.send_to(&probe, t).await;
+            for pkt in &packets {
+                let _ = sock.send_to(pkt, t).await;
+            }
+        }
+    }
+
+    /// Where the PBD2 marks are kept (next to the peer list); loads what is there.
+    pub fn set_discovery2_path(&self, path: std::path::PathBuf) {
+        *lock(&self.inner.marks) = discovery2::Marks::load(path);
+    }
+
+    /// A session's `Hello` says whether the peer speaks PBD2: mark it, or drop an old mark.
+    pub(crate) fn note_peer_capabilities(&self, peer: PeerId, hello: &pb_protocol::Hello) {
+        if hello.supports(pb_protocol::CAP_DISCOVERY2) {
+            lock(&self.inner.marks).mark(peer);
+        } else if lock(&self.inner.marks).unmark(&peer) {
+            lock(&self.inner.dkeys).remove(&peer);
+        }
+    }
+
+    /// The discovery key shared with `peer`, derived once and kept. `None` when the peer is not paired or its key is
+    /// unusable.
+    fn discovery_key(&self, peer: &PeerId) -> Option<Arc<pb_identity::DiscoveryKey>> {
+        if let Some(k) = lock(&self.inner.dkeys).get(peer) {
+            return Some(k.clone());
+        }
+        lock(&self.inner.store).get(peer)?;
+        let key = Arc::new(self.inner.identity.discovery_key(peer).ok()?);
+        lock(&self.inner.dkeys).insert(*peer, key.clone());
+        Some(key)
+    }
+
+    /// The keys of peers that are paired and marked PBD2.
+    fn marked_keys(&self) -> Vec<(PeerId, Arc<pb_identity::DiscoveryKey>)> {
+        let marked: Vec<PeerId> = lock(&self.inner.marks).peers().to_vec();
+        marked
+            .into_iter()
+            .filter_map(|p| self.discovery_key(&p).map(|k| (p, k)))
+            .collect()
+    }
+
+    /// One PBD2 packet: authenticated against the marked peers' keys, then checked for replay, and only then used.
+    /// A probe is answered (at most once a second per peer) with this device's addresses under the pair's mac; an
+    /// answer's addresses, which the mac covers, become candidates. Nothing unauthenticated is acted on.
+    async fn handle_v2(
+        &self,
+        sock: &UdpSocket,
+        from: SocketAddr,
+        pkt: &[u8],
+        answered: &mut Vec<(PeerId, Instant)>,
+    ) {
+        let Some(p) = discovery2::parse2(pkt) else {
+            return;
+        };
+        let keys = self.marked_keys();
+        let ring: Vec<(PeerId, &pb_identity::DiscoveryKey)> =
+            keys.iter().map(|(id, k)| (*id, &**k)).collect();
+        let windows = [window(-1), window(0), window(1)];
+        let Some(peer) = discovery2::authenticate(&ring, &windows, &p) else {
+            return;
+        };
+        if !lock(&self.inner.replay).insert(peer, p.nonce) {
+            return;
+        }
+        match p.kind {
+            PROBE2 => {
+                answered.retain(|(_, at)| at.elapsed() < Duration::from_secs(1));
+                if answered.iter().any(|(q, _)| *q == peer) {
+                    return;
+                }
+                let my_port = self.port();
+                let Some((_, key)) = keys.iter().find(|(id, _)| *id == peer) else {
+                    return;
+                };
+                if my_port == 0 {
+                    return;
+                }
+                answered.push((peer, Instant::now()));
+                let addrs: Vec<SocketAddr> = self
+                    .addrs()
+                    .iter()
+                    .filter_map(|a| a.parse::<SocketAddr>().ok())
+                    .collect();
+                let reply =
+                    discovery2::build_answer(key, my_port, p.nonce, random16(), &addrs, window(0));
+                let _ = sock.send_to(&reply, from).await;
+            }
+            ANSWER2 => {
+                for a in p.addrs {
+                    self.add_candidate(peer, a);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -356,6 +474,33 @@ impl Node {
             let _ = store.try_pin(p);
         })
         .await;
+    }
+}
+
+fn random16() -> [u8; 16] {
+    let mut b = [0u8; 16];
+    // A failure leaves zeros: a nonce that repeats only costs the replay check one false positive.
+    let _ = getrandom::fill(&mut b);
+    b
+}
+
+/// The current discovery window (tests build packets by hand).
+#[cfg(test)]
+pub(crate) fn test_window() -> u64 {
+    window(0)
+}
+
+impl Node {
+    /// Whether `peer` is marked as speaking PBD2.
+    #[cfg(test)]
+    pub(crate) fn test_is_marked(&self, peer: &PeerId) -> bool {
+        lock(&self.inner.marks).contains(peer)
+    }
+
+    /// Marks `peer` as speaking PBD2 without a session (what a Hello listing it does).
+    #[cfg(test)]
+    pub(crate) fn test_mark_discovery2(&self, peer: PeerId) {
+        lock(&self.inner.marks).mark(peer);
     }
 }
 

@@ -1145,6 +1145,8 @@ pub async fn start_node(
     let (node, ev) = Node::bind_or_any(&identity, store, config)
         .await
         .map_err(fail)?;
+    // Which peers speak keyed discovery lives next to the peer list (never inside it).
+    node.set_discovery2_path(dir.join("discovery2.txt"));
     // The sender was told "saved": hand each whole file to the app again
     // (it moves it to the save folder). The sender's name was not kept.
     let (sender, sender_id) = match node.paired_peers().as_slice() {

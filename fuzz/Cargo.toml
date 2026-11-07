@@ -52,6 +52,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "discovery2_packet"
+path = "fuzz_targets/discovery2_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "file_names"
 path = "fuzz_targets/file_names.rs"
 test = false
