@@ -160,7 +160,11 @@ fun RelayTheme(choice: ThemeChoice = ThemeChoice, content: @Composable () -> Uni
         if (Build.VERSION.SDK_INT < 31) null
         else if (d) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     }
-    val modes = Modes(reducedTransparency = choice.reduceTransparency.value, lite = choice.liteForced.value)
+    val signals = rememberLiteSignals(forced = choice.liteForced.value, slowFrames = false)
+    val modes = Modes(
+        reducedTransparency = choice.reduceTransparency.value,
+        lite = liteReason(signals) != null,
+    )
     val glass = resolve(materialFor(look, dark), modes)
     val haze = remember { HazeState() }
     CompositionLocalProvider(LocalGlass provides glass, LocalModes provides modes, LocalHazeState provides haze) {
