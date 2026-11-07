@@ -6,6 +6,11 @@ The single place that says what is done, what is in progress and what is left in
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M7.R. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
 - **Next task:** M8 (several devices; M8.2 first; see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
+- **M8 in progress (2026-11-07), nothing ticked yet:**
+  - *Done:* Android `PcStore.kt` (nicknames, labels, default after removal, `sendTarget`), per-PC prefs, Connection page with Rename, Make default and per-PC status; PC `devices.txt` nickname, fsync, `default_device` setting moved on at unpair, `devices::send_target`; transport and ffi `connected_peers()`.
+  - *M8.2 still open:* the PC Devices page star and Rename (`pages/devices.rs`; its model is a `(name, fingerprint, changed)` tuple, so it needs a small struct first).
+  - *M8.1 still open:* the call sites (share sheet, Send to, clipboard, tile, touchpad, widget), the PC picker menu, `peer_id` on `AskControl` and `IncomingOffer`.
+  - *Not started:* M8.3, M8.4 (advisor first), M8.5, M8.R.
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
