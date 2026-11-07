@@ -601,6 +601,17 @@ impl Node {
         live.push((peer, conn.weak_handle()));
     }
 
+    /// The paired peers that have at least one open connection right now, each once.
+    pub fn connected_peers(&self) -> Vec<PeerId> {
+        let mut out: Vec<PeerId> = Vec::new();
+        for (p, w) in lock(&self.inner.live).iter() {
+            if w.upgrade().is_some_and(|c| c.close_reason().is_none()) && !out.contains(p) {
+                out.push(*p);
+            }
+        }
+        out
+    }
+
     /// Connections still open (tests check nothing is kept alive).
     #[cfg(test)]
     fn live_count(&self) -> usize {

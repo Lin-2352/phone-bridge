@@ -221,6 +221,25 @@ async fn close_all_closes_every_live_connection() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn connected_peers_lists_each_peer_with_an_open_connection_once() {
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone_a, _a_ev, _) = node(2, "PhoneA").await;
+    let (phone_b, _b_ev, _) = node(3, "PhoneB").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone_a, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone_b, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    assert!(pc.connected_peers().is_empty(), "nobody connected yet");
+    let _s1 = phone_a.connect(&pc.peer_id()).await.unwrap();
+    let _s2 = phone_a.connect(&pc.peer_id()).await.unwrap();
+    let _pa1 = pc_ev.sessions.recv().await.unwrap();
+    let _pa2 = pc_ev.sessions.recv().await.unwrap();
+    assert_eq!(pc.connected_peers(), vec![phone_a.peer_id()]);
+    pc.close_all(b"disconnect").await;
+    assert!(pc.connected_peers().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_session_past_the_quota_from_one_peer_is_refused_as_busy() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (phone, _pev, _) = node(2, "Phone").await;

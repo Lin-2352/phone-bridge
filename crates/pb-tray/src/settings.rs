@@ -34,6 +34,8 @@ pub struct Settings {
     pub look: u8,
     /// Ask for Windows Hello before sensitive actions (M7.2). On in release builds by default.
     pub unlock_gate: bool,
+    /// The phone that sends go to when none is chosen: its id in hex, or empty when there is none.
+    pub default_device: String,
     /// Let a paired phone drive this PC's pointer and keyboard.
     pub allow_control: bool,
     /// Show the phone's notifications as Windows toasts.
@@ -103,6 +105,7 @@ impl Default for Settings {
             theme: 0,
             look: 0,
             unlock_gate: !cfg!(debug_assertions),
+            default_device: String::new(),
             allow_control: false,
             notify_enabled: true,
             notify_content: 1,
@@ -264,6 +267,14 @@ impl Settings {
                     }
                 }
                 "look" => s.look = u8::from(v == "relay"),
+                "default_device" => {
+                    s.default_device = if v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        v.to_ascii_lowercase()
+                    } else {
+                        String::new()
+                    }
+                }
                 "unlock_gate" => s.unlock_gate = parse_bool(v).unwrap_or(s.unlock_gate),
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
@@ -350,7 +361,7 @@ impl Settings {
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut text = format!("version={}\n", self.version);
         text += &format!(
-            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nlook={}\nunlock_gate={}\nallow_control={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nlook={}\nunlock_gate={}\ndefault_device={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
             self.keep_in_history,
@@ -359,6 +370,7 @@ impl Settings {
             ["system", "light", "dark"][self.theme.min(2) as usize],
             ["native", "relay"][self.look.min(1) as usize],
             self.unlock_gate,
+            self.default_device,
             self.allow_control,
             self.save_dir.display()
         );
@@ -561,6 +573,21 @@ theme=dark
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_default_device_round_trips_and_bad_values_are_dropped() {
+        let d = mig_dir("defdev");
+        let f = d.join("settings.txt");
+        let id = "ab".repeat(32);
+        let s = Settings {
+            default_device: id.clone(),
+            ..Settings::default()
+        };
+        s.save(&f).unwrap();
+        assert_eq!(Settings::load(&f).default_device, id);
+        std::fs::write(&f, "version=3\ndefault_device=not-an-id\n").unwrap();
+        assert_eq!(Settings::load(&f).default_device, "");
     }
 
     #[test]
@@ -804,6 +831,7 @@ theme=dark
             theme: 2,
             look: 1,
             unlock_gate: false,
+            default_device: "cd".repeat(32),
             allow_control: false,
             notify_enabled: false,
             notify_content: 2,

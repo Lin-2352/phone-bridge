@@ -2,6 +2,8 @@ package dev.phonebridge.app
 
 import android.content.Context
 import android.net.Uri
+import dev.phonebridge.app.devices.cleanNickname
+import dev.phonebridge.app.devices.defaultAfterRemoval
 
 /** User settings. Share clipboard is off until the user turns it on. */
 private const val NL = "\n"
@@ -354,6 +356,32 @@ class Prefs(context: Context) {
     var lastPcName: String?
         get() = sp.getString("last_pc_name", null)
         set(v) = sp.edit().putString("last_pc_name", v).apply()
+
+    /** The PC that sends go to when none is chosen (its peer id), or null when none is paired. */
+    var defaultPc: String?
+        get() = sp.getString("default_pc", null)?.takeIf { it.isNotEmpty() }
+        set(v) = sp.edit().putString("default_pc", v ?: "").apply()
+
+    /** This phone's own label for one PC (never sent to it), or null to show the PC's own name. */
+    fun pcNickname(id: String): String? = cleanNickname(sp.getString("$id/nickname", null))
+
+    fun setPcNickname(id: String, raw: String?) {
+        val n = cleanNickname(raw)
+        sp.edit().apply { if (n == null) remove("$id/nickname") else putString("$id/nickname", n) }.apply()
+    }
+
+    /** When this PC was last in contact (wall-clock ms), 0 if never. */
+    fun pcLastSeenMs(id: String): Long = sp.getLong("$id/last_seen_ms", 0L)
+
+    fun setPcLastSeenMs(id: String, ms: Long) = sp.edit().putLong("$id/last_seen_ms", ms).apply()
+
+    /** The PC was unpaired: its settings go with it, and the default moves on if it was the default. */
+    fun forgetPc(id: String, remaining: List<uniffi.pb_ffi.PbPeer>) {
+        val e = sp.edit()
+        sp.all.keys.filter { it.startsWith("$id/") }.forEach { e.remove(it) }
+        e.putString("default_pc", defaultAfterRemoval(remaining, id, defaultPc) ?: "")
+        e.apply()
+    }
 
     /** Folder the user picked for received files (SAF tree), or null for Downloads/Phone Bridge. */
     var saveTree: Uri?

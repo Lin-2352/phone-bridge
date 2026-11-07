@@ -2033,6 +2033,15 @@ impl PbNode {
 
     /// "Disconnect everything": closes every connection to a paired PC. Pairing is untouched; the app also clears
     /// every "always allow" and pauses itself (Kotlin side).
+    /// Ids of the paired devices that are connected right now.
+    pub fn connected_peers(&self) -> Vec<String> {
+        self.node
+            .connected_peers()
+            .into_iter()
+            .map(|p| p.to_string())
+            .collect()
+    }
+
     pub async fn disconnect_all(&self) {
         self.node.close_all(b"disconnect").await;
     }
