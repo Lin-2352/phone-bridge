@@ -58,7 +58,7 @@ const MAX_INCOMING: usize = 16;
 /// Pairing connections handled at once, from their own pool: idle ones
 /// (anyone on the LAN can open them while a code is shown) must not take
 /// the slots paired devices connect through.
-const MAX_PAIRING: usize = 2;
+const MAX_PAIRING: usize = pairing::MAX_PAIRING_SLOTS;
 /// How long either side waits for the user to confirm the SAS.
 pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -265,6 +265,8 @@ struct Inner {
     device_name: String,
     store: SharedStore,
     ticket: Mutex<Option<Ticket>>,
+    /// Wrong pairing tokens, per source and in total (outlives the rotation of the code).
+    bad_tokens: Mutex<pairing::BadTokenLimits>,
     pairings: mpsc::Sender<PendingPairing>,
     sessions: mpsc::Sender<Session>,
     discovery: Mutex<Option<discovery::Discovery>>,
@@ -382,6 +384,7 @@ impl Node {
                 device_name: config.device_name,
                 store,
                 ticket: Mutex::new(None),
+                bad_tokens: Mutex::default(),
                 pairings: pair_tx,
                 sessions: sess_tx,
                 discovery: Mutex::new(None),
@@ -575,6 +578,8 @@ impl Node {
             addrs,
         };
         *lock(&self.inner.ticket) = Some(ticket);
+        // A new code starts its global count again; a source that was blocked stays blocked.
+        lock(&self.inner.bad_tokens).new_ticket();
         Ok(code)
     }
 
@@ -840,7 +845,8 @@ impl Node {
                         conn.close(CLOSE_PAIR_FAILED.into(), b"busy");
                         return;
                     };
-                    let _ = node.host_pairing(conn, peer).await;
+                    // Time-boxed as a whole: a stalled peer cannot hold the slot for ever.
+                    let _ = pairing::within_slot(node.host_pairing(conn, peer)).await;
                 } else {
                     // A paired peer is authenticated: free the slot for the
                     // next handshake while its session runs.
@@ -895,7 +901,18 @@ impl Node {
         };
         let started = {
             let mut ticket = lock(&self.inner.ticket);
-            HostPairing::start(&mut ticket, self.inner.me, joiner, &start, Instant::now())
+            let mut limits = lock(&self.inner.bad_tokens);
+            // The remote IP is the source; a relayed connection has none, so those share one source.
+            let source = used_addr(&conn).map_or(std::net::IpAddr::from([0, 0, 0, 0]), |a| a.ip());
+            HostPairing::start(
+                &mut ticket,
+                &mut limits,
+                source,
+                self.inner.me,
+                joiner,
+                &start,
+                Instant::now(),
+            )
         };
         let (host, mut nonce) = match started {
             Ok(v) => v,
