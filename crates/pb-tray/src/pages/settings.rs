@@ -184,7 +184,7 @@ const APP_BIT: u32 = 0x1000_0000;
 const DEVICE_BIT: u32 = 0x2000_0000;
 const KEY_MASK: u32 = 0x0FFF_FFFF;
 
-const KEYS: [Key; 19] = [
+const KEYS: [Key; 20] = [
     Key::Share,
     Key::ShareImages,
     Key::Passwords,
@@ -195,6 +195,7 @@ const KEYS: [Key; 19] = [
     Key::SendTo,
     Key::Startup,
     Key::Control,
+    Key::UnlockGate,
     Key::Notify,
     Key::NotifyLock,
     Key::NotifyClear,
@@ -248,6 +249,7 @@ fn device_id(m: &Model, i: usize) -> u32 {
 /// Whether a toggle can be flipped now (sub-options wait for their switch).
 fn toggle_enabled(m: &Model, k: Key) -> bool {
     match k {
+        Key::UnlockGate => m.unlock_available,
         Key::Passwords | Key::ShareImages => m.share,
         Key::NotifyLock
         | Key::NotifyClear
@@ -923,6 +925,9 @@ mod tests {
         Model {
             share: true,
             notify: true,
+            // Windows Hello can run: the switch is a control, not a greyed row.
+            unlock_available: true,
+            unlock_reason: "Ask for Windows Hello before sensitive actions",
             apps: vec![("WhatsApp".into(), true), ("Gmail".into(), false)],
             devices: vec![
                 ("Pixel 8".into(), "18CF-F6D8".into(), false),
@@ -1049,6 +1054,7 @@ mod tests {
             Key::SendTo,
             Key::Startup,
             Key::Control,
+            Key::UnlockGate,
             Key::Notify,
             Key::NotifyLock,
             Key::NotifyClear,
@@ -1296,6 +1302,7 @@ mod tests {
             | Key::SendTo
             | Key::Startup
             | Key::Control
+            | Key::UnlockGate
             | Key::Notify
             | Key::NotifyLock
             | Key::NotifyClear
@@ -1316,7 +1323,7 @@ mod tests {
             };
             assert_eq!(click(&h, &m), Some(set(SAction::Toggle(*k))));
         }
-        assert_eq!(KEYS.len(), 19);
+        assert_eq!(KEYS.len(), 20);
         for r in rows(&model()) {
             if let Row::Toggle(k, ..) = r {
                 assert!(KEYS.contains(&k), "{k:?} missing from KEYS");

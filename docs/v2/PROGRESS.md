@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M7.6. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M7.2 (the Windows Hello call) and the M7.3 PC call sites; then M7.R and M8 (see [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md)).
+- **Last finished task:** M7.3. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M7.R, then M8 (see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -165,8 +165,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 ## M7 Security shield
 - [x] M7.0 Plan: [plans/2026-11-06-m7-security-shield.md](plans/2026-11-06-m7-security-shield.md) (written ahead of M4.9/M4.R; Task M7.0a refreshes it at start)
 - [x] M7.1 Android unlock gate (BiometricPrompt per API level; `FragmentActivity` hosts) (unlock gate rules, BiometricPrompt, FragmentActivity, unlock_gate pref and Settings row; the prompt itself is on the device checklist)
-- [ ] M7.2 PC unlock gate (Windows Hello interop on Windows 11; unavailable with a reason elsewhere)
-- [ ] M7.3 Gate wired to every guarded action, with a 60 s grace
+- [x] M7.2 PC unlock gate (Windows Hello interop on Windows 11; unavailable with a reason elsewhere) (Windows Hello call, availability rules, the setting and its row)
+- [x] M7.3 Gate wired to every guarded action, with a 60 s grace (Android and PC call sites; the SAS confirm and Android allow-list switches are open)
 - [x] M7.4 "Disconnect everything" in the tray, flyout, tile, notification and Home (close_all, ffi disconnect_all, PC menu entry, Android Settings row; flyout, tile, notification and Home entry points are open)
 - [x] M7.5 PBD2 key derivation inside `pb-identity` (X25519 + HKDF; all-zero results rejected) (key derivation, cross-checked with an independent implementation)
 - [x] M7.6 PBD2 packets: MACed probe and answer, only MACed addresses dialled, per-peer ratchet off PBD1, fuzz target (PBD2 packets, marks, replay cache, node wiring, fuzz target, docs; Relay 0.2.0 interop pinned in both directions)
@@ -263,8 +263,8 @@ Ticked tasks above that still have named pieces open. They are listed here so a 
 - [ ] M6.5, M6.8, M6.9, M6.10, M6.12, M6.13 the screens, widget, quick panel and tile
 - [ ] M6.15 and M6.16 screenshot matrix and the emulator job (CI)
 - [ ] M7.1 the BiometricPrompt path is checked on the device (device checklist)
-- [ ] M7.2 the Windows Hello call (`pb-platform-win`, `IUserConsentVerifierInterop`), the settings row and the gate call sites on the PC
-- [ ] M7.3 Android: the gate also guards the SAS confirm and turning on an always-allow switch in Settings (consent screens, Remove PC, auto-accept and the gate switch are done)
+- [x] M7.2 and M7.3 PC: the Hello prompt itself and the call sites are checked on the PC (DEVICE-CHECKS); the allow-list change guard is Android-only (Windows Hello call, availability rules, the setting and its row)
+- [x] M7.3 Android: the gate also guards the SAS confirm and turning on an always-allow switch in Settings (consent screens, Remove PC, auto-accept and the gate switch are done) (Android and PC call sites; the SAS confirm and Android allow-list switches are open)
 - [ ] M7.4 the flyout action, the quick-settings tile, the notification action and a Home button for "Disconnect everything" (the tray menu and the Settings row exist)
 - [ ] M7.8 the tray and ffi call sites that take an `OfferPermit` when an offer arrives, and the "too many requests" notice; THREAT_MODEL row 14 stays "partly implemented"
-
+- [ ] CI: `audio_is_current_again_right_after_a_blackout` is a 13 s real-time test that flakes when other tests starve the CPU (about one CI run in three); run it in its own serial group or give it a stable clock

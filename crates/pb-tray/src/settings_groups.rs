@@ -43,6 +43,7 @@ pub const OPTIONS: &[&str] = &[
     "Save received files to",
     "Show in Explorer \u{201c}Send to\u{201d}",
     "Start with Windows",
+    "Ask for Windows Hello before sensitive actions",
     "Let my phone control this PC",
     "Play PC audio without asking",
     "Keep history",

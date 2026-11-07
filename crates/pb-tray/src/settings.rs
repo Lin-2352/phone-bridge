@@ -32,6 +32,8 @@ pub struct Settings {
     pub theme: u8,
     /// The glass look: 0 = native (Mica and Acrylic), 1 = Relay glass.
     pub look: u8,
+    /// Ask for Windows Hello before sensitive actions (M7.2). On in release builds by default.
+    pub unlock_gate: bool,
     /// Let a paired phone drive this PC's pointer and keyboard.
     pub allow_control: bool,
     /// Show the phone's notifications as Windows toasts.
@@ -100,6 +102,7 @@ impl Default for Settings {
             save_dir: downloads,
             theme: 0,
             look: 0,
+            unlock_gate: !cfg!(debug_assertions),
             allow_control: false,
             notify_enabled: true,
             notify_content: 1,
@@ -137,8 +140,9 @@ pub fn always_allow_off(s: &mut Settings) -> bool {
 
 /// The settings file's format version. 1 introduced `version=` and pinned the save folder of
 /// installs that existed before the default changed. 2 added `look=` (nothing to rewrite: an
-/// install that never chose gets the native look, and the file is saved at version 2).
-pub const SETTINGS_VERSION: u32 = 2;
+/// install that never chose gets the native look, and the file is saved at version 2). 3 added `unlock_gate=` (the
+/// same: nothing to rewrite, an install that never chose gets the default, and the file is saved at version 3).
+pub const SETTINGS_VERSION: u32 = 3;
 
 /// The folder name received files went to before "Relay" names (installs keep it).
 const LEGACY_SAVE_FOLDER: &str = "Phone Bridge";
@@ -260,6 +264,7 @@ impl Settings {
                     }
                 }
                 "look" => s.look = u8::from(v == "relay"),
+                "unlock_gate" => s.unlock_gate = parse_bool(v).unwrap_or(s.unlock_gate),
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
@@ -345,7 +350,7 @@ impl Settings {
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut text = format!("version={}\n", self.version);
         text += &format!(
-            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nlook={}\nallow_control={}\nsave_dir={}\n",
+            "universal_clipboard={}\nskip_private={}\nkeep_in_history={}\nshare_images={}\nauto_accept={}\ntheme={}\nlook={}\nunlock_gate={}\nallow_control={}\nsave_dir={}\n",
             self.universal_clipboard,
             self.skip_private,
             self.keep_in_history,
@@ -353,6 +358,7 @@ impl Settings {
             self.auto_accept,
             ["system", "light", "dark"][self.theme.min(2) as usize],
             ["native", "relay"][self.look.min(1) as usize],
+            self.unlock_gate,
             self.allow_control,
             self.save_dir.display()
         );
@@ -524,6 +530,54 @@ mod tests {
     }
 
     #[test]
+    fn v2_settings_gain_the_unlock_gate_default() {
+        let d = mig_dir("v2gate");
+        let f = d.join("settings.txt");
+        std::fs::write(
+            &f,
+            "version=2
+look=relay
+theme=dark
+",
+        )
+        .unwrap();
+        let s = Settings::load_and_migrate(&f, &cx(true));
+        assert_eq!(s.version, 3);
+        assert_eq!(
+            s.unlock_gate,
+            !cfg!(debug_assertions),
+            "on in release builds, off in debug builds"
+        );
+        assert_eq!(
+            (s.look, s.theme),
+            (1, 2),
+            "the other settings are untouched"
+        );
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            text.starts_with(
+                "version=3
+"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_unlock_gate_round_trips() {
+        let d = mig_dir("gaterw");
+        let f = d.join("settings.txt");
+        for on in [true, false] {
+            let s = Settings {
+                unlock_gate: on,
+                ..Settings::default()
+            };
+            s.save(&f).unwrap();
+            assert_eq!(Settings::load(&f).unlock_gate, on);
+        }
+    }
+
+    #[test]
     fn v1_settings_gain_native_look() {
         let d = mig_dir("v1look");
         let f = d.join("settings.txt");
@@ -533,10 +587,16 @@ mod tests {
             s.look, 0,
             "an install that never chose keeps the native look"
         );
-        assert_eq!(s.version, 2);
+        assert_eq!(
+            s.version, SETTINGS_VERSION,
+            "a v1 file migrates all the way to the current version"
+        );
         assert_eq!(s.theme, 2, "the other settings are untouched");
         let text = std::fs::read_to_string(&f).unwrap();
-        assert!(text.starts_with("version=2\n"), "{text}");
+        assert!(
+            text.starts_with(&format!("version={SETTINGS_VERSION}\n")),
+            "{text}"
+        );
         assert!(text.contains("look=native\n"), "{text}");
     }
 
@@ -629,6 +689,7 @@ mod tests {
             "auto_accept",
             "theme",
             "look",
+            "unlock_gate",
             "save_dir",
             "notify_content",
             "notify_app",
@@ -742,6 +803,7 @@ mod tests {
             save_dir: PathBuf::from(r"D:\Inbox"),
             theme: 2,
             look: 1,
+            unlock_gate: false,
             allow_control: false,
             notify_enabled: false,
             notify_content: 2,

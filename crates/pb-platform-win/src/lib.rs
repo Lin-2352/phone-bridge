@@ -10,6 +10,7 @@ pub mod clipboard;
 pub mod dib;
 #[cfg(windows)]
 mod dpapi;
+pub mod hello;
 #[cfg(windows)]
 pub mod input;
 pub mod opus;

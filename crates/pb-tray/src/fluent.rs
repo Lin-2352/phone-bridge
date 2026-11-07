@@ -255,7 +255,7 @@ pub fn backdrop_supported(build: u32, remote_session: bool) -> bool {
 }
 
 /// The Windows build number ("CurrentBuildNumber"), or 0 when it cannot be read.
-fn os_build() -> u32 {
+pub(crate) fn os_build() -> u32 {
     let mut buf = [0u16; 16];
     let mut size = (buf.len() * 2) as u32;
     // SAFETY: reads one registry string into `buf`; `size` is its size in bytes.
@@ -280,7 +280,7 @@ fn os_build() -> u32 {
         .unwrap_or(0)
 }
 
-fn remote_session() -> bool {
+pub(crate) fn remote_session() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
     // SAFETY: GetSystemMetrics has no preconditions.
     unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }

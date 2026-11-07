@@ -29,6 +29,8 @@ pub enum Key {
     KeepLogs,
     /// Do not ask on this PC before playing its audio on the phone.
     AudioSkipConfirm,
+    /// Ask for Windows Hello before sensitive actions (M7.2).
+    UnlockGate,
 }
 
 /// Three-way choices, painted as segmented buttons.
@@ -60,6 +62,10 @@ pub struct Model {
     pub keep_history: bool,
     pub keep_logs: bool,
     pub audio_skip_confirm: bool,
+    /// The unlock gate switch, whether Windows Hello can run now, and the line under the switch.
+    pub unlock_gate: bool,
+    pub unlock_available: bool,
+    pub unlock_reason: &'static str,
     /// Where the logs go, and how big they are now (bytes).
     pub log_dir: String,
     pub log_bytes: u64,
@@ -113,6 +119,7 @@ impl Model {
             Key::KeepHistory => self.keep_history,
             Key::KeepLogs => self.keep_logs,
             Key::AudioSkipConfirm => self.audio_skip_confirm,
+            Key::UnlockGate => self.unlock_gate,
         }
     }
 
@@ -288,6 +295,11 @@ pub fn rows(m: &Model) -> Vec<Row> {
             Key::Control,
             "Let my phone control this PC",
             "Use the phone as a touchpad and keyboard",
+        ),
+        Row::Toggle(
+            Key::UnlockGate,
+            "Ask for Windows Hello before sensitive actions",
+            m.unlock_reason,
         ),
         Row::Header("Audio"),
         Row::Toggle(

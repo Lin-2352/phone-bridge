@@ -1184,6 +1184,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 return;
             }
             let open = sas_open(id);
+            let settings = st.settings.clone();
+            let raw_hwnd = hwnd.0 as isize;
             crate::dialog_window::ask_while(
                 Dialog::pairing(&peer_name, &sas),
                 {
@@ -1192,7 +1194,16 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 },
                 move |yes| {
                     sas_closed(id);
-                    let _ = cmds.send(Cmd::Decide { id, accept: yes });
+                    // Confirming a pairing is guarded: a failed or cancelled unlock turns "yes" into "no".
+                    crate::unlock::gate_answer(
+                        crate::unlock::Guarded::ConfirmPairing,
+                        settings,
+                        raw_hwnd,
+                        "Confirm pairing",
+                        move |ok| {
+                            let _ = cmds.send(Cmd::Decide { id, accept: ok });
+                        },
+                    )(yes);
                 },
             );
         }
@@ -1349,17 +1360,23 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                     "Allow",
                     "Don't allow",
                 ),
-                move |yes| {
-                    // An answer after the request timed out changes nothing.
-                    let in_time = reply.send(yes).is_ok();
-                    if yes && in_time {
-                        // Remember the choice; Settings can turn it off again.
-                        if let Some(st) = STATE.get() {
-                            let _ = st.settings.lock().map(|mut s| s.allow_control = true);
-                            save_settings(st);
+                crate::unlock::gate_answer(
+                    crate::unlock::Guarded::AllowDecision,
+                    st.settings.clone(),
+                    hwnd.0 as isize,
+                    "Allow PC control",
+                    move |yes| {
+                        // An answer after the request timed out changes nothing.
+                        let in_time = reply.send(yes).is_ok();
+                        if yes && in_time {
+                            // Remember the choice; Settings can turn it off again.
+                            if let Some(st) = STATE.get() {
+                                let _ = st.settings.lock().map(|mut s| s.allow_control = true);
+                                save_settings(st);
+                            }
                         }
-                    }
-                },
+                    },
+                ),
             );
         }
         UiEvent::IncomingOffer {
@@ -1382,12 +1399,21 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                     "Decline",
                 ),
                 move || alive.alive(),
-                move |yes| {
-                    // The offer may have timed out while the dialog was open.
-                    if !reply.answer(yes) && yes {
-                        crate::ui::pill("That request expired. Send it again from the phone.", 8);
-                    }
-                },
+                crate::unlock::gate_answer(
+                    crate::unlock::Guarded::AllowDecision,
+                    st.settings.clone(),
+                    hwnd.0 as isize,
+                    "Save the incoming file",
+                    move |yes| {
+                        // The offer may have timed out while the dialog was open.
+                        if !reply.answer(yes) && yes {
+                            crate::ui::pill(
+                                "That request expired. Send it again from the phone.",
+                                8,
+                            );
+                        }
+                    },
+                ),
             );
         }
         // Nothing to do here: the settings window is rebuilt after every event batch.
@@ -1406,9 +1432,15 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             crate::dialog_window::ask_while(
                 Dialog::question(title, body, yes, no),
                 move || alive.alive(),
-                move |ok| {
-                    let _ = reply.answer(ok);
-                },
+                crate::unlock::gate_answer(
+                    crate::unlock::Guarded::AllowDecision,
+                    st.settings.clone(),
+                    hwnd.0 as isize,
+                    "Allow audio sharing",
+                    move |ok| {
+                        let _ = reply.answer(ok);
+                    },
+                ),
             );
         }
         UiEvent::Info(msg) => {
@@ -2168,9 +2200,13 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
             )
         })
         .unwrap_or_default();
+    let avail = crate::unlock::cached_availability();
     crate::settings_rows::Model {
         theme,
         look: n.look,
+        unlock_gate: n.unlock_gate,
+        unlock_available: avail == crate::unlock::GateAvailability::Available,
+        unlock_reason: crate::unlock::reason_text(&avail),
         share,
         share_images,
         passwords,
@@ -2233,9 +2269,62 @@ fn camera_summary(st: &State) -> crate::camera_status::Summary {
     crate::camera_status::summary(&inputs, crate::camera::playback_error())
 }
 
+/// A setting that is guarded by Windows Hello: turning an "always allow" or automatic accept on, or the gate
+/// itself off. Turning one of them off only removes access, so it is never guarded.
+fn gated_setting(
+    st: &State,
+    a: &crate::settings_rows::Action,
+) -> Option<(crate::unlock::Guarded, &'static str)> {
+    use crate::{
+        settings_rows::{Action, Key},
+        unlock::Guarded,
+    };
+    let s = st.settings.lock().ok()?;
+    match a {
+        Action::Toggle(Key::Control) if !s.allow_control => {
+            Some((Guarded::AlwaysAllow, "Let my phone control this PC"))
+        }
+        Action::Toggle(Key::Auto) if !s.auto_accept => {
+            Some((Guarded::AutoAccept, "Accept files automatically"))
+        }
+        Action::Toggle(Key::AudioSkipConfirm) if !s.audio_skip_confirm_pc_to_phone => {
+            Some((Guarded::AlwaysAllow, "Play PC audio without asking"))
+        }
+        Action::Toggle(Key::UnlockGate) if s.unlock_gate => {
+            Some((Guarded::GateOff, "Turn off the unlock gate"))
+        }
+        _ => None,
+    }
+}
+
 fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action) {
     use crate::settings_rows::{Action, CameraAct, ChoiceKey, Key};
+    // Guarded settings ask for Windows Hello first. Once the person unlocked (the grace then holds), the same
+    // action is queued again and applied; a failed or cancelled unlock leaves the setting as it was.
+    if let Some((what, message)) = gated_setting(st, &a) {
+        let enabled = st.settings.lock().map(|s| s.unlock_gate).unwrap_or(false);
+        if crate::unlock::would_prompt(enabled) {
+            let raw = hwnd.0 as isize;
+            let again = a.clone();
+            crate::unlock::guard(what, enabled, raw, message.into(), move |ok| {
+                if ok {
+                    if let Ok(mut q) = SETTINGS_ACTIONS.lock() {
+                        q.push_back(again);
+                    }
+                    post_settings_action(raw);
+                }
+            });
+            return;
+        }
+    }
     match a {
+        Action::Toggle(Key::UnlockGate) => {
+            let _ = st
+                .settings
+                .lock()
+                .map(|mut s| s.unlock_gate = !s.unlock_gate);
+            save_settings(st);
+        }
         Action::Theme(t) => {
             let _ = st.settings.lock().map(|mut s| s.theme = t);
             crate::fluent::set_theme(t);
@@ -2772,11 +2861,18 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                         "Remove",
                         "Cancel",
                     ),
-                    move |yes| {
-                        if yes {
-                            let _ = cmds.send(Cmd::Unpair(pid));
-                        }
-                    },
+                    // Unpairing is guarded: a failed or cancelled unlock leaves the device paired.
+                    crate::unlock::gate_answer(
+                        crate::unlock::Guarded::Unpair,
+                        st.settings.clone(),
+                        hwnd.0 as isize,
+                        "Remove a paired device",
+                        move |yes| {
+                            if yes {
+                                let _ = cmds.send(Cmd::Unpair(pid));
+                            }
+                        },
+                    ),
                 );
             }
         }
@@ -2845,7 +2941,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         WM_WTSSESSION_CHANGE => {
             match wparam.0 {
-                WTS_SESSION_LOCK => notify_ui().locked = true,
+                WTS_SESSION_LOCK => {
+                    notify_ui().locked = true;
+                    // Locking the session ends the 60 s after an unlock: the next guarded action asks again.
+                    crate::unlock::reset_grace();
+                }
                 WTS_SESSION_UNLOCK => {
                     notify_ui().locked = false;
                     refresh_hidden(hwnd, st);
