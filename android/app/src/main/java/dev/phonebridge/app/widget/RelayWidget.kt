@@ -112,6 +112,16 @@ class RelayWidget : GlanceAppWidget() {
                     compact,
                     GlanceModifier.defaultWeight(),
                 )
+                // Glance has no long-press, so with several PCs paired a small button opens the list.
+                if (Bridge.node?.peers().orEmpty().size > 1) {
+                    Spacer(GlanceModifier.width(6.dp))
+                    WidgetButton(
+                        "PC ▾",
+                        Intent(ctx, dev.phonebridge.app.ChoosePcActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        compact,
+                        GlanceModifier.width(56.dp),
+                    )
+                }
             }
         }
     }

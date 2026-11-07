@@ -136,6 +136,14 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Relay.Translucent" />
         <!-- "Send clipboard" tile: reads the clipboard while focused, sends it to the PC. -->
+        <!-- A small list to choose which PC sends go to (the widget's "Choose PC"). -->
+        <activity
+            android:name=".ChoosePcActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Relay.Translucent" />
         <activity
             android:name=".SendClipboardActivity"
             android:exported="false"

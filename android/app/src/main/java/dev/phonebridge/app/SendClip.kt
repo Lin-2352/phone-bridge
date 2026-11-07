@@ -43,6 +43,32 @@ class SendClipTileService : TileService() {
 @Suppress("DEPRECATION")
 private fun TileService.collapseAndStartLegacy(i: Intent) = startActivityAndCollapse(i)
 
+/** Lets the person pick which paired PC sends go to; the choice is the default everywhere (tile, widget, share). */
+class ChoosePcActivity : Activity() {
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        val peers = Bridge.node?.peers().orEmpty()
+        if (peers.size < 2) {
+            finish()
+            return
+        }
+        val prefs = Prefs(this)
+        val names = dev.phonebridge.app.devices.labels(peers, peers.associate { it.id to prefs.pcNickname(it.id) })
+        val order = (dev.phonebridge.app.devices.sendTarget(peers, null, prefs.defaultPc) as? dev.phonebridge.app.devices.SendTarget.Ask)?.ids
+            ?: peers.map { it.id }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Send to")
+            .setItems(order.map { names[it] ?: it }.toTypedArray()) { _, i ->
+                prefs.defaultPc = order[i]
+                Bridge.linked.value = Bridge.defaultLabel(this)
+                PbService.refresh(this)
+                finish()
+            }
+            .setOnCancelListener { finish() }
+            .show()
+    }
+}
+
 /** Reads the clipboard once it has focus, sends it to the PC and disappears. */
 class SendClipboardActivity : Activity() {
     private var done = false

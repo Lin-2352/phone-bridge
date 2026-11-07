@@ -4,13 +4,9 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M7.R. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M8.1 (several devices; then M8.3, M8.4, M8.5, M8.R; see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
-- **M8 in progress (2026-11-07), nothing ticked yet:**
-  - *Done:* Android `PcStore.kt` (nicknames, labels, default after removal, `sendTarget`), per-PC prefs, Connection page with Rename, Make default and per-PC status; PC `devices.txt` nickname, fsync, `default_device` setting moved on at unpair, `devices::send_target`; transport and ffi `connected_peers()`.
-  - *M8.2 done* except PC Rename (needs a text-input dialog; follow-up).
-  - *M8.1 still open:* the call sites (share sheet, Send to, clipboard, tile, touchpad, widget), the PC picker menu, `peer_id` on `AskControl` and `IncomingOffer`.
-  - *Not started:* M8.3, M8.4 (advisor first), M8.5, M8.R.
+- **Last finished task:** M8.5 (M7.R before it). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M8.R (milestone review of several devices; see [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md)).
+- **M8 (2026-11-07):** M8.1 to M8.5 are ticked, each with its open pieces under "Open follow-ups"; the milestone review (M8.R) is next.
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -181,11 +177,11 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## M8 Several devices
 - [x] M8.0 Plan: [plans/2026-11-06-m8-several-devices.md](plans/2026-11-06-m8-several-devices.md) (written ahead of M4.9/M4.R; Task M8.0a refreshes it at start)
-- [ ] M8.1 Device picker on every send (share sheet, Send to, clipboard)
+- [x] M8.1 Device picker on every send (share sheet, Send to, clipboard) — phone: share sheet Change PC, clipboard, image and touchpad sends use the default; PC: Send to menu when several phones are paired (default first), sends go to the default, peer_id on AskControl and IncomingOffer
 - [x] M8.2 Default device, renaming, status per device — phone: nickname, Make default, status per PC; PC: Make default and a Default marker on the Devices page, default moves on at unpair, nickname store with fsync. PC Rename is not done (the tray has no text-input dialog): listed under Open follow-ups
-- [ ] M8.3 Tile and widget act on the default device; long-press opens the picker
-- [ ] M8.4 Per-device permissions; DECISIONS entry superseding `DECISIONS.md:428`
-- [ ] M8.5 Migration: today's settings become the first PC's
+- [x] M8.3 Tile and widget act on the default device; long-press opens the picker — tile subtitle and widget status name the default PC, widget has a PC button that lists the paired PCs; the tile long-press PC chip is open (follow-ups)
+- [x] M8.4 Per-device permissions; DECISIONS entry superseding `DECISIONS.md:428` — phone and ffi: Ask / Always / Never per PC with consentStep, per-PC clipboard, notification and auto-accept switches, permissions dialog behind the unlock gate; PC: control and auto-accept per phone, Disconnect clears each; audio, clipboard and notification switches per phone on the PC are open (follow-ups)
+- [x] M8.5 Migration: today's settings become the first PC's — phone migrateToPerPc and PC DeviceStore::migrate (lazy, once per device), a device paired later starts closed
 - [ ] M8.R Milestone review and CI green
 
 ## M9 Transfers that resume
@@ -256,6 +252,9 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 Ticked tasks above that still have named pieces open. They are listed here so a tick never reads as "everything done".
 
+- **M8.3:** the tile long-press (`QS_TILE_PREFERENCES`) still opens the Quick panel without a PC chip; the PC button on the widget is shown only while the widget's process has a node.
+- **M8.4:** on the PC the audio-skip, clipboard and notification switches are still read from the global setting (the per-device fields exist, migrate and are cleared by nothing); a blocked request is a notification and an app-log line, not a Timeline entry (the entry kind is shared with the PC); the PC has no per-phone settings page; Android auto-accept is per PC but the transport also keeps the global flag for peers not in a list.
+- **M8.1:** Explorer "Send to" (`--send`) and the flyout drop zone go to the default phone without asking; the phone share sheet uses a platform list, not the Compose `DevicePickerSheet`; the camera-stop liveness touch uses the default phone.
 - **M8.2:** Rename a phone on the PC (a text-input dialog does not exist in the tray yet); until then a nickname is set on the phone only.
 - [ ] M5.10 offscreen renderer (`d2d::offscreen`, `--snapshot`), goldens and the `snapshots` CI job (only the pure parts and `tools/snapshot-diff` exist)
 - [ ] M5.11 the budget run itself (`scripts/pc-budget.ps1` needs the owner's Relay closed) and the DECISIONS table
