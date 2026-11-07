@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M6.0a (Android shape tokens in gen-tokens). M5.10 and M5.11 are open (renderer and budget run).
-- **Next task:** M6.1 (theme system, Appearance settings, Roborazzi setup; see the plan in [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md)).
+- **Last finished task:** M6.6. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** M6.7 (Transfers; see the plan in [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -149,7 +149,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M6.3 Lite mode (automatic triggers and a manual toggle)
 - [ ] M6.4 Motion: token springs (Expressive only from a stable material3)
 - [ ] M6.5 Home
-- [ ] M6.6 Device picker
+- [x] M6.6 Device picker (picker rows and the sheet; M8.1 wires it into the send paths)
 - [ ] M6.7 Transfers
 - [ ] M6.8 Timeline
 - [ ] M6.9 Remote and touchpad
