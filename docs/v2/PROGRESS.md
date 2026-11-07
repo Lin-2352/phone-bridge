@@ -4,8 +4,8 @@ The single place that says what is done, what is in progress and what is left in
 
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
-- **Last finished task:** M5.9. M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M5.10 (the offscreen renderer, goldens and `snapshots` CI job; the pure parts and the diff tool are done). M5.11 budget run waits for the owner to close Relay. Earlier: M5.10 (offscreen snapshot CI job; see the plan in [plans/2026-11-06-m5-pc-redesign.md](plans/2026-11-06-m5-pc-redesign.md)).
+- **Last finished task:** M6.0a (Android shape tokens in gen-tokens). M5.10 and M5.11 are open (renderer and budget run).
+- **Next task:** M6.1 (theme system, Appearance settings, Roborazzi setup; see the plan in [plans/2026-11-06-m6-android-redesign.md](plans/2026-11-06-m6-android-redesign.md)).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -240,7 +240,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] R-4 (token done in M5.0a, Relay light tint `#E6ECFF`): sync Floot `base.css` and recapture to confirm it is visibly different
 - [ ] R-22 (token done in M5.0a, dark `warning` is amber `#E8A93A`): sync Floot `base.css` and recapture
 - [ ] Sync Floot `base.css` from `design/floot/base.css` in the repo (M4.R split the forced-colors rule from the transparency opt-out) and re-check the Floot pages afterwards
-- [ ] R-11: Android shape tokens (card 16, sheet 28) and Android type ramp (planned in M6 Task M6.0a)
+- [x] R-11: Android shape tokens (card 16, sheet 28) in gen-tokens (M6.0a); the Android type ramp is in M6.1
 - [ ] Minors R-12 to R-20 in `design/REVIEW.md` (destination on transfer rows, repeated labels, one elevation style, Windows durations 83/167/250/333, motion page layout, real nav controls, off-grid paddings, icon families, disabled-button status)
 - 2026-11-07 (M4 review): a fresh reviewer read the M4 diff against the Review Focus. Deferred minors: the CSS `--spring-*-damping` name holds a damping ratio (web libraries read a coefficient); one CSS selector does nothing and the explicit reduce-transparency switch reaches only the root element (both prototype only); `TokenSpring(stiffness, dampingRatio)` is the reverse of Compose's `spring(dampingRatio, stiffness)` (M6.4 uses named arguments); `icons_are_3_to_1` does not cover the four status icon colours (they pass today); two code comments are inaccurate.
 - 2026-11-07: the owner reviewed the plans for M5 to M8, supplied an enhanced version (crisp text and hairlines, a baked grain tile, a passive frame-metrics monitor with warmup, Back as deny on the Android consent sheet, biometric lockout and a busy Windows Hello verifier treated as failures, PBD2 address validation, overflow-safe quotas, unpair purges per-device permissions) and told me to follow it with monitors and the advisor. The enhancements are merged into the four plan files; the plans are approved. Next: Task M5.0a, then M5.1.
