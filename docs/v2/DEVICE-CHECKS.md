@@ -37,3 +37,13 @@ Setup: the phone paired with two PCs (the tray, and a second identity from `pb.e
 - [ ] **PC Send to.** With "Send to" set to Ask and two phones, the tray menu lists both and the choice is used once.
 - [x] **Finding fixed (2026-11-08, `bb2f333`):** the "Remove <PC>?" dialog showed only the bare name, so two PCs with one name could not be told apart. It now reads "Remove ASUS-ROG-STRIX- (D5C4)?", checked on the phone. Rename and permissions dialogs use the same label (not opened on the phone).
 - [x] **Status after a phone-started send (2026-11-08, `5e3bb46`).** After a notification reached the PC, Home says "Last seen just now" (it said "33 min ago" before the fix).
+
+## Not run yet (2026-11-08)
+Written so the next device session runs from this list. Needs the owner: QR scan to pair, unlock gate, Windows Hello, Remote Desktop, system toggles.
+- [ ] M8.4 Never for camera and control; grace resume under Never (needs a tray command that asks for control).
+- [ ] M8.4 Always while locked (the phone must be locked by the owner; never sleep it from adb).
+- [ ] M8.4 Live clipboard sync and notification mirror per PC (post a real app notification; `cmd notification post` produced no mirror event).
+- [ ] M7 Unlock-gate prompts on "Share clipboard" and "Share audio without asking"; M7.1 BiometricPrompt; M7.2 Windows Hello.
+- [ ] M8.2 Rename and permissions dialogs opened on the phone; M8.5 true upgrade test; M8.1 share sheet; M8.3 tile and widget; PC Send to.
+- [ ] M5.1 PC visuals (Mica, Acrylic, Relay glass, text at 100/125/150%, transparency toggle, high contrast, Remote Desktop) with a v2 tray that has its own folder and a firewall allow.
+- [ ] Finding to investigate (M9.0b): after pairing a second PC while the phone's Relay had been off, the phone kept only the new PC (`peers.txt` one line, `default_pc` empty).

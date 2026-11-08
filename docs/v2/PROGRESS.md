@@ -5,7 +5,7 @@ The single place that says what is done, what is in progress and what is left in
 ## Resume here
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M8.R (M8 is done). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
-- **Next task:** M9 has no plan yet. M8 is done; what is still open from M5 to M8 is under "Open follow-ups (2026-11-07)" below, and the phone checks are in [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
+- **Next task:** T0 (todo carry-over), then M9.0b (a second pairing removed the first PC from the phone: investigate), then Prelude P (M5.10, M5.11, M6.7, M7.8 call sites), then M9. Plans: [M9](plans/2026-11-08-m9-resume-transfers.md), [M10](plans/2026-11-08-m10-stay-current.md), [M11](plans/2026-11-08-m11-docs-final.md). M8 is done; what is still open from M5 to M8 is under "Open follow-ups (2026-11-07)" below, and the phone checks are in [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
 - **Read first, in this order:**
   1. this file;
   2. the spec: [SPEC.md](SPEC.md);
@@ -183,7 +183,13 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M8.5 Migration: today's settings become the first PC's — phone migrateToPerPc and PC DeviceStore::migrate (lazy, once per device), a device paired later starts closed
 - [x] M8.R Milestone review and CI green — one reviewer (3 Critical, 7 Important, 9 Minor): all Critical and 6 Important fixed test-first (a yes for one phone no longer reaches an unmigrated one; live notifications obey the per-PC switch; phone audio asks per PC; unpairing purges a PC's settings; Disconnect clears the legacy keys; a Send-to choice is scoped to its command and expires; the share goes to the chosen or default PC; Never notes are rate-limited); the rest are under Open follow-ups
 
+## Before M9 (added 2026-11-08)
+- [ ] T0 Todo carry-over: every check and leftover not run so far is listed in DEVICE-CHECKS.md (section "Not run yet") and under Open follow-ups
+- [ ] M9.0b Investigate: pairing a second PC left the phone with only that PC (`peers.txt` had one line, `default_pc` empty; the first PC was gone). Test first (`adding_a_second_pc_keeps_the_first`), fix the root cause
+- [ ] P.1 M5.10 snapshot CI job, P.2 M5.11 budget run, P.3 M6.7 Transfers screen, P.4 M7.8 `OfferPermit` call sites (the CI bar M9.R and M10.R rely on)
+
 ## M9 Transfers that resume
+- [x] M9.0 Plan: [plans/2026-11-08-m9-resume-transfers.md](plans/2026-11-08-m9-resume-transfers.md) (Task M9.0a refreshes it at start)
 - [ ] M9.1 Resume protocol: `resume_token`, `resume_from`, prefix hash, `resume` capability
 - [ ] M9.2 Partial-file store: 24 h limit, caps, persisted token map
 - [ ] M9.3 Send queue per device (pause, resume, cancel)
@@ -193,6 +199,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M9.R Milestone review and CI green
 
 ## M10 Stay current and trusted
+- [x] M10.0 Plan: [plans/2026-11-08-m10-stay-current.md](plans/2026-11-08-m10-stay-current.md) (owner key is a stop-and-ask: "OWNER KEY")
 - [ ] M10.1 Signed release manifest (offline Ed25519 key, anti-rollback, key rotation) and the PC update check
 - [ ] M10.2 Android update check
 - [ ] M10.3 Provider-agnostic Windows code-signing step (skipped without secrets)
@@ -205,6 +212,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M10.R Milestone review and CI green
 
 ## M11 Docs, checklist, final review
+- [x] M11.0 Plan: [plans/2026-11-08-m11-docs-final.md](plans/2026-11-08-m11-docs-final.md)
 - [ ] M11.1 THREAT_MODEL: new rows and drift fixed
 - [ ] M11.2 WIRE_PROTOCOL
 - [ ] M11.3 DECISIONS
@@ -272,4 +280,5 @@ Ticked tasks above that still have named pieces open. They are listed here so a 
 - [x] M7.3 Android: the gate also guards the SAS confirm and turning on an always-allow switch in Settings (consent screens, Remove PC, auto-accept and the gate switch are done) (Android and PC call sites; the SAS confirm and Android allow-list switches are open)
 - [ ] M7.4 the flyout action, the quick-settings tile, the notification action and a Home button for "Disconnect everything" (the tray menu and the Settings row exist)
 - [ ] M7.8 the tray and ffi call sites that take an `OfferPermit` when an offer arrives, and the "too many requests" notice; THREAT_MODEL row 14 stays "partly implemented"
+- [ ] 2026-11-08 device session: Never works for screen and audio (prompt at Ask, refusal and one note at Never); not run: camera and control Never, grace resume, Always-while-locked, live per-PC clipboard and notification mirror (`cmd notification post` produced no mirror event: retry with a real app notification), gate prompts, Rename/permissions dialogs. Tool gaps: the tray has no CLI trigger for a control request; a v2 tray with a temp `--dir` cannot install the camera driver; the phone pairs only by QR scan.
 - [ ] CI: `audio_is_current_again_right_after_a_blackout` is a 13 s real-time test that flakes when other tests starve the CPU (about one CI run in three); run it in its own serial group or give it a stable clock
