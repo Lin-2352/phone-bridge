@@ -646,6 +646,7 @@ class PbService : Service() {
                 Log.i(TAG, "Disconnected: ${e.peerName} (${e.reason})")
                 Bridge.pcContact(this, opened = false)
             }
+            is PbEvent.Reached -> Bridge.attemptDone(this, reached = true)
         }
         Bridge.listeners.forEach { it(e) }
     }

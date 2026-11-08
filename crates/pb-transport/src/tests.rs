@@ -1870,6 +1870,18 @@ mod notify {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn reaching_the_pc_is_reported_so_the_app_can_show_last_seen() {
+        let (pc, mut pc_ev, _, phone, _, _) = paired().await;
+        let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        out.on_reached(move |id| s2.lock().unwrap().push(id));
+        out.post(note("r", "hello"), None);
+        let _ = collect(&mut pc_ev).await;
+        assert_eq!(*seen.lock().unwrap(), vec![pc.peer_id()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn outbox_coalesces_updates_to_one_key() {
         let (_pc, mut pc_ev, _, phone, _, _) = paired().await;
         let out = NotifyOutbox::new(phone.clone()).with_linger(LINGER);

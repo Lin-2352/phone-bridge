@@ -312,7 +312,12 @@ struct Outbox {
     peers: Mutex<HashMap<PeerId, PeerState>>,
     /// Only these PCs (ids as text) get live notifications; `None` means every paired PC.
     allowed: Mutex<Option<HashSet<String>>>,
+    /// Called each time a notify session to a PC opens: the phone reached that PC (contact the apps show as "last seen").
+    reached: Mutex<Option<ReachedHook>>,
 }
+
+/// What runs when a session opened by the outbox reaches a PC.
+type ReachedHook = Arc<dyn Fn(PeerId) + Send + Sync>;
 
 /// Whether a PC may receive notifications given the allowed list.
 fn peer_allowed(allowed: &Option<HashSet<String>>, id: &str) -> bool {
@@ -333,7 +338,13 @@ impl NotifyOutbox {
             icons: Mutex::default(),
             peers: Mutex::default(),
             allowed: Mutex::default(),
+            reached: Mutex::default(),
         }))
+    }
+
+    /// `f` runs with the PC's id every time a session this outbox opened reaches that PC.
+    pub fn on_reached(&self, f: impl Fn(PeerId) + Send + Sync + 'static) {
+        *lock(&self.0.reached) = Some(Arc::new(f));
     }
 
     /// Limits live notifications to these PCs (`None`: every paired PC).
@@ -524,6 +535,10 @@ async fn run_peer(o: Arc<Outbox>, peer: PeerId, mut rx: mpsc::UnboundedReceiver<
         Ok(s) => s,
         Err(_) => return o.failed(peer, queue, &mut rx),
     };
+    let hook = lock(&o.reached).clone();
+    if let Some(f) = hook {
+        f(peer);
+    }
     let missed: Vec<String> = lock(&o.peers)
         .get_mut(&peer)
         .map(|st| st.missed.drain(..).collect())

@@ -100,6 +100,10 @@ pub enum PbEvent {
         peer_id: String,
         reason: String,
     },
+    /// This phone opened a session to the PC to send something (a notification): the PC is reachable now.
+    Reached {
+        peer_id: String,
+    },
     Clipboard {
         peer_name: String,
         peer_id: String,
@@ -1242,6 +1246,18 @@ pub async fn start_node(
             node.audio_slots().clone(),
         )),
     });
+    // A session this phone opens to send notifications is contact too ("last seen" must not lag behind the PC's view).
+    {
+        let l = listener.clone();
+        shared.notify.on_reached(move |id| {
+            push(
+                &l,
+                PbEvent::Reached {
+                    peer_id: id.to_string(),
+                },
+            )
+        });
+    }
     // The phone only joins pairings; drop host-side requests.
     drop(ev.pairings);
     let mut sessions = ev.sessions;
