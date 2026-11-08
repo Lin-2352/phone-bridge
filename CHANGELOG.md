@@ -1,8 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (not released yet)
 
 ### Added
+- **Files that stop part-way continue.** If the link drops during a transfer, the receiving device keeps what arrived (up to a day, within a size limit) and the sender sends only the rest. The PC retries a dropped link by itself; on the phone the *Retry* button on the notification continues the transfer. Relay 0.2.0 devices still work; they just start over.
+- **Send queue.** Files wait in line per device (up to 64). *Pause queue* on the PC's Transfers page holds the next file without stopping the one sending; waiting files are listed with a *Remove* button, and after a restart they come back paused.
+- **Drag and drop.** Drop files on the PC's quick panel, main window or screen window; with several phones paired Relay asks which one. On a tablet, foldable or other wide window, drop files from another app onto Relay to send them to the default PC.
+- **The unlock gate and *Disconnect everything*.** Sensitive switches ask for your fingerprint or Windows Hello first; one action closes every connection and turns every "always allow" off.
+- **Per-device permissions.** Each paired device has its own "always allow" answers, a *Never* choice that refuses without asking, nicknames, and a default device; sends ask which device when several are paired.
+- **Keyed discovery.** Paired devices find each other without anyone else on the network being able to tell them apart or plant an address.
+- **A Windows installer** (per user; an administrator install also adds a firewall rule for Private networks only) next to the portable zip, and a Windows on ARM build that has not been run.
+- **Release integrity tooling.** A signed release manifest can be verified (rollback, replay and key replacement are refused) and a signing step for Windows files is in the build. Neither is switched on: no public key or certificate is set up yet.
+- Redesigned PC windows and a Transfers screen on the phone.
+
+### Changed
+- The wire protocol's draft label is gone; new fields are optional, so 0.2.0 devices ignore them.
+
+### Not done yet
+- Clipboard history is built (encrypted, opt-in, seven days) but has no switch or list on screen.
+- The update check has no button yet, and the app cannot verify a manifest until the owner's public key is added.
+- The phone does not retry a dropped link by itself. The PC's *Retry* button on a failed row sends outside the queue.
+- Most of this version has been tested by automatic tests only. The checklist of what still needs a person with a phone is `docs/DEVICE-TEST-CHECKLIST.md`.
+
+### Added (since 0.2.0, earlier work)
 - A PC asking for control while *Relay control* is off now sends you to Accessibility settings, or posts a notification that does if Android won't let Relay open them from the background. The request waits up to 40 seconds for you to turn it on, instead of being refused on the spot.
 
 - *Silence earphones too*, on by default. Turned off, connected earphones keep playing during a share, and the audio also goes to the PC.

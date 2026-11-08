@@ -23,7 +23,7 @@ Relay connects an Android phone and a Windows PC directly over your local networ
 
 Download both parts from the [latest release](https://github.com/Lin-2352/phone-bridge/releases):
 
-1. **PC:** unzip `Relay-<version>-windows-x64-portable.zip` on a local drive and run `Relay.exe`. Allow it through the firewall on private networks. Everything it keeps stays in the `data` folder beside it.
+1. **PC:** either unzip `Relay-<version>-windows-x64-portable.zip` on a local drive and run `Relay.exe` (everything it keeps stays in the `data` folder beside it), or run `Relay-<version>-windows-x64-setup.exe` (installs for your account only; choose *install for all users* to also add a firewall rule for Private networks, otherwise Windows asks once the first time Relay starts). Allow it on **private** networks only.
 2. **Phone:** install `Relay-<version>.apk`. It isn't on an app store, so Android asks you to allow the install.
 3. **Pair:** choose *Pair a phone* from the tray icon, scan the QR code with the phone, and check that both screens show the same six digits.
 
@@ -38,13 +38,15 @@ These are protections, so only lift them for a build you trust, and check its SH
 
 ### If it doesn't connect
 
-- **Windows firewall:** allow Relay on the network type you're on. Many shared Wi-Fi networks count as *Public*, and allowing only private networks blocks the phone there.
+- **Windows firewall and the *Public* network type:** Relay is allowed on **Private** networks only, and Windows blocks the phone on a network it calls *Public*. Many shared Wi-Fi networks count as Public. If yours does, either set that network to Private in Windows settings (your decision: it also relaxes Windows' other rules for that network) or use USB tethering or a hotspot you trust.
 - **VPN:** a VPN on the phone or PC can block the local network unless its LAN access option is on.
 - **Device isolation:** some shared Wi-Fi networks stop devices reaching each other at all. USB tethering or a phone hotspot avoids that.
 
 Requires Android 10 or later and Windows 10 2004 or later. The webcam needs Windows 11, and icons look best there too.
 
 The release also has `Relay-<version>-windows-x64.exe`, the app as a single file with nothing to unzip. It keeps its data in `%LOCALAPPDATA%\Relay` (an install made by an older version keeps `%LOCALAPPDATA%\PhoneBridge`) rather than beside it, and it can't set up the webcam, so use the zip if you want either of those.
+
+**Updates.** Relay does not check for updates by itself and sends nothing to anyone: look at the [releases page](https://github.com/Lin-2352/phone-bridge/releases). A signed-release check is built into the code but switched off until the project's public key is added, so for now an update is a manual download. Check the SHA-256 in the release notes.
 
 Each release is also on the [Packages page](https://github.com/Lin-2352/phone-bridge/pkgs/container/relay), for pulling with `oras pull ghcr.io/lin-2352/relay:<version>`.
 

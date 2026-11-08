@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "ffi-smoke"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "iroh",
  "iroh-spike",
@@ -1203,7 +1203,7 @@ checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
 
 [[package]]
 name = "gen-tokens"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "toml 0.8.23",
 ]
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "iroh-spike"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "iroh",
  "n0-error",
@@ -2627,7 +2627,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pb-bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.4",
  "iroh",
@@ -2639,11 +2639,11 @@ dependencies = [
 
 [[package]]
 name = "pb-camera-frames"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "pb-camera-source"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "pb-camera-frames",
  "windows 0.62.2",
@@ -2652,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "pb-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "pb-identity",
  "pb-platform-win",
@@ -2663,7 +2663,7 @@ dependencies = [
 
 [[package]]
 name = "pb-ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-compat",
  "iroh",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "pb-identity"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
@@ -2692,14 +2692,14 @@ dependencies = [
 
 [[package]]
 name = "pb-log"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
 ]
 
 [[package]]
 name = "pb-platform-win"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "pb-identity",
@@ -2713,14 +2713,14 @@ dependencies = [
 
 [[package]]
 name = "pb-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "prost",
 ]
 
 [[package]]
 name = "pb-transport"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fs4",
  "getrandom 0.3.4",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "pb-tray"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "embed-resource",
  "pb-camera-frames",
@@ -2760,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "pb-update"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "serde",
@@ -2769,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "pb-video"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "pem-rfc7468"
@@ -3599,7 +3599,7 @@ checksum = "e8e2fb0f499abb4d162f2bedad68f5ef91a1682b5a03596ddb67efd37768d100"
 
 [[package]]
 name = "snapshot-diff"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "socket2"
@@ -4221,7 +4221,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "uniffi",
 ]
@@ -4568,7 +4568,7 @@ checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
 name = "wifidirect-win"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "windows 0.62.2",
 ]

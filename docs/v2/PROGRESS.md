@@ -216,8 +216,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M11.1 THREAT_MODEL: new rows and drift fixed (2026-11-08: an M9 to M11 section covering partial files, the queue, clipboard history (storage built, not on screen), drag and drop, update signing, the installer firewall rule, signing and publishing; row 10 (no flavors exist) and row 13 (update status) corrected. Rows for the unbuilt viewer, the PC/phone update check UI and Public-network detection are not written because those are not built)
 - [x] M11.2 WIRE_PROTOCOL (2026-11-08: no longer a draft; `scripts/check-docs.sh` (new, a `docs` CI job) fails when a capability in code is missing from the document, the document calls itself a draft, the threat model lacks a 0.3.0 topic, or a ticked row has no commit)
 - [x] M11.3 DECISIONS (2026-11-08: M9 and M10 sections with the rulings, what each costs if wrong, and what is not built)
-- [ ] M11.4 CHANGELOG 0.3.0 and README
-- [ ] M11.5 `docs/DEVICE-TEST-CHECKLIST.md` for Claude on the owner's desktop
+- [x] M11.4 CHANGELOG 0.3.0 and README (2026-11-08: version 0.3.0 in `Cargo.toml` and the Android build (versionCode 6), `min_compatible` unchanged; the changelog lists what is built and what is not done; README covers the installer, the Public-network block and updates)
+- [x] M11.5 `docs/DEVICE-TEST-CHECKLIST.md` for Claude on the owner's desktop (2026-11-08: setup, safety rules, how to report, 13 numbered checks for M9 and M10 plus the run-log sections for M5, M7 and M8, measurements, and what cannot be tested yet)
 - [ ] M11.6 Final whole-branch review
 - [ ] M11.7 Final push (no pull request)
 
