@@ -113,6 +113,16 @@ jobs:
           if (-not $p.WaitForExit(30000)) { $p.Kill(); throw 'Relay.exe hung (a loader error box?)' }
           "exit code: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { throw "Relay.exe loaded a DLL from its own folder (exit $($p.ExitCode))" }
+      - name: Signing script test (no certificate needed)
+        shell: pwsh
+        run: pwsh scripts/tests/sign-windows.Tests.ps1
+      - name: Sign Relay.exe (skipped without a certificate; never on pull requests)
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          WIN_SIGN_PFX_BASE64: ${{ secrets.WIN_SIGN_PFX_BASE64 }}
+          WIN_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PFX_PASSWORD }}
+        run: pwsh scripts/sign-windows.ps1 -Path target/release/pb-tray.exe
       - run: pwsh scripts/make-portable.ps1 -Zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

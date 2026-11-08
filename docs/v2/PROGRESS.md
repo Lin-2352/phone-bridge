@@ -202,7 +202,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M10.0 Plan: [plans/2026-11-08-m10-stay-current.md](plans/2026-11-08-m10-stay-current.md) (owner key is a stop-and-ask: "OWNER KEY")
 - [ ] M10.1 Signed release manifest (offline Ed25519 key, anti-rollback, key rotation) and the PC update check (2026-11-08, PARTIAL, not ticked: `crates/pb-update` verifier with 16 tests, `sign-manifest` tool, fuzz target `manifest`. Ruling: manifest `date` is integer UTC seconds, `next_key` and signatures are hex, so no date parser sits on the trust boundary. NOT done: the PC "Check now" request and Settings row, persisting the trust state, the Android check (M10.2). OWNER KEY: no public key is embedded; `TrustState` starts empty so every manifest is rejected as UnknownKey until the owner supplies a key)
 - [ ] M10.2 Android update check
-- [ ] M10.3 Provider-agnostic Windows code-signing step (skipped without secrets)
+- [x] M10.3 Provider-agnostic Windows code-signing step (skipped without secrets) (2026-11-08: `scripts/sign-windows.ps1` reads `WIN_SIGN_PFX_BASE64`, `WIN_SIGN_PFX_PASSWORD`, optional `WIN_SIGN_TIMESTAMP_URL` by name, skips with one line when absent, never prints them, deletes the temp .pfx; CI signs `pb-tray.exe` before the zip except on pull requests; `scripts/tests/sign-windows.Tests.ps1` passes. A real signature needs the owner's certificate: nothing signed yet)
 - [ ] M10.4 Inno Setup installer with a Private-network firewall rule for `Relay.exe`
 - [ ] M10.5 Public-network detection and guidance (installer and portable)
 - [ ] M10.6 Windows ARM64 build
