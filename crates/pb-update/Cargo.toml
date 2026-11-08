@@ -1,0 +1,17 @@
+[package]
+name = "pb-update"
+description = "Signed release manifest: format, Ed25519 verifier, rollback and key-rotation rules"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed25519-dalek = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+

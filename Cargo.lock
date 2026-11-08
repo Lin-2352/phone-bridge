@@ -2759,6 +2759,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pb-update"
+version = "0.2.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pb-video"
 version = "0.2.0"
 

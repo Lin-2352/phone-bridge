@@ -19,6 +19,7 @@ pb-identity = { path = "../crates/pb-identity", features = ["fuzzing"] }
 pb-video = { path = "../crates/pb-video" }
 pb-camera-frames = { path = "../crates/pb-camera-frames" }
 pb-transport = { path = "../crates/pb-transport", features = ["fuzzing"] }
+pb-update = { path = "../crates/pb-update" }
 
 [workspace]
 members = ["."]
@@ -103,6 +104,13 @@ bench = false
 [[bin]]
 name = "peers_file"
 path = "fuzz_targets/peers_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
 test = false
 doc = false
 bench = false

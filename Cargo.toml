@@ -6,6 +6,7 @@ members = [
     "crates/pb-identity",
     "tools/snapshot-diff",
     "crates/pb-protocol",
+    "crates/pb-update",
     "crates/pb-transport",
     "crates/pb-cli",
     "crates/pb-ffi",
