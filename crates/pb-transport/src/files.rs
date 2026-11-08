@@ -108,12 +108,40 @@ impl std::fmt::Debug for Cancel {
 pub struct TransferOpts {
     pub progress: Option<Progress>,
     pub cancel: Option<Cancel>,
+    /// Receiver: where to keep a partial file so a broken transfer can continue (needs the `resume` capability
+    /// on both sides). `None` keeps the old behaviour: a failed receive deletes what it has.
+    pub resume: Option<Resume>,
+}
+
+/// The receiver's partial-file store and a clock (unix seconds), shared by every transfer of the node.
+#[derive(Clone)]
+pub struct Resume {
+    pub store: std::sync::Arc<std::sync::Mutex<crate::partials::PartialStore>>,
+    pub now: fn() -> u64,
 }
 
 impl TransferOpts {
     pub fn new(progress: Option<Progress>, cancel: Option<Cancel>) -> Self {
-        Self { progress, cancel }
+        Self {
+            progress,
+            cancel,
+            resume: None,
+        }
     }
+
+    /// The same options with a partial-file store, so a broken receive is kept and can be continued.
+    pub fn with_resume(mut self, resume: Resume) -> Self {
+        self.resume = Some(resume);
+        self
+    }
+}
+
+/// Seconds since the Unix epoch (the clock [`Resume::now`] normally is).
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Run `f`, or give up with [`Error::Cancelled`] as soon as `cancel` fires.
@@ -338,12 +366,16 @@ pub(crate) async fn await_reply(s: &mut Session, id: u64) -> Result<bool, Error>
 
 /// The reply to `id`: accepted, and if not, whether it was too large.
 async fn await_answer(s: &mut Session, id: u64) -> Result<(bool, bool), Error> {
+    let r = await_full_reply(s, id).await?;
+    Ok((r.accept, r.too_large))
+}
+
+/// The whole reply to `id` (it may carry `resume_from` and its prefix hash).
+async fn await_full_reply(s: &mut Session, id: u64) -> Result<OfferReply, Error> {
     tokio::time::timeout(OFFER_TIMEOUT, async {
         loop {
             match s.recv().await? {
-                Some(ControlMsg::OfferReply(r)) if r.id == id => {
-                    return Ok((r.accept, r.too_large))
-                }
+                Some(ControlMsg::OfferReply(r)) if r.id == id => return Ok(r),
                 Some(_) => continue,
                 None => return Err(Error::Closed),
             }
@@ -437,8 +469,57 @@ impl Node {
         reader: R,
         opts: TransferOpts,
     ) -> Result<[u8; 32], Error> {
+        self.send_stream_with(peer, kind, name, size, mime, reader, opts, None)
+            .await
+    }
+
+    /// Send a file that can continue after a break. `token` (16 random bytes) must stay the same for every retry
+    /// of this file; `open` returns a fresh reader positioned at byte 0 each time it is called (the first call
+    /// supplies the reader, a later call happens only when the receiver's kept bytes are not this file's prefix).
+    /// With a peer that lacks the `resume` capability this is an ordinary [`Node::send_file_with`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_file_resumable<R, F>(
+        &self,
+        peer: &PeerId,
+        name: &str,
+        size: u64,
+        mime: &str,
+        mut open: F,
+        token: [u8; 16],
+        opts: TransferOpts,
+    ) -> Result<[u8; 32], Error>
+    where
+        R: AsyncRead + Unpin,
+        F: FnMut() -> std::io::Result<R> + Send,
+    {
+        let reader = open().map_err(|e| Error::Io(e.to_string()))?;
+        self.send_stream_with(
+            peer,
+            OfferKind::File,
+            name,
+            size,
+            mime,
+            reader,
+            opts,
+            Some((token, &mut open)),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_stream_with<R: AsyncRead + Unpin>(
+        &self,
+        peer: &PeerId,
+        kind: OfferKind,
+        name: &str,
+        size: u64,
+        mime: &str,
+        reader: R,
+        opts: TransferOpts,
+        resume: Option<ResumeSource<'_, R>>,
+    ) -> Result<[u8; 32], Error> {
         let mut s = or_cancel(&opts.cancel, self.connect(peer)).await?;
-        match send_on(&mut s, kind, name, size, mime, reader, &opts).await {
+        match send_on(&mut s, kind, name, size, mime, reader, &opts, resume).await {
             Err(Error::Cancelled) => {
                 // Tell the receiver on purpose, so it cleans up and says why.
                 s.conn.close(CLOSE_CANCELLED.into(), b"cancelled");
@@ -475,6 +556,7 @@ impl Node {
             size: text.len() as u64,
             mime: "text/plain".into(),
             text: text.to_owned(),
+            ..Default::default()
         }))
         .await?;
         let accepted = await_reply(&mut s, id).await?;
@@ -488,6 +570,9 @@ impl Node {
     }
 }
 
+/// A resume token and the way to reopen the source from byte 0.
+type ResumeSource<'a, R> = ([u8; 16], &'a mut (dyn FnMut() -> std::io::Result<R> + Send));
+
 #[allow(clippy::too_many_arguments)]
 async fn send_on<R: AsyncRead + Unpin>(
     s: &mut Session,
@@ -497,9 +582,19 @@ async fn send_on<R: AsyncRead + Unpin>(
     mime: &str,
     mut reader: R,
     opts: &TransferOpts,
+    mut resume: Option<ResumeSource<'_, R>>,
 ) -> Result<[u8; 32], Error> {
     let (cancel, progress) = (&opts.cancel, &opts.progress);
     let id = new_id();
+    // A token goes only to a peer that says it can resume, and only for a file.
+    let peer_resumes = s
+        .remote_hello
+        .capabilities
+        .iter()
+        .any(|c| c == pb_protocol::CAP_RESUME);
+    if !(peer_resumes && kind == OfferKind::File) {
+        resume = None;
+    }
     or_cancel(
         cancel,
         s.send(ControlMsg::Offer(Offer {
@@ -509,22 +604,53 @@ async fn send_on<R: AsyncRead + Unpin>(
             size,
             mime: mime.to_owned(),
             text: String::new(),
+            resume_token: resume.as_ref().map(|(t, _)| t.to_vec()).unwrap_or_default(),
         })),
     )
     .await?;
-    if let (false, too_large) = or_cancel(cancel, await_answer(s, id)).await? {
+    let reply = or_cancel(cancel, await_full_reply(s, id)).await?;
+    if !reply.accept {
         s.conn.close(0u32.into(), b"declined");
-        return Err(if too_large {
+        return Err(if reply.too_large {
             Error::TooLarge
         } else {
             Error::Declined
         });
     }
-    let mut out = s.conn.open_uni().await.map_err(tx)?;
-    or_cancel(cancel, write_frame(&mut out, &FileHeader { id })).await?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; CHUNK];
     let mut done = 0u64;
+    // The receiver kept the first `resume_from` bytes: check they are this file's, by hash, before seeking.
+    if let Some((_, open)) = resume.as_mut() {
+        let n = reply.resume_from;
+        if n > 0 && n <= size && reply.prefix_sha256.len() == 32 {
+            while done < n {
+                let want = chunk_len(n - done, CHUNK);
+                let got = reader
+                    .read(&mut buf[..want])
+                    .await
+                    .map_err(|e| Error::Io(e.to_string()))?;
+                if got == 0 {
+                    return Err(Error::Io(format!("source ended after {done} of {n} bytes")));
+                }
+                hasher.update(&buf[..got]);
+                done += got as u64;
+            }
+            let same = hasher.clone().finalize().as_slice() == reply.prefix_sha256.as_slice();
+            if !same {
+                // Not the same file any more: start again from the first byte.
+                reader = open().map_err(|e| Error::Io(e.to_string()))?;
+                hasher = Sha256::new();
+                done = 0;
+            }
+        }
+    }
+    let mut out = s.conn.open_uni().await.map_err(tx)?;
+    or_cancel(
+        cancel,
+        write_frame(&mut out, &FileHeader { id, offset: done }),
+    )
+    .await?;
     while done < size {
         let want = chunk_len(size - done, CHUNK);
         let n = reader
@@ -663,6 +789,7 @@ pub async fn receive_offer_with(
                 id,
                 accept: false,
                 too_large: too_big,
+                ..Default::default()
             }))
             .await?;
         // The sender closes once it has read the reply; closing first could
@@ -674,13 +801,42 @@ pub async fn receive_offer_with(
             Error::Declined
         });
     }
-    session
-        .send(ControlMsg::OfferReply(OfferReply {
-            id,
-            accept: true,
-            too_large: false,
-        }))
-        .await?;
+    // A kept partial of this exact file (same peer, token, name and size) is offered back as `resume_from`.
+    let resume_plan = match &opts.resume {
+        Some(r)
+            if kind == OfferKind::File
+                && offer.resume_token.len() == 16
+                && session
+                    .remote_hello
+                    .capabilities
+                    .iter()
+                    .any(|c| c == pb_protocol::CAP_RESUME) =>
+        {
+            let token: [u8; 16] = offer.resume_token.as_slice().try_into().unwrap_or([0; 16]);
+            plan_resume(
+                r.clone(),
+                session.peer,
+                token,
+                sanitize_file_name(&offer.name),
+                offer.size,
+                dir.to_owned(),
+            )
+            .await
+        }
+        _ => None,
+    };
+    let mut reply = OfferReply {
+        id,
+        accept: true,
+        ..Default::default()
+    };
+    if let Some(plan) = &resume_plan {
+        reply.resume_from = plan.len;
+        if let Some(h) = &plan.prefix {
+            reply.prefix_sha256 = h.clone().finalize().to_vec();
+        }
+    }
+    session.send(ControlMsg::OfferReply(reply)).await?;
     match kind {
         OfferKind::Text | OfferKind::Link => {
             wait_for_close(session).await;
@@ -696,7 +852,9 @@ pub async fn receive_offer_with(
         OfferKind::ClipboardImage => {
             // In memory only (bounded by MAX_CLIPBOARD_IMAGE above): the
             // receive folder is the user's, often synced or indexed.
-            return match receive_bytes(session, id, offer.size, None, progress, &cancel).await {
+            return match receive_bytes(session, id, offer.size, None, progress, &cancel, 0, None)
+                .await
+            {
                 Ok(png) => {
                     session.conn.close(CLOSE_SAVED.into(), b"saved");
                     Ok(Received::Image(png))
@@ -711,10 +869,28 @@ pub async fn receive_offer_with(
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| Error::Io(e.to_string()))?;
-    // A local random suffix: the offer id is the peer's choice and may repeat.
-    let partial = dir.join(format!(".{name}.partial-{:016x}", new_id()));
+    // A local random suffix: the offer id is the peer's choice and may repeat. With a kept partial the store
+    // owns the path (named from the peer and the token, never from the name the peer sent).
+    let partial = match &resume_plan {
+        Some(plan) => plan.path.clone(),
+        None => dir.join(format!(".{name}.partial-{:016x}", new_id())),
+    };
+    let (start, seed) = match &resume_plan {
+        Some(plan) => (plan.len, plan.prefix.clone()),
+        None => (0, None),
+    };
     let result = async {
-        receive_bytes(session, id, offer.size, Some(&partial), progress, &cancel).await?;
+        receive_bytes(
+            session,
+            id,
+            offer.size,
+            Some(&partial),
+            progress,
+            &cancel,
+            start,
+            seed,
+        )
+        .await?;
         let dir = dir.to_owned();
         let (src, n) = (partial.clone(), name.clone());
         tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
@@ -731,6 +907,9 @@ pub async fn receive_offer_with(
     .await;
     match result {
         Ok(dest) => {
+            if let (Some(plan), Some(r)) = (&resume_plan, &opts.resume) {
+                plan.finish(r);
+            }
             // We read the sender's TransferDone; closing now discards nothing.
             session.conn.close(CLOSE_SAVED.into(), b"saved");
             Ok(Received::File {
@@ -739,10 +918,92 @@ pub async fn receive_offer_with(
             })
         }
         Err(e) => {
-            let _ = tokio::fs::remove_file(&partial).await;
+            // A connection that broke or went quiet keeps its partial for the next attempt; a cancel, a hash
+            // mismatch, a protocol error or a disk error deletes it.
+            let keep = resume_plan.is_some()
+                && matches!(e, Error::Transport(_) | Error::Closed | Error::Timeout);
+            if !keep {
+                let _ = tokio::fs::remove_file(&partial).await;
+                if let (Some(plan), Some(r)) = (&resume_plan, &opts.resume) {
+                    plan.finish(r);
+                }
+            }
             Err(fail_receive(session, e).await)
         }
     }
+}
+
+/// What a receiver does for a resumable file: where its partial is, how many bytes it holds, and the hasher
+/// already fed with them (so the final SHA-256 still covers the whole file).
+struct ResumePlan {
+    path: PathBuf,
+    len: u64,
+    prefix: Option<Sha256>,
+    peer: PeerId,
+    token: [u8; 16],
+}
+
+impl ResumePlan {
+    fn finish(&self, r: &Resume) {
+        r.store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .finish(self.peer, self.token);
+    }
+}
+
+/// Claims the kept partial for this file or starts a new one (`None` when it cannot be kept: the transfer then
+/// is not resumable and behaves as before). Reads the kept bytes to hash them, never trusting a stored hash.
+async fn plan_resume(
+    r: Resume,
+    peer: PeerId,
+    token: [u8; 16],
+    name: String,
+    size: u64,
+    dir: PathBuf,
+) -> Option<ResumePlan> {
+    tokio::task::spawn_blocking(move || -> Option<ResumePlan> {
+        use std::io::Read;
+        let now = (r.now)();
+        let mut store = r.store.lock().unwrap_or_else(|p| p.into_inner());
+        // Expired partials and the disk's margin are checked at every resumable offer.
+        store.sweep(now, free_bytes(&dir));
+        if let Some(c) = store.claim(peer, token, &name, size) {
+            let mut hasher = Sha256::new();
+            let mut f = std::fs::File::open(&c.path).ok()?;
+            let mut buf = vec![0u8; 1 << 20];
+            let mut left = c.len;
+            while left > 0 {
+                let want = chunk_len(left, buf.len());
+                let n = f.read(&mut buf[..want]).ok()?;
+                if n == 0 {
+                    return None;
+                }
+                hasher.update(&buf[..n]);
+                left -= n as u64;
+            }
+            return Some(ResumePlan {
+                path: c.path,
+                len: c.len,
+                prefix: (c.len > 0).then_some(hasher),
+                peer,
+                token,
+            });
+        }
+        let path = store
+            .create(peer, token, &name, size, now, free_bytes(&dir))
+            .ok()?;
+        Some(ResumePlan {
+            path,
+            len: 0,
+            prefix: None,
+            peer,
+            token,
+        })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// End a failed receive: tell the sender why (cancelled or failed) and
@@ -768,6 +1029,7 @@ async fn fail_receive(session: &Session, e: Error) -> Error {
 
 /// Receive the offered bytes into `partial`, or into memory (returned) when
 /// it is `None`; either way the size and the sender's SHA-256 are checked.
+#[allow(clippy::too_many_arguments)]
 async fn receive_bytes(
     session: &mut Session,
     id: u64,
@@ -775,6 +1037,8 @@ async fn receive_bytes(
     partial: Option<&Path>,
     progress: Option<Progress>,
     cancel: &Option<Cancel>,
+    mut start: u64,
+    mut seed: Option<Sha256>,
 ) -> Result<Vec<u8>, Error> {
     let stream = or_cancel(cancel, async {
         tokio::time::timeout(Duration::from_secs(30), session.conn.accept_uni())
@@ -794,6 +1058,16 @@ async fn receive_bytes(
     if header.id != id {
         return Err(Error::Protocol("file stream for a different offer".into()));
     }
+    // The sender continues at the offset we offered, or starts over at 0 (its source differs from our bytes).
+    if header.offset != start {
+        if header.offset != 0 {
+            return Err(Error::Protocol(
+                "file stream at an offset never offered".into(),
+            ));
+        }
+        start = 0;
+        seed = None;
+    }
     // Hashing and disk writes run on a blocking thread, overlapped with the
     // network reads, in batches of about 1 MiB: QUIC hands over a few KB at a
     // time, and one hash + write + thread hop per piece capped receives at
@@ -805,12 +1079,21 @@ async fn receive_bytes(
         let mut file = match &path {
             Some(p) => Some(std::io::BufWriter::with_capacity(
                 BATCH,
-                std::fs::File::create(p)?,
+                if start > 0 {
+                    // Continue the kept bytes (the file holds exactly `start` of them).
+                    let f = std::fs::OpenOptions::new().append(true).open(p)?;
+                    if f.metadata()?.len() != start {
+                        return Err(std::io::Error::other("the kept partial changed"));
+                    }
+                    f
+                } else {
+                    std::fs::File::create(p)?
+                },
             )),
             None => None,
         };
         let mut mem = Vec::new();
-        let mut hasher = Sha256::new();
+        let mut hasher = seed.take().unwrap_or_default();
         while let Some(chunk) = queue.blocking_recv() {
             hasher.update(&chunk);
             match &mut file {
@@ -823,7 +1106,7 @@ async fn receive_bytes(
         }
         Ok((hasher.finalize().into(), mem))
     });
-    let mut done = 0u64;
+    let mut done = start;
     // Bytes that arrived in the same packet as the header.
     let mut batch = std::mem::take(&mut reader.buf);
     let mut buf = vec![0u8; CHUNK];
@@ -874,7 +1157,9 @@ async fn receive_bytes(
     read?;
     let (ours, mem) = written.map_err(|e| Error::Io(e.to_string()))?;
     if done != size {
-        return Err(Error::Protocol(format!("received {done} of {size} bytes")));
+        // The stream ended before the whole file arrived: a break (the sender stopped, or the link dropped), not
+        // a protocol violation. A kept partial can continue it.
+        return Err(Error::Closed);
     }
     let theirs = or_cancel(cancel, async {
         tokio::time::timeout(Duration::from_secs(30), async {

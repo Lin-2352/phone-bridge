@@ -61,6 +61,9 @@ const ROUNDS: u32 = 4;
 /// opens or closes (an incoming session clears the transport's flag).
 static CHANGED: Mutex<Vec<PeerId>> = Mutex::new(Vec::new());
 
+/// Where a file that broke mid-transfer is kept so it can continue (M9.2); set once by [`run`].
+static RESUME: std::sync::OnceLock<pb_transport::files::Resume> = std::sync::OnceLock::new();
+
 pub fn is_changed(id: &PeerId) -> bool {
     CHANGED.lock().map(|g| g.contains(id)).unwrap_or(false)
 }
@@ -745,6 +748,19 @@ pub async fn run(
         move || ui(UiEvent::PeersChecked)
     }));
     std::fs::create_dir_all(&opts.dir)?;
+    // Kept partial files live in the data folder (private to this account), never in the save folder.
+    match pb_transport::partials::PartialStore::open(
+        &opts.dir.join("partials"),
+        pb_transport::files::unix_now(),
+    ) {
+        Ok(store) => {
+            let _ = RESUME.set(pb_transport::files::Resume {
+                store: Arc::new(Mutex::new(store)),
+                now: pb_transport::files::unix_now,
+            });
+        }
+        Err(e) => log.line(&format!("RESUME partial store unavailable: {e}")),
+    }
     // A virtual camera a crash left behind goes now (nothing is streaming).
     if crate::camera_register::is_registered() {
         let log = log.clone();
@@ -1876,10 +1892,13 @@ async fn pump_session(
                     ));
                     let _ = row;
                 }
-                let opts = TransferOpts::new(
+                let mut opts = TransferOpts::new(
                     tracked.as_ref().map(|(row, _)| tr::progress_cb(*row)),
                     tracked.as_ref().map(|(_, c)| c.clone()),
                 );
+                if let Some(r) = RESUME.get() {
+                    opts = opts.with_resume(r.clone());
+                }
                 let offer_size = offer.size;
                 let outcome =
                     receive_offer_with(&mut s, offer, accept, &dir, DEFAULT_MAX_FILE, opts).await;

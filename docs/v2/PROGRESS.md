@@ -190,8 +190,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## M9 Transfers that resume
 - [x] M9.0 Plan: [plans/2026-11-08-m9-resume-transfers.md](plans/2026-11-08-m9-resume-transfers.md) (Task M9.0a refreshes it at start)
-- [ ] M9.1 Resume protocol: `resume_token`, `resume_from`, prefix hash, `resume` capability
-- [ ] M9.2 Partial-file store: 24 h limit, caps, persisted token map
+- [x] M9.1 Resume protocol: `resume_token`, `resume_from`, prefix hash, `resume` capability (2026-11-08: wire fields, `send_file_resumable`, receiver keeps the partial on a broken link; tests `resume_with_matching_prefix_continues`, `resume_with_wrong_prefix_restarts_at_zero`, `a_cancelled_resumable_receive_deletes_its_partial`; fuzz target `offer_resume`. Tray and phone receive with a store; no app sends a token yet: that is the queue, M9.3)
+- [x] M9.2 Partial-file store: 24 h limit, caps, persisted token map (`pb-transport/src/partials.rs`, 13 tests; ADVISOR before the flow was applied: reopen the source instead of seeking, store before wiring)
 - [ ] M9.3 Send queue per device (pause, resume, cancel)
 - [ ] M9.4 History: transfers under `keep_history`; clipboard history opt-in (encrypted, 7 days, no sensitive clips)
 - [ ] M9.5 Drag-and-drop on the PC (flyout, main window, screen window)

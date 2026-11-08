@@ -36,13 +36,15 @@ pub const CAP_CLIPBOARD: &str = "clipboard";
 /// longer sent to it or answered from it. An older peer ignores the name.
 pub const CAP_DISCOVERY2: &str = "discovery2";
 
-/// Reserved for resumable transfers (offer resume token, queue pause and resume, milestone M9).
+/// `Hello.capabilities` entry: this build keeps a partial file and continues it (`Offer.resume_token`,
+/// `OfferReply.resume_from`, `FileHeader.offset`). A peer without it never sees those fields. The send queue
+/// (pause, resume, cancel) is local and needs no capability.
 pub const CAP_RESUME: &str = "resume";
 
 /// Names kept for features not built yet. A build advertises one only once it implements it.
 /// The other planned features (unlock gate, Disconnect everything, pairing limits, quotas,
 /// several devices, history, drag-and-drop) change nothing on the wire.
-pub const RESERVED_CAPS: &[&str] = &[CAP_RESUME];
+pub const RESERVED_CAPS: &[&str] = &[];
 
 /// What this build puts in `Hello.capabilities`.
 pub fn local_capabilities() -> Vec<String> {
@@ -50,6 +52,7 @@ pub fn local_capabilities() -> Vec<String> {
         CAP_CLIPBOARD.into(),
         CAP_AUDIO.into(),
         CAP_DISCOVERY2.into(),
+        CAP_RESUME.into(),
     ]
 }
 
@@ -463,13 +466,14 @@ mod tests {
     #[test]
     fn reserved_capabilities_are_not_advertised_yet() {
         let local = local_capabilities();
-        // discovery2 ships with M7 (keyed discovery); only resume is still reserved.
+        // discovery2 shipped with M7 (keyed discovery) and resume with M9: nothing is reserved any more.
         assert_eq!(
             local,
             vec![
                 "clipboard".to_string(),
                 "audio".to_string(),
-                "discovery2".to_string()
+                "discovery2".to_string(),
+                "resume".to_string()
             ]
         );
         for r in RESERVED_CAPS {
@@ -478,7 +482,10 @@ mod tests {
                 "{r} is advertised before it exists"
             );
         }
-        assert_eq!(RESERVED_CAPS, &[CAP_RESUME]);
+        assert!(
+            RESERVED_CAPS.is_empty(),
+            "every named capability is implemented"
+        );
     }
 
     #[test]

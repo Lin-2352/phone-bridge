@@ -917,6 +917,8 @@ fn notify_wanted(sh: &Shared) -> bool {
 struct Shared {
     events: Events,
     incoming_dir: std::path::PathBuf,
+    /// Where a file that broke mid-transfer is kept so it can continue (M9.2); `None` when the folder is unusable.
+    resume: Option<pb_transport::files::Resume>,
     auto_accept: std::sync::atomic::AtomicBool,
     clipboard_sync: std::sync::atomic::AtomicBool,
     /// Per-device switches. `None` means "use the global switch above"; `Some(ids)` means only these PCs.
@@ -1218,6 +1220,15 @@ pub async fn start_node(
     let shared = Arc::new(Shared {
         events: listener.clone(),
         incoming_dir: dir.join("incoming"),
+        resume: pb_transport::partials::PartialStore::open(
+            &dir.join("partials"),
+            pb_transport::files::unix_now(),
+        )
+        .ok()
+        .map(|store| pb_transport::files::Resume {
+            store: Arc::new(std::sync::Mutex::new(store)),
+            now: pb_transport::files::unix_now,
+        }),
         auto_accept: std::sync::atomic::AtomicBool::new(true),
         clipboard_sync: std::sync::atomic::AtomicBool::new(false),
         auto_accept_peers: PeerSet::default(),
@@ -1551,16 +1562,22 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     accept,
                     &sh.incoming_dir,
                     DEFAULT_MAX_FILE,
-                    pb_transport::files::TransferOpts::new(
-                        Some(progress_events(
-                            sh.events.clone(),
-                            name.clone(),
-                            pid.clone(),
-                            file_name.clone(),
-                            true,
-                        )),
-                        Some(guard.cancel.clone()),
-                    ),
+                    {
+                        let o = pb_transport::files::TransferOpts::new(
+                            Some(progress_events(
+                                sh.events.clone(),
+                                name.clone(),
+                                pid.clone(),
+                                file_name.clone(),
+                                true,
+                            )),
+                            Some(guard.cancel.clone()),
+                        );
+                        match &sh.resume {
+                            Some(r) => o.with_resume(r.clone()),
+                            None => o,
+                        }
+                    },
                 )
                 .await;
                 drop(guard);

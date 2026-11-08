@@ -339,6 +339,7 @@ pub async fn receive_input(
             id: start.id,
             accept,
             too_large: false,
+            ..Default::default()
         }))
         .await?;
     if !accept {

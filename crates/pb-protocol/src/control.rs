@@ -42,7 +42,7 @@ pub enum ControlMsg {
     #[prost(message, tag = "8")]
     ClipboardUpdate(ClipboardUpdate),
     /// The sender wants to control this device's pointer and keyboard. The
-    /// receiver answers with `OfferReply { id, accept }`; if accepted, the
+    /// receiver answers with `OfferReply { id, accept, ..Default::default() }`; if accepted, the
     /// sender opens one unidirectional stream of 8-byte `InputDatagram`
     /// records (see `pb_protocol::InputDatagram`) and the session lasts until
     /// that stream ends.
@@ -72,7 +72,7 @@ pub enum ControlMsg {
     #[prost(message, tag = "16")]
     NotifyActionResult(NotifyActionResult),
     /// PC -> phone: show me your screen. Answered by `ScreenAccept`, or by
-    /// `OfferReply { accept: false }`. Accepting also lets the PC's window
+    /// `OfferReply { accept: false, ..Default::default() }`. Accepting also lets the PC's window
     /// drive the phone for this session (input on its own uni stream).
     #[prost(message, tag = "17")]
     ScreenStart(ScreenStart),
@@ -621,6 +621,10 @@ pub struct Offer {
     pub mime: String,
     #[prost(string, tag = "6")]
     pub text: String,
+    /// Resumable transfers (capability `resume`): exactly 16 random bytes chosen by the sender and kept for every
+    /// retry of this file. Empty from a peer without the capability, and for anything but a file.
+    #[prost(bytes = "vec", tag = "7")]
+    pub resume_token: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -633,6 +637,13 @@ pub struct OfferReply {
     /// (so the sender can say why). Older peers leave it false.
     #[prost(bool, tag = "3")]
     pub too_large: bool,
+    /// Bytes of this file the receiver already holds (a kept partial), 0 when none. Only sent in answer to an
+    /// offer that carried a `resume_token`.
+    #[prost(uint64, tag = "4")]
+    pub resume_from: u64,
+    /// SHA-256 of those `resume_from` bytes (32 bytes), so the sender can check they are the same file prefix.
+    #[prost(bytes = "vec", tag = "5")]
+    pub prefix_sha256: Vec<u8>,
 }
 
 /// Sent after the last file byte; the receiver compares the hash before
@@ -670,6 +681,10 @@ pub struct ClipboardUpdate {
 pub struct FileHeader {
     #[prost(uint64, tag = "1")]
     pub id: u64,
+    /// Where in the file the bytes on this stream start: 0 (absent) for the whole file, or the `resume_from`
+    /// the receiver offered after the sender checked the prefix hash.
+    #[prost(uint64, tag = "2")]
+    pub offset: u64,
 }
 
 impl From<ControlMsg> for Control {
@@ -843,6 +858,62 @@ mod tests {
     use super::*;
     use crate::{decode_frame, encode_frame};
 
+    /// The offer as Relay 0.2.0 wrote it: fields 1 to 6 only.
+    #[derive(Clone, PartialEq, Message)]
+    struct OldOffer {
+        #[prost(uint64, tag = "1")]
+        id: u64,
+        #[prost(string, tag = "3")]
+        name: String,
+        #[prost(uint64, tag = "4")]
+        size: u64,
+    }
+
+    #[test]
+    fn offer_without_resume_token_decodes_as_0_2_0() {
+        let old = OldOffer {
+            id: 5,
+            name: "a.bin".into(),
+            size: 10,
+        };
+        let new = Offer::decode(old.encode_to_vec().as_slice()).unwrap();
+        assert_eq!((new.id, new.size), (5, 10));
+        assert!(new.resume_token.is_empty(), "absent means no resume");
+        // And a 0.2.0 reader ignores the field it does not know.
+        let with_token = Offer {
+            resume_token: vec![1; 16],
+            ..new
+        };
+        let back = OldOffer::decode(with_token.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(back, old);
+    }
+
+    #[test]
+    fn reply_and_header_resume_fields_are_optional_and_round_trip() {
+        let none = OfferReply::decode(&[0x08, 0x07][..]).unwrap();
+        assert_eq!((none.resume_from, none.prefix_sha256.len()), (0, 0));
+        let r = OfferReply {
+            id: 1,
+            accept: true,
+            resume_from: 4 << 30,
+            prefix_sha256: vec![3; 32],
+            ..Default::default()
+        };
+        assert_eq!(OfferReply::decode(r.encode_to_vec().as_slice()).unwrap(), r);
+        let h = FileHeader {
+            id: 1,
+            offset: 4 << 30,
+        };
+        assert_eq!(FileHeader::decode(h.encode_to_vec().as_slice()).unwrap(), h);
+        assert_eq!(FileHeader::decode(&[0x08, 0x01][..]).unwrap().offset, 0);
+    }
+
+    #[test]
+    fn resume_is_advertised_now_and_no_longer_reserved() {
+        assert!(crate::local_capabilities().contains(&crate::CAP_RESUME.to_string()));
+        assert!(!crate::RESERVED_CAPS.contains(&crate::CAP_RESUME));
+    }
+
     #[test]
     fn control_envelope_round_trips_each_variant() {
         let msgs = [
@@ -859,11 +930,13 @@ mod tests {
                 size: 1 << 33,
                 mime: "image/jpeg".into(),
                 text: String::new(),
+                ..Default::default()
             }),
             ControlMsg::OfferReply(OfferReply {
                 id: 9,
                 accept: true,
                 too_large: false,
+                ..Default::default()
             }),
             ControlMsg::TransferDone(TransferDone {
                 id: 9,
@@ -1190,6 +1263,7 @@ mod tests {
             size: 1234,
             mime: "image/png".into(),
             text: String::new(),
+            ..Default::default()
         };
         let bytes = Control::from(ControlMsg::Offer(offer.clone())).encode_to_vec();
         let got = Control::decode(bytes.as_slice()).unwrap();

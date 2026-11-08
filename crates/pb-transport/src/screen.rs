@@ -459,6 +459,7 @@ pub async fn serve_screen(
                 id: start.id,
                 accept: false,
                 too_large: false,
+                ..Default::default()
             }))
             .await?;
         crate::files::wait_for_close(&session).await;

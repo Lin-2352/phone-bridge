@@ -24,6 +24,13 @@ pb-transport = { path = "../crates/pb-transport", features = ["fuzzing"] }
 members = ["."]
 
 [[bin]]
+name = "offer_resume"
+path = "fuzz_targets/offer_resume.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "control_frame"
 path = "fuzz_targets/control_frame.rs"
 test = false

@@ -790,6 +790,276 @@ mod transfers {
         std::fs::read_dir(dir).unwrap().next().is_none()
     }
 
+    // ---- resumable transfers (M9.1) ----
+
+    use crate::files::{receive_offer_with, unix_now, Resume, TransferOpts};
+    use crate::partials::PartialStore;
+    use sha2::{Digest, Sha256};
+
+    const TOKEN: [u8; 16] = [9; 16];
+
+    /// A source that reads `left` bytes of `data` and then fails, like a link that dropped.
+    struct FailAfter {
+        data: std::io::Cursor<Vec<u8>>,
+        left: usize,
+    }
+
+    impl tokio::io::AsyncRead for FailAfter {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.left == 0 {
+                return std::task::Poll::Ready(Err(std::io::Error::other("link lost")));
+            }
+            let n = buf.remaining().min(self.left).min(64 * 1024);
+            let pos = self.data.position() as usize;
+            let chunk = self.data.get_ref()[pos..pos + n].to_vec();
+            buf.put_slice(&chunk);
+            self.data.set_position((pos + n) as u64);
+            self.left -= n;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    fn resume_in(dir: &Path) -> Resume {
+        Resume {
+            store: Arc::new(std::sync::Mutex::new(
+                PartialStore::open(dir, unix_now()).unwrap(),
+            )),
+            now: unix_now,
+        }
+    }
+
+    async fn receive_with(
+        pc_ev: &mut NodeEvents,
+        dir: &Path,
+        resume: Option<Resume>,
+        progress: Option<crate::files::Progress>,
+        cancel: Option<crate::files::Cancel>,
+    ) -> Result<Received, Error> {
+        let mut s = pc_ev.sessions.recv().await.unwrap();
+        loop {
+            match s.recv().await? {
+                Some(ControlMsg::Offer(o)) => {
+                    let mut opts = TransferOpts::new(progress, cancel);
+                    if let Some(r) = resume {
+                        opts = opts.with_resume(r);
+                    }
+                    return receive_offer_with(&mut s, o, true, dir, DEFAULT_MAX_FILE, opts).await;
+                }
+                Some(_) => continue,
+                None => return Err(Error::Closed),
+            }
+        }
+    }
+
+    fn sha(data: &[u8]) -> [u8; 32] {
+        Sha256::digest(data).into()
+    }
+
+    /// Sends `data` once with a link that drops after `cut` bytes; returns what the receiver kept.
+    async fn first_attempt(
+        phone: &Node,
+        pcid: &PeerId,
+        pc_ev: &mut NodeEvents,
+        dir: &Path,
+        resume: &Resume,
+        data: &[u8],
+        cut: usize,
+    ) -> u64 {
+        let owned = data.to_vec();
+        let send = phone.send_file_resumable(
+            pcid,
+            "r.bin",
+            data.len() as u64,
+            "",
+            move || {
+                Ok(FailAfter {
+                    data: std::io::Cursor::new(owned.clone()),
+                    left: cut,
+                })
+            },
+            TOKEN,
+            TransferOpts::default(),
+        );
+        let recv = receive_with(pc_ev, dir, Some(resume.clone()), None, None);
+        let (sent, got) = within("first attempt", async { tokio::join!(send, recv) }).await;
+        assert!(sent.is_err(), "the link dropped: {sent:?}");
+        assert!(
+            matches!(
+                got,
+                Err(Error::Transport(_) | Error::Closed | Error::Timeout)
+            ),
+            "{got:?}"
+        );
+        let kept = resume
+            .store
+            .lock()
+            .unwrap()
+            .claim(phone.peer_id(), TOKEN, "r.bin", data.len() as u64)
+            .map(|c| c.len)
+            .expect("the partial is kept after a broken link");
+        assert!(kept > 0 && kept < data.len() as u64, "kept {kept}");
+        kept
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_with_matching_prefix_continues() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("resume-ok");
+        let parts = tmp("resume-ok-parts");
+        let resume = resume_in(&parts);
+        let data = pattern(4 << 20);
+        let kept = first_attempt(&phone, &pcid, &mut pc_ev, &dir, &resume, &data, 2_500_000).await;
+
+        let first_progress = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+        let fp = first_progress.clone();
+        let progress: crate::files::Progress =
+            Arc::new(move |done, _| fp.lock().unwrap().push(done));
+        let again = data.clone();
+        let send = phone.send_file_resumable(
+            &pcid,
+            "r.bin",
+            data.len() as u64,
+            "",
+            move || Ok(std::io::Cursor::new(again.clone())),
+            TOKEN,
+            TransferOpts::default(),
+        );
+        let recv = receive_with(&mut pc_ev, &dir, Some(resume.clone()), Some(progress), None);
+        let (sent, got) = within("second attempt", async { tokio::join!(send, recv) }).await;
+        assert_eq!(sent.unwrap(), sha(&data), "the hash covers the whole file");
+        let Received::File { path, size } = got.unwrap() else {
+            panic!("not a file")
+        };
+        assert_eq!(size, data.len() as u64);
+        assert_eq!(std::fs::read(path).unwrap(), data);
+        assert!(
+            first_progress.lock().unwrap().iter().all(|d| *d > kept),
+            "only the missing bytes were sent: kept {kept}, progress {:?}",
+            first_progress.lock().unwrap()
+        );
+        assert!(
+            resume
+                .store
+                .lock()
+                .unwrap()
+                .claim(phone.peer_id(), TOKEN, "r.bin", data.len() as u64)
+                .is_none(),
+            "a finished file leaves no partial"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_with_wrong_prefix_restarts_at_zero() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("resume-bad");
+        let parts = tmp("resume-bad-parts");
+        let resume = resume_in(&parts);
+        let a = pattern(4 << 20);
+        first_attempt(&phone, &pcid, &mut pc_ev, &dir, &resume, &a, 2_500_000).await;
+
+        // The file changed on the sender between the attempts (same name and size, other content).
+        let b: Vec<u8> = a.iter().map(|x| x ^ 0xff).collect();
+        let again = b.clone();
+        let send = phone.send_file_resumable(
+            &pcid,
+            "r.bin",
+            b.len() as u64,
+            "",
+            move || Ok(std::io::Cursor::new(again.clone())),
+            TOKEN,
+            TransferOpts::default(),
+        );
+        let recv = receive_with(&mut pc_ev, &dir, Some(resume), None, None);
+        let (sent, got) = within("second attempt", async { tokio::join!(send, recv) }).await;
+        assert_eq!(sent.unwrap(), sha(&b));
+        let Received::File { path, .. } = got.unwrap() else {
+            panic!("not a file")
+        };
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            b,
+            "never a splice of old and new"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_receiver_without_a_store_receives_the_whole_file() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("resume-none");
+        let data = pattern(2 << 20);
+        let again = data.clone();
+        let send = phone.send_file_resumable(
+            &pcid,
+            "r.bin",
+            data.len() as u64,
+            "",
+            move || Ok(std::io::Cursor::new(again.clone())),
+            TOKEN,
+            TransferOpts::default(),
+        );
+        let recv = receive_with(&mut pc_ev, &dir, None, None, None);
+        let (sent, got) = within("plain receive", async { tokio::join!(send, recv) }).await;
+        assert_eq!(sent.unwrap(), sha(&data));
+        let Received::File { path, .. } = got.unwrap() else {
+            panic!("not a file")
+        };
+        assert_eq!(std::fs::read(path).unwrap(), data);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_resumable_receive_deletes_its_partial() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("resume-cancel");
+        let parts = tmp("resume-cancel-parts");
+        let resume = resume_in(&parts);
+        let data = pattern(32 << 20);
+        let cancel = crate::files::Cancel::new();
+        let again = data.clone();
+        let send = phone.send_file_resumable(
+            &pcid,
+            "r.bin",
+            data.len() as u64,
+            "",
+            move || Ok(std::io::Cursor::new(again.clone())),
+            TOKEN,
+            TransferOpts::default(),
+        );
+        let recv = receive_with(
+            &mut pc_ev,
+            &dir,
+            Some(resume.clone()),
+            Some(cancel_after(1 << 20, &cancel)),
+            Some(cancel.clone()),
+        );
+        let (sent, got) = within("cancelled receive", async { tokio::join!(send, recv) }).await;
+        assert!(matches!(got, Err(Error::Cancelled)), "{got:?}");
+        assert!(matches!(sent, Err(Error::PeerCancelled)), "{sent:?}");
+        assert!(
+            resume
+                .store
+                .lock()
+                .unwrap()
+                .claim(phone.peer_id(), TOKEN, "r.bin", data.len() as u64)
+                .is_none(),
+            "a cancel is final: nothing is kept"
+        );
+        assert!(
+            std::fs::read_dir(&parts)
+                .unwrap()
+                .flatten()
+                .all(|f| !f.file_name().to_string_lossy().ends_with(".part")),
+            "no partial file is left"
+        );
+    }
+
     #[tokio::test]
     async fn a_cancel_handle_wakes_waiters_and_is_sticky() {
         let c = crate::files::Cancel::new();
@@ -1018,6 +1288,7 @@ mod transfers {
             size: MAX_CLIPBOARD_IMAGE as u64 + 1,
             mime: "image/png".into(),
             text: String::new(),
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -1081,6 +1352,7 @@ mod transfers {
                 id: o.id,
                 accept: true,
                 too_large: false,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -1113,6 +1385,7 @@ mod transfers {
             size: data.len() as u64,
             mime: String::new(),
             text: String::new(),
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -1122,7 +1395,15 @@ mod transfers {
             }
         }
         let mut out = s.conn.open_uni().await.unwrap();
-        write_frame(&mut out, &FileHeader { id: 7 }).await.unwrap();
+        write_frame(
+            &mut out,
+            &FileHeader {
+                id: 7,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         let n = if stop_half {
             data.len() / 2
         } else {

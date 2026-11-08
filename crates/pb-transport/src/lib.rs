@@ -14,6 +14,7 @@ pub mod files;
 pub mod input;
 pub mod notify;
 pub mod pairing;
+pub mod partials;
 pub mod quota;
 pub mod screen;
 pub mod tuning;
