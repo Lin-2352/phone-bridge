@@ -135,7 +135,7 @@ class ScanActivity : ComponentActivity() {
     private fun handOff(code: String) {
         if (!done.compareAndSet(false, true)) return
         Log.i(TAG, "SCAN got pairing code")
-        PairingFlow.start(code)
+        PairingFlow.start(this, code)
         runOnUiThread {
             startActivity(
                 Intent(this, MainActivity::class.java)

@@ -187,7 +187,7 @@ class MainActivity : FragmentActivity() {
         if (!intent.hasExtra("pair_code") && !intent.hasExtra("confirm") && !intent.hasExtra("send_text")) return
         Bridge.scope.launch {
             val node = Bridge.awaitNode() ?: return@launch
-            intent.getStringExtra("pair_code")?.let { PairingFlow.start(it) }
+            intent.getStringExtra("pair_code")?.let { PairingFlow.start(this@MainActivity, it) }
             intent.getStringExtra("confirm")?.let { PairingFlow.confirm(applicationContext, it == "yes") }
             intent.getStringExtra("send_text")?.let { t ->
                 val peer = node.peers().firstOrNull() ?: return@let

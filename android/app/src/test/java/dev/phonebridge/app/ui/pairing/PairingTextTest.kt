@@ -8,6 +8,23 @@ import org.junit.Test
 class PairingTextTest {
     private fun join(r: String?) = joinErrorText(r)
 
+    @Test fun a_failed_join_names_the_vpn_when_one_is_on() {
+        for (reason in listOf("Failed", "timed out", "transport error", null)) {
+            val t = joinErrorText(reason, vpnOn = true)
+            assertTrue("$reason: $t", "VPN" in t)
+        }
+    }
+
+    @Test fun a_vpn_is_not_blamed_for_a_wrong_or_expired_code() {
+        assertFalse("VPN" in joinErrorText("wrong pairing code", vpnOn = true))
+        assertFalse("VPN" in joinErrorText("the code expired", vpnOn = true))
+    }
+
+    @Test fun without_a_vpn_the_text_is_unchanged() {
+        assertEquals(joinErrorText("timed out"), joinErrorText("timed out", vpnOn = false))
+        assertFalse("VPN" in joinErrorText("Failed", vpnOn = false))
+    }
+
     @Test fun expired_or_used_code_says_get_a_new_one() {
         val t = join("pairing refused: the code expired or was already used, or the other device declined")
         assertTrue(t, t.startsWith("That code has expired"))

@@ -16,7 +16,16 @@ private const val UNREACHABLE = "Could not reach your PC. Check that it is on th
 private const val UNKNOWN = "Pairing did not work. On your PC choose Pair new device to show a new code, then $SCAN_AGAIN."
 
 /** Why the first step (joining with the scanned code) failed, in a sentence with a next step. */
-fun joinErrorText(reason: String?): String {
+fun joinErrorText(reason: String?, vpnOn: Boolean = false): String {
+    val text = joinErrorBase(reason)
+    // A wrong or expired code is the code's fault; any other failure to get through may be the VPN's.
+    val codeProblem = text == NOT_RELAY || text == REJECTED || text == EXPIRED
+    return if (vpnOn && !codeProblem) "$text $VPN_HINT" else text
+}
+
+private const val VPN_HINT = "A VPN is on and may be blocking the local network: turn it off, or allow local network access (or exclude $APP_NAME) in the VPN app."
+
+private fun joinErrorBase(reason: String?): String {
     val r = reason?.lowercase() ?: return UNKNOWN
     return when {
         "not a relay pairing code" in r || "malformed" in r -> NOT_RELAY

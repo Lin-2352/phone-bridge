@@ -263,6 +263,7 @@ class PbService : Service() {
     private val router = EventRouter(events, saves)
     @Volatile private var destroyed = false
     private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var lanCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var rediscoverJob: kotlinx.coroutines.Job? = null
 
     /** New Wi-Fi or new address: find the paired PC again (debounced). */
@@ -306,6 +307,8 @@ class PbService : Service() {
         }
         AppLog.init(this)
         AppLog.event("events", "service_start")
+        // Before the node makes its sockets: with a VPN up, local traffic goes to the Wi-Fi directly.
+        LanRoute.refresh(this)
         Timeline.init(this)
         // A crash while streaming must not leave the phone muted. Off the main thread, in order with shares.
         dev.phonebridge.app.audio.VolumeJobs.shared.submit { PhoneSpeaker.restore(this) }
@@ -357,6 +360,16 @@ class PbService : Service() {
         }
         runCatching { getSystemService(android.net.ConnectivityManager::class.java).registerDefaultNetworkCallback(cb) }
             .onSuccess { netCallback = cb }
+        // The default network is the tunnel while a VPN is up and never reports the Wi-Fi: watch every network, so
+        // the Wi-Fi binding follows a VPN coming or going.
+        val lan = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) { if (LanRoute.refresh(this@PbService)) rediscoverSoon() }
+            override fun onLost(network: android.net.Network) { if (LanRoute.refresh(this@PbService)) rediscoverSoon() }
+        }
+        runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java)
+                .registerNetworkCallback(android.net.NetworkRequest.Builder().build(), lan)
+        }.onSuccess { lanCallback = lan }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -438,6 +451,8 @@ class PbService : Service() {
         cancelProgress(false)
         netCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
         netCallback = null
+        lanCallback?.let { cb -> runCatching { getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(cb) } }
+        lanCallback = null
         scope.cancel()
         Bridge.running.value = false
         Bridge.startingSince = 0L

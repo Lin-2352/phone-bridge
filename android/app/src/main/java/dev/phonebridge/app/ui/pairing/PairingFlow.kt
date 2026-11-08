@@ -9,6 +9,7 @@ import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.AppLog
 import dev.phonebridge.app.Bridge
 import dev.phonebridge.app.PbService
+import dev.phonebridge.app.vpnActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -39,11 +40,14 @@ object PairingFlow {
     private val lock = Any()
     /** Bumped by every start and cancel: an attempt whose number is out of date has been given up. */
     private var gen = 0
+    @Volatile private var appCtx: Context? = null
+    private fun vpnNow() = appCtx?.let { vpnActive(it) } ?: false
 
     /** Join with a scanned or typed [code]; the progress shows at once. A second call while joining is ignored. */
-    fun start(code: String) {
+    fun start(ctx: Context, code: String) {
         synchronized(lock) {
             if (phase.value is PairPhase.Joining) return
+            appCtx = ctx.applicationContext
             phase.value = PairPhase.Joining(SystemClock.elapsedRealtime())
             val g = ++gen
             job = Bridge.scope.launch { join(code, g) }
@@ -85,7 +89,7 @@ object PairingFlow {
             }
             if (sas == null) {
                 AppLog.event("events", "pair_step", "step" to "join_failed", "type" to "Timeout")
-                fail(joinErrorText("timed out"))
+                fail(joinErrorText("timed out", vpnNow()))
                 return
             }
             Log.i(TAG, "SAS shown")
@@ -98,7 +102,7 @@ object PairingFlow {
             val reason = (e as? PbException.Failed)?.reason ?: e.message
             Log.i(TAG, "Pairing failed: ${e.javaClass.simpleName}")
             AppLog.event("events", "pair_step", "step" to "join_failed", "type" to e.javaClass.simpleName)
-            if (synchronized(lock) { gen == g }) fail(joinErrorText(reason))
+            if (synchronized(lock) { gen == g }) fail(joinErrorText(reason, vpnNow()))
         }
     }
 
