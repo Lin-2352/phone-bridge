@@ -864,6 +864,11 @@ pub async fn run(
                 ui(UiEvent::Info("Pair a phone first".into()));
                 return;
             };
+            // Retried by hand: a place it still holds in the queue goes, so it is not sent twice.
+            if let Ok(mut q) = queues().lock() {
+                q.of(&id.to_string()).drop_path(&info.path);
+            }
+            save_queues();
             let (node, log, ui, settings) =
                 (node.clone(), log.clone(), ui.clone(), settings.clone());
             rt.spawn(async move {
@@ -1000,6 +1005,10 @@ pub async fn run(
                         Ok(_) => {
                             refresh_changed(&node);
                             log.line(&format!("UNPAIRED {id}"));
+                            if let Ok(mut q) = queues().lock() {
+                                q.forget(&id.to_string());
+                            }
+                            save_queues();
                             if let Ok(mut d) = devices.lock() {
                                 if d.forget(&id.to_string()) {
                                     let _ = d.save(&devices_path);
@@ -1082,7 +1091,7 @@ pub async fn run(
                 }
                 Some(Cmd::QueueRemove { peer, id }) => {
                     if let Ok(mut q) = queues().lock() {
-                        q.of(&peer).cancel(id);
+                        q.of(&peer).remove_waiting(id);
                     }
                     save_queues();
                     ui(UiEvent::PeersChecked);
@@ -1516,6 +1525,15 @@ async fn send_batch(
                 pb_transport::files::new_resume_token(),
             )
         });
+        let paused = queues()
+            .lock()
+            .map(|mut q| q.of(&key).is_paused())
+            .unwrap_or(false);
+        if matches!(added, Some(Ok(_))) && paused {
+            ui(UiEvent::Info(format!(
+                "The queue is paused: {file_name} will go to {name} when you choose Resume queue on the Transfers page"
+            )));
+        }
         if !matches!(added, Some(Ok(_))) {
             ui(UiEvent::Info(format!(
                 "{name} already has {} files waiting; {file_name} was not added",
@@ -1549,7 +1567,7 @@ async fn drain_queue(
         };
         let total = queues()
             .lock()
-            .map(|q| q.get(&key).map_or(1, |s| s.items().len()))
+            .map(|q| q.get(&key).map_or(1, |s| s.pending().max(1)))
             .unwrap_or(1);
         let (row, cancel) = tr::start(tr::NewTransfer {
             dir: tr::Dir::Send,

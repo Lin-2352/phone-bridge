@@ -928,6 +928,9 @@ pub async fn receive_offer_with(
                 if let (Some(plan), Some(r)) = (&resume_plan, &opts.resume) {
                     plan.finish(r);
                 }
+            } else if let (Some(plan), Some(r)) = (&resume_plan, &opts.resume) {
+                // Kept for the next attempt: this receive no longer owns it.
+                plan.release(r);
             }
             Err(e)
         }
@@ -968,6 +971,13 @@ struct ResumePlan {
 }
 
 impl ResumePlan {
+    fn release(&self, r: &Resume) {
+        r.store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .unlock(self.peer, self.token);
+    }
+
     fn finish(&self, r: &Resume) {
         r.store
             .lock()
@@ -988,16 +998,41 @@ async fn plan_resume(
     tokio::task::spawn_blocking(move || -> Option<ResumePlan> {
         use std::io::Read;
         let now = (r.now)();
-        let mut store = r.store.lock().unwrap_or_else(|p| p.into_inner());
-        // Expired partials and the disk's margin are checked at every resumable offer. The margin is the
-        // free space where the partials live, which is not the save folder's drive when they differ.
-        let free = free_bytes(store.dir());
-        store.sweep(now, free);
-        if let Some(c) = store.claim(peer, token, &name, size) {
+        let claim = {
+            let mut store = r.store.lock().unwrap_or_else(|p| p.into_inner());
+            // Another receive with the same peer and token owns the partial: this one is not resumable.
+            if !store.lock(peer, token) {
+                return None;
+            }
+            // Expired partials and the disk's margin are checked at every resumable offer. The margin is the
+            // free space where the partials live, which is not the save folder's drive when they differ.
+            let free = free_bytes(store.dir());
+            store.sweep(now, free);
+            match store.claim(peer, token, &name, size) {
+                Some(c) => c,
+                None => {
+                    return match store.create(peer, token, &name, size, now, free) {
+                        Ok(path) => Some(ResumePlan {
+                            path,
+                            len: 0,
+                            prefix: None,
+                            peer,
+                            token,
+                        }),
+                        Err(_) => {
+                            store.unlock(peer, token);
+                            None
+                        }
+                    };
+                }
+            }
+            // The guard ends here: hashing up to 2 GiB must not hold every other transfer's lock.
+        };
+        let hashed = (|| -> Option<Sha256> {
             let mut hasher = Sha256::new();
-            let mut f = std::fs::File::open(&c.path).ok()?;
+            let mut f = std::fs::File::open(&claim.path).ok()?;
             let mut buf = vec![0u8; 1 << 20];
-            let mut left = c.len;
+            let mut left = claim.len;
             while left > 0 {
                 let want = chunk_len(left, buf.len());
                 let n = f.read(&mut buf[..want]).ok()?;
@@ -1007,22 +1042,24 @@ async fn plan_resume(
                 hasher.update(&buf[..n]);
                 left -= n as u64;
             }
-            return Some(ResumePlan {
-                path: c.path,
-                len: c.len,
-                prefix: (c.len > 0).then_some(hasher),
+            Some(hasher)
+        })();
+        match hashed {
+            Some(hasher) => Some(ResumePlan {
+                path: claim.path,
+                len: claim.len,
+                prefix: (claim.len > 0).then_some(hasher),
                 peer,
                 token,
-            });
+            }),
+            None => {
+                r.store
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .unlock(peer, token);
+                None
+            }
         }
-        let path = store.create(peer, token, &name, size, now, free).ok()?;
-        Some(ResumePlan {
-            path,
-            len: 0,
-            prefix: None,
-            peer,
-            token,
-        })
     })
     .await
     .ok()

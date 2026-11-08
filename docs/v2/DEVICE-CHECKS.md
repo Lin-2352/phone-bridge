@@ -48,5 +48,5 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - [ ] M5.1 PC visuals (Mica, Acrylic, Relay glass, text at 100/125/150%, transparency toggle, high contrast, Remote Desktop) with a v2 tray that has its own folder and a firewall allow.
 - [ ] Finding to investigate (M9.0b): after pairing a second PC while the phone's Relay had been off, the phone kept only the new PC (`peers.txt` one line, `default_pc` empty).
 - [ ] M9.5 Drag files from Explorer onto the flyout, the main window and the screen window with two phones paired (the "Send to" menu appears, the chosen phone gets the files) and with one phone paired (no menu).
-- [ ] M9.3 Send a large file, break the link (turn Wi-Fi off on the phone for a few seconds), and watch it continue instead of restarting; Pause queue on the Transfers page holds the next file.
+- [ ] M9.3 Send a large file, break the link (turn Wi-Fi off on the phone for 90 seconds: a shorter gap may not break the connection), and watch it continue instead of restarting; Pause queue on the Transfers page holds the next file.
 - [ ] M9.6 On a tablet, foldable or in desktop/split mode: drag a photo from another app onto Relay; it goes to the default PC. On a phone-sized window nothing accepts the drop.

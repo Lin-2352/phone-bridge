@@ -19,6 +19,9 @@ pub const TOTAL_CAP: u64 = 8 * 1024 * 1024 * 1024;
 /// Free space that must remain on the disk after what is kept.
 pub const KEEP_FREE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Most partials kept for one peer, whatever their sizes (empty offers cost nothing against the byte caps).
+pub const MAX_ENTRIES_PER_PEER: usize = 64;
+
 const INDEX: &str = "resume.txt";
 
 /// The limits, as values so tests can use small ones.
@@ -104,9 +107,25 @@ pub struct PartialStore {
     dir: PathBuf,
     caps: Caps,
     entries: Vec<Entry>,
+    /// Partials a receive is using now: never claimed twice, evicted or swept.
+    locked: std::collections::HashSet<(PeerId, [u8; 16])>,
 }
 
 impl PartialStore {
+    /// Marks the partial as in use by a running receive; false when another receive already has it.
+    pub fn lock(&mut self, peer: PeerId, token: [u8; 16]) -> bool {
+        self.locked.insert((peer, token))
+    }
+
+    /// The receive ended but the partial is kept for a later attempt.
+    pub fn unlock(&mut self, peer: PeerId, token: [u8; 16]) {
+        self.locked.remove(&(peer, token));
+    }
+
+    fn is_locked(&self, e: &Entry) -> bool {
+        self.locked.contains(&(e.peer, e.token))
+    }
+
     /// The folder the partial files live in (its disk is the one whose free space matters).
     pub fn dir(&self) -> &Path {
         &self.dir
@@ -147,6 +166,7 @@ impl PartialStore {
             dir: dir.to_path_buf(),
             caps,
             entries,
+            locked: Default::default(),
         };
         s.sweep(now, u64::MAX);
         Ok(s)
@@ -227,6 +247,15 @@ impl PartialStore {
             .iter()
             .position(|e| e.peer == peer && e.token == token)
         {
+            if self.is_locked(&self.entries[i]) {
+                return Err(KeepRefusal::Io);
+            }
+            self.remove_at(i);
+        }
+        while self.entries.iter().filter(|e| e.peer == peer).count() >= MAX_ENTRIES_PER_PEER {
+            let Some(i) = self.oldest(Some(&peer)) else {
+                break;
+            };
             self.remove_at(i);
         }
         let held = |s: &Self, p: Option<&PeerId>| -> u64 {
@@ -245,6 +274,12 @@ impl PartialStore {
         while held(self, None).saturating_add(size) > self.caps.total {
             let Some(i) = self.oldest(None) else { break };
             self.remove_at(i);
+        }
+        // What is left may be partials a transfer is writing; those are never evicted, so refuse instead.
+        if held(self, Some(&peer)).saturating_add(size) > self.caps.per_peer
+            || held(self, None).saturating_add(size) > self.caps.total
+        {
+            return Err(KeepRefusal::TooBig);
         }
         let e = Entry {
             peer,
@@ -265,6 +300,7 @@ impl PartialStore {
             .iter()
             .enumerate()
             .filter(|(_, e)| peer.is_none_or(|p| &e.peer == p))
+            .filter(|(_, e)| !self.is_locked(e))
             .min_by_key(|(_, e)| e.created)
             .map(|(i, _)| i)
     }
@@ -280,6 +316,7 @@ impl PartialStore {
             self.remove_at(i);
             self.save();
         }
+        self.locked.remove(&(peer, token));
     }
 
     /// Drops what is stale: older than the keep time, missing or oversized files, files in the folder that no
@@ -290,7 +327,7 @@ impl PartialStore {
             let e = &self.entries[i];
             let stale = now.saturating_sub(e.created) > self.caps.keep_secs;
             let bad = self.len_of(e).is_none_or(|l| l > e.size);
-            if stale || bad {
+            if (stale || bad) && !self.is_locked(&self.entries[i]) {
                 self.remove_at(i);
             } else {
                 i += 1;
@@ -303,7 +340,8 @@ impl PartialStore {
             self.remove_at(i);
         }
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
-            let owned: Vec<String> = self.entries.iter().map(Entry::file_name).collect();
+            let owned: std::collections::HashSet<String> =
+                self.entries.iter().map(Entry::file_name).collect();
             for f in rd.flatten() {
                 let n = f.file_name().to_string_lossy().into_owned();
                 if n.ends_with(".part") && !owned.contains(&n) {
@@ -350,6 +388,48 @@ mod tests {
             total: 1500,
             keep_free: 10,
         }
+    }
+
+    #[test]
+    fn a_partial_in_use_is_locked_and_never_evicted_or_swept() {
+        let d = dir("lock");
+        let mut s = PartialStore::open_with(&d, 0, small()).unwrap();
+        s.create(peer(1), TOKEN, "a.bin", 600, 1, u64::MAX).unwrap();
+        assert!(s.lock(peer(1), TOKEN));
+        assert!(!s.lock(peer(1), TOKEN), "a second receive cannot share it");
+        // A new 600-byte file would push this peer over its cap: the locked one is not the victim.
+        assert_eq!(
+            s.create(peer(1), [8; 16], "b.bin", 600, 2, u64::MAX),
+            Err(KeepRefusal::TooBig)
+        );
+        // The disk is short on space: sweep may not delete what a transfer is writing.
+        s.sweep(3, 0);
+        assert!(s.claim(peer(1), TOKEN, "a.bin", 600).is_some());
+        // Even stale, a locked partial stays until its transfer ends.
+        s.sweep(10_000, u64::MAX);
+        assert!(s.claim(peer(1), TOKEN, "a.bin", 600).is_some());
+        s.unlock(peer(1), TOKEN);
+        assert!(s.lock(peer(1), TOKEN));
+        s.finish(peer(1), TOKEN);
+        assert!(s.lock(peer(1), TOKEN), "finish releases the lock too");
+    }
+
+    #[test]
+    fn a_peer_cannot_pile_up_empty_partials() {
+        let d = dir("many");
+        let mut s = PartialStore::open_with(&d, 0, small()).unwrap();
+        for i in 0..200u32 {
+            let mut t = [0u8; 16];
+            t[..4].copy_from_slice(&i.to_le_bytes());
+            s.create(peer(1), t, "z.bin", 0, i as u64, u64::MAX)
+                .unwrap();
+        }
+        let kept = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter(|f| f.file_name().to_string_lossy().ends_with(".part"))
+            .count();
+        assert!(kept <= MAX_ENTRIES_PER_PEER, "kept {kept}");
     }
 
     #[test]

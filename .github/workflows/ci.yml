@@ -5,6 +5,10 @@ on:
     branches: ["**"]
   pull_request:
 
+# Every job only reads the repository; nothing here needs more.
+permissions:
+  contents: read
+
 jobs:
   rust:
     strategy:

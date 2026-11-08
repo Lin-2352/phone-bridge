@@ -23,6 +23,21 @@ pub const MAX_FUTURE_SECS: u64 = 7 * 24 * 3600;
 /// Most artifacts a manifest may list.
 pub const MAX_ARTIFACTS: usize = 32;
 /// Artifact links must start with this.
+/// An artifact link must start with the project's release address and continue with plain path
+/// characters only: no `..` or `.` segment, no percent-escapes, no backslash, no query, so the browser
+/// cannot be walked out of the release folder.
+fn url_ok(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix(RELEASE_URL_PREFIX) else {
+        return false;
+    };
+    url.len() <= 512
+        && !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '+'))
+        && rest.split('/').all(|seg| seg != "." && seg != "..")
+}
+
 pub const RELEASE_URL_PREFIX: &str = "https://github.com/Lin-2352/phone-bridge/releases/";
 /// The text the current key signs to introduce the next key: this prefix plus the key in hex.
 pub const NEXT_KEY_PREFIX: &str = "relay-next-key:";
@@ -173,7 +188,7 @@ pub fn verify(
     }
     let mut artifacts = Vec::new();
     for a in raw.artifacts {
-        if !a.url.starts_with(RELEASE_URL_PREFIX) || a.url.len() > 512 || a.name.len() > 128 {
+        if !url_ok(&a.url) || a.name.len() > 128 {
             return reject(Reject::BadUrl);
         }
         let Some(sha256) = unhex::<32>(&a.sha256) else {
@@ -467,6 +482,10 @@ mod tests {
             "http://github.com/Lin-2352/phone-bridge/releases/x",
             "https://evil.example/Relay.zip",
             "https://github.com/Lin-2352/phone-bridge/releases.evil/x",
+            "https://github.com/Lin-2352/phone-bridge/releases/../../../evil/x/releases/download/a.zip",
+            "https://github.com/Lin-2352/phone-bridge/releases/%2e%2e/%2e%2e/evil/a.zip",
+            "https://github.com/Lin-2352/phone-bridge/releases/./x?a=b",
+            "https://github.com/Lin-2352/phone-bridge/releases/",
         ] {
             let m = manifest("0.3.0", NOW, "")
                 .replace(&format!("{RELEASE_URL_PREFIX}v0.3.0/Relay.zip"), url);

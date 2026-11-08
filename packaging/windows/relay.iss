@@ -53,6 +53,8 @@ Filename: "{sys}\netsh.exe"; \
 Filename: "{app}\Relay.exe"; Description: "Start Relay"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+; If the webcam was set up (portable or installed), uninstalling takes it away too.
+Filename: "{app}\Relay.exe"; Parameters: "--unregister-camera"; Flags: runhidden skipifdoesntexist; RunOnceId: "RelayCamera"
 Filename: "{sys}\netsh.exe"; \
   Parameters: "advfirewall firewall delete rule name=""Relay"" program=""{app}\Relay.exe"""; \
   Flags: runhidden; RunOnceId: "RelayFirewallRule"; Check: IsAdminInstallMode

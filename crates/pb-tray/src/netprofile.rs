@@ -6,6 +6,8 @@
 //!
 //! `guidance` is pure; `connected` is a thin read of the Network List Manager (no administrator).
 #![allow(unsafe_code)]
+// Its only caller is the Windows tray window; elsewhere the module is built for its tests only.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {

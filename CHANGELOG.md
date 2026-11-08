@@ -3,7 +3,7 @@
 ## 0.3.0 (not released yet)
 
 ### Added
-- **Files that stop part-way continue.** If the link drops during a transfer, the receiving device keeps what arrived (up to a day, within a size limit) and the sender sends only the rest. The PC retries a dropped link by itself; on the phone the *Retry* button on the notification continues the transfer. Relay 0.2.0 devices still work; they just start over.
+- **Files that stop part-way continue.** If the link drops during a transfer, the receiving device keeps what arrived (up to a day, within a size limit) and the sender sends only the rest. After a dropped link the PC retries by itself while each attempt gets somewhere (up to three times); on the phone the *Retry* button on the notification continues the transfer. Relay 0.2.0 devices still work; they just start over.
 - **Send queue.** Files wait in line per device (up to 64). *Pause queue* on the PC's Transfers page holds the next file without stopping the one sending; waiting files are listed with a *Remove* button, and after a restart they come back paused.
 - **Drag and drop.** Drop files on the PC's quick panel, main window or screen window; with several phones paired Relay asks which one. On a tablet, foldable or other wide window, drop files from another app onto Relay to send them to the default PC.
 - **The unlock gate and *Disconnect everything*.** Sensitive switches ask for your fingerprint or Windows Hello first; one action closes every connection and turns every "always allow" off.

@@ -20,8 +20,8 @@ For each check: **pass**, **fail** (what happened, what was expected, the app lo
 Each check: do the steps, compare with *Expect*.
 
 ### Files, resume and the queue (M9)
-1. **Resume after a dropped link, PC to phone.** Send a file of about 1 GB. At about half, turn the phone's Wi-Fi off for ten seconds, then on. *Expect:* the PC log says it retried, the Transfers row keeps counting from where it stopped (not from 0), and the file arrives with the same SHA-256 as the source.
-2. **Resume, phone to PC.** Share a 500 MB video to Relay, drop the link the same way at about half, then tap *Retry* on the notification. *Expect:* it continues, not restarts, and arrives intact.
+1. **Resume after a dropped link, PC to phone.** Send a file of about 1 GB. At about half, turn the phone's Wi-Fi off for 90 seconds (Relay waits up to 60 seconds before it treats a silent link as dead; a shorter gap may not break the connection at all), then on. *Expect:* the PC log says it retried (if the outage outlasts the three attempts the row fails: press *Retry* on it and it continues), the Transfers row keeps counting from where it stopped (not from 0), and the file arrives with the same SHA-256 as the source.
+2. **Resume, phone to PC.** Share a 500 MB video to Relay, break the link the same way (90 seconds) at about half, then tap *Retry* on the notification. *Expect:* it continues, not restarts, and arrives intact.
 3. **An unanswered prompt is not retried.** With automatic accept off on the receiver, send a file and ignore the question until it times out. *Expect:* the question is shown once, not again by itself.
 4. **Queue.** Send ten files at once. Press *Pause queue* on the PC's Transfers page while the third is sending. *Expect:* the third finishes, the rest list as waiting with *Remove* buttons, the button reads *Resume queue*. Remove one, resume. *Expect:* the rest arrive in order, the removed one does not.
 5. **Queue survives a restart.** Pause with files waiting, quit Relay, start it. *Expect:* the files are listed as waiting, nothing sends until *Resume queue*; a file you moved meanwhile shows *Needs the file again*.

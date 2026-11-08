@@ -2105,7 +2105,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pb-camera-frames"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "pb-fuzz"
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "pb-identity"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
@@ -2135,14 +2135,14 @@ dependencies = [
 
 [[package]]
 name = "pb-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "prost",
 ]
 
 [[package]]
 name = "pb-transport"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fs4",
  "getrandom 0.3.4",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "pb-update"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "serde",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "pb-video"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "pem-rfc7468"

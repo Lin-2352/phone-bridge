@@ -116,6 +116,29 @@ impl SendQueue {
         self.paused = true;
     }
 
+    /// Takes out a file that has not started. The one sending is left alone (false): its transfer would
+    /// go on without a place in the queue.
+    pub fn remove_waiting(&mut self, id: u64) -> bool {
+        let before = self.items.len();
+        self.items
+            .retain(|i| i.id != id || i.state == QueueState::Sending);
+        self.items.len() != before
+    }
+
+    /// The file was retried by hand: its place in the queue goes, so it is not sent twice.
+    pub fn drop_path(&mut self, path: &Path) {
+        self.items
+            .retain(|i| i.path != path || i.state == QueueState::Sending);
+    }
+
+    /// Files that still have to be sent or are sending.
+    pub fn pending(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| matches!(i.state, QueueState::Waiting | QueueState::Sending))
+            .count()
+    }
+
     /// Removes every item that has not started (the user cancelled what was queued); the one
     /// sending, if any, is left to the caller to cancel.
     pub fn clear_waiting(&mut self) {
@@ -205,6 +228,11 @@ impl Queues {
     }
 
     /// The page's one Pause / Resume switch covers every phone.
+    /// The phone was unpaired: its queue goes with it.
+    pub fn forget(&mut self, peer: &str) {
+        self.by_peer.remove(peer);
+    }
+
     pub fn set_all_paused(&mut self, paused: bool) {
         self.paused_all = paused;
         for q in self.by_peer.values_mut() {
@@ -473,6 +501,31 @@ mod tests {
         assert!(!qs.any_paused());
         assert!(qs.of("a").next().is_some());
         assert_eq!(qs.peers_with_waiting(), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn remove_never_touches_the_file_that_is_sending() {
+        let mut q = SendQueue::default();
+        let a = add(&mut q, "a");
+        let b = add(&mut q, "b");
+        q.next();
+        assert!(!q.remove_waiting(a), "a has started: Remove cannot take it");
+        assert!(q.remove_waiting(b));
+        assert_eq!(q.items().len(), 1);
+        assert_eq!(q.pending(), 1);
+    }
+
+    #[test]
+    fn a_retried_file_leaves_its_queue_place_and_unpairing_drops_the_queue() {
+        let mut qs = Queues::default();
+        add(qs.of("a"), "x.bin");
+        add(qs.of("a"), "y.bin");
+        let path = qs.of("a").items()[0].path.clone();
+        qs.of("a").drop_path(&path);
+        assert_eq!(qs.of("a").items().len(), 1);
+        qs.forget("a");
+        assert!(qs.get("a").is_none());
+        assert!(qs.rows_all().is_empty());
     }
 
     #[test]

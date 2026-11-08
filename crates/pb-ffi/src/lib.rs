@@ -43,8 +43,6 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for PbError {
     }
 }
 
-/// Implemented in Kotlin with an Android Keystore AES-GCM key, so the identity
-/// seed is never stored in clear.
 /// Gives the engine a fresh file descriptor each time it needs to read the file again (a resumed
 /// send reads the start once to prove it matches, then the rest).
 #[uniffi::export(with_foreign)]
@@ -54,6 +52,8 @@ pub trait FileOpener: Send + Sync {
     fn open(&self) -> i32;
 }
 
+/// Implemented in Kotlin with an Android Keystore AES-GCM key, so the identity
+/// seed is never stored in clear.
 #[uniffi::export(with_foreign)]
 pub trait KeyWrapper: Send + Sync {
     fn wrap(&self, plain: Vec<u8>) -> Result<Vec<u8>, PbError>;
@@ -2268,10 +2268,17 @@ impl PbNode {
         mime: String,
         token: Vec<u8>,
     ) -> Result<(), PbError> {
+        // The first descriptor Kotlin hands out is detached and ours to close: take it before any check can
+        // fail, and keep it for the first read.
+        let first = {
+            let fd = opener.open();
+            (fd >= 0).then(|| fd_to_file(fd)).transpose()?
+        };
         let token: [u8; 16] = token
             .try_into()
             .map_err(|_| fail("the resume token must be 16 bytes"))?;
         let peer = self.find(&peer_id)?;
+        let mut first = first;
         let started = std::time::Instant::now();
         let guard = CancelGuard::new(false);
         let peer_name = self
@@ -2289,6 +2296,9 @@ impl PbNode {
                 size,
                 &mime,
                 move || {
+                    if let Some(f) = first.take() {
+                        return Ok(tokio::fs::File::from_std(f));
+                    }
                     let fd = opener.open();
                     if fd < 0 {
                         return Err(std::io::Error::other("the file cannot be opened"));
