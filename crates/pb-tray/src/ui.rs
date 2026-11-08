@@ -3519,7 +3519,7 @@ mod tests {
             ids.len(),
             "a reused id runs the wrong command"
         );
-        assert!(ID_SEND_DROPPED < ID_UNPAIR_BASE, "below the per-phone ids");
+        const { assert!(ID_SEND_DROPPED < ID_UNPAIR_BASE) };
     }
 
     #[test]

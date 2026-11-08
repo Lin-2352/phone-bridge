@@ -1060,6 +1060,47 @@ mod transfers {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_resumable_send_cancelled_by_the_sender_leaves_no_partial_on_the_receiver() {
+        let (pc, mut pc_ev, phone, _pev) = paired().await;
+        let pcid = pc.peer_id();
+        let dir = tmp("resume-scancel");
+        let parts = tmp("resume-scancel-parts");
+        let resume = resume_in(&parts);
+        let data = pattern(32 << 20);
+        let cancel = crate::files::Cancel::new();
+        let again = data.clone();
+        let send = phone.send_file_resumable(
+            &pcid,
+            "s.bin",
+            data.len() as u64,
+            "",
+            move || Ok(std::io::Cursor::new(again.clone())),
+            TOKEN,
+            TransferOpts::new(Some(cancel_after(1 << 20, &cancel)), Some(cancel.clone())),
+        );
+        let recv = receive_with(&mut pc_ev, &dir, Some(resume.clone()), None, None);
+        let (sent, got) = within("sender cancels", async { tokio::join!(send, recv) }).await;
+        assert!(matches!(sent, Err(Error::Cancelled)), "{sent:?}");
+        assert!(matches!(got, Err(Error::PeerCancelled)), "{got:?}");
+        assert!(
+            resume
+                .store
+                .lock()
+                .unwrap()
+                .claim(phone.peer_id(), TOKEN, "s.bin", data.len() as u64)
+                .is_none(),
+            "the sender cancelled for good: nothing is kept for a resume that will never come"
+        );
+        assert!(
+            std::fs::read_dir(&parts)
+                .unwrap()
+                .flatten()
+                .all(|f| !f.file_name().to_string_lossy().ends_with(".part")),
+            "no partial file is left"
+        );
+    }
+
     #[tokio::test]
     async fn a_cancel_handle_wakes_waiters_and_is_sticky() {
         let c = crate::files::Cancel::new();

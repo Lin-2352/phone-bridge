@@ -819,7 +819,6 @@ pub async fn receive_offer_with(
                 token,
                 sanitize_file_name(&offer.name),
                 offer.size,
-                dir.to_owned(),
             )
             .await
         }
@@ -895,7 +894,7 @@ pub async fn receive_offer_with(
         let (src, n) = (partial.clone(), name.clone());
         tokio::task::spawn_blocking(move || -> std::io::Result<PathBuf> {
             let dest = reserve_unique(&dir, &n)?;
-            std::fs::rename(&src, &dest).inspect_err(|_| {
+            move_into_place_with(&src, &dest, |a, b| std::fs::rename(a, b)).inspect_err(|_| {
                 let _ = std::fs::remove_file(&dest);
             })?;
             Ok(dest)
@@ -918,8 +917,10 @@ pub async fn receive_offer_with(
             })
         }
         Err(e) => {
-            // A connection that broke or went quiet keeps its partial for the next attempt; a cancel, a hash
-            // mismatch, a protocol error or a disk error deletes it.
+            // The cancel (ours or the sender's) is recognised first: a sender that cancelled for good must not
+            // leave a partial for a resume that will never come. Only a connection that broke or went quiet
+            // keeps its partial for the next attempt; a hash mismatch, a protocol error or a disk error deletes it.
+            let e = fail_receive(session, e).await;
             let keep = resume_plan.is_some()
                 && matches!(e, Error::Transport(_) | Error::Closed | Error::Timeout);
             if !keep {
@@ -928,7 +929,30 @@ pub async fn receive_offer_with(
                     plan.finish(r);
                 }
             }
-            Err(fail_receive(session, e).await)
+            Err(e)
+        }
+    }
+}
+
+/// Puts a finished partial at its destination. The partial lives in the private data folder and the
+/// destination in the save folder, which may be on another drive, where a rename fails; then the bytes are
+/// copied and the partial removed. A failed copy leaves no half file at the destination.
+fn move_into_place_with(
+    src: &Path,
+    dest: &Path,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if rename(src, dest).is_ok() {
+        return Ok(());
+    }
+    match std::fs::copy(src, dest) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(src);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(dest);
+            Err(e)
         }
     }
 }
@@ -960,14 +984,15 @@ async fn plan_resume(
     token: [u8; 16],
     name: String,
     size: u64,
-    dir: PathBuf,
 ) -> Option<ResumePlan> {
     tokio::task::spawn_blocking(move || -> Option<ResumePlan> {
         use std::io::Read;
         let now = (r.now)();
         let mut store = r.store.lock().unwrap_or_else(|p| p.into_inner());
-        // Expired partials and the disk's margin are checked at every resumable offer.
-        store.sweep(now, free_bytes(&dir));
+        // Expired partials and the disk's margin are checked at every resumable offer. The margin is the
+        // free space where the partials live, which is not the save folder's drive when they differ.
+        let free = free_bytes(store.dir());
+        store.sweep(now, free);
         if let Some(c) = store.claim(peer, token, &name, size) {
             let mut hasher = Sha256::new();
             let mut f = std::fs::File::open(&c.path).ok()?;
@@ -990,9 +1015,7 @@ async fn plan_resume(
                 token,
             });
         }
-        let path = store
-            .create(peer, token, &name, size, now, free_bytes(&dir))
-            .ok()?;
+        let path = store.create(peer, token, &name, size, now, free).ok()?;
         Some(ResumePlan {
             path,
             len: 0,
@@ -1184,6 +1207,33 @@ async fn receive_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_partial_on_another_drive_is_copied_into_place_when_rename_fails() {
+        let d = std::env::temp_dir().join(format!("pb-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (src, dest) = (d.join("a.part"), d.join("a.bin"));
+        std::fs::write(&src, b"hello").unwrap();
+        // The OS refuses to rename across volumes (ERROR_NOT_SAME_DEVICE); the file must still arrive.
+        let cross =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices));
+        move_into_place_with(&src, &dest, cross).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"hello");
+        assert!(!src.exists(), "the partial is gone once it is copied");
+    }
+
+    #[test]
+    fn a_failed_move_leaves_no_half_file_at_the_destination() {
+        let d = std::env::temp_dir().join(format!("pb-move2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (src, dest) = (d.join("missing.part"), d.join("b.bin"));
+        let cross =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices));
+        assert!(move_into_place_with(&src, &dest, cross).is_err());
+        assert!(!dest.exists());
+    }
 
     #[test]
     fn disguised_executables_are_risky() {

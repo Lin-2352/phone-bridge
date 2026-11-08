@@ -107,6 +107,11 @@ pub struct PartialStore {
 }
 
 impl PartialStore {
+    /// The folder the partial files live in (its disk is the one whose free space matters).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Opens (creating the folder) and loads the index; entries whose file is gone are dropped.
     pub fn open(dir: &Path, now: u64) -> std::io::Result<Self> {
         Self::open_with(dir, now, Caps::default())
