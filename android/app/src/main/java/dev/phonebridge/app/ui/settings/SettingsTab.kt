@@ -526,9 +526,12 @@ fun SettingsTab(onDone: () -> Unit) {
     var renaming by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
     var pcPrefsTick by remember { mutableStateOf(0) }
     var permsFor by remember { mutableStateOf<uniffi.pb_ffi.PbPeer?>(null) }
+    // The name a dialog shows: the nickname or name, with the start of the fingerprint when two PCs share one.
+    fun pcLabel(p: uniffi.pb_ffi.PbPeer): String =
+        dev.phonebridge.app.devices.labels(peers, peers.associate { it.id to prefs.pcNickname(it.id) })[p.id] ?: p.name
     permsFor?.let { p ->
         val kinds = dev.phonebridge.app.devices.ConsentKind.entries
-        val shown = prefs.pcNickname(p.id) ?: p.name
+        val shown = pcLabel(p)
         RelayDialog(
             title = "$shown permissions",
             onDismissRequest = { permsFor = null; pcPrefsTick++ },
@@ -594,7 +597,7 @@ fun SettingsTab(onDone: () -> Unit) {
     renaming?.let { p ->
         var text by remember(p.id) { mutableStateOf(prefs.pcNickname(p.id).orEmpty()) }
         RelayDialog(
-            title = "Rename ${p.name}",
+            title = "Rename ${pcLabel(p)}",
             onDismissRequest = { renaming = null },
             confirmText = "Save",
             onConfirm = {
@@ -615,7 +618,7 @@ fun SettingsTab(onDone: () -> Unit) {
     }
     removing?.let { p ->
         RelayDialog(
-            title = "Remove ${p.name}?",
+            title = "Remove ${pcLabel(p)}?",
             onDismissRequest = { removing = null },
             confirmText = "Remove",
             destructive = true,
@@ -624,7 +627,7 @@ fun SettingsTab(onDone: () -> Unit) {
                 val removeIt = {
                     // A failed save keeps the PC paired; the list below is re-read either way.
                     runCatching { Bridge.node?.tryUnpair(p.id) }.exceptionOrNull()?.let {
-                        notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
+                        notifyInfo(ctx, "Couldn't remove ${pcLabel(p)}", "It is still paired. Try again.")
                     }
                     Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
                     Prefs(ctx).forgetPc(p.id, Bridge.node?.peers().orEmpty())
@@ -634,7 +637,7 @@ fun SettingsTab(onDone: () -> Unit) {
                 }
                 // Unpairing is guarded: an unlock first (a failed or cancelled one leaves the PC paired).
                 val gateActivity = (ctx as? androidx.fragment.app.FragmentActivity)
-                if (gateActivity != null) gateActivity.gated(Guarded.Unpair, "Remove ${p.name}") { removeIt() } else removeIt()
+                if (gateActivity != null) gateActivity.gated(Guarded.Unpair, "Remove ${pcLabel(p)}") { removeIt() } else removeIt()
             },
             dismissText = "Cancel",
         ) {
