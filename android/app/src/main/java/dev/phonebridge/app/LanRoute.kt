@@ -26,6 +26,11 @@ fun lanNetworkToBind(nets: List<NetSnapshot>): Long? {
     return (lan.firstOrNull { it.wifi } ?: lan.firstOrNull { it.ethernet })?.id
 }
 
+/** The "did not receive" notification: names the VPN when one is on, since it is the most likely reason a PC cannot be reached. */
+fun notReceivedText(peerName: String, fileName: String, vpnOn: Boolean): String =
+    if (vpnOn) "$peerName did not receive $fileName. A VPN is on and may be blocking the local network: allow local network access (or exclude $APP_NAME) in the VPN app, or turn it off."
+    else "$peerName did not receive $fileName. Is $APP_NAME running there?"
+
 /**
  * While a VPN is up, Relay's own traffic goes to the Wi-Fi network directly (`bindProcessToNetwork`): this is an
  * app-level route, not a change to the VPN or to any setting. Android only honours it when the VPN app allows

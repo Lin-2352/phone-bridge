@@ -2,6 +2,7 @@ package dev.phonebridge.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LanRouteTest {
@@ -27,4 +28,12 @@ class LanRouteTest {
         assertNull(lanNetworkToBind(listOf(tunnelOverWifi)))
         assertEquals(1L, lanNetworkToBind(listOf(tunnelOverWifi, wifi)))
     }
+
+    @Test fun aFailedSendNamesTheVpnWhenOneIsOn() {
+        val t = notReceivedText("My PC", "a.pdf", vpnOn = true)
+        assertTrue(t, "VPN" in t && "My PC" in t && "a.pdf" in t)
+    }
+
+    @Test fun aFailedSendStaysPlainWithoutAVpn() =
+        assertEquals("My PC did not receive a.pdf. Is Relay running there?", notReceivedText("My PC", "a.pdf", vpnOn = false))
 }

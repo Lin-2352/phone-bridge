@@ -297,7 +297,7 @@ object OutgoingShare {
 
     fun offerRetry(app: android.content.Context, peerId: String, peerName: String, f: Out, cancelled: Boolean) {
         val title = failureTitle(f.name, cancelled, outgoing = true)
-        val text = if (cancelled) "${f.name} was not sent to $peerName" else "$peerName did not receive ${f.name}. Is $APP_NAME running there?"
+        val text = if (cancelled) "${f.name} was not sent to $peerName" else notReceivedText(peerName, f.name, vpnActive(app))
         val keep = f.keep
         if (keep == null) { notifyInfo(app, title, text); return }
         val id = seq.getAndIncrement()
