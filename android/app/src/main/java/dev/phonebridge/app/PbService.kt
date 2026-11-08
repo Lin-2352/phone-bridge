@@ -368,7 +368,13 @@ class PbService : Service() {
         }
         runCatching {
             getSystemService(android.net.ConnectivityManager::class.java)
-                .registerNetworkCallback(android.net.NetworkRequest.Builder().build(), lan)
+                .registerNetworkCallback(
+                    // The default request leaves VPN networks out: without this the callback never hears a VPN come up.
+                    android.net.NetworkRequest.Builder()
+                        .removeCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                        .build(),
+                    lan,
+                )
         }.onSuccess { lanCallback = lan }
     }
 
