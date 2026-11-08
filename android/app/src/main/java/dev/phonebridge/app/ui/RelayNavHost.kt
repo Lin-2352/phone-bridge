@@ -56,6 +56,9 @@ fun startTab(intent: Intent?, debuggable: Boolean): Tab = startTab(intent?.getSt
 
 const val TAB_EXTRA = "tab"
 
+/** The Transfers screen: a destination under the tabs, reached from Home (Back returns to it). */
+const val TRANSFERS_ROUTE = "transfers"
+
 /** Bumped by MainActivity on every resume: rows showing system settings re-read them. */
 val LocalResumeCount = compositionLocalOf { 0 }
 
@@ -111,7 +114,8 @@ fun RelayNavHost(start: Tab, startKey: Int = 0) {
             enterTransition = { fadeIn(tokenSpec(Tokens.Springs.Standard, modes)) },
             exitTransition = { fadeOut(tokenSpec(Tokens.Springs.Standard, modes)) },
         ) {
-            composable(Tab.Home.route) { HomeTab(onTimeline = { go(Tab.Timeline) }) }
+            composable(Tab.Home.route) { HomeTab(onTimeline = { go(Tab.Timeline) }, onTransfers = { nav.navigate(TRANSFERS_ROUTE) }) }
+            composable(TRANSFERS_ROUTE) { TransfersScreen(onBack = { nav.popBackStack() }) }
             composable(Tab.Timeline.route) { TimelineTab() }
             composable(Tab.Remote.route) { RemoteTab() }
             composable(Tab.Settings.route) { SettingsTab(onDone = { go(Tab.Home) }) }

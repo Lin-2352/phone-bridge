@@ -633,11 +633,17 @@ class PbService : Service() {
             is PbEvent.ControlRequest -> askControl(e)
             is PbEvent.ControlServiceNeeded -> sendToControlSettings(e.peerName)
             is PbEvent.TransferFailed -> {
+                dev.phonebridge.app.ui.Transfers.feed(dev.phonebridge.app.ui.TransferSignal.Failed(e.peerId, isCancelled(e.reason)))
                 cancelProgress(true)
                 if (isCancelled(e.reason)) notifySimple("Transfer cancelled", e.reason.replaceFirstChar { it.uppercase() })
                 else notifySimple("Transfer from ${e.peerName} failed", e.reason)
             }
-            is PbEvent.TransferProgress -> notifyProgress(e)
+            is PbEvent.TransferProgress -> {
+                dev.phonebridge.app.ui.Transfers.feed(
+                    dev.phonebridge.app.ui.TransferSignal.Progress(e.peerId, e.peerName, e.name, e.done.toLong(), e.total.toLong(), e.incoming),
+                )
+                notifyProgress(e)
+            }
             is PbEvent.Connected -> {
                 Log.i(TAG, "Connected: ${e.peerName}")
                 Bridge.pcContact(this, opened = true)

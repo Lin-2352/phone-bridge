@@ -29,6 +29,14 @@ data class TransferListRow(
 /** The transfers this process knows about, fed where the service posts transfer notifications. */
 object Transfers {
     val items = mutableStateListOf<TransferItem>()
+
+    /** Applies a signal from the service; safe from any thread (the list is replaced as a whole). */
+    @Synchronized
+    fun feed(signal: TransferSignal) {
+        val next = applyTransferSignal(items.toList(), signal)
+        items.clear()
+        items.addAll(next)
+    }
 }
 
 /** Running first, then waiting, then everything finished with the newest first. */

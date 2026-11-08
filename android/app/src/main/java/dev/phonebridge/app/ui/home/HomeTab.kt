@@ -133,7 +133,7 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeTab(onTimeline: () -> Unit) {
+fun HomeTab(onTimeline: () -> Unit, onTransfers: () -> Unit = {}) {
     val ctx = LocalContext.current
     val resumed = LocalResumeCount.current
     val prefs = remember { Prefs(ctx) }
@@ -303,6 +303,7 @@ fun HomeTab(onTimeline: () -> Unit) {
             item(key = "recent-head") {
                 Row(Modifier.fillMaxWidth().padding(top = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
                     Text("Recent", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).padding(start = Spacing.lg))
+                    TextButton(onClick = onTransfers) { Text("Transfers") }
                     if (recent.isNotEmpty()) TextButton(onClick = onTimeline) { Text("See all") }
                 }
             }

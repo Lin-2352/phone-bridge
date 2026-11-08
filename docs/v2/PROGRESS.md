@@ -150,7 +150,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M6.4 Motion: token springs (Expressive only from a stable material3)
 - [ ] M6.5 Home
 - [x] M6.6 Device picker (picker rows and the sheet; M8.1 wires it into the send paths)
-- [ ] M6.7 Transfers
+- [x] M6.7 Transfers (2026-11-08: `TransfersScreen`, route `transfers` from a Home "Transfers" button, fed from `PbService` through `applyTransferSignal`; JVM-tested, not device-checked; no pause/cancel buttons until M9.3)
 - [ ] M6.8 Timeline
 - [ ] M6.9 Remote and touchpad
 - [ ] M6.10 Settings
