@@ -53,6 +53,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.sp
+import dev.phonebridge.app.devices.isLargeScreen
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import kotlinx.coroutines.launch
 
 private const val TAG = "PhoneBridge"
@@ -192,10 +196,26 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun App() {
         val scope = rememberCoroutineScope()
-        RelayNavHost(requestedTab.value, tabRequest.intValue)
+        // On a large window (tablet, foldable, desktop mode) files can be dragged in from another window and are
+        // sent to the default PC; a phone-sized window takes no drops.
+        val large = isLargeScreen(androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp)
+        val dropReceiver = androidx.compose.runtime.remember { dev.phonebridge.app.devices.DropReceiver(this@MainActivity) }
+        androidx.compose.foundation.layout.Box(
+            if (large) {
+                androidx.compose.ui.Modifier.dragAndDropTarget(
+                    shouldStartDragAndDrop = { it.toAndroidDragEvent().clipDescription?.hasMimeType("*/*") == true },
+                    target = dropReceiver,
+                )
+            } else {
+                androidx.compose.ui.Modifier
+            },
+        ) {
+            RelayNavHost(requestedTab.value, tabRequest.intValue)
+        }
         sas.value?.let { code ->
             // The comparison is a consent prompt: no overlays, no remote taps while it shows.
             androidx.compose.runtime.DisposableEffect(Unit) {
