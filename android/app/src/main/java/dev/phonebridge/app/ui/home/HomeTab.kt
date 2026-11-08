@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import dev.phonebridge.app.AppLog
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.vpnActive
 import dev.phonebridge.app.AudioShare
@@ -542,6 +543,7 @@ private fun removeForgottenPcs(ctx: Context) {
             runCatching { node.tryUnpair(p.id) }.exceptionOrNull()?.let {
                 notifyInfo(ctx, "Couldn't remove ${p.name}", "It is still paired. Try again.")
             }
+            AppLog.event("events", "pc_removed", "id" to p.id.take(8), "from" to "pc_forgot_phone", "left" to node.peers().size)
         }
         val prefs = Prefs(ctx)
         prefs.dropAllowancesExcept(node.peers().map { it.id })

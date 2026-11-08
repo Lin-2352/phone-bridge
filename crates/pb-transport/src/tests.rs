@@ -131,6 +131,38 @@ async fn pair_then_exchange_clipboard_both_ways() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn adding_a_second_pc_keeps_the_first() {
+    let (pc1, mut pc1_ev, _) = node(1, "PC").await;
+    let (pc2, mut pc2_ev, _) = node(3, "PC").await; // same name on purpose
+    let (phone, _pev, phone_store) = node(2, "Phone").await;
+
+    let (h, j, _, _) = pair(&pc1, &mut pc1_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+    let (h, j, _, _) = pair(&pc2, &mut pc2_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok(), "{h:?} {j:?}");
+
+    let ids: Vec<_> = lock(&phone_store).list().iter().map(|p| p.id).collect();
+    assert!(ids.contains(&pc1.peer_id()), "the first PC is still paired");
+    assert!(ids.contains(&pc2.peer_id()), "the second PC is paired");
+    assert_eq!(phone.paired_peers().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_second_pairing_keeps_the_first_pc() {
+    let (pc1, mut pc1_ev, _) = node(1, "PC").await;
+    let (pc2, mut pc2_ev, _) = node(3, "PC2").await;
+    let (phone, _pev, phone_store) = node(2, "Phone").await;
+
+    let (h, j, _, _) = pair(&pc1, &mut pc1_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok());
+    // The person says "no, the codes differ" on the phone.
+    let (_h, j, _, _) = pair(&pc2, &mut pc2_ev, &phone, true, false).await;
+    assert!(j.is_err());
+    assert!(lock(&phone_store).get(&pc1.peer_id()).is_some());
+    assert!(lock(&phone_store).get(&pc2.peer_id()).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unpaired_peer_is_refused() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (stranger, _sev, stranger_store) = node(9, "Stranger").await;

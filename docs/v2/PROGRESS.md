@@ -185,7 +185,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 
 ## Before M9 (added 2026-11-08)
 - [ ] T0 Todo carry-over: every check and leftover not run so far is listed in DEVICE-CHECKS.md (section "Not run yet") and under Open follow-ups
-- [ ] M9.0b Investigate: pairing a second PC left the phone with only that PC (`peers.txt` had one line, `default_pc` empty; the first PC was gone). Test first (`adding_a_second_pc_keeps_the_first`), fix the root cause
+- [ ] M9.0b (2026-11-08: not reproduced; transport proven fine by `adding_a_second_pc_keeps_the_first` and `a_refused_second_pairing_keeps_the_first_pc`; the phone now logs `node_ready ids`, `paired_now` and `pc_removed from=` so the next occurrence is explained; stays open until it is explained) Investigate: pairing a second PC left the phone with only that PC (`peers.txt` had one line, `default_pc` empty; the first PC was gone). Test first (`adding_a_second_pc_keeps_the_first`), fix the root cause
 - [ ] P.1 M5.10 snapshot CI job, P.2 M5.11 budget run, P.3 M6.7 Transfers screen, P.4 M7.8 `OfferPermit` call sites (the CI bar M9.R and M10.R rely on)
 
 ## M9 Transfers that resume

@@ -562,7 +562,7 @@ class PbService : Service() {
         Bridge.linked.value = Bridge.defaultLabel(this)
         Bridge.nodeReady.value = true
         Prefs(this).let { if (it.identityLost) it.identityLost = identityLostAfter(it.identityLost, failure = null) }
-        AppLog.event("events", "node_ready", "paired" to n.peers().size)
+        AppLog.event("events", "node_ready", "paired" to n.peers().size, "ids" to n.peers().joinToString(",") { it.id.take(8) })
         ScreenshotWatcher.sync(this)
         updateStatus()
         Log.i(TAG, "SERVICE node started id=${n.peerId()}")

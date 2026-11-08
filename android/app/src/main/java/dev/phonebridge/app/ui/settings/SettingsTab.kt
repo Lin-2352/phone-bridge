@@ -629,6 +629,8 @@ fun SettingsTab(onDone: () -> Unit) {
                     runCatching { Bridge.node?.tryUnpair(p.id) }.exceptionOrNull()?.let {
                         notifyInfo(ctx, "Couldn't remove ${pcLabel(p)}", "It is still paired. Try again.")
                     }
+                    // A removal is always explained in the log: which PC, from where, how many remain.
+                    AppLog.event("events", "pc_removed", "id" to p.id.take(8), "from" to "settings", "left" to (Bridge.node?.peers()?.size ?: -1))
                     Prefs(ctx).dropAllowancesExcept(Bridge.node?.peers()?.map { q -> q.id }.orEmpty())
                     Prefs(ctx).forgetPc(p.id, Bridge.node?.peers().orEmpty())
                     Bridge.linked.value = Bridge.defaultLabel(ctx)

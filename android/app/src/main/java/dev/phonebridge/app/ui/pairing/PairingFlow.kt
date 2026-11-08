@@ -114,7 +114,7 @@ object PairingFlow {
         try {
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
-            AppLog.event("events", "pair_step", "step" to "paired")
+            AppLog.event("events", "pair_step", "step" to "paired", "paired_now" to n.peers().size)
             Bridge.linked.value = name
             // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".
             Bridge.stampSeen(ctx)
