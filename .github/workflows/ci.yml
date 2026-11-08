@@ -206,6 +206,8 @@ jobs:
         with:
           fetch-depth: 0
       - run: bash scripts/check-docs.sh
+      - name: The third-party licence list is current
+        run: python3 scripts/gen-notice.py --check
 
   deny:
     runs-on: ubuntu-latest

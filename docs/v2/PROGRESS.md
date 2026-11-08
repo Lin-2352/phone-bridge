@@ -206,8 +206,8 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M10.4 Inno Setup installer with a Private-network firewall rule for `Relay.exe` (2026-11-08, CI builds it (the `windows-zip` job on `0d673e8` produced the setup file); never installed or run on a machine: `packaging/windows/relay.iss` per-user by default; the rule (program, UDP, Private, inbound) is added only on an administrator install because a rule needs administrator, removed on uninstall; CI builds and uploads it. Not run on a machine)
 - [x] M10.5 Public-network detection and guidance (installer and portable) (2026-11-08: `netprofile.rs` reads the Network List Manager (no administrator) and, once per run, shows a one-line notice when every connected network is Public; it never changes the network type; a mixed Public and Private set shows nothing. The real call ran on this PC (two Public networks seen). The README and the installer notes carry the same guidance; the installer wizard itself shows no extra page)
 - [ ] M10.6 Windows ARM64 build
-- [ ] M10.7 CycloneDX SBOM (Rust and Gradle)
-- [ ] M10.8 Third-party notices (`NOTICE` file and in-app screen)
+- [ ] M10.7 CycloneDX SBOM (Rust and Gradle) (2026-11-08, PARTIAL, not ticked: the `sbom` CI job writes a CycloneDX file per Rust crate and passed on CI; the Gradle SBOM is not done because the CycloneDX Gradle plugin must be added to the dependency verification file)
+- [ ] M10.8 Third-party notices (`NOTICE` file and in-app screen) (2026-11-08, PARTIAL, not ticked: `THIRD_PARTY_RUST.md` is generated from `cargo metadata` by `scripts/gen-notice.py` (no copyleft licence in it) and a `docs` CI step fails when it is stale. NOT done: the Android libraries' notices and the in-app notices screens on both apps)
 - [x] M10.9 Least-privilege publish job (2026-11-08: two jobs, `download` with `contents: read` only and `push` with `packages: write` only, default `permissions: {}`, the files travel as a one-day artifact; actions pinned and the pin check passes. It first runs for real on the next published release)
 - [ ] M10.R Milestone review and CI green
 
