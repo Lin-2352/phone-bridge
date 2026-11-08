@@ -139,7 +139,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M5.8 Toasts (camera colours and the pill are on tokens; the XML toast copy audit is open for M5.R)
 - [x] M5.9 Narrator UIA for the quick panel (flyout tiles are a UIA tree, per window; focus events for toggles are a follow-up)
 - [ ] M5.10 CI snapshot job (offscreen Direct2D, both themes, light and dark)
-- [x] M5.11 Memory and CPU budgets re-measured and recorded (measured OVER budget, see DECISIONS "PC budget run"; cause open)
+- [ ] M5.11 Memory and CPU budgets re-measured and recorded (first run 2026-11-08 was NOT an idle measurement: fresh data folder probably showed the pairing window; re-run with a seeded folder, see DECISIONS "PC budget run")
 - [ ] M5.R Milestone review and CI green
 
 ## M6 Android native redesign
@@ -192,7 +192,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M9.0 Plan: [plans/2026-11-08-m9-resume-transfers.md](plans/2026-11-08-m9-resume-transfers.md) (Task M9.0a refreshes it at start)
 - [x] M9.1 Resume protocol: `resume_token`, `resume_from`, prefix hash, `resume` capability (2026-11-08: wire fields, `send_file_resumable`, receiver keeps the partial on a broken link; tests `resume_with_matching_prefix_continues`, `resume_with_wrong_prefix_restarts_at_zero`, `a_cancelled_resumable_receive_deletes_its_partial`; fuzz target `offer_resume`. Tray and phone receive with a store; no app sends a token yet: that is the queue, M9.3)
 - [x] M9.2 Partial-file store: 24 h limit, caps, persisted token map (`pb-transport/src/partials.rs`, 13 tests; ADVISOR before the flow was applied: reopen the source instead of seeking, store before wiring)
-- [x] M9.3 Send queue per device (2026-11-08, PARTIAL: pure queues with order, pause, cancel, restart-as-paused, 64 cap, state reconcile in `pb-tray/src/queue.rs` and `devices/SendQueue.kt`, 9 + 8 tests; the PC tray now sends with a resume token and retries a dropped link 3 times. NOT done: persisting `queue.txt`, the queue rows with pause/cancel buttons on the Transfers page/screen, and the Android service sending through the queue and a token. Listed in Open follow-ups)
+- [ ] M9.3 Send queue per device (2026-11-08, PARTIAL, not ticked until wired: pure queues with order, pause, cancel, restart-as-paused, 64 cap, state reconcile in `pb-tray/src/queue.rs` and `devices/SendQueue.kt`, 9 + 8 tests; the PC tray now sends with a resume token and retries a dropped link 3 times. NOT done: persisting `queue.txt`, the queue rows with pause/cancel buttons on the Transfers page/screen, and the Android service sending through the queue and a token. Listed in Open follow-ups)
 - [ ] M9.4 History: transfers under `keep_history`; clipboard history opt-in (encrypted, 7 days, no sensitive clips)
 - [ ] M9.5 Drag-and-drop on the PC (flyout, main window, screen window)
 - [ ] M9.6 Drag-and-drop on Android large screens

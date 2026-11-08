@@ -1523,14 +1523,23 @@ async fn send_one_file(
             .await;
             match r {
                 Ok(_) => break,
-                Err(
-                    pb_transport::Error::Transport(_)
-                    | pb_transport::Error::Closed
-                    | pb_transport::Error::Timeout,
-                ) if attempt < 3 && !cancel.is_cancelled() => {
+                Err(e)
+                    if crate::queue::should_retry(
+                        matches!(
+                            e,
+                            pb_transport::Error::Transport(_)
+                                | pb_transport::Error::Closed
+                                | pb_transport::Error::Timeout
+                        ),
+                        attempt,
+                        cancel.is_cancelled(),
+                        tr::progress_of(row).map_or(0, |(d, _)| d),
+                    ) =>
+                {
                     attempt += 1;
                     log.line(&format!(
-                        "FILE send \"{file_name}\" interrupted, retry {attempt} of 3"
+                        "FILE send \"{file_name}\" interrupted, retry {attempt} of {}",
+                        crate::queue::MAX_RETRIES
                     ));
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }

@@ -245,6 +245,16 @@ impl Queues {
     }
 }
 
+/// Retries a send after a broken link at most this many times.
+pub const MAX_RETRIES: u32 = 3;
+
+/// Whether a failed send is tried again with the same token. Only a link that broke after the
+/// other device accepted and bytes flowed (`bytes_sent > 0`) is retried: an unanswered or
+/// dismissed prompt also ends in a timeout, and re-offering it would ask the person again.
+pub fn should_retry(transient: bool, attempt: u32, cancelled: bool, bytes_sent: u64) -> bool {
+    transient && !cancelled && bytes_sent > 0 && attempt < MAX_RETRIES
+}
+
 fn esc(s: &str) -> String {
     s.replace('%', "%25")
         .replace('\t', "%09")
@@ -286,6 +296,24 @@ mod tests {
             [n.len() as u8; 16],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn only_a_broken_transfer_is_retried_never_an_unanswered_prompt() {
+        assert!(should_retry(true, 0, false, 1_000), "link lost mid-file");
+        assert!(
+            !should_retry(true, 0, false, 0),
+            "no byte flowed: the prompt timed out or was dismissed"
+        );
+        assert!(
+            !should_retry(true, 3, false, 1_000),
+            "three retries at most"
+        );
+        assert!(!should_retry(true, 0, true, 1_000), "a cancel is final");
+        assert!(
+            !should_retry(false, 0, false, 1_000),
+            "declined, too large and the like"
+        );
     }
 
     #[test]
