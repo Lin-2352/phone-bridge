@@ -46,46 +46,71 @@ fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
     v
 }
 
+fn protect(plain: &[u8], entropy: &[u8]) -> io::Result<Vec<u8>> {
+    let input = blob(plain);
+    let entropy = blob(entropy);
+    let mut out = CRYPT_INTEGER_BLOB::default();
+    // SAFETY: input/entropy point to live slices for the call; `out` is a
+    // valid out-pointer; no prompt struct; UI is forbidden.
+    unsafe {
+        CryptProtectData(
+            &input,
+            PCWSTR::null(),
+            Some(&entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out,
+        )
+    }
+    .map_err(io::Error::other)?;
+    Ok(take(out))
+}
+
+fn unprotect(sealed: &[u8], entropy: &[u8]) -> io::Result<Vec<u8>> {
+    let input = blob(sealed);
+    let entropy = blob(entropy);
+    let mut out = CRYPT_INTEGER_BLOB::default();
+    // SAFETY: as in `protect`; DPAPI only reads `input` and writes `out`.
+    unsafe {
+        CryptUnprotectData(
+            &input,
+            None,
+            Some(&entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out,
+        )
+    }
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(take(out))
+}
+
 impl SeedWrapper for Dpapi {
     fn wrap(&self, plain: &[u8]) -> io::Result<Vec<u8>> {
-        let input = blob(plain);
-        let entropy = blob(ENTROPY);
-        let mut out = CRYPT_INTEGER_BLOB::default();
-        // SAFETY: input/entropy point to live slices for the call; `out` is a
-        // valid out-pointer; no prompt struct; UI is forbidden.
-        unsafe {
-            CryptProtectData(
-                &input,
-                PCWSTR::null(),
-                Some(&entropy),
-                None,
-                None,
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut out,
-            )
-        }
-        .map_err(io::Error::other)?;
-        Ok(take(out))
+        protect(plain, ENTROPY)
     }
 
     fn unwrap(&self, sealed: &[u8]) -> io::Result<Vec<u8>> {
-        let input = blob(sealed);
-        let entropy = blob(ENTROPY);
-        let mut out = CRYPT_INTEGER_BLOB::default();
-        // SAFETY: as in `wrap`; DPAPI only reads `input` and writes `out`.
-        unsafe {
-            CryptUnprotectData(
-                &input,
-                None,
-                Some(&entropy),
-                None,
-                None,
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut out,
-            )
-        }
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(take(out))
+        unprotect(sealed, ENTROPY)
+    }
+}
+
+const CLIP_HISTORY_ENTROPY: &[u8] = b"phone-bridge/clip-history/v1";
+
+/// DPAPI (current user) with its own entropy for the clipboard history file, so a blob of one
+/// kind never opens as the other. DPAPI authenticates the blob; no nonce of ours is needed.
+#[derive(Default)]
+pub struct DpapiClipHistory;
+
+impl DpapiClipHistory {
+    pub fn seal(&self, plain: &[u8]) -> io::Result<Vec<u8>> {
+        protect(plain, CLIP_HISTORY_ENTROPY)
+    }
+
+    pub fn open(&self, sealed: &[u8]) -> io::Result<Vec<u8>> {
+        unprotect(sealed, CLIP_HISTORY_ENTROPY)
     }
 }
 
@@ -100,6 +125,17 @@ mod tests {
         assert!(sealed.len() > seed.len());
         assert!(!sealed.windows(32).any(|w| w == seed));
         assert_eq!(Dpapi.unwrap(&sealed).unwrap(), seed);
+    }
+
+    #[test]
+    fn clip_history_blobs_do_not_open_as_the_identity_seed_and_back() {
+        let sealed = DpapiClipHistory.seal(b"hello").unwrap();
+        assert_eq!(DpapiClipHistory.open(&sealed).unwrap(), b"hello");
+        assert!(
+            Dpapi.unwrap(&sealed).is_err(),
+            "other entropy: not openable as a seed"
+        );
+        assert!(DpapiClipHistory.open(&Dpapi.wrap(b"x").unwrap()).is_err());
     }
 
     #[test]

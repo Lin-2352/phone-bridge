@@ -36,6 +36,7 @@ mod camera_register;
 mod camera_status;
 #[cfg(windows)]
 mod camera_window;
+mod clip_history;
 #[cfg(windows)]
 mod clip_image;
 #[cfg(windows)]

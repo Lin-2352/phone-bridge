@@ -20,4 +20,4 @@ pub mod power;
 mod thread_priority;
 
 #[cfg(windows)]
-pub use dpapi::Dpapi;
+pub use dpapi::{Dpapi, DpapiClipHistory};
