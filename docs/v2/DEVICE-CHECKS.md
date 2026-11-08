@@ -35,5 +35,5 @@ Setup: the phone paired with two PCs (the tray, and a second identity from `pb.e
 - [ ] **M7 Gate on new switches.** With the unlock gate on, turning on "Share clipboard" or "Share this phone's audio without asking" asks for an unlock; turning them off does not.
 - [ ] **M8.3 Tile and widget.** The Send tile and widget name the default PC and send to it.
 - [ ] **PC Send to.** With "Send to" set to Ask and two phones, the tray menu lists both and the choice is used once.
-- [ ] **Finding (2026-11-08):** the "Remove <PC>?" dialog shows only the bare name, so two PCs with one name cannot be told apart there (the list rows do show the suffix). Tracked under Open follow-ups.
+- [x] **Finding fixed (2026-11-08, `bb2f333`):** the "Remove <PC>?" dialog showed only the bare name, so two PCs with one name could not be told apart. It now reads "Remove ASUS-ROG-STRIX- (D5C4)?", checked on the phone. Rename and permissions dialogs use the same label (not opened on the phone).
 - [x] **Status after a phone-started send (2026-11-08, `5e3bb46`).** After a notification reached the PC, Home says "Last seen just now" (it said "33 min ago" before the fix).
