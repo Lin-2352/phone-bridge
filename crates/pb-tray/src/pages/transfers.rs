@@ -65,13 +65,18 @@ impl From<&transfers::Row> for TransferRow {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransfersModel {
     pub rows: Vec<TransferRow>,
+    /// The send queue is paused: the next file waits (Resume is offered).
+    pub paused: bool,
 }
 
 impl TransfersModel {
     /// The registry's rows, ordered for the page.
     pub fn from_registry() -> Self {
         let rows = transfers::rows().iter().map(TransferRow::from).collect();
-        TransfersModel { rows: order(rows) }
+        TransfersModel {
+            rows: order(rows),
+            paused: crate::core::queue_paused(),
+        }
     }
 }
 
@@ -108,6 +113,9 @@ pub fn empty_text() -> (&'static str, &'static str) {
 
 /// Hit ids: one button per row, by position.
 const BUTTON: u32 = 10;
+/// The Pause / Resume button beside the title.
+const QUEUE_BUTTON: u32 = 5;
+const QUEUE_BUTTON_W: f32 = 120.0;
 
 /// Sizes in logical px.
 const PAD: f32 = 24.0;
@@ -120,6 +128,8 @@ const BAR_H: f32 = 4.0;
 
 struct Parts {
     title: RectF,
+    /// Pause or Resume queue, right of the title; None when there is nothing to pause.
+    queue: Option<RectF>,
     card: RectF,
     /// Each row and its button.
     rows: Vec<(RectF, RectF)>,
@@ -130,10 +140,19 @@ fn parts(r: RectF, s: f32, m: &TransfersModel) -> Parts {
     let (left, right) = (r.left + PAD * s, (r.right - PAD * s).max(r.left + PAD * s));
     let top = r.top + PAD * s;
     let title = rectf(left, top, right, top + TITLE_H * s);
+    let queue = (!m.rows.is_empty() || m.paused).then(|| {
+        rectf(
+            (right - QUEUE_BUTTON_W * s).max(left),
+            title.top + (TITLE_H - BUTTON_H) * s / 2.0,
+            right,
+            title.top + (TITLE_H + BUTTON_H) * s / 2.0,
+        )
+    });
     if m.rows.is_empty() {
         let card = rectf(left, title.bottom, right, title.bottom + EMPTY_H * s);
         return Parts {
             title,
+            queue,
             card,
             rows: Vec::new(),
             bottom: card.bottom + PAD * s,
@@ -162,6 +181,7 @@ fn parts(r: RectF, s: f32, m: &TransfersModel) -> Parts {
         .collect();
     Parts {
         title,
+        queue,
         card,
         rows,
         bottom: card.bottom + PAD * s,
@@ -174,7 +194,8 @@ fn has_button(r: &TransferRow) -> bool {
 
 pub fn layout(r: RectF, s: f32, m: &TransfersModel) -> Vec<Hit> {
     let p = parts(r, s, m);
-    m.rows
+    let mut hits: Vec<Hit> = m
+        .rows
         .iter()
         .zip(&p.rows)
         .enumerate()
@@ -183,7 +204,14 @@ pub fn layout(r: RectF, s: f32, m: &TransfersModel) -> Vec<Hit> {
             id: BUTTON + k as u32,
             r: *b,
         })
-        .collect()
+        .collect();
+    if let Some(q) = p.queue {
+        hits.push(Hit {
+            id: QUEUE_BUTTON,
+            r: q,
+        });
+    }
+    hits
 }
 
 /// `width` in pixels; the height in logical px.
@@ -195,6 +223,9 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &TransfersModel) {
     let (s, pal) = (c.s, c.p);
     let p = parts(r, s, m);
     text(c, Font::Title, "Transfers", p.title, pal.text, Align::Left);
+    if let Some(q) = p.queue {
+        fluent::button(c, q, queue_label(m), m.paused);
+    }
     widgets::card(c, p.card);
     if m.rows.is_empty() {
         let (title, hint) = empty_text();
@@ -271,7 +302,18 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &TransfersModel) {
     }
 }
 
+fn queue_label(m: &TransfersModel) -> &'static str {
+    if m.paused {
+        "Resume queue"
+    } else {
+        "Pause queue"
+    }
+}
+
 pub fn describe(hit: &Hit, m: &TransfersModel) -> Option<Desc> {
+    if hit.id == QUEUE_BUTTON {
+        return Some(Desc::new(queue_label(m).to_owned(), Role::Button));
+    }
     let t = m.rows.get(hit.id.checked_sub(BUTTON)? as usize)?;
     if t.can_cancel {
         Some(Desc::new(format!("Cancel {}", t.name), Role::Button))
@@ -283,6 +325,13 @@ pub fn describe(hit: &Hit, m: &TransfersModel) -> Option<Desc> {
 }
 
 pub fn click(hit: &Hit, m: &TransfersModel) -> Option<Action> {
+    if hit.id == QUEUE_BUTTON {
+        return Some(if m.paused {
+            Action::QueueResume
+        } else {
+            Action::QueuePause
+        });
+    }
     let t = m.rows.get(hit.id.checked_sub(BUTTON)? as usize)?;
     if t.can_cancel {
         Some(Action::TransferCancel(t.id))
@@ -354,12 +403,13 @@ mod tests {
                 row(2, Kind::Failed, 1, 10),
                 row(3, Kind::Done, 10, 10),
             ],
+            ..Default::default()
         };
         let hits = layout(page(), 1.0, &m);
         assert_eq!(
             hits.len(),
-            2,
-            "Cancel for the running one, Retry for the failed one"
+            3,
+            "Cancel for the running one, Retry for the failed one, and the queue button"
         );
         for h in &hits {
             let d = describe(h, &m).expect("described");
@@ -368,9 +418,31 @@ mod tests {
     }
 
     #[test]
+    fn the_queue_button_pauses_then_resumes() {
+        let mut m = TransfersModel {
+            rows: vec![row(7, Kind::Running, 1, 10)],
+            ..Default::default()
+        };
+        let q = |m: &TransfersModel| {
+            let hits = layout(page(), 1.0, m);
+            let h = *hits.iter().find(|h| h.id == QUEUE_BUTTON).unwrap();
+            (click(&h, m), describe(&h, m).unwrap().name)
+        };
+        assert_eq!(q(&m), (Some(Action::QueuePause), "Pause queue".into()));
+        m.paused = true;
+        assert_eq!(q(&m), (Some(Action::QueueResume), "Resume queue".into()));
+        let empty = TransfersModel::default();
+        assert!(
+            layout(page(), 1.0, &empty).is_empty(),
+            "nothing to pause, no button"
+        );
+    }
+
+    #[test]
     fn cancel_and_retry_use_the_transfer_actions() {
         let m = TransfersModel {
             rows: vec![row(7, Kind::Running, 1, 10), row(9, Kind::Failed, 1, 10)],
+            ..Default::default()
         };
         let hits = layout(page(), 1.0, &m);
         assert_eq!(click(&hits[0], &m), Some(Action::TransferCancel(7)));
@@ -381,6 +453,7 @@ mod tests {
     fn hits_stay_inside_the_content_height() {
         let m = TransfersModel {
             rows: (1..=6).map(|i| row(i, Kind::Done, 10, 10)).collect(),
+            ..Default::default()
         };
         let h = content_height(800.0, 1.5, &m);
         for x in layout(rectf(0.0, 0.0, 800.0, 10.0), 1.5, &m) {

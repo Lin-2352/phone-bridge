@@ -179,6 +179,29 @@ impl Queues {
         self.by_peer.get(peer)
     }
 
+    /// The page's one Pause / Resume switch covers every phone.
+    pub fn set_all_paused(&mut self, paused: bool) {
+        for q in self.by_peer.values_mut() {
+            q.paused = paused;
+        }
+    }
+
+    pub fn any_paused(&self) -> bool {
+        self.by_peer.values().any(|q| q.paused)
+    }
+
+    /// Phones that have an item ready to send (after Resume, each needs a worker).
+    pub fn peers_with_waiting(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .by_peer
+            .iter()
+            .filter(|(_, q)| q.items.iter().any(|i| i.state == QueueState::Waiting))
+            .map(|(p, _)| p.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
     /// `queue.txt`: one line per unfinished item, `peer \t id \t token \t size \t name \t path`
     /// with tab, newline and `%` percent-escaped in the free-text fields. Done and failed items
     /// are not kept.
@@ -385,6 +408,21 @@ mod tests {
             "the token survives so a resume can match"
         );
         assert!(q.next().is_none(), "nothing sends before the user resumes");
+    }
+
+    #[test]
+    fn pausing_all_queues_and_resuming_them_is_one_switch() {
+        let mut qs = Queues::default();
+        add(qs.of("a"), "1");
+        add(qs.of("b"), "2");
+        assert!(!qs.any_paused());
+        qs.set_all_paused(true);
+        assert!(qs.any_paused());
+        assert!(qs.of("a").next().is_none() && qs.of("b").next().is_none());
+        qs.set_all_paused(false);
+        assert!(!qs.any_paused());
+        assert!(qs.of("a").next().is_some());
+        assert_eq!(qs.peers_with_waiting(), vec!["b".to_string()]);
     }
 
     #[test]

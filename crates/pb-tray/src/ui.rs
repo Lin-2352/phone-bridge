@@ -588,6 +588,12 @@ fn page_action(a: crate::pages::Action) {
         Action::TransferRetry(id) => {
             std::thread::spawn(move || crate::transfers::retry(id));
         }
+        Action::QueuePause => {
+            let _ = st.cmds.send(Cmd::QueuePause);
+        }
+        Action::QueueResume => {
+            let _ = st.cmds.send(Cmd::QueueResume);
+        }
         // On a worker: the check and the shell may wait on a slow share.
         Action::OpenFile(path) => page_file(raw, path, true),
         Action::ShowInFolder(path) => page_file(raw, path, false),

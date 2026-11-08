@@ -65,6 +65,9 @@ pub enum Action {
     /// Cancel or retry the transfer with this id (the registry's own cancel and retry).
     TransferCancel(u64),
     TransferRetry(u64),
+    /// Pause or resume the send queue (the next file waits; the one sending finishes).
+    QueuePause,
+    QueueResume,
     /// Open a received or sent file, or show it in Explorer; the tray
     /// checks first that it is still there.
     OpenFile(String),

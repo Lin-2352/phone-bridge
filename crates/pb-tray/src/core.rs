@@ -348,6 +348,10 @@ pub enum Cmd {
     SendClipboard(String),
     /// Files chosen in the dialog, dropped on the flyout, or sent via Explorer.
     SendFiles(Vec<PathBuf>),
+    /// Queue: the next file waits (the one sending finishes).
+    QueuePause,
+    /// Queue: send what waits, phone by phone.
+    QueueResume,
     /// The local clipboard changed (from the clipboard listener).
     ClipboardChanged {
         text: String,
@@ -748,6 +752,14 @@ pub async fn run(
         move || ui(UiEvent::PeersChecked)
     }));
     std::fs::create_dir_all(&opts.dir)?;
+    // Files that were waiting when Relay last closed come back paused; the user resumes them.
+    let qfile = opts.dir.join("queue.txt");
+    if let Ok(text) = std::fs::read_to_string(&qfile) {
+        if let Ok(mut q) = queues().lock() {
+            *q = crate::queue::Queues::load(&text, |p| p.exists());
+        }
+    }
+    let _ = QUEUE_FILE.set(qfile);
     // Kept partial files live in the data folder (private to this account), never in the save folder.
     match pb_transport::partials::PartialStore::open(
         &opts.dir.join("partials"),
@@ -851,7 +863,16 @@ pub async fn run(
                 (node.clone(), log.clone(), ui.clone(), settings.clone());
             rt.spawn(async move {
                 send_one_file(
-                    &node, &id, &name, &info.path, row, cancel, &log, &*ui, &settings,
+                    &node,
+                    &id,
+                    &name,
+                    &info.path,
+                    row,
+                    cancel,
+                    pb_transport::files::new_resume_token(),
+                    &log,
+                    &*ui,
+                    &settings,
                 )
                 .await;
             });
@@ -1043,6 +1064,33 @@ pub async fn run(
                             }
                         }
                     });
+                }
+                Some(Cmd::QueuePause) => {
+                    queue_set_paused(true);
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                }
+                Some(Cmd::QueueResume) => {
+                    queue_set_paused(false);
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                    let waiting = queues()
+                        .lock()
+                        .map(|q| q.peers_with_waiting())
+                        .unwrap_or_default();
+                    let known: Vec<(PeerId, String)> =
+                        peers.lock().map(|g| g.clone()).unwrap_or_default();
+                    for key in waiting {
+                        let Some((id, name)) = known.iter().find(|(i, _)| i.to_string() == key).cloned()
+                        else {
+                            continue;
+                        };
+                        let (node, log, ui, settings) =
+                            (node.clone(), log.clone(), ui.clone(), settings.clone());
+                        tokio::spawn(async move {
+                            drain_queue(&node, &id, &name, &log, &*ui, &settings).await;
+                        });
+                    }
                 }
                 Some(Cmd::SendFiles(paths)) => {
                     let (node, log, ui, settings) =
@@ -1432,32 +1480,119 @@ async fn send_batch(
     ui: &(impl Fn(UiEvent) + ?Sized),
     settings: &SharedSettings,
 ) {
-    use crate::transfers as tr;
-    let batch = tr::new_batch_id();
-    let total = paths.len();
-    for (i, path) in paths.into_iter().enumerate() {
-        if tr::batch_stopped(batch) {
-            break;
-        }
+    let key = id.to_string();
+    for path in paths {
         let file_name = file_name_of(&path);
         let size = tokio::fs::metadata(&path)
             .await
             .map(|m| m.len())
             .unwrap_or(0);
+        let added = queues().lock().ok().map(|mut q| {
+            q.of(&key).enqueue(
+                path,
+                file_name.clone(),
+                size,
+                pb_transport::files::new_resume_token(),
+            )
+        });
+        if !matches!(added, Some(Ok(_))) {
+            ui(UiEvent::Info(format!(
+                "{name} already has {} files waiting; {file_name} was not added",
+                crate::queue::MAX_PER_DEVICE
+            )));
+        }
+    }
+    save_queues();
+    drain_queue(node, id, name, log, ui, settings).await;
+}
+
+/// Sends the waiting items of one phone, one after the other. Several callers may run this at
+/// once: `next()` hands out an item only while none is sending, so the sends never overlap.
+async fn drain_queue(
+    node: &Node,
+    id: &PeerId,
+    name: &str,
+    log: &Log,
+    ui: &(impl Fn(UiEvent) + ?Sized),
+    settings: &SharedSettings,
+) {
+    use crate::transfers as tr;
+    let key = id.to_string();
+    let batch = tr::new_batch_id();
+    loop {
+        if tr::batch_stopped(batch) {
+            break;
+        }
+        let Some(item) = queues().lock().ok().and_then(|mut q| q.of(&key).next()) else {
+            break;
+        };
+        let total = queues()
+            .lock()
+            .map(|q| q.get(&key).map_or(1, |s| s.items().len()))
+            .unwrap_or(1);
         let (row, cancel) = tr::start(tr::NewTransfer {
             dir: tr::Dir::Send,
             peer: name.to_owned(),
-            name: file_name,
-            size,
-            path: Some(path.clone()),
+            name: item.name.clone(),
+            size: item.size,
+            path: Some(item.path.clone()),
             batch: Some(tr::Batch {
                 id: batch,
-                index: i + 1,
+                index: 1,
                 total,
             }),
         });
-        send_one_file(node, id, name, &path, row, cancel, log, ui, settings).await;
+        let outcome = send_one_file(
+            node, id, name, &item.path, row, cancel, item.token, log, ui, settings,
+        )
+        .await;
+        if let Ok(mut q) = queues().lock() {
+            let s = q.of(&key);
+            match outcome {
+                SendOutcome::Done => s.finish(item.id),
+                // A cancel removes the item; a failure keeps nothing to retry automatically.
+                SendOutcome::Cancelled => {
+                    s.cancel(item.id);
+                }
+                SendOutcome::Failed => s.fail(item.id),
+            }
+        }
+        save_queues();
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendOutcome {
+    Done,
+    Cancelled,
+    Failed,
+}
+
+fn queues() -> &'static Mutex<crate::queue::Queues> {
+    static Q: std::sync::OnceLock<Mutex<crate::queue::Queues>> = std::sync::OnceLock::new();
+    Q.get_or_init(|| Mutex::new(crate::queue::Queues::default()))
+}
+
+/// Pauses or resumes every phone's queue: the next file waits, the one sending finishes.
+pub fn queue_set_paused(paused: bool) {
+    if let Ok(mut q) = queues().lock() {
+        q.set_all_paused(paused);
+    }
+}
+
+/// True while any queue is paused (the Transfers page shows "Resume").
+pub fn queue_paused() -> bool {
+    queues().lock().map(|q| q.any_paused()).unwrap_or(false)
+}
+
+static QUEUE_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Writes `queue.txt` (unfinished items, tokens included) next to the other private state.
+fn save_queues() {
+    let (Some(path), Ok(q)) = (QUEUE_FILE.get(), queues().lock()) else {
+        return;
+    };
+    let _ = std::fs::write(path, q.save());
 }
 
 fn file_name_of(path: &std::path::Path) -> String {
@@ -1476,10 +1611,11 @@ async fn send_one_file(
     path: &std::path::Path,
     row: u64,
     cancel: pb_transport::files::Cancel,
+    token: [u8; 16],
     log: &Log,
     ui: &(impl Fn(UiEvent) + ?Sized),
     settings: &SharedSettings,
-) {
+) -> SendOutcome {
     use crate::transfers as tr;
     let file_name = file_name_of(path);
     let started = Instant::now();
@@ -1499,10 +1635,9 @@ async fn send_one_file(
         ));
         crate::applog::emit(crate::applog::file_started("sent", &file_name, size));
         drop(f);
-        // One token for every attempt of this file: after a broken link the receiver keeps what it
-        // got and the next attempt sends only the rest (it falls back to the whole file when the
+        // The queue item's token serves every attempt of this file: after a broken link the receiver
+        // keeps what it got and the next attempt sends only the rest (it falls back to the whole file when the
         // receiver kept nothing or the file changed).
-        let token = pb_transport::files::new_resume_token();
         let mut attempt = 0u32;
         loop {
             let opts = TransferOpts::new(Some(tr::progress_cb(row)), Some(cancel.clone()));
@@ -1550,6 +1685,7 @@ async fn send_one_file(
     }
     .await;
     let took = started.elapsed();
+    let mut outcome = SendOutcome::Done;
     match result {
         Ok(size) => {
             seen(node, id);
@@ -1576,6 +1712,7 @@ async fn send_one_file(
             let mbps = done as f64 / 1e6 / took.as_secs_f64().max(1e-3);
             match e {
                 pb_transport::Error::Cancelled | pb_transport::Error::PeerCancelled => {
+                    outcome = SendOutcome::Cancelled;
                     let by = if matches!(e, pb_transport::Error::PeerCancelled) {
                         tr::cancel(row, tr::CancelBy::Peer);
                         "peer"
@@ -1598,6 +1735,7 @@ async fn send_one_file(
                     }
                 }
                 e => {
+                    outcome = SendOutcome::Failed;
                     log.line(&format!("FILE send \"{file_name}\" failed: {e}"));
                     let f = tr::describe(
                         tr::Dir::Send,
@@ -1618,6 +1756,7 @@ async fn send_one_file(
             }
         }
     }
+    outcome
 }
 
 /// Runs a session with the "reinstalled or reset" note following the
