@@ -86,6 +86,7 @@ mod portable;
 mod qr;
 #[cfg(windows)]
 mod qr_window;
+mod queue;
 #[cfg(windows)]
 mod relaunch;
 #[cfg(windows)]

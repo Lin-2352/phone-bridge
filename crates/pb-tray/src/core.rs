@@ -1498,13 +1498,45 @@ async fn send_one_file(
             "FILE send start \"{file_name}\" {size} bytes to \"{name}\""
         ));
         crate::applog::emit(crate::applog::file_started("sent", &file_name, size));
-        let opts = TransferOpts::new(Some(tr::progress_cb(row)), Some(cancel.clone()));
-        dial(
-            node,
-            id,
-            node.send_file_with(id, &file_name, size, "", f, opts),
-        )
-        .await?;
+        drop(f);
+        // One token for every attempt of this file: after a broken link the receiver keeps what it
+        // got and the next attempt sends only the rest (it falls back to the whole file when the
+        // receiver kept nothing or the file changed).
+        let token = pb_transport::files::new_resume_token();
+        let mut attempt = 0u32;
+        loop {
+            let opts = TransferOpts::new(Some(tr::progress_cb(row)), Some(cancel.clone()));
+            let p = path.to_path_buf();
+            let r = dial(
+                node,
+                id,
+                node.send_file_resumable(
+                    id,
+                    &file_name,
+                    size,
+                    "",
+                    move || std::fs::File::open(&p).map(tokio::fs::File::from_std),
+                    token,
+                    opts,
+                ),
+            )
+            .await;
+            match r {
+                Ok(_) => break,
+                Err(
+                    pb_transport::Error::Transport(_)
+                    | pb_transport::Error::Closed
+                    | pb_transport::Error::Timeout,
+                ) if attempt < 3 && !cancel.is_cancelled() => {
+                    attempt += 1;
+                    log.line(&format!(
+                        "FILE send \"{file_name}\" interrupted, retry {attempt} of 3"
+                    ));
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         Ok::<_, pb_transport::Error>(size)
     }
     .await;

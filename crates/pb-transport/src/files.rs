@@ -1390,3 +1390,10 @@ mod link_tests {
         }
     }
 }
+
+/// A fresh random resume token for one transfer (never derived from the offer id).
+pub fn new_resume_token() -> [u8; 16] {
+    let mut t = [0u8; 16];
+    getrandom::fill(&mut t).expect("the OS random source");
+    t
+}
