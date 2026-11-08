@@ -215,7 +215,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M11.0 Plan: [plans/2026-11-08-m11-docs-final.md](plans/2026-11-08-m11-docs-final.md)
 - [x] M11.1 THREAT_MODEL: new rows and drift fixed (2026-11-08: an M9 to M11 section covering partial files, the queue, clipboard history (storage built, not on screen), drag and drop, update signing, the installer firewall rule, signing and publishing; row 10 (no flavors exist) and row 13 (update status) corrected. Rows for the unbuilt viewer, the PC/phone update check UI and Public-network detection are not written because those are not built)
 - [x] M11.2 WIRE_PROTOCOL (2026-11-08: no longer a draft; `scripts/check-docs.sh` (new, a `docs` CI job) fails when a capability in code is missing from the document, the document calls itself a draft, the threat model lacks a 0.3.0 topic, or a ticked row has no commit)
-- [ ] M11.3 DECISIONS
+- [x] M11.3 DECISIONS (2026-11-08: M9 and M10 sections with the rulings, what each costs if wrong, and what is not built)
 - [ ] M11.4 CHANGELOG 0.3.0 and README
 - [ ] M11.5 `docs/DEVICE-TEST-CHECKLIST.md` for Claude on the owner's desktop
 - [ ] M11.6 Final whole-branch review
