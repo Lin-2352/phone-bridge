@@ -45,6 +45,15 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for PbError {
 
 /// Implemented in Kotlin with an Android Keystore AES-GCM key, so the identity
 /// seed is never stored in clear.
+/// Gives the engine a fresh file descriptor each time it needs to read the file again (a resumed
+/// send reads the start once to prove it matches, then the rest).
+#[uniffi::export(with_foreign)]
+pub trait FileOpener: Send + Sync {
+    /// A detached descriptor (ParcelFileDescriptor.detachFd()) the engine takes ownership of, or a
+    /// negative number when the file cannot be opened now (moved, permission gone).
+    fn open(&self) -> i32;
+}
+
 #[uniffi::export(with_foreign)]
 pub trait KeyWrapper: Send + Sync {
     fn wrap(&self, plain: Vec<u8>) -> Result<Vec<u8>, PbError>;
@@ -2231,6 +2240,68 @@ impl PbNode {
                             .find(|p| p.id == peer)
                             .map(|p| p.name)
                             .unwrap_or_default(),
+                        peer.to_string(),
+                        name.clone(),
+                        false,
+                    )),
+                    Some(guard.cancel.clone()),
+                ),
+            )
+            .await;
+        drop(guard);
+        match &sent {
+            Ok(_) => applog::file_done("sent", &name, size, started.elapsed().as_secs_f64()),
+            Err(e) => applog::file_failed("sent", &name, &e.to_string()),
+        }
+        sent.map(|_| ()).map_err(fail)
+    }
+
+    /// Share a file that can be sent again from where a broken link stopped: `token` (16 bytes,
+    /// chosen once per file and kept for the retries) lets the PC match what it kept. `opener`
+    /// supplies a fresh descriptor whenever the file must be read again.
+    pub async fn send_file_resumable(
+        &self,
+        peer_id: String,
+        opener: Arc<dyn FileOpener>,
+        name: String,
+        size: u64,
+        mime: String,
+        token: Vec<u8>,
+    ) -> Result<(), PbError> {
+        let token: [u8; 16] = token
+            .try_into()
+            .map_err(|_| fail("the resume token must be 16 bytes"))?;
+        let peer = self.find(&peer_id)?;
+        let started = std::time::Instant::now();
+        let guard = CancelGuard::new(false);
+        let peer_name = self
+            .node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id == peer)
+            .map(|p| p.name)
+            .unwrap_or_default();
+        let sent = self
+            .node
+            .send_file_resumable(
+                &peer,
+                &name,
+                size,
+                &mime,
+                move || {
+                    let fd = opener.open();
+                    if fd < 0 {
+                        return Err(std::io::Error::other("the file cannot be opened"));
+                    }
+                    fd_to_file(fd)
+                        .map(tokio::fs::File::from_std)
+                        .map_err(|e| std::io::Error::other(e.to_string()))
+                },
+                token,
+                pb_transport::files::TransferOpts::new(
+                    Some(progress_events(
+                        self.shared.events.clone(),
+                        peer_name,
                         peer.to_string(),
                         name.clone(),
                         false,

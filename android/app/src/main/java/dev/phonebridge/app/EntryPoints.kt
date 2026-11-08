@@ -236,8 +236,38 @@ object OutgoingShare {
     /** Cancel was tapped on the progress notification: the rest of the batch is not sent. */
     @Volatile var cancelRequested = false
 
-    class Out(val name: String, val size: Long, val mime: String, val fd: Int, val keep: android.os.ParcelFileDescriptor?)
-    private class Pending(val peerId: String, val peerName: String, val name: String, val size: Long, val mime: String, val keep: android.os.ParcelFileDescriptor)
+    /** [token] names this file for the PC across attempts: a Retry after a broken link sends only the rest. */
+    class Out(
+        val name: String,
+        val size: Long,
+        val mime: String,
+        val fd: Int,
+        val keep: android.os.ParcelFileDescriptor?,
+        val token: ByteArray = ByteArray(16).also { java.security.SecureRandom().nextBytes(it) },
+    )
+    private class Pending(
+        val peerId: String,
+        val peerName: String,
+        val name: String,
+        val size: Long,
+        val mime: String,
+        val keep: android.os.ParcelFileDescriptor,
+        val token: ByteArray,
+    )
+
+    /** A fresh descriptor for each read: the first is the one opened for this send, later ones
+     *  are copies of the kept descriptor rewound to the start (a resume reads the start, then the rest). */
+    private class KeptFile(private var first: Int, private val keep: android.os.ParcelFileDescriptor?) : uniffi.pb_ffi.FileOpener {
+        @Synchronized
+        override fun open(): Int {
+            if (first >= 0) return first.also { first = -1 }
+            val k = keep ?: return -1
+            return runCatching {
+                android.system.Os.lseek(k.fileDescriptor, 0, android.system.OsConstants.SEEK_SET)
+                k.dup().detachFd()
+            }.getOrDefault(-1)
+        }
+    }
 
     private val store = RetryStore<Pending>(4)
     private val seq = java.util.concurrent.atomic.AtomicLong(1)
@@ -245,7 +275,7 @@ object OutgoingShare {
     /** Sends one file; on failure or cancel posts a notification with Retry while a copy of the descriptor is kept. */
     suspend fun send(app: android.content.Context, node: uniffi.pb_ffi.PbNode, peerId: String, peerName: String, f: Out) {
         try {
-            node.sendFileFd(peerId, f.fd, f.name, f.size.toULong(), f.mime)
+            node.sendFileResumable(peerId, KeptFile(f.fd, f.keep), f.name, f.size.toULong(), f.mime, f.token)
             Log.i(TAG, "SHARE sent file ext=${LogFields.extOnly(f.name)} (${f.size} bytes)")
             Bridge.attemptDone(app, reached = true)
             AppLog.event("events", "share_sent", "kind" to "file", "ext" to LogFields.extOnly(f.name), "bytes" to f.size)
@@ -271,7 +301,7 @@ object OutgoingShare {
         val keep = f.keep
         if (keep == null) { notifyInfo(app, title, text); return }
         val id = seq.getAndIncrement()
-        store.put(id, Pending(peerId, peerName, f.name, f.size, f.mime, keep)).forEach { runCatching { it.keep.close() } }
+        store.put(id, Pending(peerId, peerName, f.name, f.size, f.mime, keep, f.token)).forEach { runCatching { it.keep.close() } }
         val nid = 300 + (id % 20).toInt()
         val retry = android.app.PendingIntent.getBroadcast(
             app, nid,
@@ -308,7 +338,7 @@ object OutgoingShare {
                 android.system.Os.lseek(p.keep.fileDescriptor, 0, android.system.OsConstants.SEEK_SET)
                 p.keep.dup()
             }.getOrNull()?.let { d ->
-                send(app, node, p.peerId, p.peerName, Out(p.name, p.size, p.mime, d.detachFd(), p.keep))
+                send(app, node, p.peerId, p.peerName, Out(p.name, p.size, p.mime, d.detachFd(), p.keep, p.token))
                 true
             } == true
             if (!ok) {
