@@ -607,6 +607,9 @@ fn page_action(a: crate::pages::Action) {
         Action::QueueResume => {
             let _ = st.cmds.send(Cmd::QueueResume);
         }
+        Action::QueueRemove(peer, id) => {
+            let _ = st.cmds.send(Cmd::QueueRemove { peer, id });
+        }
         // On a worker: the check and the shell may wait on a slow share.
         Action::OpenFile(path) => page_file(raw, path, true),
         Action::ShowInFolder(path) => page_file(raw, path, false),

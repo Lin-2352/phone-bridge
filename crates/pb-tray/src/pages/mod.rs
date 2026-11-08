@@ -68,6 +68,8 @@ pub enum Action {
     /// Pause or resume the send queue (the next file waits; the one sending finishes).
     QueuePause,
     QueueResume,
+    /// Take a waiting file out of a phone's queue (its queue key and the item id).
+    QueueRemove(String, u64),
     /// Files dropped on the main window: sent to a phone (asking which when several are paired).
     DropFiles(Vec<std::path::PathBuf>),
     /// Open a received or sent file, or show it in Explorer; the tray

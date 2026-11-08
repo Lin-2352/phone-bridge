@@ -62,9 +62,21 @@ impl From<&transfers::Row> for TransferRow {
     }
 }
 
+/// A file waiting in a phone's send queue (not started, paused, or its source is missing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedRow {
+    /// The phone's queue key, for Remove.
+    pub peer: String,
+    pub id: u64,
+    pub name: String,
+    pub status: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransfersModel {
     pub rows: Vec<TransferRow>,
+    /// Files waiting behind the ones sending, from the send queue.
+    pub queued: Vec<QueuedRow>,
     /// The send queue is paused: the next file waits (Resume is offered).
     pub paused: bool,
 }
@@ -75,6 +87,7 @@ impl TransfersModel {
         let rows = transfers::rows().iter().map(TransferRow::from).collect();
         TransfersModel {
             rows: order(rows),
+            queued: crate::core::queue_rows(),
             paused: crate::core::queue_paused(),
         }
     }
@@ -116,6 +129,8 @@ const BUTTON: u32 = 10;
 /// The Pause / Resume button beside the title.
 const QUEUE_BUTTON: u32 = 5;
 const QUEUE_BUTTON_W: f32 = 120.0;
+/// Hit ids: one Remove button per queued file, by position.
+const QUEUED_BUTTON: u32 = 1000;
 
 /// Sizes in logical px.
 const PAD: f32 = 24.0;
@@ -140,7 +155,8 @@ fn parts(r: RectF, s: f32, m: &TransfersModel) -> Parts {
     let (left, right) = (r.left + PAD * s, (r.right - PAD * s).max(r.left + PAD * s));
     let top = r.top + PAD * s;
     let title = rectf(left, top, right, top + TITLE_H * s);
-    let queue = (!m.rows.is_empty() || m.paused).then(|| {
+    let count = m.rows.len() + m.queued.len();
+    let queue = (count > 0 || m.paused).then(|| {
         rectf(
             (right - QUEUE_BUTTON_W * s).max(left),
             title.top + (TITLE_H - BUTTON_H) * s / 2.0,
@@ -148,7 +164,7 @@ fn parts(r: RectF, s: f32, m: &TransfersModel) -> Parts {
             title.top + (TITLE_H + BUTTON_H) * s / 2.0,
         )
     });
-    if m.rows.is_empty() {
+    if count == 0 {
         let card = rectf(left, title.bottom, right, title.bottom + EMPTY_H * s);
         return Parts {
             title,
@@ -162,9 +178,9 @@ fn parts(r: RectF, s: f32, m: &TransfersModel) -> Parts {
         left,
         title.bottom,
         right,
-        title.bottom + m.rows.len() as f32 * ROW_H * s,
+        title.bottom + count as f32 * ROW_H * s,
     );
-    let rows = (0..m.rows.len())
+    let rows = (0..count)
         .map(|k| {
             let t = card.top + k as f32 * ROW_H * s;
             let row = rectf(left, t, right, t + ROW_H * s);
@@ -205,6 +221,14 @@ pub fn layout(r: RectF, s: f32, m: &TransfersModel) -> Vec<Hit> {
             r: *b,
         })
         .collect();
+    for (j, _) in m.queued.iter().enumerate() {
+        if let Some((_, b)) = p.rows.get(m.rows.len() + j) {
+            hits.push(Hit {
+                id: QUEUED_BUTTON + j as u32,
+                r: *b,
+            });
+        }
+    }
     if let Some(q) = p.queue {
         hits.push(Hit {
             id: QUEUE_BUTTON,
@@ -227,7 +251,7 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &TransfersModel) {
         fluent::button(c, q, queue_label(m), m.paused);
     }
     widgets::card(c, p.card);
-    if m.rows.is_empty() {
+    if m.rows.is_empty() && m.queued.is_empty() {
         let (title, hint) = empty_text();
         widgets::empty_state(c, p.card, fluent::glyph::SEND, title, hint);
         return;
@@ -300,6 +324,24 @@ pub fn draw(c: &mut Canvas, r: RectF, m: &TransfersModel) {
             fluent::button(c, *b, "Retry", true);
         }
     }
+    for (q, (row, b)) in m.queued.iter().zip(p.rows.iter().skip(m.rows.len())) {
+        let pad = fluent::ROW_PAD as f32 * s;
+        let cy = (row.top + row.bottom) / 2.0;
+        let g = rectf(
+            row.left + pad,
+            cy - 10.0 * s,
+            row.left + pad + 20.0 * s,
+            cy + 10.0 * s,
+        );
+        fluent::icon(c, fluent::glyph::UPLOAD, g, pal.text2);
+        let tx = g.right + SPACE[2] * s;
+        let tr = (b.left - SPACE[2] * s).max(tx);
+        let name = rectf(tx, row.top + 10.0 * s, tr, row.top + 32.0 * s);
+        text(c, Font::Body, &q.name, name, pal.text, Align::Left);
+        let meta = rectf(tx, name.bottom, tr, name.bottom + 18.0 * s);
+        text(c, Font::Caption, &q.status, meta, pal.text2, Align::Left);
+        fluent::button(c, *b, "Remove", false);
+    }
 }
 
 fn queue_label(m: &TransfersModel) -> &'static str {
@@ -314,6 +356,10 @@ pub fn describe(hit: &Hit, m: &TransfersModel) -> Option<Desc> {
     if hit.id == QUEUE_BUTTON {
         return Some(Desc::new(queue_label(m).to_owned(), Role::Button));
     }
+    if hit.id >= QUEUED_BUTTON {
+        let q = m.queued.get((hit.id - QUEUED_BUTTON) as usize)?;
+        return Some(Desc::new(format!("Remove {}", q.name), Role::Button));
+    }
     let t = m.rows.get(hit.id.checked_sub(BUTTON)? as usize)?;
     if t.can_cancel {
         Some(Desc::new(format!("Cancel {}", t.name), Role::Button))
@@ -325,6 +371,10 @@ pub fn describe(hit: &Hit, m: &TransfersModel) -> Option<Desc> {
 }
 
 pub fn click(hit: &Hit, m: &TransfersModel) -> Option<Action> {
+    if hit.id >= QUEUED_BUTTON {
+        let q = m.queued.get((hit.id - QUEUED_BUTTON) as usize)?;
+        return Some(Action::QueueRemove(q.peer.clone(), q.id));
+    }
     if hit.id == QUEUE_BUTTON {
         return Some(if m.paused {
             Action::QueueResume
@@ -436,6 +486,56 @@ mod tests {
             layout(page(), 1.0, &empty).is_empty(),
             "nothing to pause, no button"
         );
+    }
+
+    fn queued(id: u64, status: &str) -> QueuedRow {
+        QueuedRow {
+            peer: "phone-1".into(),
+            id,
+            name: format!("queued{id}.bin"),
+            status: status.into(),
+        }
+    }
+
+    #[test]
+    fn waiting_files_are_listed_with_a_remove_button() {
+        let m = TransfersModel {
+            rows: vec![row(1, Kind::Running, 1, 10)],
+            queued: vec![queued(5, "Waiting"), queued(6, "Needs the file again")],
+            ..Default::default()
+        };
+        let hits = layout(page(), 1.0, &m);
+        // Cancel for the running one, Remove for each queued one, and the queue button.
+        assert_eq!(hits.len(), 4);
+        let removes: Vec<_> = hits
+            .iter()
+            .filter_map(|h| match click(h, &m) {
+                Some(Action::QueueRemove(peer, id)) => Some((peer, id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            removes,
+            vec![("phone-1".to_string(), 5), ("phone-1".to_string(), 6)]
+        );
+        for h in &hits {
+            assert!(!describe(h, &m).unwrap().name.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_page_with_only_queued_files_is_not_the_empty_state() {
+        let m = TransfersModel {
+            queued: vec![queued(1, "Paused")],
+            paused: true,
+            ..Default::default()
+        };
+        assert!(content_height(800.0, 1.0, &m) > 0.0);
+        let hits = layout(page(), 1.0, &m);
+        assert_eq!(hits.len(), 2, "Remove and Resume queue");
+        for x in &hits {
+            assert!(x.r.bottom <= content_height(page().right, 1.0, &m) + 0.5);
+        }
     }
 
     #[test]

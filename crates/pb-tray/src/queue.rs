@@ -116,6 +116,22 @@ impl SendQueue {
         self.paused = true;
     }
 
+    /// Removes every item that has not started (the user cancelled what was queued); the one
+    /// sending, if any, is left to the caller to cancel.
+    pub fn clear_waiting(&mut self) {
+        self.items
+            .retain(|i| i.state != QueueState::Waiting && i.state != QueueState::NeedsFile);
+    }
+
+    /// A file that was missing may be back (a USB stick, a share): Waiting again when `exists` finds it.
+    pub fn recheck(&mut self, exists: impl Fn(&Path) -> bool) {
+        for i in &mut self.items {
+            if i.state == QueueState::NeedsFile && exists(&i.path) {
+                i.state = QueueState::Waiting;
+            }
+        }
+    }
+
     pub fn resume(&mut self) {
         self.paused = false;
     }
@@ -168,11 +184,20 @@ impl SendQueue {
 #[derive(Default, Debug)]
 pub struct Queues {
     by_peer: HashMap<String, SendQueue>,
+    /// The page's one switch: a phone met later starts paused too, so the page never says
+    /// "Resume queue" while a queue is sending.
+    paused_all: bool,
 }
 
 impl Queues {
     pub fn of(&mut self, peer: &str) -> &mut SendQueue {
-        self.by_peer.entry(peer.to_owned()).or_default()
+        let paused = self.paused_all;
+        self.by_peer
+            .entry(peer.to_owned())
+            .or_insert_with(|| SendQueue {
+                paused,
+                ..SendQueue::default()
+            })
     }
 
     pub fn get(&self, peer: &str) -> Option<&SendQueue> {
@@ -181,13 +206,36 @@ impl Queues {
 
     /// The page's one Pause / Resume switch covers every phone.
     pub fn set_all_paused(&mut self, paused: bool) {
+        self.paused_all = paused;
         for q in self.by_peer.values_mut() {
             q.paused = paused;
         }
     }
 
     pub fn any_paused(&self) -> bool {
-        self.by_peer.values().any(|q| q.paused)
+        self.paused_all || self.by_peer.values().any(|q| q.paused)
+    }
+
+    /// Every queue's rows (paused shown as such), with the phone's queue key, in a stable order.
+    pub fn rows_all(&self) -> Vec<(String, Item)> {
+        let mut peers: Vec<_> = self.by_peer.keys().cloned().collect();
+        peers.sort();
+        peers
+            .into_iter()
+            .flat_map(|p| {
+                self.by_peer[&p]
+                    .rows()
+                    .into_iter()
+                    .map(move |i| (p.clone(), i))
+            })
+            .collect()
+    }
+
+    /// After Resume: files that were missing are looked for again.
+    pub fn recheck(&mut self, exists: impl Fn(&Path) -> bool) {
+        for q in self.by_peer.values_mut() {
+            q.recheck(&exists);
+        }
     }
 
     /// Phones that have an item ready to send (after Resume, each needs a worker).
@@ -264,6 +312,8 @@ impl Queues {
                 state,
             });
         }
+        // Everything that came back is paused, and so is a phone met after the restart.
+        q.paused_all = !q.by_peer.is_empty();
         q
     }
 }
@@ -423,6 +473,54 @@ mod tests {
         assert!(!qs.any_paused());
         assert!(qs.of("a").next().is_some());
         assert_eq!(qs.peers_with_waiting(), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn a_phone_met_after_pausing_starts_paused_too() {
+        let mut qs = Queues::default();
+        add(qs.of("a"), "1");
+        qs.set_all_paused(true);
+        // A phone with no queue yet must not send while the page says "Resume queue".
+        add(qs.of("b"), "2");
+        assert!(qs.of("b").is_paused());
+        assert!(qs.of("b").next().is_none());
+        qs.set_all_paused(false);
+        assert!(qs.of("b").next().is_some());
+        assert!(!qs.any_paused());
+    }
+
+    #[test]
+    fn resume_rechecks_files_that_were_missing() {
+        let mut qs = Queues::default();
+        add(qs.of("p"), "usb.bin");
+        let mut back = Queues::load(&qs.save(), |_| false);
+        assert_eq!(back.of("p").items()[0].state, QueueState::NeedsFile);
+        // The stick is back: Resume finds the file again.
+        back.recheck(|_| true);
+        assert_eq!(back.of("p").items()[0].state, QueueState::Waiting);
+        // Still gone: it stays "needs the file" and does not block a new send forever.
+        let mut gone = Queues::load(&qs.save(), |_| false);
+        gone.recheck(|_| false);
+        assert_eq!(gone.of("p").items()[0].state, QueueState::NeedsFile);
+        let id = gone.of("p").items()[0].id;
+        assert!(
+            !gone.of("p").cancel(id),
+            "removing a missing file is not a running transfer"
+        );
+        assert!(gone.of("p").items().is_empty());
+    }
+
+    #[test]
+    fn cancelling_what_is_waiting_keeps_the_file_that_is_sending() {
+        let mut q = SendQueue::default();
+        let a = add(&mut q, "a");
+        add(&mut q, "b");
+        add(&mut q, "c");
+        q.next();
+        q.clear_waiting();
+        assert_eq!(q.items().len(), 1);
+        assert_eq!(q.items()[0].id, a);
+        assert_eq!(q.items()[0].state, QueueState::Sending);
     }
 
     #[test]

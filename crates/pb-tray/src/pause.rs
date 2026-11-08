@@ -46,6 +46,7 @@ pub fn needs_network(c: &Cmd) -> bool {
         | Cmd::NotifyAction { .. } => true,
         Cmd::CancelPair
         | Cmd::QueuePause
+        | Cmd::QueueRemove { .. }
         | Cmd::StopCamera
         | Cmd::CancelScreen
         | Cmd::StopAudio(_)

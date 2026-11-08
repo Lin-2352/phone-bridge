@@ -62,6 +62,15 @@ class ClipHistoryTest {
     }
 
     @Test
+    fun a_clip_dated_in_the_future_does_not_live_forever() {
+        val h = history(Mem())
+        h.add("from a wrong clock", false, 10 * ClipHistory.KEEP_SECS)
+        assertTrue(h.entries(100).isEmpty())
+        h.add("now", false, 100)
+        assertEquals(listOf("now"), h.entries(100).map { it.text })
+    }
+
+    @Test
     fun history_with_lost_key_reads_as_empty_not_garbage() {
         val m = Mem()
         history(m, key()).add("secret plans", false, 100)

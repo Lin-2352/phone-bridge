@@ -1052,6 +1052,13 @@ async fn fail_receive(session: &Session, e: Error) -> Error {
 
 /// Receive the offered bytes into `partial`, or into memory (returned) when
 /// it is `None`; either way the size and the sender's SHA-256 are checked.
+/// How long the receiver waits for the data stream. A sender that resumes first hashes the bytes the receiver
+/// already holds (`start`) before it opens the stream, so a slow source (a USB 2 stick, a network share) needs
+/// longer; 20 MB/s is assumed as the slowest worth waiting for.
+fn stream_wait(start: u64) -> Duration {
+    Duration::from_secs(30 + start / 20_000_000)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn receive_bytes(
     session: &mut Session,
@@ -1064,7 +1071,7 @@ async fn receive_bytes(
     mut seed: Option<Sha256>,
 ) -> Result<Vec<u8>, Error> {
     let stream = or_cancel(cancel, async {
-        tokio::time::timeout(Duration::from_secs(30), session.conn.accept_uni())
+        tokio::time::timeout(stream_wait(start), session.conn.accept_uni())
             .await
             .map_err(|_| Error::Timeout)?
             .map_err(tx)
@@ -1207,6 +1214,17 @@ async fn receive_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resume_waits_for_the_sender_to_hash_what_was_kept() {
+        assert_eq!(stream_wait(0), Duration::from_secs(30));
+        // 2 GiB kept: the sender needs up to ~107 s to read it from a slow source.
+        assert!(stream_wait(2 << 30) >= Duration::from_secs(30 + 100));
+        assert!(
+            stream_wait(2 << 30) < Duration::from_secs(300),
+            "still bounded"
+        );
+    }
 
     #[test]
     fn a_partial_on_another_drive_is_copied_into_place_when_rename_fails() {

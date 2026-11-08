@@ -352,6 +352,11 @@ pub enum Cmd {
     QueuePause,
     /// Queue: send what waits, phone by phone.
     QueueResume,
+    /// Queue: take one waiting file out (it is not sending, so nothing to cancel on the wire).
+    QueueRemove {
+        peer: String,
+        id: u64,
+    },
     /// The local clipboard changed (from the clipboard listener).
     ClipboardChanged {
         text: String,
@@ -869,7 +874,12 @@ pub async fn run(
                     &info.path,
                     row,
                     cancel,
-                    pb_transport::files::new_resume_token(),
+                    // The same token as the failed attempt, so the phone's kept bytes are used.
+                    retry_tokens()
+                        .lock()
+                        .ok()
+                        .and_then(|t| t.get(&(name.clone(), info.path.clone())).copied())
+                        .unwrap_or_else(pb_transport::files::new_resume_token),
                     &log,
                     &*ui,
                     &settings,
@@ -1070,7 +1080,18 @@ pub async fn run(
                     save_queues();
                     ui(UiEvent::PeersChecked);
                 }
+                Some(Cmd::QueueRemove { peer, id }) => {
+                    if let Ok(mut q) = queues().lock() {
+                        q.of(&peer).cancel(id);
+                    }
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                }
                 Some(Cmd::QueueResume) => {
+                    // Files that were missing (a USB stick, a share) are looked for again first.
+                    if let Ok(mut q) = queues().lock() {
+                        q.recheck(|p| p.exists());
+                    }
                     queue_set_paused(false);
                     save_queues();
                     ui(UiEvent::PeersChecked);
@@ -1542,30 +1563,76 @@ async fn drain_queue(
                 total,
             }),
         });
+        let token_key = (name.to_owned(), item.path.clone());
+        if let Ok(mut t) = retry_tokens().lock() {
+            t.insert(token_key.clone(), item.token);
+        }
         let outcome = send_one_file(
             node, id, name, &item.path, row, cancel, item.token, log, ui, settings,
         )
         .await;
+        let mut stop = false;
         if let Ok(mut q) = queues().lock() {
-            let s = q.of(&key);
             match outcome {
-                SendOutcome::Done => s.finish(item.id),
-                // A cancel removes the item; a failure keeps nothing to retry automatically.
-                SendOutcome::Cancelled => {
-                    s.cancel(item.id);
+                SendOutcome::Done => q.of(&key).finish(item.id),
+                // Relay itself stopped it (Pause, Quit): the file keeps its place and token, and the
+                // whole queue waits for the person to resume.
+                SendOutcome::Cancelled("pause" | "quit") => {
+                    q.of(&key).retry(item.id);
+                    q.set_all_paused(true);
+                    stop = true;
                 }
-                SendOutcome::Failed => s.fail(item.id),
+                // The person pressed Cancel: that file and what was queued behind it go, as one
+                // batch always did.
+                SendOutcome::Cancelled("user") => {
+                    let s = q.of(&key);
+                    s.cancel(item.id);
+                    s.clear_waiting();
+                }
+                // The other device cancelled this file; the rest is still wanted.
+                SendOutcome::Cancelled(_) => {
+                    q.of(&key).cancel(item.id);
+                }
+                SendOutcome::Failed => q.of(&key).fail(item.id),
+            }
+        }
+        if outcome == SendOutcome::Done {
+            if let Ok(mut t) = retry_tokens().lock() {
+                t.remove(&token_key);
             }
         }
         save_queues();
+        if stop {
+            break;
+        }
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SendOutcome {
     Done,
-    Cancelled,
+    /// Why: "user" (Cancel), "peer" (the other device), "pause" or "quit" (Relay itself stopped it).
+    Cancelled(&'static str),
     Failed,
+}
+
+/// Bytes this attempt moved, from the row's progress before and after it. Progress carries over from an
+/// earlier attempt, so only a change means the other device accepted this time; a restart at zero also counts.
+fn attempt_bytes(before: u64, after: u64) -> u64 {
+    if after == before {
+        0
+    } else {
+        after.max(1)
+    }
+}
+
+/// The resume token of each file by phone and path, so the Retry button on a failed row continues the
+/// transfer instead of sending the whole file again.
+type RetryTokens = Mutex<std::collections::HashMap<(String, PathBuf), [u8; 16]>>;
+
+fn retry_tokens() -> &'static RetryTokens {
+    static T: std::sync::OnceLock<RetryTokens> = std::sync::OnceLock::new();
+    T.get_or_init(Mutex::default)
 }
 
 fn queues() -> &'static Mutex<crate::queue::Queues> {
@@ -1578,6 +1645,34 @@ pub fn queue_set_paused(paused: bool) {
     if let Ok(mut q) = queues().lock() {
         q.set_all_paused(paused);
     }
+}
+
+/// What the Transfers page lists for the queue: files that wait behind the one sending, are paused, or
+/// lost their source. The file sending is in the transfer registry, not here.
+pub fn queue_rows() -> Vec<crate::pages::transfers::QueuedRow> {
+    use crate::queue::QueueState;
+    let Ok(q) = queues().lock() else {
+        return Vec::new();
+    };
+    q.rows_all()
+        .into_iter()
+        .filter(|(_, i)| {
+            !matches!(
+                i.state,
+                QueueState::Sending | QueueState::Done | QueueState::Failed
+            )
+        })
+        .map(|(peer, i)| crate::pages::transfers::QueuedRow {
+            peer,
+            id: i.id,
+            status: match i.state {
+                QueueState::Paused => "Paused".to_owned(),
+                QueueState::NeedsFile => "Needs the file again".to_owned(),
+                _ => "Waiting".to_owned(),
+            },
+            name: i.name,
+        })
+        .collect()
 }
 
 /// True while any queue is paused (the Transfers page shows "Resume").
@@ -1641,6 +1736,9 @@ async fn send_one_file(
         let mut attempt = 0u32;
         loop {
             let opts = TransferOpts::new(Some(tr::progress_cb(row)), Some(cancel.clone()));
+            // Progress is for the whole file across attempts; whether THIS attempt moved is what says the
+            // other device accepted. A prompt left unanswered ends in a timeout with nothing moved.
+            let before = tr::progress_of(row).map_or(0, |(d, _)| d);
             let p = path.to_path_buf();
             let r = dial(
                 node,
@@ -1668,7 +1766,7 @@ async fn send_one_file(
                         ),
                         attempt,
                         cancel.is_cancelled(),
-                        tr::progress_of(row).map_or(0, |(d, _)| d),
+                        attempt_bytes(before, tr::progress_of(row).map_or(0, |(d, _)| d)),
                     ) =>
                 {
                     attempt += 1;
@@ -1712,13 +1810,13 @@ async fn send_one_file(
             let mbps = done as f64 / 1e6 / took.as_secs_f64().max(1e-3);
             match e {
                 pb_transport::Error::Cancelled | pb_transport::Error::PeerCancelled => {
-                    outcome = SendOutcome::Cancelled;
                     let by = if matches!(e, pb_transport::Error::PeerCancelled) {
                         tr::cancel(row, tr::CancelBy::Peer);
                         "peer"
                     } else {
                         tr::cancel_reason(row)
                     };
+                    outcome = SendOutcome::Cancelled(by);
                     log.line(&format!(
                         "FILE send \"{file_name}\" cancelled by {by} after {done} of {total} bytes ({mbps:.1} MB/s)"
                     ));
@@ -2619,6 +2717,36 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_prompt_left_unanswered_after_earlier_progress_is_not_a_broken_link() {
+        // 500 bytes went before the link broke; the second attempt waits for a yes nobody gives.
+        assert_eq!(
+            attempt_bytes(500, 500),
+            0,
+            "nothing moved this attempt: no retry"
+        );
+        assert!(!crate::queue::should_retry(
+            true,
+            1,
+            false,
+            attempt_bytes(500, 500)
+        ));
+        // The yes came and bytes moved, then it broke again: that is retried.
+        assert!(crate::queue::should_retry(
+            true,
+            1,
+            false,
+            attempt_bytes(500, 900)
+        ));
+        // The receiver kept nothing and the file restarted at zero, then broke: also retried.
+        assert!(crate::queue::should_retry(
+            true,
+            1,
+            false,
+            attempt_bytes(500, 100)
+        ));
+    }
 
     #[tokio::test]
     async fn a_waiting_request_is_pending_until_cancelled() {

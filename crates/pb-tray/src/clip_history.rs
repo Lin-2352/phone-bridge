@@ -20,6 +20,9 @@ pub const MAX_CLIP: usize = 64 * 1024;
 /// Most clips kept; the oldest go first.
 pub const MAX_ENTRIES: usize = 200;
 
+/// How far ahead of the clock a stored time may be before the clip counts as expired.
+const MAX_SKEW_SECS: u64 = 24 * 3600;
+
 const VERSION: u8 = 1;
 
 /// Seals and opens one record.
@@ -141,7 +144,10 @@ impl<S: Seal> ClipHistory<S> {
             total += 1;
             if let Some(e) = self.read_record(&bytes[i..i + n]) {
                 opened += 1;
-                if now.saturating_sub(e.created) < KEEP_SECS {
+                // A clip dated in the future (the clock was set back) would never expire: it is dropped.
+                if e.created <= now.saturating_add(MAX_SKEW_SECS)
+                    && now.saturating_sub(e.created) < KEEP_SECS
+                {
                     out.push(e);
                 }
             }
@@ -256,6 +262,17 @@ mod tests {
         let now = 1_000 + KEEP_SECS;
         let texts: Vec<_> = h.entries(now).into_iter().map(|e| e.text).collect();
         assert_eq!(texts, vec!["new"]);
+    }
+
+    #[test]
+    fn a_clip_dated_in_the_future_does_not_live_forever() {
+        let d = dir("future");
+        let h = ClipHistory::new(&d, Fake(7), true);
+        h.add("from a wrong clock", false, 10 * KEEP_SECS).unwrap();
+        // The clock is corrected: that clip is a week and more ahead, so it is gone, not kept until then.
+        assert!(h.entries(100).is_empty());
+        h.add("now", false, 100).unwrap();
+        assert_eq!(h.entries(100).len(), 1);
     }
 
     #[test]

@@ -94,7 +94,8 @@ class ClipHistory(
             total++
             val e = decode(rec) ?: continue
             opened++
-            if (nowSecs - e.created < KEEP_SECS) out += e
+            // A clip dated in the future (the clock was set back) would never expire: it is dropped.
+            if (e.created <= nowSecs + MAX_SKEW_SECS && nowSecs - e.created < KEEP_SECS) out += e
         }
         if (total > 0 && opened == 0) blob.delete()
         return out
@@ -130,6 +131,7 @@ class ClipHistory(
         const val KEEP_SECS = 7L * 24 * 3600
         const val MAX_CLIP = 64 * 1024
         const val MAX_ENTRIES = 200
+        private const val MAX_SKEW_SECS = 24L * 3600
         private const val VERSION: Byte = 1
 
         /** A short run of digits (optionally grouped by spaces or dashes) is a one-time code. */
