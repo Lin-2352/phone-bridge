@@ -1,6 +1,6 @@
-# Relay: wire protocol (draft v0)
+# Relay: wire protocol (version 0)
 
-Status: draft. Matches the `pb-protocol` crate at protocol version 0. Two devices talk when each side's `min_compatible` is at most the other's `protocol_version`. The version is still 0, so every build talks to every other.
+Status: current for Relay 0.3.0. Matches the `pb-protocol` crate at protocol version 0; fields added since 0.2.0 are optional, so an older build ignores them. Two devices talk when each side's `min_compatible` is at most the other's `protocol_version`. The version is still 0, so every build talks to every other.
 
 ## Layers
 1. **QUIC** (iroh 1.3.0 / noq) provides encryption, authentication of the peer's Ed25519 key, streams and unreliable datagrams.
