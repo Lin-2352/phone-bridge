@@ -27,11 +27,13 @@ Each line says what to look at, on which setup, and which task added it. Tests p
 Setup: the phone paired with two PCs (the tray, and a second identity from `pb.exe --dir <d2> --port 47201`).
 
 - [ ] **M8.5 Upgrade keeps the answers.** Install the build from before the per-PC change, turn on a global "always allow" and "accept automatically", then install the current build over it. Each paired PC keeps those answers (Settings, Connection, the PC's permissions); a PC paired afterwards starts at Ask.
-- [ ] **M8.2 Names and default.** Rename a PC on the phone, Make default, remove the default PC: the default moves to the next one and the status line names it.
+- [x] **M8.2 Names and default.** Rename a PC on the phone, Make default, remove the default PC: the default moves to the next one and the status line names it. *(2026-11-08, Android debug build from `5e3bb46`, Nothing/realme RMX3561: two PCs with the same name show as "(DB78)" and "(1217)" with a Default marker; Make default moved the default and back; removing a PC left no stored settings for it and the default stayed. Not run: Rename)*
 - [ ] **M8.1 Share sheet.** Share text to Relay with two PCs: it goes to the default, and "Change PC" sends it to the other.
 - [ ] **M8.4 Never.** Set a PC to Never for screen, camera, control and audio. Each request from that PC is refused without a dialog, with at most one "Request blocked" note a minute. Also after the PC resumes a screen or camera share inside its grace.
 - [ ] **M8.4 Always while locked.** With Always set and the phone locked, the request still asks.
-- [ ] **M8.4 Per-PC switches.** Clipboard, notifications and automatic accept on for one PC only: only that PC receives clips and notification mirrors, and only its files are accepted unasked.
+- [x] **M8.4 Per-PC switches.** Clipboard, notifications and automatic accept on for one PC only: only that PC receives clips and notification mirrors, and only its files are accepted unasked. *(2026-11-08, Android debug build from `5e3bb46`, Nothing/realme RMX3561: only the new-PC defaults: a PC paired later has no Always entries and no per-PC switch on; its one-shot clipboard send arrived as a notice. Live clipboard sync and notification mirror per PC not run)*
 - [ ] **M7 Gate on new switches.** With the unlock gate on, turning on "Share clipboard" or "Share this phone's audio without asking" asks for an unlock; turning them off does not.
 - [ ] **M8.3 Tile and widget.** The Send tile and widget name the default PC and send to it.
 - [ ] **PC Send to.** With "Send to" set to Ask and two phones, the tray menu lists both and the choice is used once.
+- [ ] **Finding (2026-11-08):** the "Remove <PC>?" dialog shows only the bare name, so two PCs with one name cannot be told apart there (the list rows do show the suffix). Tracked under Open follow-ups.
+- [x] **Status after a phone-started send (2026-11-08, `5e3bb46`).** After a notification reached the PC, Home says "Last seen just now" (it said "33 min ago" before the fix).
