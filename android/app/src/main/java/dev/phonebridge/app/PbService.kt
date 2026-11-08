@@ -647,6 +647,17 @@ class PbService : Service() {
                 Bridge.pcContact(this, opened = false)
             }
             is PbEvent.Reached -> Bridge.attemptDone(this, reached = true)
+            is PbEvent.OfferRefused -> {
+                AppLog.event("events", "offer_refused", "reason" to e.reason)
+                // At most one note a minute per PC, so a PC that keeps offering cannot fill the shade.
+                val now = android.os.SystemClock.elapsedRealtime()
+                val key = "${e.peerId}/offer"
+                if (dev.phonebridge.app.devices.shouldNotifyBlock(blockNoted[key], now)) {
+                    blockNoted[key] = now
+                    val why = if (e.reason == "no_space") "its files would not fit on this phone" else "too many requests"
+                    notifyInfo(this, "File refused", "${e.peerName}: $why")
+                }
+            }
         }
         Bridge.listeners.forEach { it(e) }
     }

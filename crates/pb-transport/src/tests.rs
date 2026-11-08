@@ -163,6 +163,31 @@ async fn a_refused_second_pairing_keeps_the_first_pc() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_session_admits_offers_only_within_the_peers_quota() {
+    use crate::quota::{QuotaRefusal, MAX_OFFERS_PER_PEER_PER_MIN};
+    let (pc, mut pc_ev, _) = node(1, "PC").await;
+    let (phone, _pev, _) = node(2, "Phone").await;
+    let (h, j, _, _) = pair(&pc, &mut pc_ev, &phone, true, true).await;
+    assert!(h.is_ok() && j.is_ok());
+    let _out = phone.connect(&pc.peer_id()).await.unwrap();
+    let inc = pc_ev.sessions.recv().await.unwrap();
+
+    // Not enough room: refused with the space answer.
+    assert_eq!(
+        inc.offer_permit(1 << 40, 1 << 30).err(),
+        Some(QuotaRefusal::NotEnoughSpace)
+    );
+    let mut held = Vec::new();
+    for _ in 0..MAX_OFFERS_PER_PEER_PER_MIN {
+        held.push(inc.offer_permit(1, u64::MAX).unwrap());
+    }
+    assert_eq!(
+        inc.offer_permit(1, u64::MAX).err(),
+        Some(QuotaRefusal::TooManyOffers)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unpaired_peer_is_refused() {
     let (pc, mut pc_ev, _) = node(1, "PC").await;
     let (stranger, _sev, stranger_store) = node(9, "Stranger").await;

@@ -586,6 +586,17 @@ async fn send_on<R: AsyncRead + Unpin>(
 /// Free space left after a transfer, at minimum.
 const KEEP_FREE: u64 = 256 * 1024 * 1024;
 
+/// Free bytes on the disk that holds `dir` (its parent when it does not exist yet); `u64::MAX` when the
+/// query fails, so an unknown size never refuses a file.
+pub fn free_bytes(dir: &Path) -> u64 {
+    let probe = if dir.exists() {
+        dir
+    } else {
+        dir.parent().unwrap_or(dir)
+    };
+    fs4::available_space(probe).unwrap_or(u64::MAX)
+}
+
 fn room_for(dir: &Path, size: u64) -> bool {
     // The directory may not exist yet; its parent is on the same volume.
     let probe = if dir.exists() {

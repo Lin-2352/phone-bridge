@@ -126,6 +126,13 @@ pub enum PbEvent {
         peer_id: String,
         path: String,
     },
+    /// A file offer was refused without asking because this PC is over its quota: `reason` is `too_many`
+    /// (more than 30 offers a minute) or `no_space` (its in-flight files would not fit on the disk).
+    OfferRefused {
+        peer_name: String,
+        peer_id: String,
+        reason: String,
+    },
     /// A file finished arriving; Kotlin moves it into Downloads/Phone Bridge.
     FileReceived {
         peer_name: String,
@@ -1473,7 +1480,32 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             }
             Ok(Some(ControlMsg::Offer(offer))) => {
                 let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
-                let accept = if is_image {
+                // A PC over its quota is refused before anything asks the person; the reservation is held
+                // until the file is done.
+                let permit =
+                    (offer.kind == pb_protocol::control::OfferKind::File as i32).then(|| {
+                        s.offer_permit(
+                            offer.size,
+                            pb_transport::files::free_bytes(&sh.incoming_dir),
+                        )
+                    });
+                let over_quota = permit.as_ref().and_then(|r| r.as_ref().err().copied());
+                let _permit = permit.and_then(|r| r.ok());
+                let accept = if let Some(why) = over_quota {
+                    push(
+                        &sh.events,
+                        PbEvent::OfferRefused {
+                            peer_name: name.clone(),
+                            peer_id: pid.clone(),
+                            reason: match why {
+                                pb_transport::quota::QuotaRefusal::NotEnoughSpace => "no_space",
+                                _ => "too_many",
+                            }
+                            .to_owned(),
+                        },
+                    );
+                    false
+                } else if is_image {
                     // Governed by the clipboard switches, never by the file prompt.
                     image_accepted(
                         sh.clipboard_peers.allows(&sh.clipboard_sync, &pid),

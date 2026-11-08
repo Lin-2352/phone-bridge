@@ -753,7 +753,8 @@ impl Node {
         }
         .await;
         // Whichever step noticed the peer's close, report why it closed.
-        let session = started.map_err(|e| closed_by_peer(&conn, e))?;
+        let mut session = started.map_err(|e| closed_by_peer(&conn, e))?;
+        session.quotas = self.inner.quotas.clone();
         self.note_peer_capabilities(*peer, &session.remote_hello);
         Ok(session)
     }
@@ -952,9 +953,10 @@ impl Node {
         else {
             return;
         };
-        if let Ok(session) =
+        if let Ok(mut session) =
             Session::start(conn, peer, send, recv, &self.inner.device_name, &known.name).await
         {
+            session.quotas = self.inner.quotas.clone();
             self.note_peer_capabilities(peer, &session.remote_hello);
             let _ = self.inner.sessions.send(session).await;
         }
@@ -1182,9 +1184,23 @@ pub struct Session {
     /// not from each call, so a `select!` that keeps cancelling `recv` still
     /// notices a silent peer.
     last_rx: Instant,
+    /// The node's per-peer quotas, so an app can admit a file offer (see [`Session::offer_permit`]).
+    quotas: quota::PeerQuotas,
 }
 
 impl Session {
+    /// Admits a file offer on this session against its peer's quota: at most 30 a minute, and the peer's
+    /// in-flight bytes plus this one (plus a safety margin) must fit in `free`, the free bytes on the disk
+    /// (see [`files::free_bytes`]). Hold the permit while the file is received. A refusal is the answer to
+    /// give: too many requests, or not enough space.
+    pub fn offer_permit(
+        &self,
+        size: u64,
+        free: u64,
+    ) -> Result<quota::OfferPermit, quota::QuotaRefusal> {
+        self.quotas.offer(self.peer, size, free, Instant::now())
+    }
+
     async fn start(
         conn: Connection,
         peer: PeerId,
@@ -1238,6 +1254,7 @@ impl Session {
             heartbeat,
             watchdog: DEFAULT_WATCHDOG,
             last_rx: Instant::now(),
+            quotas: quota::PeerQuotas::default(),
         })
     }
 

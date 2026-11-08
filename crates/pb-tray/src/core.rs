@@ -1784,8 +1784,30 @@ async fn pump_session(
                 let refusal = is_file
                     .then(|| pb_transport::files::refusal(&dir, offer.size, DEFAULT_MAX_FILE))
                     .flatten();
+                // A phone over its quota is refused before anything asks the person; the reservation is held
+                // until the file is done.
+                let permit = is_file
+                    .then(|| s.offer_permit(offer.size, pb_transport::files::free_bytes(&dir)));
+                let over_quota = permit.as_ref().and_then(|r| r.as_ref().err().copied());
+                let _permit = permit.and_then(|r| r.ok());
                 let mut expired = false;
-                let accept = if is_image {
+                let accept = if let Some(why) = over_quota {
+                    log.line(&format!(
+                        "FILE refused: over quota ({why:?}) from \"{}\"",
+                        s.peer_name
+                    ));
+                    ui(UiEvent::Info(match why {
+                        pb_transport::quota::QuotaRefusal::NotEnoughSpace => format!(
+                            "Relay refused a file from {}: its files would not fit on this disk",
+                            s.peer_name
+                        ),
+                        _ => format!(
+                            "Relay refused files from {}: too many requests",
+                            s.peer_name
+                        ),
+                    }));
+                    false
+                } else if is_image {
                     // A clipboard picture is governed by the sharing switches, not
                     // the file prompt, and is never written to the save folder.
                     let on = settings
