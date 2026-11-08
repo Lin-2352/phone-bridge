@@ -797,16 +797,17 @@ class PbService : Service() {
             Intent(this, OfferReceiver::class.java).putExtra("offer", e.id.toLong()).putExtra("accept", accept).putExtra("nid", id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val mb = e.size.toDouble() / 1_048_576
         val n = Notification.Builder(this, CH_EVENTS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
             .setContentTitle("${e.peerName} wants to send ${e.name}")
-            .setContentText("%.1f MB".format(mb))
+            .setContentText(offerNotificationText(e.size))
+            // Tapping the body opens Relay but must not dismiss the question: the answer is the two buttons.
+            .setContentIntent(PendingIntent.getActivity(this, id, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE))
             .addAction(Notification.Action.Builder(null, "Decline", action(false)).build())
             .addAction(Notification.Action.Builder(null, "Accept", action(true)).build())
             // The sender gives up after 2 minutes; so does the question.
             .setTimeoutAfter(120_000)
-            .setAutoCancel(true)
+            .setAutoCancel(false)
             .build()
         getSystemService(NotificationManager::class.java).notify(id, n)
         askNotes[e.id] = id

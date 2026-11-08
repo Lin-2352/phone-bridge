@@ -26,6 +26,10 @@ fun lanNetworkToBind(nets: List<NetSnapshot>): Long? {
     return (lan.firstOrNull { it.wifi } ?: lan.firstOrNull { it.ethernet })?.id
 }
 
+/** The text of the "wants to send" question: tapping the body does not answer it, so it says where the answer is. */
+fun offerNotificationText(sizeBytes: ULong): String =
+    "%.1f MB. Swipe down for Accept or Decline".format(sizeBytes.toDouble() / 1_048_576)
+
 /** The "did not receive" notification: names the VPN when one is on, since it is the most likely reason a PC cannot be reached. */
 fun notReceivedText(peerName: String, fileName: String, vpnOn: Boolean): String =
     if (vpnOn) "$peerName did not receive $fileName. A VPN is on and may be blocking the local network: allow local network access (or exclude $APP_NAME) in the VPN app, or turn it off."

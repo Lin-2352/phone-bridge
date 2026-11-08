@@ -34,6 +34,11 @@ class LanRouteTest {
         assertTrue(t, "VPN" in t && "My PC" in t && "a.pdf" in t)
     }
 
+    @Test fun theOfferNotificationSaysWhereTheAnswerIs() {
+        val t = offerNotificationText(300_000UL)
+        assertTrue(t, "0.3 MB" in t && "Accept" in t && "Decline" in t)
+    }
+
     @Test fun aFailedSendStaysPlainWithoutAVpn() =
         assertEquals("My PC did not receive a.pdf. Is Relay running there?", notReceivedText("My PC", "a.pdf", vpnOn = false))
 }
