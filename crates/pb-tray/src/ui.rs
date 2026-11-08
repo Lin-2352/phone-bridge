@@ -92,6 +92,10 @@ struct State {
 }
 
 pub const ID_SEND_FILES: usize = 4;
+/// Files dropped on a Relay window: asks which phone when several are paired, then sends them.
+const ID_SEND_DROPPED: usize = 41;
+/// What was dropped, held while the "Send to" menu is open.
+static PENDING_DROP: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
 pub const ID_TOGGLE_CLIP: usize = 5;
 const ID_TOGGLE_AUTO: usize = 6;
 const ID_OPEN_FOLDER: usize = 7;
@@ -504,7 +508,7 @@ fn open_flyout(hwnd: HWND, st: &State) {
 
 /// Runs a flyout command (from the flyout or Home's quick actions). Only
 /// posts: the caller may be inside another window's procedure.
-fn flyout_action(raw: isize, cmds: &UnboundedSender<Cmd>, a: crate::flyout::Action) {
+fn flyout_action(raw: isize, _cmds: &UnboundedSender<Cmd>, a: crate::flyout::Action) {
     match a {
         crate::flyout::Action::ToggleClipboard => post_command(raw, ID_TOGGLE_CLIP),
         crate::flyout::Action::SendFiles => post_command(raw, ID_SEND_FILES),
@@ -519,10 +523,18 @@ fn flyout_action(raw: isize, cmds: &UnboundedSender<Cmd>, a: crate::flyout::Acti
         crate::flyout::Action::CameraWindow => post_command(raw, ID_CAMERA_WINDOW),
         // Opens the main window on Home.
         crate::flyout::Action::OpenRelay => post_command(raw, ID_OPEN_MAIN),
-        crate::flyout::Action::Dropped(files) => {
-            let _ = cmds.send(Cmd::SendFiles(files));
-        }
+        crate::flyout::Action::Dropped(files) => drop_files(raw, files),
     }
+}
+
+/// Files dropped on the flyout, the main window or the screen window. They wait here while the
+/// "Send to" menu asks which phone (when several are paired); `command` then sends them.
+fn drop_files(raw: isize, files: Vec<std::path::PathBuf>) {
+    if files.is_empty() {
+        return;
+    }
+    *PENDING_DROP.lock().unwrap_or_else(|p| p.into_inner()) = files;
+    post_command(raw, ID_SEND_DROPPED);
 }
 
 /// A main window page action other than switching pages. Stop takes the
@@ -588,6 +600,7 @@ fn page_action(a: crate::pages::Action) {
         Action::TransferRetry(id) => {
             std::thread::spawn(move || crate::transfers::retry(id));
         }
+        Action::DropFiles(files) => drop_files(raw, files),
         Action::QueuePause => {
             let _ = st.cmds.send(Cmd::QueuePause);
         }
@@ -1541,9 +1554,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             save_settings(st);
         }
         UiEvent::ScreenFiles(files) => {
-            if !files.is_empty() {
-                let _ = st.cmds.send(Cmd::SendFiles(files));
-            }
+            drop_files(TRAY_HWND.load(std::sync::atomic::Ordering::Relaxed), files);
         }
         UiEvent::NotifyActionFailed { reason, reply } => {
             crate::status::show(&reason, 6);
@@ -2736,7 +2747,7 @@ fn ask_send_target(hwnd: HWND, st: &State, action: usize) -> bool {
 }
 
 fn command(hwnd: HWND, st: &State, id: usize) {
-    if matches!(id, ID_SEND_CLIPBOARD | ID_SEND_FILES)
+    if matches!(id, ID_SEND_CLIPBOARD | ID_SEND_FILES | ID_SEND_DROPPED)
         && !SEND_TARGET_CHOSEN.swap(false, std::sync::atomic::Ordering::SeqCst)
         && ask_send_target(hwnd, st, id)
     {
@@ -2751,7 +2762,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                 .and_then(|g| g.get(n - ID_SEND_TO_BASE).map(|(i, _)| i.to_string()));
             let action = PENDING_SEND.swap(0, std::sync::atomic::Ordering::SeqCst);
             if let (Some(phone), true) = (phone, action != 0) {
-                let kind = if action == ID_SEND_FILES {
+                let kind = if action == ID_SEND_FILES || action == ID_SEND_DROPPED {
                     crate::core::SendKind::Files
                 } else {
                     crate::core::SendKind::Clipboard
@@ -2763,6 +2774,13 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         }
         ID_PAIR => {
             let _ = st.cmds.send(Cmd::Pair);
+        }
+        ID_SEND_DROPPED => {
+            let files =
+                std::mem::take(&mut *PENDING_DROP.lock().unwrap_or_else(|p| p.into_inner()));
+            if !files.is_empty() {
+                let _ = st.cmds.send(Cmd::SendFiles(files));
+            }
         }
         ID_SEND_CLIPBOARD => match clipboard::get_text(Some(hwnd)) {
             Ok(ClipText::Text(t)) => {
@@ -3481,6 +3499,34 @@ pub fn message_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_files_have_a_command_id_of_their_own() {
+        let ids = [
+            ID_SEND_FILES,
+            ID_SEND_DROPPED,
+            ID_TOGGLE_CLIP,
+            ID_SENDTO,
+            ID_OPEN_MAIN,
+            crate::menu_model::ID_PAUSE,
+            crate::menu_model::ID_DISCONNECT,
+        ];
+        let mut sorted = ids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            ids.len(),
+            "a reused id runs the wrong command"
+        );
+        assert!(ID_SEND_DROPPED < ID_UNPAIR_BASE, "below the per-phone ids");
+    }
+
+    #[test]
+    fn an_empty_drop_sends_nothing_and_waits_for_nothing() {
+        drop_files(0, Vec::new());
+        assert!(PENDING_DROP.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn a_withdrawn_pairing_prompt_is_closed_once() {

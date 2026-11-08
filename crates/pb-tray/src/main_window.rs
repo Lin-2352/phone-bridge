@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::{
     core::{w, PCWSTR},
     Win32::{
@@ -48,12 +49,12 @@ use windows::{
                 SC_MINIMIZE, SC_RESTORE, SIZE_RESTORED, SM_CXFRAME, SM_CXPADDEDBORDER,
                 SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE,
                 SW_SHOW, WM_CAPTURECHANGED, WM_COMMAND, WM_CONTEXTMENU, WM_CTLCOLOREDIT,
-                WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO,
-                WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
-                WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE, WM_NCMOUSEMOVE, WM_NOTIFY,
-                WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WNDCLASSW,
-                WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
+                WM_DESTROY, WM_DPICHANGED, WM_DROPFILES, WM_ERASEBKGND, WM_EXITSIZEMOVE,
+                WM_GETMINMAXINFO, WM_GETOBJECT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
+                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WM_NCMOUSELEAVE,
+                WM_NCMOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_SETCURSOR, WM_SIZE, WM_SYSCOMMAND,
+                WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW,
             },
         },
     },
@@ -2029,6 +2030,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // SAFETY: default handling.
                 .unwrap_or_else(|| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
         }
+        WM_DROPFILES => {
+            let drop = HDROP(wparam.0 as *mut _);
+            let mut files = Vec::new();
+            // SAFETY: the HDROP comes from the shell for this message; each name is read into a
+            // buffer of the size the shell reported, then the handle is released with DragFinish.
+            unsafe {
+                let n = DragQueryFileW(drop, u32::MAX, None);
+                for i in 0..n {
+                    let len = DragQueryFileW(drop, i, None) as usize;
+                    let mut buf = vec![0u16; len + 1];
+                    DragQueryFileW(drop, i, Some(&mut buf));
+                    files.push(std::path::PathBuf::from(String::from_utf16_lossy(
+                        &buf[..len],
+                    )));
+                }
+                DragFinish(drop);
+            }
+            if let (false, Some(host)) = (files.is_empty(), HOST.get()) {
+                (host.act)(pages::Action::DropFiles(files));
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             // A delete still waiting for its undo is final now.
             commit_delete(hwnd);
@@ -2189,6 +2212,8 @@ fn make_window(rect: SavedRect, for_mica: bool) -> Result<(HWND, Surface, Timing
                 None,
             )
             .map_err(|e| e.to_string())?;
+            // Files dropped anywhere on the window are sent to a phone.
+            windows::Win32::UI::Shell::DragAcceptFiles(h, true);
             let _ = SetWindowPos(
                 h,
                 None,

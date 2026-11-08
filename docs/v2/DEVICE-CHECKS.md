@@ -47,3 +47,5 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - [ ] M8.2 Rename and permissions dialogs opened on the phone; M8.5 true upgrade test; M8.1 share sheet; M8.3 tile and widget; PC Send to.
 - [ ] M5.1 PC visuals (Mica, Acrylic, Relay glass, text at 100/125/150%, transparency toggle, high contrast, Remote Desktop) with a v2 tray that has its own folder and a firewall allow.
 - [ ] Finding to investigate (M9.0b): after pairing a second PC while the phone's Relay had been off, the phone kept only the new PC (`peers.txt` one line, `default_pc` empty).
+- [ ] M9.5 Drag files from Explorer onto the flyout, the main window and the screen window with two phones paired (the "Send to" menu appears, the chosen phone gets the files) and with one phone paired (no menu).
+- [ ] M9.3 Send a large file, break the link (turn Wi-Fi off on the phone for a few seconds), and watch it continue instead of restarting; Pause queue on the Transfers page holds the next file.
