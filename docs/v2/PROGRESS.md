@@ -139,7 +139,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [x] M5.8 Toasts (camera colours and the pill are on tokens; the XML toast copy audit is open for M5.R)
 - [x] M5.9 Narrator UIA for the quick panel (flyout tiles are a UIA tree, per window; focus events for toggles are a follow-up)
 - [ ] M5.10 CI snapshot job (offscreen Direct2D, both themes, light and dark)
-- [ ] M5.11 Memory and CPU budgets re-measured and recorded
+- [x] M5.11 Memory and CPU budgets re-measured and recorded (measured OVER budget, see DECISIONS "PC budget run"; cause open)
 - [ ] M5.R Milestone review and CI green
 
 ## M6 Android native redesign
@@ -265,7 +265,7 @@ Ticked tasks above that still have named pieces open. They are listed here so a 
 - **M8.1:** Explorer "Send to" (`--send`) and the flyout drop zone go to the default phone without asking; the phone share sheet uses a platform list, not the Compose `DevicePickerSheet`; the camera-stop liveness touch uses the default phone.
 - **M8.2:** Rename a phone on the PC (a text-input dialog does not exist in the tray yet); until then a nickname is set on the phone only.
 - [ ] M5.10 offscreen renderer (`d2d::offscreen`, `--snapshot`), goldens and the `snapshots` CI job (only the pure parts and `tools/snapshot-diff` exist)
-- [ ] M5.11 the budget run itself (`scripts/pc-budget.ps1` needs the owner's Relay closed) and the DECISIONS table
+- [ ] M5.11 follow-up: idle private 71 MB and idle CPU 0.22 s are over budget; find why the device is alive at idle (run with the window closed, check the first-run window)
 - [ ] M5.8 XML toast copy audit (`strings.rs`)
 - [ ] M5 Segoe UI Variable to Segoe UI font fallback in the product, and tabular numerals on live counters
 - [ ] M6.1 Roborazzi: `GlassScreenshotTest` is parked in `android/app/src/screenshotPending/` (the Robolectric process crashes natively on Windows); run it on Linux CI, record goldens
