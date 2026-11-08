@@ -1202,6 +1202,14 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 balloon(hwnd, "Relay", n);
             }
             set_tip(hwnd, &current_tip(st));
+            // Once per run: when Windows calls every connected network Public, say why the phone
+            // cannot reach this PC (the firewall rule is for Private networks only).
+            static NETWORK_NOTE: std::sync::Once = std::sync::Once::new();
+            NETWORK_NOTE.call_once(|| {
+                if let Some(text) = crate::netprofile::guidance(&crate::netprofile::connected()) {
+                    crate::status::show(&text, 15);
+                }
+            });
             // Toasts restored from the notification centre whose phone is no
             // longer paired go now.
             let paired: Vec<pb_identity::PeerId> = st

@@ -204,7 +204,7 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M10.2 Android update check
 - [x] M10.3 Provider-agnostic Windows code-signing step (skipped without secrets) (2026-11-08: `scripts/sign-windows.ps1` reads `WIN_SIGN_PFX_BASE64`, `WIN_SIGN_PFX_PASSWORD`, optional `WIN_SIGN_TIMESTAMP_URL` by name, skips with one line when absent, never prints them, deletes the temp .pfx; CI signs `pb-tray.exe` before the zip except on pull requests; `scripts/tests/sign-windows.Tests.ps1` passes. A real signature needs the owner's certificate: nothing signed yet)
 - [x] M10.4 Inno Setup installer with a Private-network firewall rule for `Relay.exe` (2026-11-08, CI builds it (the `windows-zip` job on `0d673e8` produced the setup file); never installed or run on a machine: `packaging/windows/relay.iss` per-user by default; the rule (program, UDP, Private, inbound) is added only on an administrator install because a rule needs administrator, removed on uninstall; CI builds and uploads it. Not run on a machine)
-- [ ] M10.5 Public-network detection and guidance (installer and portable)
+- [x] M10.5 Public-network detection and guidance (installer and portable) (2026-11-08: `netprofile.rs` reads the Network List Manager (no administrator) and, once per run, shows a one-line notice when every connected network is Public; it never changes the network type; a mixed Public and Private set shows nothing. The real call ran on this PC (two Public networks seen). The README and the installer notes carry the same guidance; the installer wizard itself shows no extra page)
 - [ ] M10.6 Windows ARM64 build
 - [ ] M10.7 CycloneDX SBOM (Rust and Gradle)
 - [ ] M10.8 Third-party notices (`NOTICE` file and in-app screen)

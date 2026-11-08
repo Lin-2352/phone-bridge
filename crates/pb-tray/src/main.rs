@@ -71,6 +71,7 @@ mod menu_model;
 mod motw;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod netpath;
+mod netprofile;
 #[cfg(windows)]
 mod netsample;
 #[cfg_attr(not(windows), allow(dead_code))]
