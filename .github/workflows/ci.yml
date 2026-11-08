@@ -124,10 +124,28 @@ jobs:
           WIN_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PFX_PASSWORD }}
         run: pwsh scripts/sign-windows.ps1 -Path target/release/pb-tray.exe
       - run: pwsh scripts/make-portable.ps1 -Zip
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          & $iscc "/DAppVersion=$version" packaging/windows/relay.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed ($LASTEXITCODE)" }
+          if (-not (Test-Path "dist/Relay-$version-windows-x64-setup.exe")) { throw 'the installer was not produced' }
+      - name: Sign the installer (skipped without a certificate; never on pull requests)
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          WIN_SIGN_PFX_BASE64: ${{ secrets.WIN_SIGN_PFX_BASE64 }}
+          WIN_SIGN_PFX_PASSWORD: ${{ secrets.WIN_SIGN_PFX_PASSWORD }}
+        run: pwsh scripts/sign-windows.ps1 -Path (Get-ChildItem dist/*-setup.exe).FullName
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: relay-windows-portable
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
           if-no-files-found: error
 
   fuzz-smoke:

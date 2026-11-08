@@ -3,6 +3,10 @@ name: publish package
 # Copies a release's files to GitHub Packages as an OCI artifact, because
 # Packages has no type for plain files. The release page stays the place to
 # download from; this is for pulling a version with `oras`.
+#
+# Two jobs, so each holds only the permission it needs: the download job can
+# read the repository's releases but cannot write packages; the push job can
+# write packages but never runs a download or any script from the release.
 on:
   release:
     types: [published]
@@ -12,20 +16,44 @@ on:
         description: Release tag to publish, such as v0.2.0
         required: true
 
-permissions:
-  contents: read
-  packages: write
+# Nothing by default; each job asks for its own.
+permissions: {}
 
 jobs:
-  publish:
+  download:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+      - name: The release must hold files and no folders
+        run: |
+          test -n "$(ls -A assets)" || { echo "the release has no files"; exit 1; }
+          test -z "$(find assets -mindepth 1 -type d)" || { echo "unexpected folder in the release"; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-files
+          path: assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    needs: download
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
       REGISTRY_TOKEN: ${{ github.token }}
     steps:
       - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
-      - run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-files
+          path: assets
       - name: Push to ghcr.io
         working-directory: assets
         run: |

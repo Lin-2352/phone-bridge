@@ -203,12 +203,12 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` to do · `[-]` dropped (with th
 - [ ] M10.1 Signed release manifest (offline Ed25519 key, anti-rollback, key rotation) and the PC update check (2026-11-08, PARTIAL, not ticked: `crates/pb-update` verifier with 16 tests, `sign-manifest` tool, fuzz target `manifest`. Ruling: manifest `date` is integer UTC seconds, `next_key` and signatures are hex, so no date parser sits on the trust boundary. NOT done: the PC "Check now" request and Settings row, persisting the trust state, the Android check (M10.2). OWNER KEY: no public key is embedded; `TrustState` starts empty so every manifest is rejected as UnknownKey until the owner supplies a key)
 - [ ] M10.2 Android update check
 - [x] M10.3 Provider-agnostic Windows code-signing step (skipped without secrets) (2026-11-08: `scripts/sign-windows.ps1` reads `WIN_SIGN_PFX_BASE64`, `WIN_SIGN_PFX_PASSWORD`, optional `WIN_SIGN_TIMESTAMP_URL` by name, skips with one line when absent, never prints them, deletes the temp .pfx; CI signs `pb-tray.exe` before the zip except on pull requests; `scripts/tests/sign-windows.Tests.ps1` passes. A real signature needs the owner's certificate: nothing signed yet)
-- [ ] M10.4 Inno Setup installer with a Private-network firewall rule for `Relay.exe`
+- [ ] M10.4 Inno Setup installer with a Private-network firewall rule for `Relay.exe` (2026-11-08, PARTIAL until CI builds it: `packaging/windows/relay.iss` per-user by default; the rule (program, UDP, Private, inbound) is added only on an administrator install because a rule needs administrator, removed on uninstall; CI builds and uploads it. Not run on a machine)
 - [ ] M10.5 Public-network detection and guidance (installer and portable)
 - [ ] M10.6 Windows ARM64 build
 - [ ] M10.7 CycloneDX SBOM (Rust and Gradle)
 - [ ] M10.8 Third-party notices (`NOTICE` file and in-app screen)
-- [ ] M10.9 Least-privilege publish job
+- [x] M10.9 Least-privilege publish job (2026-11-08: two jobs, `download` with `contents: read` only and `push` with `packages: write` only, default `permissions: {}`, the files travel as a one-day artifact; actions pinned and the pin check passes. It first runs for real on the next published release)
 - [ ] M10.R Milestone review and CI green
 
 ## M11 Docs, checklist, final review
