@@ -583,6 +583,11 @@ impl Registry {
         self.stopped_batches.contains(&batch)
     }
 
+    /// The batch goes on: one of its files was held on its own, which is not Relay pausing.
+    pub fn unstop_batch(&mut self, batch: u64) {
+        self.stopped_batches.retain(|b| *b != batch);
+    }
+
     /// Back to waiting with a fresh cancel handle; `None` if not retryable.
     pub fn retry(&mut self, id: u64, now: Instant) -> Option<(Cancel, RetryInfo)> {
         let e = self.get(id)?;
@@ -757,6 +762,10 @@ pub fn cancel_all(by: CancelBy) -> usize {
 
 pub fn batch_stopped(batch: u64) -> bool {
     with(|r| r.batch_stopped(batch))
+}
+
+pub fn unstop_batch(batch: u64) {
+    with(|r| r.unstop_batch(batch));
 }
 
 pub fn active_count() -> usize {

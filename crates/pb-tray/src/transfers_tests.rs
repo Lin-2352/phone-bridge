@@ -382,6 +382,24 @@ fn pause_cancels_every_live_transfer_fires_the_handles_and_leaves_done_ones() {
 }
 
 #[test]
+fn a_file_held_on_its_own_lets_its_batch_go_on() {
+    let now = Instant::now();
+    let mut r = Registry::new();
+    let b = Batch {
+        id: 21,
+        index: 1,
+        total: 3,
+    };
+    let (a, _) = r.add(nt(Dir::Send, "a", Some(b)), now);
+    // Holding one file stops it like a pause does, which marks its batch stopped...
+    r.cancel(a, CancelBy::Pause, now);
+    assert!(r.batch_stopped(21));
+    // ...and the sender, told it was a hold and not Relay pausing, lets the batch continue.
+    r.unstop_batch(21);
+    assert!(!r.batch_stopped(21));
+}
+
+#[test]
 fn stopping_sends_never_touches_an_incoming_file() {
     let now = Instant::now();
     let mut r = Registry::new();

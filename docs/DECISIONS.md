@@ -606,3 +606,13 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **PC:** WinHTTP (system proxy and certificate store, ten-second limits); no new dependency and nothing loaded until the button is pressed. Rows on the General page can now be 10, not 9.
 - **Phone:** `Network.openConnection` on a named network: the VPN when one is up, else Wi-Fi, Ethernet, then mobile data. Relay binds the process to Wi-Fi while a VPN is up for local traffic; a default request would skip the VPN and show the person's address to GitHub.
 - The `pb-update` signed-manifest verifier and `sign-manifest` stay, unused and with an empty trust list.
+
+## Owner rulings: Transfers controls, toasts, last seen (2026-11-10)
+
+- **Cancel is per file.** A person's Cancel (and the other device's cancel) stops only that file; the rest of a batch goes on. Relay pausing or quitting still stops the whole batch. Cost if wrong: someone who wanted "cancel everything" presses Cancel all instead.
+- **Cancel all** is its own button on the Transfers page: it clears what waits (held files too) and stops what sends.
+- **Pause stops what is sending.** Pause queue stops the file in flight and keeps its place and resume token; files arriving from a phone are not touched (the queue only governs what the PC sends). Pause on one row (or ticked rows) holds just those files; Resume queue also releases files held one by one. Until resume works end to end a stopped file starts again from the beginning.
+- **Rows have checkboxes** with a bar (Pause, Resume, Cancel, Remove) over the ticked rows; Select all / Clear selection in the header; Remove takes a finished, failed or cancelled transfer off the list and a waiting file out of the queue.
+- **Toasts remove themselves** from the notification centre: Relay's own after 2 minutes, mirrored phone notifications after 10, calls after 1. Expandable (longer) toast text is not done: Windows gives a toast no expand control, to be decided with the owner.
+- **Last seen lives on the phone's Home card only** ("Connected", or "Last seen X ago" while the PC is away). The tile, widget, notification status line and the Devices list say connected or not connected.
+- **Not decided yet:** announcing "3 files" on receive; Windows Hello switches per area (design first, security-sensitive).

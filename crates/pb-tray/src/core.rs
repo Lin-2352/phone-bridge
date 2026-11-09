@@ -1656,6 +1656,9 @@ async fn drain_queue(
         )
         .await;
         let mut stop = false;
+        // A pause puts the file back in the queue: the stopped transfer's own row would list it twice.
+        let mut drop_row = false;
+        let mut held_one = false;
         if let Ok(mut q) = queues().lock() {
             match outcome {
                 SendOutcome::Done => q.of(&key).finish(item.id),
@@ -1663,7 +1666,10 @@ async fn drain_queue(
                 // whole queue waits for the person to resume.
                 SendOutcome::Cancelled("pause" | "quit") => {
                     // One file held by the person: it is parked and the queue goes on without it.
-                    if !q.of(&key).stopped_for_hold(item.id) {
+                    drop_row = outcome == SendOutcome::Cancelled("pause");
+                    if q.of(&key).stopped_for_hold(item.id) {
+                        held_one = true;
+                    } else {
                         q.of(&key).retry(item.id);
                         q.set_all_paused(true);
                         stop = true;
@@ -1681,6 +1687,13 @@ async fn drain_queue(
             if let Ok(mut t) = retry_tokens().lock() {
                 t.remove(&token_key);
             }
+        }
+        if held_one {
+            // Holding one file is not Relay pausing: the batch goes on with the next.
+            tr::unstop_batch(batch);
+        }
+        if drop_row {
+            tr::dismiss(row);
         }
         save_queues();
         if stop {
