@@ -581,6 +581,6 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 
 - **PC:** at most 80 MB private (committed, `PrivateMemorySize64`) in every state, window open or closed; idle CPU at most 0.05 s per 60 s. Replaces 40 MB working set / 15 MB private / 70 MB window.
 - **Phone:** PSS at most 80 MB. Replaces 60 MB.
-- **Why:** after the device release the PC tray holds 71 MB committed. 51 MB is one region the NVIDIA user-mode driver allocates within a second of start and keeps while the driver stays loaded (resident working set is 2.2 MB). On 11-02 the display was on the Intel GPU and the figure was 13 MB.
+- **Why:** after the device release the PC tray holds 71 MB committed. 51 MB is one region the NVIDIA user-mode driver allocates within a second of start and keeps while the driver stays loaded (resident working set is 2.2 MB). On 11-02 the figure was 13 MB (the notes say Intel UHD drove the panel; which adapter was used now is not confirmed). With the device alive (first 35 s after start, or a window open) the process is about 120 MB, over the 80 MB budget; only the idle-after-release state passes.
 - **Cost if wrong:** a lower-memory machine gets no warning until 80 MB. Choosing the low-power adapter would likely return to about 13 MB; not done, because the owner accepted the figure.
 - `scripts/pc-budget.ps1` now measures idle after the device release (55 s), not across it.
