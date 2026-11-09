@@ -1,0 +1,71 @@
+name: release-android
+
+# Builds the signed Android release APK. Started by hand only (never by a push or a pull request, so a fork
+# can never reach the key). The key comes from repository secrets; see docs/ANDROID-SIGNING.md.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-apk:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: The signing secrets exist
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KSP: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KA: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KP: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FP: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          for v in KS KSP KA KP FP; do
+            if [ -z "${!v}" ]; then echo "::error::missing $v: see docs/ANDROID-SIGNING.md"; exit 1; fi
+          done
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master on 2026-11-05
+        with:
+          toolchain: "1.99.1"
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: cargo install cargo-ndk --locked --version 4.1.2
+      - name: Put the key where the build looks for it
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KSP: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KA: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KP: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          umask 077
+          d="$RUNNER_TEMP/relay-key"; mkdir -p "$d"
+          printf '%s' "$KS" | base64 -d > "$d/release.jks"
+          { echo "storeFile=$d/release.jks"; echo "storePassword=$KSP"; echo "keyAlias=$KA"; echo "keyPassword=$KP"; } > "$d/keystore.properties"
+          echo "PB_KEYSTORE_PROPERTIES=$d/keystore.properties" >> "$GITHUB_ENV"
+      - name: Build the release APK
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" bash scripts/android-build.sh --variant release
+      - name: The APK is signed with the pinned certificate
+        env:
+          PINNED: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          apk=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+          got=$(grep -m1 'certificate SHA-256 digest' "$RUNNER_TEMP/certs.txt" | sed 's/.*: //' | tr -d ': ' | tr 'A-F' 'a-f')
+          want=$(printf '%s' "$PINNED" | tr -d ': ' | tr 'A-F' 'a-f')
+          if [ "$got" != "$want" ]; then echo "::error::signed with $got, expected $want"; exit 1; fi
+          (cd "$(dirname "$apk")" && sha256sum "$(basename "$apk")" > "$(basename "$apk").sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relay-android-release
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/release/*.sha256
+          if-no-files-found: error
+      - name: Remove the key from the runner
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/relay-key"
