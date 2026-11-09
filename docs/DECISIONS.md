@@ -590,3 +590,8 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Memory:** 80 MB is a hard maximum in every scenario (PC private/committed bytes with a window open or closed, at start-up, and phone PSS with the UI open or in the background). Not an average or an idle figure. Anything above it is a bug to fix by optimisation, not a number to restate. Research on how to guarantee it is in progress; until a fix lands the PC reads about 120 MB with the graphics device alive and the phone reads 79.9 MB in the background.
 - **Update key:** not needed for now. The app has no accounts and stores or shares no data, so the owner will not hold a release-signing key for the update manifest. The verifier and `sign-manifest` stay built; nothing embeds a key. Cost if wrong: an update check can then only point at the release page and cannot prove who published it; do not add any self-update.
 - **Signing certificates:** use a free open-source-friendly route for both Windows and Android; research under way (SignPath Foundation and similar for Windows; self-generated keystore, F-Droid and IzzyOnDroid for Android).
+
+## Owner ruling (2026-11-09): PC memory peak
+
+- 80 MB is the normal ceiling (idle and a window open once the device settles). A short peak up to about 120 MB while the graphics device starts (first ~35 s after launch, or a window opening) is accepted; it must not be sustained. No renderer change that slows the UI (WARP rejected). The unexplained 51 MB zero region stays an optimisation to find, not a blocker.
+- Lost signing keys: see `docs/KEY-RECOVERY.md`.
