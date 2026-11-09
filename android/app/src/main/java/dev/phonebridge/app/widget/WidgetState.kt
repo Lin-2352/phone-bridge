@@ -6,8 +6,8 @@ import dev.phonebridge.app.relayStatus
  * The widget's status line: the shared [relayStatus] on one line. [running] means the service runs and
  * its node is up; [starting] the service runs but the node is not up yet.
  */
-fun widgetLabel(running: Boolean, pcName: String?, connected: Boolean, starting: Boolean = false, lastSeenMs: Long = 0L, nowMs: Long = 0L, attemptFailed: Boolean = false): String =
-    relayStatus(running || starting, running, pcName, connected, lastSeenMs, nowMs, attemptFailed = attemptFailed).line
+fun widgetLabel(running: Boolean, pcName: String?, connected: Boolean, starting: Boolean = false, attemptFailed: Boolean = false): String =
+    relayStatus(running || starting, running, pcName, connected, attemptFailed = attemptFailed).line
 
 /**
  * Connected as Home means it (ui/home/HomeTab.kt `live`, worded "Connected" by `pcStatus`): only while

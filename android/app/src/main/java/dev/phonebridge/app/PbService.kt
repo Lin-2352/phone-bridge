@@ -123,8 +123,6 @@ object Bridge {
         if (svc != null) svc.updateStatus() else { refreshTile(ctx); RelayWidget.update(ctx) }
     }
 
-    /** The newest contact stamp: this process's, or the saved one (a fresh process starts at 0). */
-    fun lastSeenAny(ctx: Context): Long = maxOf(lastSeen.longValue, Prefs(ctx).lastSeenMs)
 
     /**
      * The one status answer for notification, tile, panel and widget (see [relayStatus]).
@@ -133,7 +131,7 @@ object Bridge {
     fun status(ctx: Context, serviceUp: Boolean = false): RelayStatus {
         val up = running.value || serviceUp
         return relayStatus(
-            up, nodeReady.value, linked.value, isConnected(), lastSeenAny(ctx), System.currentTimeMillis(), controlledBy.value,
+            up, nodeReady.value, linked.value, isConnected(), controlledBy.value,
             discoveryOff = node?.let { !it.discoveryActive() } ?: false,
             attemptFailed = attemptFailed.value,
             identityLost = Prefs(ctx).identityLost,

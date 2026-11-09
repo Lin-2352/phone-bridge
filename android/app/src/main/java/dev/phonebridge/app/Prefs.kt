@@ -468,7 +468,6 @@ class Prefs(context: Context) {
     }
 
     /** When this PC was last in contact (wall-clock ms), 0 if never. */
-    fun pcLastSeenMs(id: String): Long = sp.getLong("$id/last_seen_ms", 0L)
 
     fun setPcLastSeenMs(id: String, ms: Long) = sp.edit().putLong("$id/last_seen_ms", ms).apply()
 

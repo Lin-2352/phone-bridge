@@ -21,13 +21,13 @@ fun tileClick(shownOn: Boolean, locked: Boolean): TileClick = when {
 /** The tile's second line, from what is really running. */
 fun tileSubtitle(
     wished: Boolean, running: Boolean, starting: Boolean, linked: String?,
-    live: Boolean = false, lastSeenMs: Long = 0L, nowMs: Long = 0L,
+    live: Boolean = false,
 ): String = when {
-    // The PC name only while it is really in contact; else how long ago, as on Home.
+    // The PC name only while it is really in contact. The last-seen time is on Home only.
     running -> when {
         linked == null -> "On"
         live -> linked
-        else -> pcStatus(false, lastSeenMs, nowMs, paired = true)
+        else -> "Not connected"
     }
     starting -> "Starting\u2026"
     // Wanted on, but Android killed it: say so; a tap starts it again.

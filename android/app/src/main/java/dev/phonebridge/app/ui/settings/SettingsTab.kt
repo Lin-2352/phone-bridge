@@ -744,12 +744,7 @@ fun SettingsTab(onDone: () -> Unit) {
                                 }
                                 peers.forEachIndexed { i, p ->
                                     if (i > 0) RowDivider()
-                                    val status = dev.phonebridge.app.devices.pcStatus(
-                                        live = p.id in live,
-                                        lastSeenMs = prefs.pcLastSeenMs(p.id).takeIf { it > 0 } ?: prefs.lastSeenMs,
-                                        nowMs = System.currentTimeMillis(),
-                                        paired = true,
-                                    )
+                                    val status = dev.phonebridge.app.devices.pcStatus(live = p.id in live, paired = true)
                                     RelayRow(
                                         onClick = { permsFor = p },
                                         title = names[p.id] ?: p.name,

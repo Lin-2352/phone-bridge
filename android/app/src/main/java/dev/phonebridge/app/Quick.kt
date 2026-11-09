@@ -111,8 +111,6 @@ class BridgeTileService : TileService() {
                     starting = on && !Bridge.running.value,
                     linked = Bridge.linked.value,
                     live = Bridge.isConnected(),
-                    lastSeenMs = Bridge.lastSeenAny(this@BridgeTileService),
-                    nowMs = System.currentTimeMillis(),
                 )
             }
             updateTile()

@@ -18,7 +18,7 @@ data class RelayStatus(val title: String, val detail: String?) {
  */
 fun relayStatus(
     running: Boolean, ready: Boolean, pc: String?, connected: Boolean,
-    lastSeenMs: Long, nowMs: Long, controller: String? = null, discoveryOff: Boolean = false,
+    controller: String? = null, discoveryOff: Boolean = false,
     attemptFailed: Boolean = false, identityLost: Boolean = false,
 ): RelayStatus = when {
     // The service stopped on purpose: "is off" would send the user the wrong way.
@@ -29,9 +29,8 @@ fun relayStatus(
     pc == null -> RelayStatus("Not paired yet", null)
     connected -> RelayStatus("Connected to $pc", null)
     discoveryOff -> RelayStatus("$pc not reachable", DISCOVERY_OFF_TEXT)
-    attemptFailed -> RelayStatus("$pc not reachable", if (lastSeenMs > 0L) pcStatus(false, lastSeenMs, nowMs, paired = true) else null)
-    lastSeenMs <= 0L -> RelayStatus("Paired with $pc", null)
-    else -> RelayStatus("Paired with $pc", pcStatus(false, lastSeenMs, nowMs, paired = true))
+    attemptFailed -> RelayStatus("$pc not reachable", null)
+    else -> RelayStatus("Paired with $pc", null)
 }
 
 /** Said while the PC is away and another app holds the discovery port. */

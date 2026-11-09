@@ -58,12 +58,11 @@ class PcStoreTest {
     }
 
     @Test
-    fun status_per_pc_uses_its_own_last_seen() {
-        val now = 10_000_000L
-        assertEquals("Connected", pcStatus(live = true, lastSeenMs = 0, nowMs = now, paired = true))
-        assertEquals("Last seen 5 min ago", pcStatus(live = false, lastSeenMs = now - 5 * 60_000, nowMs = now, paired = true))
-        assertEquals("Not seen yet", pcStatus(live = false, lastSeenMs = 0, nowMs = now, paired = true))
-        assertEquals("Not paired", pcStatus(live = false, lastSeenMs = now, nowMs = now, paired = false))
+    fun the_devices_list_never_shows_a_last_seen_time() {
+        // Last seen lives on Home only (owner, 2026-11-09): here a PC is connected or it is not.
+        assertEquals("Connected", pcStatus(live = true, paired = true))
+        assertEquals("Not connected", pcStatus(live = false, paired = true))
+        assertEquals("Not paired", pcStatus(live = false, paired = false))
     }
 
     @Test

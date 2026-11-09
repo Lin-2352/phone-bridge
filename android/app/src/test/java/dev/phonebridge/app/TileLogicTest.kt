@@ -41,9 +41,8 @@ class TileLogicTest {
     @Test
     fun aPairedPcNotInContactIsNotShownAsHealthy() {
         // F1: the active tile used to print the PC name whether or not it was reachable.
-        val now = 10_000_000_000L
-        assertEquals("Last seen 3 h ago", tileSubtitle(true, true, false, "RMX PC", live = false, lastSeenMs = now - 3 * 3600_000L, nowMs = now))
-        assertEquals("Paired", tileSubtitle(true, true, false, "RMX PC", live = false, lastSeenMs = 0L, nowMs = now))
-        assertEquals("On", tileSubtitle(true, true, false, null, live = false, lastSeenMs = 0L, nowMs = now))
+        // No last-seen time on the tile (owner, 2026-11-09): Home is the one place for it.
+        assertEquals("Not connected", tileSubtitle(true, true, false, "RMX PC", live = false))
+        assertEquals("On", tileSubtitle(true, true, false, null, live = false))
     }
 }

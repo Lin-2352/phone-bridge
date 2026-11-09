@@ -14,8 +14,7 @@ class WidgetStateTest {
         assertEquals("Not paired yet", widgetLabel(running = true, pcName = null, connected = false))
         assertEquals("Connected to DESK", widgetLabel(running = true, pcName = "DESK", connected = true))
         assertEquals("Paired with DESK", widgetLabel(running = true, pcName = "DESK", connected = false))
-        assertEquals("Paired with DESK \u00b7 last seen 3 h ago", widgetLabel(true, "DESK", false, lastSeenMs = 1_000_000L, nowMs = 1_000_000L + 3 * 3600_000L))
-        assertEquals("DESK not reachable \u00b7 last seen 3 h ago", widgetLabel(true, "DESK", false, lastSeenMs = 1_000_000L, nowMs = 1_000_000L + 3 * 3600_000L, attemptFailed = true))
+        assertEquals("DESK not reachable", widgetLabel(true, "DESK", false, attemptFailed = true))
         assertEquals("Starting\u2026", widgetLabel(running = false, pcName = null, connected = false, starting = true))
     }
 

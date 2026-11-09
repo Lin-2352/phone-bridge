@@ -102,18 +102,11 @@ fun defaultAfterRemoval(remaining: List<PbPeer>, removed: String, current: Strin
     return remaining.minByOrNull { it.name.lowercase() }?.id
 }
 
-/** The status line of one PC, from its own last-seen time. */
-fun pcStatus(live: Boolean, lastSeenMs: Long, nowMs: Long, paired: Boolean): String {
-    if (!paired) return "Not paired"
-    if (live) return "Connected"
-    if (lastSeenMs <= 0L) return "Not seen yet"
-    val minutes = (nowMs - lastSeenMs) / 60_000
-    return "Last seen " + when {
-        minutes < 1 -> "just now"
-        minutes < 60 -> "$minutes min ago"
-        minutes < 24 * 60 -> "${minutes / 60} h ago"
-        else -> "${minutes / (24 * 60)} d ago"
-    }
+/** The status of one PC in a list. The last-seen time lives on the Home card only. */
+fun pcStatus(live: Boolean, paired: Boolean): String = when {
+    !paired -> "Not paired"
+    live -> "Connected"
+    else -> "Not connected"
 }
 
 /**
