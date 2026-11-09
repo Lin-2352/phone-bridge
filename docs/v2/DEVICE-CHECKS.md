@@ -102,3 +102,11 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Not run: phone to PC file (picker), audio, Hello switches on screen, Transfers controls on a phone path.
 - Note: the offer notification sits in the Relay group and needs two taps (expand group, expand row) to show Accept/Decline.
 - Cleanup: default PC set back to ASUS-ROG-STRIX-; ASUS-V2 test pairing still on the phone (to remove).
+
+## 2026-11-10 (later): queue to the real phone, share sheet
+- Same v2 test PC folder reused; the phone reconnected on its own (no re-pair needed).
+- Queue of 3 x 3 MB files PC to phone with "Accept from my devices automatically" on: all sent one after another, 0.8 to 1.4 s each, 2.2 to 3.7 MB/s. Name collision saved as "q3 (1).bin". PASS.
+- Without auto-accept the offer waits for a tap; an offer unanswered for about 2 minutes fails with "timed out" and the queue moves on to the next file. As designed.
+- Phone share sheet (ACTION_SEND text): "Send to ASUS-V2?" with Change PC, Cancel, Send; Send completed with no error. Receipt on the PC not confirmed (that PC's auto-copy and toast text are off).
+- Incident: a tap in the notification shade opened Google Pay (the shade had shifted). Left at once with Home, nothing touched in it. Do not drive the shade by coordinates; use Relay's own screens or auto-accept.
+- Phone auto-accept switched back off; Relay (0.2.0 folder) restarted.
