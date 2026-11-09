@@ -2748,6 +2748,7 @@ dependencies = [
  "pb-platform-win",
  "pb-protocol",
  "pb-transport",
+ "pb-update",
  "pb-video",
  "qrcode",
  "rqrr",
