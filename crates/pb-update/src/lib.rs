@@ -38,6 +38,8 @@ fn url_ok(url: &str) -> bool {
         && rest.split('/').all(|seg| seg != "." && seg != "..")
 }
 
+pub mod releases;
+
 pub const RELEASE_URL_PREFIX: &str = "https://github.com/Lin-2352/phone-bridge/releases/";
 /// The text the current key signs to introduce the next key: this prefix plus the key in hex.
 pub const NEXT_KEY_PREFIX: &str = "relay-next-key:";
