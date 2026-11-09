@@ -110,3 +110,10 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Phone share sheet (ACTION_SEND text): "Send to ASUS-V2?" with Change PC, Cancel, Send; Send completed with no error. Receipt on the PC not confirmed (that PC's auto-copy and toast text are off).
 - Incident: a tap in the notification shade opened Google Pay (the shade had shifted). Left at once with Home, nothing touched in it. Do not drive the shade by coordinates; use Relay's own screens or auto-accept.
 - Phone auto-accept switched back off; Relay (0.2.0 folder) restarted.
+
+## 2026-11-10 (later still): issues we noted
+- Clipboard both ways (v2 PC with the real phone): PC to phone and phone to PC both arrive once the phone's per-PC clipboard switch for that PC is on. Cause of "not working": a PC paired later starts with the switch off while the master switch showed on (any PC on). Fixed (db90800), test `the_all_pcs_switch_reads_on_only_when_every_pc_has_it_on`.
+- Phone share sheet text to the PC clipboard (PC auto-copy on): arrives. PASS.
+- QR pairing window: the class had no icon (default program icon). Added the Relay logo; shortened the window (620 to 575 logical px, text area 120 to 90) to cut the empty space. Not confirmed by eye: the window closes itself after 2 minutes and my captures missed it. To check by eye.
+- Windows Hello area switches: in this debug build the gate is off, so the rows are not reachable by UI Automation. Covered by unit tests only; needs a release build to try on screen.
+- Incident: a full-screen capture I took while looking for the QR window showed the owner's browser behind it; deleted at once. Capture only the Relay window from now on.

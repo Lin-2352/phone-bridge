@@ -19,7 +19,7 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, RegisterClassW,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, LoadIconW, RegisterClassW,
             SetForegroundWindow, SetTimer, ShowWindow, CW_USEDEFAULT, SW_SHOW, WINDOW_EX_STYLE,
             WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_PAINT, WM_TIMER, WNDCLASSW, WS_CAPTION,
             WS_OVERLAPPED, WS_SYSMENU,
@@ -35,7 +35,7 @@ use crate::{
 
 const CLASS: PCWSTR = w!("PhoneBridgePairQr");
 const QUIET: usize = 4;
-const TEXT_H: i32 = 120;
+const TEXT_H: i32 = 90;
 /// Height of one text line under the code, logical px.
 const LINE_H: f32 = 24.0;
 const TIMER_ID: usize = 1;
@@ -249,6 +249,12 @@ pub fn show(code: &str, refresh_in: Duration, closes_in: Duration) -> Result<(),
                 lpfnWndProc: Some(wndproc),
                 hInstance: hinstance.into(),
                 lpszClassName: CLASS,
+                // The Relay logo (resource 1), not the default program icon, in the title bar and taskbar.
+                hIcon: LoadIconW(
+                    Some(hinstance.into()),
+                    PCWSTR(std::ptr::without_provenance::<u16>(1)),
+                )
+                .unwrap_or_default(),
                 ..Default::default()
             };
             RegisterClassW(&wc);
@@ -260,7 +266,7 @@ pub fn show(code: &str, refresh_in: Duration, closes_in: Duration) -> Result<(),
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 (460.0 * sys_scale()) as i32,
-                (620.0 * sys_scale()) as i32,
+                (575.0 * sys_scale()) as i32,
                 None,
                 None,
                 Some(hinstance.into()),
