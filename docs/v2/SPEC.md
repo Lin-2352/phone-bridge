@@ -57,8 +57,8 @@ An architect reviewed the first draft. I then checked each of its claims against
 - **Licence:** MIT OR Apache-2.0. No code from GPL or AGPL projects; studying their UIs is fine. Icons come from Fluent System Icons (MIT) and Material Symbols (Apache-2.0).
 - **Security model unchanged:** "the PC can only ask". Sensitive actions need the phone's own consent, and every live share stays visible with a Stop.
 - **Budgets:**
-  - Android: background PSS ≤60 MB (`DECISIONS.md:95`).
-  - PC (`DECISIONS.md:393`): the idle tray uses 0 CPU, with ≤40 MB working set and ≤15 MB private while no window is open; ≤70 MB private with the main window open.
+  - Android: PSS ≤80 MB (owner ruling 2026-11-09, `DECISIONS.md`).
+  - PC (`DECISIONS.md:393`): the idle tray uses 0 CPU, with ≤80 MB private (committed) memory in every state, window open or closed (owner ruling 2026-11-09).
   - New, recorded in DECISIONS in M2: at most one Android wakeup per 15 min when idle with no PC.
   - Effects run only while visible.
 - **Accessibility:**

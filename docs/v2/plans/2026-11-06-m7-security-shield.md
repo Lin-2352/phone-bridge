@@ -14,7 +14,7 @@
 - MIT OR Apache-2.0; no GPL/AGPL code. New crates: `hkdf` and `hmac` (MIT OR Apache-2.0); check with `cargo deny check licenses bans`.
 - "The PC can only ask": the gate adds a step in front of a consent that still exists; it never replaces a consent and never lets a PC action skip the phone's consent.
 - `PROTOCOL_VERSION` stays 0. Every new message or field is capability-gated (`discovery2`) and written into `docs/WIRE_PROTOCOL.md`. Every parser keeps size limits and gets a fuzz target. `a_0_2_0_peer_still_talks` (`crates/pb-transport/src/tests.rs:3610`) and `a_probe_from_a_paired_peer_updates_its_address_and_gets_an_answer` stay green.
-- Budgets unchanged (Android PSS ≤ 60 MB, one idle wakeup per 15 min; PC idle 0 CPU).
+- Budgets unchanged (Android PSS ≤ 80 MB, one idle wakeup per 15 min; PC idle 0 CPU).
 - Defaults: gate on in release and `qa`, off in debug; turning it off takes one unlock; after a successful unlock nothing asks again for 60 s.
 - Never rename the package, Keystore alias, DPAPI entropy, pipe/mutex names, AUMID, notification channel ids or `filesDir` file names. Never touch `peers.txt` format (a 4th field makes 0.2.0 reject the line).
 - One commit per task, subject starting with the task ID; the same commit ticks `docs/v2/PROGRESS.md` and moves "Resume here". Push after every task. No attribution lines of any kind.

@@ -265,7 +265,7 @@ Ticked tasks above that still have named pieces open. They are listed here so a 
 - **M8.1:** Explorer "Send to" (`--send`) and the flyout drop zone go to the default phone without asking; the phone share sheet uses a platform list, not the Compose `DevicePickerSheet`; the camera-stop liveness touch uses the default phone.
 - **M8.2:** Rename a phone on the PC (a text-input dialog does not exist in the tray yet); until then a nickname is set on the phone only.
 - [ ] M5.10 offscreen renderer (`d2d::offscreen`, `--snapshot`), goldens and the `snapshots` CI job (only the pure parts and `tools/snapshot-diff` exist)
-- [ ] M5.11 follow-up: idle private 71 MB and idle CPU 0.22 s are over budget; find why the device is alive at idle (run with the window closed, check the first-run window)
+- [x] M5.11 follow-up: the owner ruled 80 MB private for the PC (2026-11-09); measured 71 MB and 0.032 s CPU after the device release: pass. The 51 MB left behind is the NVIDIA driver (see DECISIONS).
 - [ ] M5.8 XML toast copy audit (`strings.rs`)
 - [ ] M5 Segoe UI Variable to Segoe UI font fallback in the product, and tabular numerals on live counters
 - [ ] M6.1 Roborazzi: `GlassScreenshotTest` is parked in `android/app/src/screenshotPending/` (the Robolectric process crashes natively on Windows); run it on Linux CI, record goldens

@@ -15,7 +15,7 @@
 - "The PC can only ask": resume never skips consent. A resumed offer is the same offer the phone already accepted only if its token matches a kept partial of that peer; otherwise it asks as a new file.
 - `PROTOCOL_VERSION` stays 0; the new fields are optional, gated by `CAP_RESUME` (advertised only once implemented, DECISIONS.md:464). `a_0_2_0_peer_still_talks` stays green.
 - Every parser keeps its size limits and gets a fuzz target.
-- Budgets unchanged: Android PSS <= 60 MB, one idle wakeup per 15 min (history and queue add none); PC idle tray 0 CPU, <= 40 MB working set.
+- Budgets unchanged: Android PSS <= 80 MB, one idle wakeup per 15 min (history and queue add none); PC idle tray 0 CPU, <= 80 MB private.
 - Never rename: package, Keystore alias, DPAPI entropy, pipe/mutex names, AUMID, notification channel ids, `filesDir` file names.
 - New strings go in `strings.xml` / `strings.rs`, English. Every control has a Narrator/TalkBack name.
 - One commit per task, subject starting with the task ID; the same commit ticks `docs/v2/PROGRESS.md` and moves "Resume here". Push after every task. No attribution lines.

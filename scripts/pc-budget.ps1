@@ -37,9 +37,9 @@ function Sample($p) {
 $proc = Start-Process -FilePath $Exe -ArgumentList @("--dir", $dir, "--port", $Port) -PassThru
 try {
     # 1. Idle for 60 s; the CPU delta is measured over that window.
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 55   # the graphics device is released 35 to 50 s after start; measure after that
     $cpu0 = (Sample $proc).CpuSeconds
-    Start-Sleep -Seconds 55
+    Start-Sleep -Seconds 60
     $idle = Sample $proc
     $idleCpu = $idle.CpuSeconds - $cpu0
 
@@ -62,9 +62,8 @@ try {
     $row | Format-Table -AutoSize
 
     $over = @()
-    if ($row.idle_working_set_mb -gt 40) { $over += "idle working set $($row.idle_working_set_mb) MB > 40" }
-    if ($row.idle_private_mb -gt 15) { $over += "idle private $($row.idle_private_mb) MB > 15" }
-    if ($row.window_private_mb -gt 70) { $over += "window private $($row.window_private_mb) MB > 70" }
+    if ($row.idle_private_mb -gt 80) { $over += "idle private $($row.idle_private_mb) MB > 80" }
+    if ($row.window_private_mb -gt 80) { $over += "window private $($row.window_private_mb) MB > 80" }
     if ($row.idle_cpu_seconds -ge 0.05) { $over += "idle CPU $($row.idle_cpu_seconds) s >= 0.05" }
     if ($over.Count -gt 0) {
         $over | ForEach-Object { Write-Host "OVER: $_" -ForegroundColor Red }

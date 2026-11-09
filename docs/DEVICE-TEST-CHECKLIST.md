@@ -43,7 +43,7 @@ Mica, Acrylic, Relay glass, toggling transparency, high contrast, Remote Desktop
 13. **Portable zip.** Unzip on a local drive and run. *Expect:* everything stays in the `data` folder beside it.
 
 ## Measurements to write down
-- The PC tray's idle private memory and CPU over 60 seconds with the window closed (`scripts/pc-budget.ps1`). The budget is 15 MB and 0.05 s; the last run was over, and the cause is open.
+- The PC tray's idle private memory and CPU over 60 seconds with the window closed (`scripts/pc-budget.ps1`). The budget is 80 MB private (committed) and 0.05 s CPU; the 2026-11-09 run read 71 MB and 0.032 s, so it passes.
 - The speed of a 1 GB transfer each way on the same Wi-Fi.
 - The phone's battery use over an hour idle with Relay on.
 

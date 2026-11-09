@@ -14,7 +14,7 @@
 - MIT OR Apache-2.0; no GPL/AGPL code.
 - "The PC can only ask": a per-device "Always" lets that device's request skip the prompt only where it does today (never while the phone is locked); "Never" refuses without a prompt. No consent is weakened. The M7 unlock gate guards every change to Always and every auto-accept switch.
 - No wire change: `PROTOCOL_VERSION` stays 0, `a_0_2_0_peer_still_talks` stays green. Nicknames are local labels and are never sent.
-- Budgets unchanged (Android PSS ≤ 60 MB, one idle wakeup per 15 min; PC idle 0 CPU).
+- Budgets unchanged (Android PSS ≤ 80 MB, one idle wakeup per 15 min; PC idle 0 CPU).
 - Never rename the package, Keystore alias, DPAPI entropy, pipe/mutex names, AUMID, notification channel ids or `filesDir` file names. Old pref keys stay for one release, unread, so a downgrade to 0.2.x still works.
 - New strings go in `strings.xml` / `strings.rs`, English.
 - One commit per task, subject starting with the task ID; the same commit ticks `docs/v2/PROGRESS.md` and moves "Resume here". Push after every task. No attribution lines of any kind.
