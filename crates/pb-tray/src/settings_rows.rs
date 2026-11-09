@@ -31,6 +31,10 @@ pub enum Key {
     AudioSkipConfirm,
     /// Ask for Windows Hello before sensitive actions (M7.2).
     UnlockGate,
+    /// Which areas ask for Hello while the gate is on.
+    GateFiles,
+    GateAudio,
+    GateControl,
 }
 
 /// Three-way choices, painted as segmented buttons.
@@ -64,6 +68,9 @@ pub struct Model {
     pub audio_skip_confirm: bool,
     /// The unlock gate switch, whether Windows Hello can run now, and the line under the switch.
     pub unlock_gate: bool,
+    pub gate_files: bool,
+    pub gate_audio: bool,
+    pub gate_control: bool,
     pub unlock_available: bool,
     pub unlock_reason: &'static str,
     /// Where the logs go, and how big they are now (bytes).
@@ -123,6 +130,9 @@ impl Model {
             Key::KeepLogs => self.keep_logs,
             Key::AudioSkipConfirm => self.audio_skip_confirm,
             Key::UnlockGate => self.unlock_gate,
+            Key::GateFiles => self.gate_files,
+            Key::GateAudio => self.gate_audio,
+            Key::GateControl => self.gate_control,
         }
     }
 
@@ -307,6 +317,21 @@ pub fn rows(m: &Model) -> Vec<Row> {
             Key::UnlockGate,
             "Ask for Windows Hello before sensitive actions",
             m.unlock_reason,
+        ),
+        Row::Toggle(
+            Key::GateFiles,
+            "Hello for saving incoming files",
+            "Off: files you accept are saved without asking for Hello",
+        ),
+        Row::Toggle(
+            Key::GateAudio,
+            "Hello for audio sharing",
+            "Off: allowing audio sharing does not ask for Hello",
+        ),
+        Row::Toggle(
+            Key::GateControl,
+            "Hello for phone control",
+            "Off: allowing the phone to control this PC does not ask for Hello",
         ),
         Row::Header("Audio"),
         Row::Toggle(

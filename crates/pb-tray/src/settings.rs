@@ -34,6 +34,10 @@ pub struct Settings {
     pub look: u8,
     /// Ask for Windows Hello before sensitive actions (M7.2). On in release builds by default.
     pub unlock_gate: bool,
+    /// With the gate on: which areas ask. Off = that area goes ahead without Hello (turning one off needs an unlock).
+    pub gate_files: bool,
+    pub gate_audio: bool,
+    pub gate_control: bool,
     /// The phone that sends go to when none is chosen: its id in hex, or empty when there is none.
     pub default_device: String,
     /// Let a paired phone drive this PC's pointer and keyboard.
@@ -105,6 +109,9 @@ impl Default for Settings {
             theme: 0,
             look: 0,
             unlock_gate: !cfg!(debug_assertions),
+            gate_files: true,
+            gate_audio: true,
+            gate_control: true,
             default_device: String::new(),
             allow_control: false,
             notify_enabled: true,
@@ -276,6 +283,9 @@ impl Settings {
                     }
                 }
                 "unlock_gate" => s.unlock_gate = parse_bool(v).unwrap_or(s.unlock_gate),
+                "gate_files" => s.gate_files = parse_bool(v).unwrap_or(s.gate_files),
+                "gate_audio" => s.gate_audio = parse_bool(v).unwrap_or(s.gate_audio),
+                "gate_control" => s.gate_control = parse_bool(v).unwrap_or(s.gate_control),
                 "allow_control" => s.allow_control = parse_bool(v).unwrap_or(s.allow_control),
                 "skip_private" => s.skip_private = parse_bool(v).unwrap_or(s.skip_private),
                 "keep_in_history" => s.keep_in_history = parse_bool(v).unwrap_or(s.keep_in_history),
@@ -358,6 +368,18 @@ impl Settings {
         s
     }
 
+    /// Whether this action asks for Hello now: the gate is on and, for an area, its own switch is on.
+    pub fn gate_on(&self, g: crate::unlock::Guarded) -> bool {
+        use crate::unlock::Guarded as G;
+        self.unlock_gate
+            && match g {
+                G::AllowFile => self.gate_files,
+                G::AllowAudio => self.gate_audio,
+                G::AllowControl => self.gate_control,
+                _ => true,
+            }
+    }
+
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut text = format!("version={}\n", self.version);
         text += &format!(
@@ -373,6 +395,13 @@ impl Settings {
             self.default_device,
             self.allow_control,
             self.save_dir.display()
+        );
+        text += &format!(
+            "gate_files={}
+gate_audio={}
+gate_control={}
+",
+            self.gate_files, self.gate_audio, self.gate_control
         );
         text += &format!(
             "notify_enabled={}\nnotify_content={}\nnotify_lock_screen={}\nnotify_sound={}\nnotify_clear_on_phone={}\nnotify_open_on_phone={}\nnotify_otp_autocopy={}\nnotify_quiet_mirroring={}\n",
@@ -588,6 +617,42 @@ theme=dark
         assert_eq!(Settings::load(&f).default_device, id);
         std::fs::write(&f, "version=3\ndefault_device=not-an-id\n").unwrap();
         assert_eq!(Settings::load(&f).default_device, "");
+    }
+
+    #[test]
+    fn each_area_asks_for_hello_only_while_the_gate_and_its_switch_are_on() {
+        use crate::unlock::Guarded as G;
+        let mut s = Settings {
+            unlock_gate: true,
+            ..Settings::default()
+        };
+        assert!(s.gate_on(G::AllowFile) && s.gate_on(G::AllowAudio) && s.gate_on(G::AllowControl));
+        s.gate_files = false;
+        assert!(!s.gate_on(G::AllowFile), "files switch off: no ask");
+        assert!(s.gate_on(G::AllowAudio), "other areas still ask");
+        assert!(
+            s.gate_on(G::ConfirmPairing) && s.gate_on(G::Unpair),
+            "pairing and unpair always ask"
+        );
+        s.unlock_gate = false;
+        assert!(!s.gate_on(G::AllowAudio), "gate off: nothing asks");
+    }
+
+    #[test]
+    fn the_area_switches_round_trip() {
+        let dir = std::env::temp_dir().join(format!("pb-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("settings.txt");
+        let s = Settings {
+            gate_files: false,
+            gate_audio: true,
+            gate_control: false,
+            ..Settings::default()
+        };
+        s.save(&f).unwrap();
+        let l = Settings::load(&f);
+        assert!(!l.gate_files && l.gate_audio && !l.gate_control);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -831,6 +896,9 @@ theme=dark
             theme: 2,
             look: 1,
             unlock_gate: false,
+            gate_files: false,
+            gate_audio: false,
+            gate_control: false,
             default_device: "cd".repeat(32),
             allow_control: false,
             notify_enabled: false,

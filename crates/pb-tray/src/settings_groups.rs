@@ -44,6 +44,9 @@ pub const OPTIONS: &[&str] = &[
     "Show in Explorer \u{201c}Send to\u{201d}",
     "Start with Windows",
     "Ask for Windows Hello before sensitive actions",
+    "Hello for saving incoming files",
+    "Hello for audio sharing",
+    "Hello for phone control",
     "Let my phone control this PC",
     "Play PC audio without asking",
     "Keep history",
@@ -95,7 +98,11 @@ pub fn pages() -> [(Page, &'static str); 8] {
 /// Page of an option label; anything unknown lands on General.
 pub fn page_of(option: &str) -> Page {
     match option {
-        "Paired device" | "Pair device" | "Play PC audio without asking" => Page::Devices,
+        "Paired device"
+        | "Pair device"
+        | "Play PC audio without asking"
+        | "Hello for audio sharing"
+        | "Hello for phone control" => Page::Devices,
         "Share clipboard"
         | "Share images"
         | "Passwords and codes"
@@ -115,6 +122,7 @@ pub fn page_of(option: &str) -> Page {
         "Phone app" => Page::Apps,
         "Accept files automatically"
         | "Save received files to"
+        | "Hello for saving incoming files"
         | "Show in Explorer \u{201c}Send to\u{201d}" => Page::Files,
         // "Keep history", "Clear history", "Theme", "Start with Windows" ...
         _ => Page::General,

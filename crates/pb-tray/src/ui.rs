@@ -1479,7 +1479,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                     "Don't allow",
                 ),
                 crate::unlock::gate_answer(
-                    crate::unlock::Guarded::AllowDecision,
+                    crate::unlock::Guarded::AllowControl,
                     st.settings.clone(),
                     hwnd.0 as isize,
                     "Allow PC control",
@@ -1513,7 +1513,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 ),
                 move || alive.alive(),
                 crate::unlock::gate_answer(
-                    crate::unlock::Guarded::AllowDecision,
+                    crate::unlock::Guarded::AllowFile,
                     st.settings.clone(),
                     hwnd.0 as isize,
                     "Save the incoming file",
@@ -1546,7 +1546,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 Dialog::question(title, body, yes, no),
                 move || alive.alive(),
                 crate::unlock::gate_answer(
-                    crate::unlock::Guarded::AllowDecision,
+                    crate::unlock::Guarded::AllowAudio,
                     st.settings.clone(),
                     hwnd.0 as isize,
                     "Allow audio sharing",
@@ -2332,6 +2332,9 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         theme,
         look: n.look,
         unlock_gate: n.unlock_gate,
+        gate_files: n.gate_files,
+        gate_audio: n.gate_audio,
+        gate_control: n.gate_control,
         unlock_available: avail == crate::unlock::GateAvailability::Available,
         unlock_reason: crate::unlock::reason_text(&avail),
         share,
@@ -2430,6 +2433,16 @@ fn gated_setting(
         Action::Toggle(Key::UnlockGate) if s.unlock_gate => {
             Some((Guarded::GateOff, "Turn off the unlock gate"))
         }
+        // Loosening one area is as sensitive as turning the gate off.
+        Action::Toggle(Key::GateFiles) if s.gate_files => {
+            Some((Guarded::GateOff, "Stop asking for Hello on files"))
+        }
+        Action::Toggle(Key::GateAudio) if s.gate_audio => {
+            Some((Guarded::GateOff, "Stop asking for Hello on audio"))
+        }
+        Action::Toggle(Key::GateControl) if s.gate_control => {
+            Some((Guarded::GateOff, "Stop asking for Hello on phone control"))
+        }
         _ => None,
     }
 }
@@ -2455,6 +2468,14 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
         }
     }
     match a {
+        Action::Toggle(k @ (Key::GateFiles | Key::GateAudio | Key::GateControl)) => {
+            let _ = st.settings.lock().map(|mut s| match k {
+                Key::GateFiles => s.gate_files = !s.gate_files,
+                Key::GateAudio => s.gate_audio = !s.gate_audio,
+                _ => s.gate_control = !s.gate_control,
+            });
+            save_settings(st);
+        }
         Action::Toggle(Key::UnlockGate) => {
             let _ = st
                 .settings

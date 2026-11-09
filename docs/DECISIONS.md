@@ -616,3 +616,6 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 - **Toasts remove themselves** from the notification centre: Relay's own after 2 minutes, mirrored phone notifications after 10, calls after 1. Expandable (longer) toast text is not done: Windows gives a toast no expand control, to be decided with the owner.
 - **Last seen lives on the phone's Home card only** ("Connected", or "Last seen X ago" while the PC is away). The tile, widget, notification status line and the Devices list say connected or not connected.
 - **Not decided yet:** announcing "3 files" on receive; Windows Hello switches per area (design first, security-sensitive).
+
+## Windows Hello per area (2026-11-10)
+Owner asked for switches. With the gate on, three areas have their own switch (default on): saving incoming files, audio sharing, phone control. Turning one off needs an unlock. Pairing, unpair, gate off and the "always allow" toggles always ask while the gate is on. Camera and screen are not gated on the PC (the phone asks). The 60 s grace is unchanged.

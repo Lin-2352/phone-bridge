@@ -63,7 +63,9 @@ pub const GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 /// The actions the gate guards (the phone also guards allow-list changes, which the PC does not have).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Guarded {
-    AllowDecision,
+    AllowFile,
+    AllowAudio,
+    AllowControl,
     AlwaysAllow,
     AutoAccept,
     ConfirmPairing,
@@ -240,7 +242,7 @@ pub fn gate_answer(
             done(false);
             return;
         }
-        let enabled = settings.lock().map(|s| s.unlock_gate).unwrap_or(false);
+        let enabled = settings.lock().map(|s| s.gate_on(what)).unwrap_or(false);
         guard(what, enabled, hwnd, message.to_owned(), done);
     }
 }

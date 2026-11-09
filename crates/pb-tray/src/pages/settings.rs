@@ -171,7 +171,7 @@ const LINK: u32 = 1;
 const THEME: u32 = 10;
 const LOOK: u32 = 13;
 const TOGGLE: u32 = 20;
-const CHOICE: u32 = 40;
+const CHOICE: u32 = 44;
 const OPEN_FOLDER: u32 = 50;
 const CHANGE_FOLDER: u32 = 51;
 const PAIR: u32 = 52;
@@ -186,7 +186,7 @@ const APP_BIT: u32 = 0x1000_0000;
 const DEVICE_BIT: u32 = 0x2000_0000;
 const KEY_MASK: u32 = 0x0FFF_FFFF;
 
-const KEYS: [Key; 20] = [
+const KEYS: [Key; 23] = [
     Key::Share,
     Key::ShareImages,
     Key::Passwords,
@@ -198,6 +198,9 @@ const KEYS: [Key; 20] = [
     Key::Startup,
     Key::Control,
     Key::UnlockGate,
+    Key::GateFiles,
+    Key::GateAudio,
+    Key::GateControl,
     Key::Notify,
     Key::NotifyLock,
     Key::NotifyClear,
@@ -252,6 +255,7 @@ fn device_id(m: &Model, i: usize) -> u32 {
 fn toggle_enabled(m: &Model, k: Key) -> bool {
     match k {
         Key::UnlockGate => m.unlock_available,
+        Key::GateFiles | Key::GateAudio | Key::GateControl => m.unlock_available && m.unlock_gate,
         Key::Passwords | Key::ShareImages => m.share,
         Key::NotifyLock
         | Key::NotifyClear
@@ -1026,6 +1030,37 @@ mod tests {
     }
 
     #[test]
+    fn the_hello_area_switches_work_only_while_the_gate_is_on() {
+        for (k, name) in [
+            (Key::GateFiles, Page::Files),
+            (Key::GateAudio, Page::Devices),
+            (Key::GateControl, Page::Devices),
+        ] {
+            let h = Hit {
+                id: toggle_id(k),
+                r: rectf(0.0, 0.0, 1.0, 1.0),
+            };
+            let gated = Model {
+                unlock_gate: true,
+                unlock_available: true,
+                ..model()
+            };
+            assert_eq!(
+                click(&h, &on(name, gated.clone())),
+                Some(set(SAction::Toggle(k)))
+            );
+        }
+        assert!(!toggle_enabled(
+            &Model {
+                unlock_gate: false,
+                unlock_available: true,
+                ..model()
+            },
+            Key::GateFiles
+        ));
+    }
+
+    #[test]
     fn every_option_is_still_reachable() {
         // Every labelled row is on exactly one page, and every option the
         // old window offered is on some page.
@@ -1332,6 +1367,9 @@ mod tests {
             | Key::Startup
             | Key::Control
             | Key::UnlockGate
+            | Key::GateFiles
+            | Key::GateAudio
+            | Key::GateControl
             | Key::Notify
             | Key::NotifyLock
             | Key::NotifyClear
@@ -1352,7 +1390,7 @@ mod tests {
             };
             assert_eq!(click(&h, &m), Some(set(SAction::Toggle(*k))));
         }
-        assert_eq!(KEYS.len(), 20);
+        assert_eq!(KEYS.len(), 23);
         for r in rows(&model()) {
             if let Row::Toggle(k, ..) = r {
                 assert!(KEYS.contains(&k), "{k:?} missing from KEYS");
