@@ -12,6 +12,8 @@ pub const ID_AUDIO_PHONE: usize = 30;
 pub const ID_AUDIO_PC: usize = 31;
 /// "Disconnect everything": close every session, stop every share, turn every "always allow" off, and pause.
 pub const ID_DISCONNECT: usize = 32;
+/// Bring back the file-transfer window the person hid while transfers run.
+pub const ID_SHOW_TRANSFERS: usize = 33;
 
 /// The ids the actions already had in the tray's command table.
 pub struct Ids {
@@ -40,6 +42,8 @@ pub struct Inputs<'a> {
     /// What each audio direction is doing (phone audio on this PC, PC audio
     /// on the phone).
     pub audio: [crate::audio_state::Phase; 2],
+    /// File transfers still running whose window the person hid (0 when the window is up or nothing runs).
+    pub hidden_transfers: usize,
 }
 
 use crate::strings::{NO_PEER, PAUSED};
@@ -65,6 +69,13 @@ pub fn build(i: &Inputs, ids: &Ids) -> Vec<Item> {
     };
     // What is running, so it can be stopped in one click even when paused.
     let mut items = Vec::new();
+    if i.hidden_transfers > 0 {
+        items.push(Item::new(
+            glyph::SEND,
+            &format!("Show file transfers ({} running)", i.hidden_transfers),
+            ID_SHOW_TRANSFERS,
+        ));
+    }
     if i.screen_open {
         items.push(Item::new(glyph::PHONE, "Hide phone screen", ids.screen));
     }
@@ -139,6 +150,7 @@ pub fn toggle_labels() -> Vec<String> {
         screen_open: false,
         camera: Camera::Idle,
         audio: Default::default(),
+        hidden_transfers: 0,
     };
     build(&inputs, &ids)
         .into_iter()
@@ -169,7 +181,27 @@ mod tests {
             screen_open: false,
             camera: Camera::Idle,
             audio: Default::default(),
+            hidden_transfers: 0,
         }
+    }
+
+    #[test]
+    fn a_hidden_running_transfer_has_a_show_entry_at_the_top() {
+        let s = Settings::default();
+        let mut i = inputs(&s);
+        i.hidden_transfers = 2;
+        let items = build(&i, &IDS);
+        assert_eq!(items[0].label, "Show file transfers (2 running)");
+        assert_eq!(items[0].id, ID_SHOW_TRANSFERS);
+        i.hidden_transfers = 1;
+        assert_eq!(build(&i, &IDS)[0].label, "Show file transfers (1 running)");
+    }
+
+    #[test]
+    fn without_a_hidden_transfer_the_menu_has_no_transfers_entry() {
+        let s = Settings::default();
+        let items = build(&inputs(&s), &IDS);
+        assert!(items.iter().all(|i| !i.label.contains("transfers")));
     }
 
     fn labels(items: &[Item]) -> Vec<&str> {

@@ -1208,6 +1208,9 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             NETWORK_NOTE.call_once(|| {
                 if let Some(text) = crate::netprofile::guidance(&crate::netprofile::connected()) {
                     crate::status::show(&text, 15);
+                    // Also in the notification panel (where it can be expanded and read later), not only
+                    // in the pill that goes away.
+                    balloon(hwnd, "Relay", &text);
                 }
             });
             // Toasts restored from the notification centre whose phone is no
@@ -2184,6 +2187,7 @@ fn show_menu(hwnd: HWND) {
                 crate::audio::phase(crate::audio_state::Dir::PhoneToPc),
                 crate::audio::phase(crate::audio_state::Dir::PcToPhone),
             ],
+            hidden_transfers: crate::transfer_window::hidden_running(),
         },
         &Ids {
             open: ID_OPEN_MAIN,
@@ -2891,6 +2895,7 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         }
         // Takes access away and asks nothing: no confirmation and no unlock (it only removes access).
         crate::menu_model::ID_DISCONNECT => disconnect_everything(hwnd, st),
+        crate::menu_model::ID_SHOW_TRANSFERS => crate::transfer_window::show_again(),
         // The menu's quick settings run the Settings page's own setters.
         crate::menu_model::ID_TOGGLE_ALLOW_CONTROL => apply_settings_action(
             hwnd,
@@ -3521,6 +3526,7 @@ mod tests {
             ID_OPEN_MAIN,
             crate::menu_model::ID_PAUSE,
             crate::menu_model::ID_DISCONNECT,
+            crate::menu_model::ID_SHOW_TRANSFERS,
         ];
         let mut sorted = ids.to_vec();
         sorted.sort_unstable();

@@ -16,11 +16,13 @@ use windows::{
             MONITOR_DEFAULTTOPRIMARY,
         },
         System::LibraryLoader::GetModuleHandleW,
+        UI::Controls::WM_MOUSELEAVE,
+        UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, LoadCursorW, RegisterClassW,
             SetTimer, SetWindowPos, ShowWindow, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
-            SW_SHOWNOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_PAINT, WM_TIMER,
-            WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            SW_SHOWNOACTIVATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT,
+            WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
 };
@@ -34,7 +36,42 @@ const CLASS: PCWSTR = w!("PhoneBridgeStatus");
 /// Logical (96-dpi) size.
 const W: i32 = 440;
 const H: i32 = 52;
+/// One more line of text makes the pill this much taller (logical pixels).
+const LINE_H: i32 = 20;
+/// The longest message shown in full; anything past this many lines is clipped.
+const MAX_LINES: usize = 6;
+/// Characters that fit on a line of the pill, rounded down so a line never overflows: the pill is taller than
+/// needed rather than cutting the message.
+const PER_LINE: usize = 46;
 const TIMER_HIDE: usize = 1;
+/// How long a message stays after the pointer leaves it.
+const LEAVE_MS: u32 = 4000;
+
+/// How many lines `text` takes in the pill (word wrapping; a word longer than a line is broken).
+fn lines_needed(text: &str) -> usize {
+    let mut lines = 1;
+    let mut used = 0;
+    for word in text.split_whitespace() {
+        let len = word.chars().count();
+        if used > 0 && used + 1 + len <= PER_LINE {
+            used += 1 + len;
+            continue;
+        }
+        if used > 0 {
+            lines += 1;
+        }
+        // A word longer than a line is broken over whole lines.
+        let rows = len.div_ceil(PER_LINE).max(1);
+        lines += rows - 1;
+        used = len - (rows - 1) * PER_LINE;
+    }
+    lines.min(MAX_LINES)
+}
+
+/// The pill's height in logical pixels for `lines` lines.
+fn pill_height(lines: usize) -> i32 {
+    H + (lines.clamp(1, MAX_LINES) as i32 - 1) * LINE_H
+}
 
 struct Pill {
     hwnd: isize,
@@ -57,7 +94,13 @@ fn draw(c: &mut Canvas, client: RectF, text: &str) {
         client.right - fluent::ROW_PAD as f32 * c.s,
         client.bottom,
     );
-    fluent::text(c, Font::Body, text, r, c.p.text, Align::Left);
+    if lines_needed(text) == 1 {
+        fluent::text(c, Font::Body, text, r, c.p.text, Align::Left);
+    } else {
+        // A longer message wraps over as many lines as the pill was made tall for.
+        let r = rectf(r.left, r.top + 16.0 * c.s, r.right, r.bottom - 8.0 * c.s);
+        fluent::text_wrapped(c, Font::Body, text, r, c.p.text);
+    }
 }
 
 fn paint(hwnd: HWND) {
@@ -94,6 +137,29 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             paint(hwnd);
             LRESULT(0)
         }
+        // The pointer over the message keeps it on screen (it may be long); it goes a few seconds after the
+        // pointer leaves.
+        WM_MOUSEMOVE => {
+            let mut t = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            // SAFETY: our own window, on the UI thread.
+            unsafe {
+                let _ = TrackMouseEvent(&mut t);
+                let _ = KillTimer(Some(hwnd), TIMER_HIDE);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            // SAFETY: our own window, on the UI thread.
+            unsafe {
+                SetTimer(Some(hwnd), TIMER_HIDE, LEAVE_MS, None);
+            }
+            LRESULT(0)
+        }
         // Click to dismiss; it also goes away by itself.
         WM_TIMER | WM_LBUTTONUP => {
             close();
@@ -124,6 +190,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
     }
 }
 
+/// Sizes the pill for `lines` lines and puts it at the bottom-right of the primary monitor's work area, above
+/// the taskbar (a taller pill grows upward).
+///
+/// # Safety
+/// `hwnd` is the pill's own window, called on the UI thread.
+unsafe fn place(hwnd: HWND, lines: usize) {
+    let s = fluent::scale(hwnd);
+    let (w, h) = (px(s, W), px(s, pill_height(lines)));
+    let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let (x, y) = if GetMonitorInfoW(mon, &mut mi).as_bool() {
+        let wa = mi.rcWork;
+        (
+            wa.right - w - px(s, fluent::GROUP_GAP),
+            wa.bottom - h - px(s, fluent::GROUP_GAP),
+        )
+    } else {
+        (0, 0)
+    };
+    let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+}
+
 /// Show `text` for `secs` seconds (replacing any current message). UI thread.
 pub fn show(text: &str, secs: u32) {
     // Reuse the open pill: new text, timer restarted.
@@ -139,6 +230,7 @@ pub fn show(text: &str, secs: u32) {
         unsafe {
             let _ = KillTimer(Some(hwnd), TIMER_HIDE);
             SetTimer(Some(hwnd), TIMER_HIDE, secs * 1000, None);
+            place(hwnd, lines_needed(text));
             let _ = InvalidateRect(Some(hwnd), None, true);
         }
         return;
@@ -179,24 +271,7 @@ pub fn show(text: &str, secs: u32) {
                 text: text.to_owned(),
             });
         }
-        let s = fluent::scale(hwnd);
-        let (w, h) = (px(s, W), px(s, H));
-        // Bottom-right of the primary monitor's work area, above the taskbar.
-        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut mi = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let (x, y) = if GetMonitorInfoW(mon, &mut mi).as_bool() {
-            let wa = mi.rcWork;
-            (
-                wa.right - w - px(s, fluent::GROUP_GAP),
-                wa.bottom - h - px(s, fluent::GROUP_GAP),
-            )
-        } else {
-            (0, 0)
-        };
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
+        place(hwnd, lines_needed(text));
         fluent::frame(hwnd, false);
         fluent::register_window(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -253,6 +328,33 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn a_short_message_keeps_the_one_line_pill() {
+        assert_eq!(lines_needed("RMX3561 said no"), 1);
+        assert_eq!(pill_height(1), H);
+    }
+
+    #[test]
+    fn the_public_network_notice_shows_in_full() {
+        let notice = "Windows calls this network Public, so it blocks your phone.                       Set the network to Private in Windows settings, or use USB tethering.";
+        let lines = lines_needed(notice);
+        assert!(lines >= 3, "{lines} lines for {} characters", notice.len());
+        assert!(pill_height(lines) > H, "the pill grows to fit the text");
+    }
+
+    #[test]
+    fn a_very_long_message_is_capped_so_the_pill_stays_on_screen() {
+        let long = "word ".repeat(400);
+        assert_eq!(lines_needed(&long), MAX_LINES);
+        assert_eq!(pill_height(lines_needed(&long)), pill_height(MAX_LINES));
+    }
+
+    #[test]
+    fn one_long_word_still_wraps_and_empty_text_is_one_line() {
+        assert!(lines_needed(&"x".repeat(200)) >= 4);
+        assert_eq!(lines_needed(""), 1);
     }
 
     #[test]

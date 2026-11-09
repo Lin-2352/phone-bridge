@@ -52,6 +52,39 @@ const BUTTON_H: i32 = 28;
 
 pub(crate) static HWND_RAW: AtomicIsize = AtomicIsize::new(0);
 static OPENING: AtomicBool = AtomicBool::new(false);
+/// The person closed the window while transfers were running: it stays away (the transfers carry on) until they
+/// choose "Show file transfers" in the tray menu, or every transfer has ended.
+static HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether the window stays hidden: only while something still runs.
+pub fn next_hidden(hidden: bool, running: usize) -> bool {
+    hidden && running > 0
+}
+
+fn running_count() -> usize {
+    transfers::rows()
+        .iter()
+        .filter(|r| matches!(r.state, State::Waiting | State::Active))
+        .count()
+}
+
+/// How many transfers run behind a hidden window (0 when the window is up or nothing runs).
+pub fn hidden_running() -> usize {
+    let running = running_count();
+    let hidden = next_hidden(HIDDEN.load(Ordering::SeqCst), running);
+    HIDDEN.store(hidden, Ordering::SeqCst);
+    if hidden {
+        running
+    } else {
+        0
+    }
+}
+
+/// The tray's "Show file transfers": bring the window back.
+pub fn show_again() {
+    HIDDEN.store(false, Ordering::SeqCst);
+    poke();
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -187,6 +220,12 @@ thread_local! {
 /// A transfer started, changed state or ended: make sure the window is up
 /// and repaints. Safe from any thread.
 pub fn poke() {
+    // Hidden by the person: do not pop up again on every progress update.
+    let hidden = next_hidden(HIDDEN.load(Ordering::SeqCst), running_count());
+    HIDDEN.store(hidden, Ordering::SeqCst);
+    if hidden {
+        return;
+    }
     let raw = HWND_RAW.load(Ordering::SeqCst);
     if raw != 0 {
         // SAFETY: posting to our own window from any thread.
@@ -418,6 +457,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         WM_CLOSE => {
+            // Closing while something still runs hides the window; the tray menu brings it back.
+            if running_count() > 0 {
+                HIDDEN.store(true, Ordering::SeqCst);
+            }
             // Finished rows go; running transfers carry on.
             for r in transfers::rows() {
                 if !matches!(r.state, State::Waiting | State::Active) {
@@ -566,6 +609,19 @@ mod tests {
     use super::*;
     use crate::transfers::{Failure, Registry};
     use std::time::Instant;
+
+    #[test]
+    fn a_hidden_window_stays_hidden_while_transfers_run_and_resets_when_they_end() {
+        assert!(
+            next_hidden(true, 2),
+            "still running: stay hidden, no pop-up on every update"
+        );
+        assert!(
+            !next_hidden(true, 0),
+            "all done: the next transfer shows the window again"
+        );
+        assert!(!next_hidden(false, 3), "never hidden by itself");
+    }
 
     fn row_in(state: &str) -> Row {
         let mut r = Registry::new();
