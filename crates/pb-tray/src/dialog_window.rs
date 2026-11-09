@@ -778,6 +778,10 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
     unsafe {
         let Ok(hinstance) = GetModuleHandleW(None) else {
             // No window: an unanswered question is a "no".
+            crate::applog::emit(crate::applog::error(
+                "dialog",
+                "no module handle: the question was answered no",
+            ));
             done(false);
             return;
         };
@@ -813,13 +817,21 @@ fn run(d: Dialog, done: Box<dyn FnOnce(bool) + Send>, alive: Option<Alive>) {
             Some(hinstance.into()),
             None,
         ) else {
+            crate::applog::emit(crate::applog::error(
+                "dialog",
+                "the window could not be created: the question was answered no",
+            ));
             done(false);
             return;
         };
         match Surface::new(hwnd, Backdrop::Opaque) {
             Ok(surface) => SURFACE.with(|cell| *cell.borrow_mut() = Some(surface)),
-            Err(_) => {
+            Err(e) => {
                 // Nothing can draw it: an unshown question is a "no".
+                crate::applog::emit(crate::applog::error(
+                    "dialog",
+                    &format!("nothing could draw it ({e:?}): the question was answered no"),
+                ));
                 let _ = DestroyWindow(hwnd);
                 done(false);
                 return;

@@ -1265,6 +1265,9 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             let open = sas_open(id);
             let settings = st.settings.clone();
             let raw_hwnd = hwnd.0 as isize;
+            st.log
+                .line(&format!("PAIRING prompt {id} opening for \"{peer_name}\""));
+            let log = st.log.clone();
             crate::dialog_window::ask_while(
                 Dialog::pairing(&peer_name, &sas),
                 {
@@ -1273,6 +1276,10 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 },
                 move |yes| {
                     sas_closed(id);
+                    log.line(&format!(
+                        "PAIRING prompt {id} answered {}",
+                        if yes { "yes" } else { "no" }
+                    ));
                     // Confirming a pairing is guarded: a failed or cancelled unlock turns "yes" into "no".
                     crate::unlock::gate_answer(
                         crate::unlock::Guarded::ConfirmPairing,
