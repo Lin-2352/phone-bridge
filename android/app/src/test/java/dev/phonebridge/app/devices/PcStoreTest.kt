@@ -150,4 +150,15 @@ class PcStoreTest {
         assertEquals(false, needsPicker(ps, "b"))
         assertEquals(false, needsPicker(listOf(peer("a", "Alpha")), null))
     }
+
+    @Test
+    fun the_all_pcs_switch_reads_on_only_when_every_pc_has_it_on() {
+        // A freshly paired PC starts off, so the master switch must not claim "on" for it.
+        assertEquals(false, allPcsSwitch(listOf(true, false), stored = true))
+        assertEquals(true, allPcsSwitch(listOf(true, true), stored = false))
+        assertEquals(false, allPcsSwitch(listOf(false, false), stored = true))
+        // No PC list yet (Relay is off): the stored value stands.
+        assertEquals(true, allPcsSwitch(emptyList(), stored = true))
+        assertEquals(false, allPcsSwitch(emptyList(), stored = false))
+    }
 }

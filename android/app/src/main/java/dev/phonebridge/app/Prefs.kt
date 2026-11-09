@@ -65,10 +65,10 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("enabled", true)
         set(v) = sp.edit().putBoolean("enabled", v).apply()
 
-    /** The Settings value for a per-PC switch: on when any paired PC has it on (the stored value while Relay is off). */
+    /** The Settings value for a per-PC switch: on only when every paired PC has it on (the stored value while Relay is off). */
     private fun anyPc(key: String, stored: Boolean): Boolean {
         val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
-        return if (ids.isEmpty()) stored else ids.any { pcFlag(it, key) }
+        return dev.phonebridge.app.devices.allPcsSwitch(ids.map { pcFlag(it, key) }, stored)
     }
 
     var clipboardSync: Boolean

@@ -102,6 +102,12 @@ fun defaultAfterRemoval(remaining: List<PbPeer>, removed: String, current: Strin
     return remaining.minByOrNull { it.name.lowercase() }?.id
 }
 
+/**
+ * What an all-PCs switch in Settings shows: on only when every paired PC has it on, so a PC paired later (it starts
+ * off) is never hidden behind a switch that reads on. With no PC list yet the stored value stands.
+ */
+fun allPcsSwitch(flags: List<Boolean>, stored: Boolean): Boolean = if (flags.isEmpty()) stored else flags.all { it }
+
 /** The status of one PC in a list. The last-seen time lives on the Home card only. */
 fun pcStatus(live: Boolean, paired: Boolean): String = when {
     !paired -> "Not paired"
