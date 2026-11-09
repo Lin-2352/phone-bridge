@@ -595,3 +595,14 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 
 - 80 MB is the normal ceiling (idle and a window open once the device settles). A short peak up to about 120 MB while the graphics device starts (first ~35 s after launch, or a window opening) is accepted; it must not be sustained. No renderer change that slows the UI (WARP rejected). The unexplained 51 MB zero region stays an optimisation to find, not a blocker.
 - Lost signing keys: see `docs/KEY-RECOVERY.md`.
+
+## Update check without a key (2026-11-09)
+
+- **What it is:** a button on each app (PC Settings, General page; phone Settings, Updates). It reads GitHub's release list once, when pressed, and shows either "no newer release", a link to the newest one, or "Couldn't check: why". No background check, no daily timer, nothing downloaded or installed.
+- **Ruling: pre-releases count.** `/releases/latest` skips pre-releases and every release so far (0.2.0) is one, so the list is read and the highest `major.minor.patch` above the installed version is offered. Drafts, tags like `v0.8.0-rc1` and links outside this project's releases are ignored.
+- **Ruling: nothing is verified.** The owner holds no update key, so the screen never says "verified" or "safe"; it says the release is listed on GitHub and to compare on the page. Cost if wrong: a hijacked repository could point people at a bad release; there is no self-update, so the person still chooses what to install.
+- **Ruling: 512 KiB response limit** (the plan's 64 KiB was for the signed manifest; release notes make the list larger). A longer answer is a failure, not "up to date".
+- **A failure is never "up to date"** (rate limit, offline, HTML page, bad JSON, oversize), on both apps.
+- **PC:** WinHTTP (system proxy and certificate store, ten-second limits); no new dependency and nothing loaded until the button is pressed. Rows on the General page can now be 10, not 9.
+- **Phone:** `Network.openConnection` on a named network: the VPN when one is up, else Wi-Fi, Ethernet, then mobile data. Relay binds the process to Wi-Fi while a VPN is up for local traffic; a default request would skip the VPN and show the person's address to GitHub.
+- The `pb-update` signed-manifest verifier and `sign-manifest` stay, unused and with an empty trust list.

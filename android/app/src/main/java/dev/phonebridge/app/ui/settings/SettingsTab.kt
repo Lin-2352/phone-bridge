@@ -61,6 +61,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import dev.phonebridge.app.CheckResult
+import dev.phonebridge.app.checkForUpdate
+import dev.phonebridge.app.updateNote
 import dev.phonebridge.app.APP_NAME
 import dev.phonebridge.app.RESTRICTED_HELP
 import dev.phonebridge.app.advancedProtectionBlocksControl
@@ -1009,11 +1012,41 @@ fun SettingsTab(onDone: () -> Unit) {
                         }
                         item { SectionHeader("Logs") }
                         item { RelayCard { LogRows(say) } }
+                        item { SectionHeader("Updates") }
+                        item { RelayCard { UpdateRow() } }
                     }
                 }
             }
         }
     }
+}
+
+/** Check for updates: asks GitHub's release list only when tapped; a found release opens its page. */
+@Composable
+private fun UpdateRow() {
+    val ctx = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val installed = remember {
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: ""
+    }
+    var result by remember { mutableStateOf<CheckResult?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    RelayRow(
+        title = if (result is CheckResult.Found) "Open the release page" else "Check for updates",
+        supporting = if (checking) "Checking\u2026" else updateNote(result, installed),
+        onClick = {
+            val found = result as? CheckResult.Found
+            if (found != null) {
+                runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(found.url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            } else if (!checking) {
+                checking = true
+                scope.launch {
+                    result = withContext(kotlinx.coroutines.Dispatchers.IO) { checkForUpdate(ctx) }
+                    checking = false
+                }
+            }
+        },
+    )
 }
 
 /** Keep logs, Log size, Export logs and Clear all logs: the day-by-day log on this phone. */
