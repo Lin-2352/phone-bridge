@@ -89,3 +89,8 @@ Written so the next device session runs from this list. Needs the owner: QR scan
   - Pause queue stops the sending file after 98 MB (`cancelled by pause`) and the button reads Resume queue; Resume queue sends again; Cancel all stops the file (`cancelled by user`), `queue.txt` is empty.
   - Not run: the same on a real phone; Pause on a file arriving from the phone (not offered by design); dragging with ticks across a restart.
 - Flaky test again, 2026-11-10: `audio_is_current_again_right_after_a_blackout` failed on the Windows CI runner (`e617dfa`): 421,392 bytes relayed against the test's 500,000 floor, with 1,201 frames arriving normally and about 2 ms old afterwards. The Linux failure on 2026-11-09 had the same shape (430,154 bytes, 1,201 frames). A normal run relays about 1.7 MB. Reading: after the blackout the stream probably moved to a direct path around the relay, so less crossed it while audio stayed current. Not proven (no local repro in 10 runs). Floor lowered to 200,000 with a comment; the behaviour assertions (frames flow again, age under 400 ms) are unchanged.
+
+## 2026-11-10: Home card and toast "Read in full"
+- Phone Home card (USB, KIIT Wi-Fi): shows "Last seen just now" under the PC name, no last-seen text elsewhere. Dashed link line (not live).
+- Toasts over 120 characters get a "Read in full" button that opens Home (lists the full text). Unit-tested (args round trip); not yet seen on a real long toast.
+- pb-tray tests, single-threaded: 671 passed, 0 failed.

@@ -24,6 +24,9 @@ pub struct ToastSpec {
     pub call: bool,
 }
 
+/// A toast whose text is longer than this is cut short by Windows, so it gets a "Read in full" button.
+pub const LONG_TEXT: usize = 120;
+
 /// Windows shows at most this many buttons, including Send.
 const MAX_BUTTONS: usize = 5;
 
@@ -186,6 +189,10 @@ pub enum ToastArgs {
     Silence {
         tag: String,
     },
+    /// Open the full text of a long notification (Home lists it in full).
+    Full {
+        tag: String,
+    },
 }
 
 /// `a=<open|btn|reply|otp|txt|mute|silence>&t=<tag>[&i=<n>]`, tag percent-encoded.
@@ -198,6 +205,7 @@ pub fn args(a: &ToastArgs) -> String {
         ToastArgs::CopyText { tag } => ("txt", tag, None),
         ToastArgs::Mute { tag } => ("mute", tag, None),
         ToastArgs::Silence { tag } => ("silence", tag, None),
+        ToastArgs::Full { tag } => ("full", tag, None),
     };
     let mut out = format!("a={kind}&t={}", pct(tag));
     if let Some(i) = index {
@@ -227,6 +235,7 @@ pub fn parse_args(s: &str) -> Option<ToastArgs> {
         ("txt", None) => ToastArgs::CopyText { tag },
         ("mute", None) => ToastArgs::Mute { tag },
         ("silence", None) => ToastArgs::Silence { tag },
+        ("full", None) => ToastArgs::Full { tag },
         _ => return None,
     })
 }
@@ -521,6 +530,12 @@ mod tests {
         for t in [&own, &mirrored, &call] {
             assert!(expiry_secs(t) > 0);
         }
+    }
+
+    #[test]
+    fn the_read_in_full_action_round_trips() {
+        let a = ToastArgs::Full { tag: "t 1".into() };
+        assert_eq!(parse_args(&args(&a)), Some(a));
     }
 
     #[test]

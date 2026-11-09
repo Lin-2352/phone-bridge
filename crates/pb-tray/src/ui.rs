@@ -1875,6 +1875,12 @@ fn show_phone_notification(
             ));
         }
     }
+    if p.lines.iter().map(|l| l.chars().count()).sum::<usize>() > crate::toast_xml::LONG_TEXT {
+        buttons.push((
+            "Read in full".into(),
+            a(ToastArgs::Full { tag: tag.clone() }),
+        ));
+    }
     if n.call {
         // Answer and Decline are the dialer's own buttons, above.
         buttons.push(("Silence".into(), a(ToastArgs::Silence { tag: tag.clone() })));
@@ -2006,10 +2012,15 @@ fn on_toast(hwnd: HWND, st: &State, ev: ToastEvent) {
                 | ToastArgs::CopyOtp { tag }
                 | ToastArgs::CopyText { tag }
                 | ToastArgs::Mute { tag }
-                | ToastArgs::Silence { tag } => tag.clone(),
+                | ToastArgs::Silence { tag }
+                | ToastArgs::Full { tag } => tag.clone(),
             };
             if matches!(a, ToastArgs::CopyText { .. }) {
                 copy_shared_text(hwnd, st, &tag);
+                return;
+            }
+            if matches!(a, ToastArgs::Full { .. }) {
+                crate::main_window::open(crate::main_window::Page::Home);
                 return;
             }
             if tag.starts_with("pb-") {
@@ -2072,7 +2083,7 @@ fn on_toast(hwnd: HWND, st: &State, ev: ToastEvent) {
                 }
                 ToastArgs::Silence { .. } => send(K::Silence, 0, String::new()),
                 ToastArgs::CopyOtp { .. } => copy_otp(hwnd, &e.otp),
-                ToastArgs::CopyText { .. } => {}
+                ToastArgs::CopyText { .. } | ToastArgs::Full { .. } => {}
                 ToastArgs::Mute { .. } => {
                     let _ = st.settings.lock().map(|mut s| {
                         match s.notify_apps.iter_mut().find(|(p, _, _)| *p == e.package) {
