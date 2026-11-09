@@ -2300,6 +2300,16 @@ fn settings_model(st: &State) -> crate::settings_rows::Model {
         audio_skip_confirm: n.audio_skip_confirm_pc_to_phone,
         log_dir: crate::applog::dir().display().to_string(),
         log_bytes: crate::applog::size_bytes(),
+        update_note: crate::update_check::note(
+            &crate::update_check::phase(),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .0,
+        update_open: crate::update_check::note(
+            &crate::update_check::phase(),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .1,
         logs_failed: crate::applog::handle().is_none(),
         devices: paired_devices(st),
         my_fingerprint: MY_FINGERPRINT.lock().map(|f| f.clone()).unwrap_or_default(),
@@ -2573,6 +2583,16 @@ fn apply_settings_action(hwnd: HWND, st: &State, a: crate::settings_rows::Action
                 .unwrap_or(true);
             crate::applog::set_enabled(on);
             save_settings(st);
+        }
+        Action::CheckUpdates => {
+            if let Some(url) = crate::update_check::open_url() {
+                shell_open(&url, None);
+            } else {
+                let raw = hwnd.0 as isize;
+                crate::update_check::start(move || post_settings_action(raw));
+                // Show "Checking..." now.
+                post_settings_action(raw);
+            }
         }
         Action::OpenLogs => {
             let dir = crate::applog::dir();

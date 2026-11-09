@@ -86,6 +86,9 @@ pub struct Model {
     pub apps: Vec<(String, bool)>,
     /// What the camera is doing now (`None` before the first reading).
     pub camera: Option<Summary>,
+    /// The Updates row's second line, and whether its button now opens the release page.
+    pub update_note: String,
+    pub update_open: bool,
 }
 
 impl Model {
@@ -161,6 +164,8 @@ pub enum Action {
     OpenLogs,
     /// Delete every log (the tray asks first).
     ClearLogs,
+    /// Ask GitHub for the release list, or open the release page once one was found.
+    CheckUpdates,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -187,6 +192,8 @@ pub enum Row {
     LogFolder,
     /// Deletes every log, showing their size.
     ClearLogs,
+    /// Check for a newer release (a button; asks GitHub only when pressed).
+    Updates,
 }
 
 pub fn rows(m: &Model) -> Vec<Row> {
@@ -328,6 +335,7 @@ pub fn rows(m: &Model) -> Vec<Row> {
     v.push(Row::Pair);
     v.push(Row::Header("About"));
     v.push(Row::About);
+    v.push(Row::Updates);
     v
 }
 

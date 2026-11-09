@@ -159,6 +159,7 @@ fn item_height(i: &Item) -> f32 {
             Row::ClearHistory => 68.0,
             Row::LogFolder => 76.0,
             Row::ClearLogs => 68.0,
+            Row::Updates => 68.0,
         },
     }
 }
@@ -180,6 +181,7 @@ const CAMERA_WINDOW: u32 = 55;
 const CLEAR_HISTORY: u32 = 56;
 const OPEN_LOGS: u32 = 57;
 const CLEAR_LOGS: u32 = 58;
+const CHECK_UPDATES: u32 = 59;
 const APP_BIT: u32 = 0x1000_0000;
 const DEVICE_BIT: u32 = 0x2000_0000;
 const KEY_MASK: u32 = 0x0FFF_FFFF;
@@ -435,6 +437,7 @@ fn controls(row: &Row, card: RectF, s: f32, m: &Model) -> Vec<(u32, RectF)> {
         Row::ClearHistory => vec![(CLEAR_HISTORY, right_button(card, s, 100.0, 18.0))],
         Row::LogFolder => vec![(OPEN_LOGS, right_button(card, s, 100.0, 18.0))],
         Row::ClearLogs => vec![(CLEAR_LOGS, right_button(card, s, 100.0, 18.0))],
+        Row::Updates => vec![(CHECK_UPDATES, right_button(card, s, 100.0, 18.0))],
     }
 }
 
@@ -563,6 +566,7 @@ pub fn describe(hit: &Hit, m: &SettingsModel) -> Option<super::Desc> {
                 Row::ClearHistory => Desc::new("Clear history", Role::Button),
                 Row::LogFolder => Desc::new("Open log folder", Role::Button),
                 Row::ClearLogs => Desc::new("Clear all logs", Role::Button),
+                Row::Updates => Desc::new("Check for updates", Role::Button),
                 Row::Header(_) | Row::About => return None,
             });
         }
@@ -605,6 +609,7 @@ pub fn click(hit: &Hit, m: &SettingsModel) -> Option<Action> {
         CLEAR_HISTORY => SAction::ClearHistory,
         OPEN_LOGS => SAction::OpenLogs,
         CLEAR_LOGS => SAction::ClearLogs,
+        CHECK_UPDATES => SAction::CheckUpdates,
         _ => return None,
     };
     Some(Action::Settings(a))
@@ -814,6 +819,29 @@ fn draw_row(c: &Canvas, row: &Row, card: RectF, m: &Model) {
             );
             two_lines(c, card, il, right, "Clear all logs", &sub, p.text);
             fluent::button(c, b, "Clear", false);
+        }
+        Row::Updates => {
+            let b = right_button(card, s, 100.0, 18.0);
+            let right = left_of(il, b.left, s);
+            two_lines(
+                c,
+                card,
+                il,
+                right,
+                "Check for updates",
+                &m.update_note,
+                p.text,
+            );
+            fluent::button(
+                c,
+                b,
+                if m.update_open {
+                    "Open page"
+                } else {
+                    "Check now"
+                },
+                false,
+            );
         }
     }
 }
@@ -1039,6 +1067,7 @@ mod tests {
             set(SAction::ClearHistory),
             set(SAction::OpenLogs),
             set(SAction::ClearLogs),
+            set(SAction::CheckUpdates),
         ];
         for k in [ChoiceKey::Content, ChoiceKey::Sound] {
             want.extend((0..3).map(|i| set(SAction::Choice(k, i))));

@@ -51,6 +51,7 @@ pub const OPTIONS: &[&str] = &[
     "Keep logs",
     "Log folder",
     "Clear all logs",
+    "Check for updates",
     "Paired device",
     "Pair device",
     "About",
@@ -72,6 +73,7 @@ pub fn label_of(row: &Row) -> Option<&'static str> {
         Row::ClearHistory => "Clear history",
         Row::LogFolder => "Log folder",
         Row::ClearLogs => "Clear all logs",
+        Row::Updates => "Check for updates",
         Row::Header(_) => return None,
     })
 }
@@ -167,6 +169,7 @@ fn texts(row: &Row, m: &Model) -> Vec<String> {
             "Clear all logs".into(),
             "Delete every log file on this PC".into(),
         ],
+        Row::Updates => vec!["Check for updates".into(), m.update_note.clone()],
     }
 }
 
@@ -350,7 +353,7 @@ mod tests {
     #[test]
     fn no_page_but_apps_is_long() {
         // Every page except Apps must fit a window without scrolling far:
-        // at most 9 rows (Apps holds the per-app list on its own page).
+        // at most 10 rows (Apps holds the per-app list on its own page).
         let m = Model {
             apps: vec![("A".into(), true)],
             devices: vec![("D".into(), "f".into(), false)],
@@ -364,7 +367,7 @@ mod tests {
                 .iter()
                 .filter(|r| label_of(r).map(page_of) == Some(page))
                 .count();
-            assert!(n <= 9, "{title} has {n} rows");
+            assert!(n <= 10, "{title} has {n} rows");
         }
     }
 
