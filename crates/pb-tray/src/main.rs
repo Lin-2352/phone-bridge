@@ -133,7 +133,9 @@ mod transfer_window;
 mod transfers;
 #[cfg(windows)]
 mod uia;
+#[cfg(windows)]
 mod update_check;
+#[cfg(windows)]
 mod update_http;
 // Generated; some tokens (spacing, other durations) are used by the widgets (pages use them from Task 8 on).
 mod look;
