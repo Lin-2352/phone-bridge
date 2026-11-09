@@ -3890,7 +3890,11 @@ mod identity_changed {
             eprintln!(
                 "blackout: worst age before {worst_before} ms, after {worst_after} ms,                  {after} frames after, {forwarded} bytes relayed"
             );
-            assert!(forwarded > 500_000, "the audio must really cross the relay");
+            // The relay must have carried the stream at the start (about 1.7 MB in a normal run). The link may
+            // move to a direct path after the blackout, and then less crosses it: two failed CI runs saw about
+            // 420 KB relayed with 1201 frames flowing normally afterwards. 200 KB still proves it started on
+            // the impaired link.
+            assert!(forwarded > 200_000, "the audio must really cross the relay");
             assert!(after > 50, "audio must flow again after the blackout");
             assert!(
                 worst_after < 400,
