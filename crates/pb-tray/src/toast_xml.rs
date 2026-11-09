@@ -27,6 +27,18 @@ pub struct ToastSpec {
 /// Windows shows at most this many buttons, including Send.
 const MAX_BUTTONS: usize = 5;
 
+/// How long a toast stays in the notification centre before Windows removes it. Relay's own toasts (files,
+/// pairing, shared text) go after 2 minutes, a phone notification mirrored here after 10, a call after 1.
+pub fn expiry_secs(s: &ToastSpec) -> u64 {
+    if s.call {
+        60
+    } else if s.group == "pb" {
+        120
+    } else {
+        600
+    }
+}
+
 pub fn toast_xml(s: &ToastSpec) -> String {
     let mut x = format!(
         "<toast launch=\"{}\" displayTimestamp=\"{}\"",
@@ -486,6 +498,29 @@ mod tests {
             ..spec()
         };
         assert!(toast_xml(&s).contains("<text>abc</text>"));
+    }
+
+    #[test]
+    fn every_toast_expires_and_relays_own_go_first() {
+        let own = ToastSpec {
+            group: "pb".into(),
+            ..spec()
+        };
+        let mirrored = ToastSpec {
+            group: "abc".into(),
+            ..spec()
+        };
+        let call = ToastSpec {
+            call: true,
+            group: "abc".into(),
+            ..spec()
+        };
+        assert_eq!(expiry_secs(&own), 120);
+        assert_eq!(expiry_secs(&mirrored), 600);
+        assert_eq!(expiry_secs(&call), 60);
+        for t in [&own, &mirrored, &call] {
+            assert!(expiry_secs(t) > 0);
+        }
     }
 
     #[test]

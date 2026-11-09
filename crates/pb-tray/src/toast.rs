@@ -40,7 +40,7 @@ use windows::{
     },
 };
 
-use crate::toast_xml::{toast_xml, ToastSpec};
+use crate::toast_xml::{expiry_secs, toast_xml, ToastSpec};
 
 pub const AUMID: &str = "PhoneBridge.Tray";
 const ACTIVATOR: GUID = GUID::from_u128(0x72c4c623_ea97_46ea_8c4d_5de9e1f8582d);
@@ -238,6 +238,25 @@ pub fn show(s: &ToastSpec) -> Result<(), String> {
     toast.SetTag(&HSTRING::from(&s.tag)).map_err(err)?;
     toast.SetGroup(&HSTRING::from(&s.group)).map_err(err)?;
     toast.SetSuppressPopup(!s.popup).map_err(err)?;
+    // Windows removes it from the notification centre by itself (100 ns ticks since 1601).
+    let gone = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        + expiry_secs(s);
+    let ticks = (gone as i64 + 11_644_473_600) * 10_000_000;
+    if let Ok(when) =
+        windows::Foundation::PropertyValue::CreateDateTime(windows::Foundation::DateTime {
+            UniversalTime: ticks,
+        })
+        .and_then(|v| {
+            windows::core::Interface::cast::<
+                windows::Foundation::IReference<windows::Foundation::DateTime>,
+            >(&v)
+        })
+    {
+        let _ = toast.SetExpirationTime(&when);
+    }
     let tag = s.tag.clone();
     toast
         .Dismissed(&TypedEventHandler::new(
