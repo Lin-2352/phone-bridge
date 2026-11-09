@@ -94,3 +94,11 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Phone Home card (USB, KIIT Wi-Fi): shows "Last seen just now" under the PC name, no last-seen text elsewhere. Dashed link line (not live).
 - Toasts over 120 characters get a "Read in full" button that opens Home (lists the full text). Unit-tested (args round trip); not yet seen on a real long toast.
 - pb-tray tests, single-threaded: 671 passed, 0 failed.
+
+## 2026-11-10: v2 PC and the real phone (USB, KIIT Wi-Fi, phone media volume 1)
+- Pairing the phone to a v2 test PC by QR (SAS 611020, confirmed on both): PASS. The phone kept the first PC (adding a second PC no longer loses the first); both listed, new one default.
+- PC to phone file, 2 MB: the phone asked (notification Accept/Decline), after Accept it arrived, sha256 identical (09c0eb4c550a2d53). PASS.
+- Phone Send clipboard to the older 0.2.0 PC: the Home card changed from "Last seen 56 min ago" to "just now". Receipt on the PC not confirmed.
+- Not run: phone to PC file (picker), audio, Hello switches on screen, Transfers controls on a phone path.
+- Note: the offer notification sits in the Relay group and needs two taps (expand group, expand row) to show Accept/Decline.
+- Cleanup: default PC set back to ASUS-ROG-STRIX-; ASUS-V2 test pairing still on the phone (to remove).
