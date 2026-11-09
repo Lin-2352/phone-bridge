@@ -382,6 +382,37 @@ fn pause_cancels_every_live_transfer_fires_the_handles_and_leaves_done_ones() {
 }
 
 #[test]
+fn stopping_sends_never_touches_an_incoming_file() {
+    let now = Instant::now();
+    let mut r = Registry::new();
+    let (out1, c1) = r.add(nt(Dir::Send, "a", None), now);
+    let (out2, c2) = r.add(nt(Dir::Send, "b", None), now);
+    let (inc, ci) = r.add(nt(Dir::Receive, "c", None), now);
+    // One outgoing file by its path (Pause on one row).
+    assert_eq!(
+        r.cancel_sending_path(std::path::Path::new("C:\\a"), CancelBy::Pause, now),
+        1
+    );
+    assert!(c1.is_cancelled() && !c2.is_cancelled() && !ci.is_cancelled());
+    // Every outgoing file (Pause queue, Cancel all), never the incoming one.
+    assert_eq!(r.cancel_all_sending(CancelBy::User, now), 1);
+    assert!(c2.is_cancelled() && !ci.is_cancelled());
+    assert_eq!(
+        r.row(out1, now).unwrap().state,
+        State::Cancelled(CancelBy::Pause)
+    );
+    assert_eq!(
+        r.row(out2, now).unwrap().state,
+        State::Cancelled(CancelBy::User)
+    );
+    assert_eq!(
+        r.row(inc, now).unwrap().state,
+        State::Waiting,
+        "still not cancelled"
+    );
+}
+
+#[test]
 #[cfg(windows)]
 fn pause_refuses_new_sends_and_quiet_commands_stay_quiet() {
     use crate::core::Cmd;
@@ -390,7 +421,7 @@ fn pause_refuses_new_sends_and_quiet_commands_stay_quiet() {
 }
 
 #[test]
-fn cancelling_one_file_of_a_batch_stops_the_rest_but_a_peer_cancel_does_not() {
+fn cancelling_one_file_stops_only_that_file_but_pause_and_quit_stop_the_batch() {
     let now = Instant::now();
     let mut r = Registry::new();
     let b1 = Batch {
@@ -408,8 +439,18 @@ fn cancelling_one_file_of_a_batch_stops_the_rest_but_a_peer_cancel_does_not() {
         total: 3,
     };
     let (c, _) = r.add(nt(Dir::Send, "c", Some(b2)), now);
+    // The person's Cancel is for this file only (owner, 2026-11-09): the rest of the batch goes on.
     r.cancel(c, CancelBy::User, now);
-    assert!(r.batch_stopped(8));
+    assert!(!r.batch_stopped(8));
+    // Relay pausing or quitting still stops everything behind it.
+    let b3 = Batch {
+        id: 9,
+        index: 3,
+        total: 3,
+    };
+    let (d, _) = r.add(nt(Dir::Send, "d", Some(b3)), now);
+    r.cancel(d, CancelBy::Pause, now);
+    assert!(r.batch_stopped(9));
 }
 
 #[test]

@@ -65,11 +65,26 @@ pub enum Action {
     /// Cancel or retry the transfer with this id (the registry's own cancel and retry).
     TransferCancel(u64),
     TransferRetry(u64),
-    /// Pause or resume the send queue (the next file waits; the one sending finishes).
+    /// Pause or resume the whole send queue (the file sending stops too and keeps its place).
     QueuePause,
     QueueResume,
     /// Take a waiting file out of a phone's queue (its queue key and the item id).
     QueueRemove(String, u64),
+    /// Hold one waiting file, or let a held one go again (queue key and item id).
+    QueueHold(String, u64),
+    QueueRelease(String, u64),
+    /// Cancel everything: what waits and what sends.
+    QueueCancelAll,
+    /// Pause the file being sent from this path (it goes back to the queue, held).
+    TransferHold(std::path::PathBuf),
+    /// Take a finished, failed or cancelled transfer off the list.
+    TransferDismiss(u64),
+    /// Tick or untick one Transfers row; tick every row; untick all.
+    ToggleSelect(transfers::SelKey),
+    SelectAll(Vec<transfers::SelKey>),
+    ClearSelection,
+    /// Several actions from one click (the bar over ticked rows).
+    Many(Vec<Action>),
     /// Files dropped on the main window: sent to a phone (asking which when several are paired).
     DropFiles(Vec<std::path::PathBuf>),
     /// Open a received or sent file, or show it in Explorer; the tray

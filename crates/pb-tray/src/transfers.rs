@@ -511,8 +511,8 @@ impl Registry {
         }
     }
 
-    /// Stop one transfer: fires its cancel handle. A user, pause or quit
-    /// cancel also stops the rest of its batch.
+    /// Stop one transfer: fires its cancel handle. The person's Cancel and the other device's cancel
+    /// are for this file only; Relay pausing or quitting also stops the rest of its batch.
     pub fn cancel(&mut self, id: u64, by: CancelBy, now: Instant) -> bool {
         let Some(e) = self.get(id) else { return false };
         if !e.life.cancel(by) {
@@ -521,7 +521,7 @@ impl Registry {
         e.ended = Some(now);
         e.cancel.cancel();
         let batch = e.t.batch;
-        if let (Some(b), true) = (batch, by != CancelBy::Peer) {
+        if let (Some(b), true) = (batch, matches!(by, CancelBy::Pause | CancelBy::Quit)) {
             self.stop_batch(b.id);
         }
         true
@@ -532,6 +532,39 @@ impl Registry {
             .rows
             .iter()
             .filter(|e| e.life.is_live())
+            .map(|e| e.id)
+            .collect();
+        ids.into_iter()
+            .filter(|id| self.cancel(*id, by, now))
+            .count()
+    }
+
+    /// Stops the outgoing transfers of the file at `path` (Pause on one row). Incoming files are never touched.
+    pub fn cancel_sending_path(
+        &mut self,
+        path: &std::path::Path,
+        by: CancelBy,
+        now: Instant,
+    ) -> usize {
+        let ids: Vec<u64> = self
+            .rows
+            .iter()
+            .filter(|e| {
+                e.life.is_live() && e.t.dir == Dir::Send && e.t.path.as_deref() == Some(path)
+            })
+            .map(|e| e.id)
+            .collect();
+        ids.into_iter()
+            .filter(|id| self.cancel(*id, by, now))
+            .count()
+    }
+
+    /// Stops every outgoing transfer (Pause queue, Cancel all). Incoming files are never touched.
+    pub fn cancel_all_sending(&mut self, by: CancelBy, now: Instant) -> usize {
+        let ids: Vec<u64> = self
+            .rows
+            .iter()
+            .filter(|e| e.life.is_live() && e.t.dir == Dir::Send)
             .map(|e| e.id)
             .collect();
         ids.into_iter()
@@ -699,6 +732,20 @@ pub fn cancel(id: u64, by: CancelBy) -> bool {
     let ok = with(|r| r.cancel(id, by, Instant::now()));
     changed();
     ok
+}
+
+/// Stops the outgoing transfers of the file at `path` (Pause on one row).
+pub fn cancel_sending_path(path: &std::path::Path, by: CancelBy) -> usize {
+    let n = with(|r| r.cancel_sending_path(path, by, Instant::now()));
+    changed();
+    n
+}
+
+/// Stops every outgoing transfer (Pause queue, Cancel all); incoming files go on.
+pub fn cancel_all_sending(by: CancelBy) -> usize {
+    let n = with(|r| r.cancel_all_sending(by, Instant::now()));
+    changed();
+    n
 }
 
 /// Pause and Quit: every live transfer stops (peers are told by the transport).

@@ -36,6 +36,7 @@ pub fn needs_network(c: &Cmd) -> bool {
         | Cmd::SendClipboard(_)
         | Cmd::SendFiles(_)
         | Cmd::QueueResume
+        | Cmd::QueueRelease { .. }
         | Cmd::ClipboardChanged { .. }
         | Cmd::ClipboardImageChanged { .. }
         | Cmd::ControlPhone
@@ -47,6 +48,9 @@ pub fn needs_network(c: &Cmd) -> bool {
         Cmd::CancelPair
         | Cmd::QueuePause
         | Cmd::QueueRemove { .. }
+        | Cmd::QueueHold { .. }
+        | Cmd::QueueHoldPath(_)
+        | Cmd::QueueCancelAll
         | Cmd::StopCamera
         | Cmd::CancelScreen
         | Cmd::StopAudio(_)

@@ -46,6 +46,8 @@ pub struct SendQueue {
     items: Vec<Item>,
     paused: bool,
     next_id: u64,
+    /// Files whose sending was stopped on purpose to hold them (not the whole queue).
+    holding: Vec<u64>,
 }
 
 impl SendQueue {
@@ -116,6 +118,48 @@ impl SendQueue {
         self.paused = true;
     }
 
+    /// Holds one file: it is skipped until [`release`](Self::release). True when it is the file sending,
+    /// which the caller must stop (the engine then reports it through [`stopped_for_hold`](Self::stopped_for_hold)).
+    pub fn hold(&mut self, id: u64) -> bool {
+        let Some(i) = self.items.iter_mut().find(|i| i.id == id) else {
+            return false;
+        };
+        match i.state {
+            QueueState::Waiting | QueueState::NeedsFile => {
+                i.state = QueueState::Paused;
+                false
+            }
+            QueueState::Sending => {
+                if !self.holding.contains(&id) {
+                    self.holding.push(id);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A held file waits its turn again.
+    pub fn release(&mut self, id: u64) {
+        if let Some(i) = self.items.iter_mut().find(|i| i.id == id) {
+            if i.state == QueueState::Paused {
+                i.state = QueueState::Waiting;
+            }
+        }
+        self.holding.retain(|h| *h != id);
+    }
+
+    /// The engine stopped file `id` because Relay was told to pause. True when that was a hold of this one
+    /// file: it is now parked (same token) and the queue goes on; false when it was the whole queue pausing.
+    pub fn stopped_for_hold(&mut self, id: u64) -> bool {
+        let Some(at) = self.holding.iter().position(|h| *h == id) else {
+            return false;
+        };
+        self.holding.remove(at);
+        self.set(id, QueueState::Paused);
+        true
+    }
+
     /// Takes out a file that has not started. The one sending is left alone (false): its transfer would
     /// go on without a place in the queue.
     pub fn remove_waiting(&mut self, id: u64) -> bool {
@@ -142,8 +186,12 @@ impl SendQueue {
     /// Removes every item that has not started (the user cancelled what was queued); the one
     /// sending, if any, is left to the caller to cancel.
     pub fn clear_waiting(&mut self) {
-        self.items
-            .retain(|i| i.state != QueueState::Waiting && i.state != QueueState::NeedsFile);
+        self.items.retain(|i| {
+            !matches!(
+                i.state,
+                QueueState::Waiting | QueueState::NeedsFile | QueueState::Paused
+            )
+        });
     }
 
     /// A file that was missing may be back (a USB stick, a share): Waiting again when `exists` finds it.
@@ -233,10 +281,41 @@ impl Queues {
         self.by_peer.remove(peer);
     }
 
+    /// Holds the file being sent from `path` in whichever queue has it; true when one was sending (the caller
+    /// stops its transfer).
+    pub fn hold_sending_path(&mut self, path: &Path) -> bool {
+        for q in self.by_peer.values_mut() {
+            let id = q
+                .items
+                .iter()
+                .find(|i| i.state == QueueState::Sending && i.path == path)
+                .map(|i| i.id);
+            if let Some(id) = id {
+                return q.hold(id);
+            }
+        }
+        false
+    }
+
+    /// Cancel all: every phone's queue loses what has not started (held files too).
+    pub fn clear_all_waiting(&mut self) {
+        for q in self.by_peer.values_mut() {
+            q.clear_waiting();
+        }
+    }
+
     pub fn set_all_paused(&mut self, paused: bool) {
         self.paused_all = paused;
         for q in self.by_peer.values_mut() {
             q.paused = paused;
+            if !paused {
+                // Resume queue means everything: files held one by one go too.
+                for i in &mut q.items {
+                    if i.state == QueueState::Paused {
+                        i.state = QueueState::Waiting;
+                    }
+                }
+            }
         }
     }
 
@@ -425,6 +504,70 @@ mod tests {
         assert!(q.next().is_none(), "one at a time");
         q.finish(a);
         assert_eq!(q.next().unwrap().id, b);
+    }
+
+    #[test]
+    fn a_held_file_is_skipped_until_released_and_the_others_go_on() {
+        let mut q = SendQueue::default();
+        let (a, b, c) = (add(&mut q, "a"), add(&mut q, "b"), add(&mut q, "c"));
+        assert!(!q.hold(a), "a waits: nothing to stop");
+        assert_eq!(q.next().unwrap().id, b, "a is skipped");
+        q.finish(b);
+        assert_eq!(q.next().unwrap().id, c);
+        q.finish(c);
+        assert!(q.next().is_none(), "a stays held");
+        let shown = q.rows().into_iter().find(|i| i.id == a).unwrap();
+        assert_eq!(shown.state, QueueState::Paused);
+        q.release(a);
+        assert_eq!(q.next().unwrap().id, a);
+    }
+
+    #[test]
+    fn holding_the_file_that_sends_parks_it_when_the_engine_stops_it() {
+        let mut q = SendQueue::default();
+        let (a, b) = (add(&mut q, "a"), add(&mut q, "b"));
+        assert_eq!(q.next().unwrap().id, a);
+        assert!(q.hold(a), "it is sending: the caller stops the transfer");
+        assert!(
+            q.stopped_for_hold(a),
+            "the stop was a hold, not a queue pause"
+        );
+        assert!(!q.stopped_for_hold(a), "said once");
+        assert_eq!(q.next().unwrap().id, b, "the queue goes on without it");
+        let shown = q.rows().into_iter().find(|i| i.id == a).unwrap();
+        assert_eq!(shown.state, QueueState::Paused);
+        assert!(!q.is_paused(), "only that file is held");
+    }
+
+    #[test]
+    fn held_files_can_be_removed_cleared_and_released_by_resume() {
+        let mut qs = Queues::default();
+        let (a, b, c) = {
+            let q = qs.of("pc");
+            (add(q, "a"), add(q, "b"), add(q, "c"))
+        };
+        qs.of("pc").hold(a);
+        qs.of("pc").hold(b);
+        assert!(qs.of("pc").remove_waiting(a), "a held file can be removed");
+        qs.set_all_paused(true);
+        qs.set_all_paused(false);
+        let next = qs.of("pc").next().unwrap();
+        assert_eq!(
+            next.id, b,
+            "Resume queue also releases what was held one by one"
+        );
+        qs.of("pc").finish(b);
+        qs.of("pc").hold(c);
+        let d = add(qs.of("other"), "d");
+        qs.clear_all_waiting();
+        assert!(
+            qs.of("pc").items().iter().all(|i| i.id != c),
+            "Cancel all takes held files too"
+        );
+        assert!(
+            qs.of("other").items().iter().all(|i| i.id != d),
+            "every phone's queue"
+        );
     }
 
     #[test]

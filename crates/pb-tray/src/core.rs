@@ -357,6 +357,20 @@ pub enum Cmd {
         peer: String,
         id: u64,
     },
+    /// Queue: hold one file (a file already sending is stopped and kept with its token; the rest go on).
+    QueueHold {
+        peer: String,
+        id: u64,
+    },
+    /// Queue: hold the file being sent from this path (the Transfers row only knows the path).
+    QueueHoldPath(PathBuf),
+    /// Queue: let a held file go again.
+    QueueRelease {
+        peer: String,
+        id: u64,
+    },
+    /// Queue: cancel everything, what waits and what sends.
+    QueueCancelAll,
     /// The local clipboard changed (from the clipboard listener).
     ClipboardChanged {
         text: String,
@@ -1086,6 +1100,58 @@ pub async fn run(
                 }
                 Some(Cmd::QueuePause) => {
                     queue_set_paused(true);
+                    // Pause means pause: the file sending stops too and keeps its place and token. Files
+                    // arriving from the phone go on (this queue only governs what the PC sends).
+                    crate::transfers::cancel_all_sending(crate::transfers::CancelBy::Pause);
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                }
+                Some(Cmd::QueueHold { peer, id }) => {
+                    let sending = queues().lock().ok().and_then(|mut q| {
+                        let s = q.of(&peer);
+                        let path = s.items().iter().find(|i| i.id == id).map(|i| i.path.clone());
+                        if s.hold(id) {
+                            path
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(path) = sending {
+                        crate::transfers::cancel_sending_path(&path, crate::transfers::CancelBy::Pause);
+                    }
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                }
+                Some(Cmd::QueueHoldPath(path)) => {
+                    let held = queues().lock().is_ok_and(|mut q| q.hold_sending_path(&path));
+                    if held {
+                        crate::transfers::cancel_sending_path(&path, crate::transfers::CancelBy::Pause);
+                    }
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                }
+                Some(Cmd::QueueRelease { peer, id }) => {
+                    if let Ok(mut q) = queues().lock() {
+                        q.of(&peer).release(id);
+                    }
+                    save_queues();
+                    ui(UiEvent::PeersChecked);
+                    let known: Vec<(PeerId, String)> =
+                        peers.lock().map(|g| g.clone()).unwrap_or_default();
+                    if let Some((id, name)) = known.iter().find(|(i, _)| i.to_string() == peer).cloned() {
+                        let (node, log, ui, settings) =
+                            (node.clone(), log.clone(), ui.clone(), settings.clone());
+                        tokio::spawn(async move {
+                            drain_queue(&node, &id, &name, &log, &*ui, &settings).await;
+                        });
+                    }
+                }
+                Some(Cmd::QueueCancelAll) => {
+                    // The queue first, so nothing starts behind the file that is stopped.
+                    if let Ok(mut q) = queues().lock() {
+                        q.clear_all_waiting();
+                    }
+                    crate::transfers::cancel_all_sending(crate::transfers::CancelBy::User);
                     save_queues();
                     ui(UiEvent::PeersChecked);
                 }
@@ -1596,18 +1662,15 @@ async fn drain_queue(
                 // Relay itself stopped it (Pause, Quit): the file keeps its place and token, and the
                 // whole queue waits for the person to resume.
                 SendOutcome::Cancelled("pause" | "quit") => {
-                    q.of(&key).retry(item.id);
-                    q.set_all_paused(true);
-                    stop = true;
+                    // One file held by the person: it is parked and the queue goes on without it.
+                    if !q.of(&key).stopped_for_hold(item.id) {
+                        q.of(&key).retry(item.id);
+                        q.set_all_paused(true);
+                        stop = true;
+                    }
                 }
-                // The person pressed Cancel: that file and what was queued behind it go, as one
-                // batch always did.
-                SendOutcome::Cancelled("user") => {
-                    let s = q.of(&key);
-                    s.cancel(item.id);
-                    s.clear_waiting();
-                }
-                // The other device cancelled this file; the rest is still wanted.
+                // The person pressed Cancel on this file, or the other device cancelled it: only
+                // that file goes, the rest is still wanted ("Cancel all" clears the queue first).
                 SendOutcome::Cancelled(_) => {
                     q.of(&key).cancel(item.id);
                 }
@@ -1681,6 +1744,12 @@ pub fn queue_rows() -> Vec<crate::pages::transfers::QueuedRow> {
             )
         })
         .map(|(peer, i)| crate::pages::transfers::QueuedRow {
+            held: q.get(&peer).is_some_and(|s| {
+                s.items()
+                    .iter()
+                    .any(|x| x.id == i.id && x.state == QueueState::Paused)
+            }),
+            needs_file: i.state == QueueState::NeedsFile,
             peer,
             id: i.id,
             status: match i.state {

@@ -610,6 +610,38 @@ fn page_action(a: crate::pages::Action) {
         Action::QueueRemove(peer, id) => {
             let _ = st.cmds.send(Cmd::QueueRemove { peer, id });
         }
+        Action::QueueHold(peer, id) => {
+            let _ = st.cmds.send(Cmd::QueueHold { peer, id });
+        }
+        Action::QueueRelease(peer, id) => {
+            let _ = st.cmds.send(Cmd::QueueRelease { peer, id });
+        }
+        Action::QueueCancelAll => {
+            let _ = st.cmds.send(Cmd::QueueCancelAll);
+        }
+        Action::TransferHold(path) => {
+            let _ = st.cmds.send(Cmd::QueueHoldPath(path));
+        }
+        Action::TransferDismiss(id) => {
+            crate::transfers::dismiss(id);
+        }
+        Action::ToggleSelect(k) => {
+            crate::pages::transfers::toggle_selection(k);
+            crate::main_window::refresh();
+        }
+        Action::SelectAll(keys) => {
+            crate::pages::transfers::set_selection(keys);
+            crate::main_window::refresh();
+        }
+        Action::ClearSelection => {
+            crate::pages::transfers::clear_selection();
+            crate::main_window::refresh();
+        }
+        Action::Many(list) => {
+            for a in list {
+                page_action(a);
+            }
+        }
         // On a worker: the check and the shell may wait on a slow share.
         Action::OpenFile(path) => page_file(raw, path, true),
         Action::ShowInFolder(path) => page_file(raw, path, false),
