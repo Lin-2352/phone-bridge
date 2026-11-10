@@ -124,3 +124,8 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Phone audio to the PC: asked, started after about 6 s, ran 14 s, stopped cleanly; playback dropped 387 ms with 4 underruns. PASS (minor glitches).
 - Phone screen to the PC: accepted after 5.6 s, about 60 frames/s received, 17 to 25 shown, stopped from the PC. PASS.
 - Not run: camera (shows the room, needs the virtual camera driver), phone control (needs accessibility on the phone), notification mirroring, image clipboard.
+
+## 2026-11-10 (notifications and images, real phone)
+- Notification mirroring: with the phone's "Notifications on PC" switched on, a test notification (`cmd notification post`, so not a real app) reached the v2 PC ("NOTIFY posted"). The toast XML cannot be read back (Windows gives no content for history entries), so the "Read in full" button on a real long toast is still unseen. A real app notification is still to do.
+- Image clipboard PC to phone (PC "Share images" on): "CLIPSYNC sent an image (179 bytes)" on the PC, "CLIPIMG received" on the phone. PASS. Phone to PC (screenshots) not run.
+- The phone switch was off before and is back off after.
