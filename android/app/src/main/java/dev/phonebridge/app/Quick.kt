@@ -198,9 +198,9 @@ class QuickPanelActivity : FragmentActivity() {
     private fun Panel() {
         // What is running (or starting), not the saved wish; follows the service.
         var on by remember(Bridge.running.value, Bridge.startingSince) { mutableStateOf(Bridge.shownOn()) }
-        var clip by remember { mutableStateOf(prefs.clipboardSync) }
+        var clip by remember { mutableStateOf(prefs.clipboardSyncAll) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
-        var auto by remember { mutableStateOf(prefs.autoAccept) }
+        var auto by remember { mutableStateOf(prefs.autoAcceptAll) }
         val itemColors = ListItemDefaults.colors(containerColor = Color.Transparent)
         Column(
             Modifier

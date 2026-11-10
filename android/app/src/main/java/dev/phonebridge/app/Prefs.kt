@@ -65,11 +65,22 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("enabled", true)
         set(v) = sp.edit().putBoolean("enabled", v).apply()
 
-    /** The Settings value for a per-PC switch: on only when every paired PC has it on (the stored value while Relay is off). */
-    private fun anyPc(key: String, stored: Boolean): Boolean {
+    /** The Settings display of a per-PC switch: on only when every paired PC has it on (the stored value while Relay is off). */
+    private fun allPc(key: String, stored: Boolean): Boolean {
         val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
         return dev.phonebridge.app.devices.allPcsSwitch(ids.map { pcFlag(it, key) }, stored)
     }
+
+    /** What a gate reads: live when any paired PC has the switch on. */
+    private fun anyPc(key: String, stored: Boolean): Boolean {
+        val ids = Bridge.node?.peers()?.map { it.id }.orEmpty()
+        return dev.phonebridge.app.devices.anyPcSwitch(ids.map { pcFlag(it, key) }, stored)
+    }
+
+    /** The Settings switch (all PCs). */
+    val clipboardSyncAll: Boolean get() = allPc("clipboard_sync", sp.getBoolean("clipboard_sync", false))
+    val autoAcceptAll: Boolean get() = allPc("auto_accept", sp.getBoolean("auto_accept", true))
+    val notifyToPcAll: Boolean get() = allPc("notifications", sp.getBoolean("notify_to_pc", true))
 
     var clipboardSync: Boolean
         get() = anyPc("clipboard_sync", sp.getBoolean("clipboard_sync", false))

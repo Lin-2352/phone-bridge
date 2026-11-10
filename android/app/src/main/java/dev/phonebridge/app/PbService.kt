@@ -169,7 +169,10 @@ object Bridge {
         val node = n ?: return
         val prefs = Prefs(ctx)
         val ids = node.peers().map { it.id }
-        node.setClipboardPeers(prefs.pcsWithFlag("clipboard_sync", ids))
+        val clipPeers = prefs.pcsWithFlag("clipboard_sync", ids)
+        node.setClipboardPeers(clipPeers)
+        // The node's own clipboard switch follows the per-PC ones: set before the node was published it read the stored global (off by default), and a per-PC switch never updated it, so phone to PC copies were silently not sent.
+        node.setClipboardSync(clipPeers.isNotEmpty())
         node.setNotifyPeers(prefs.pcsWithFlag("notifications", ids))
         node.setAutoAcceptPeers(prefs.pcsWithFlag("auto_accept", ids))
     }

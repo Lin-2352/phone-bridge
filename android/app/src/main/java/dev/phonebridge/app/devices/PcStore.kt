@@ -108,6 +108,12 @@ fun defaultAfterRemoval(remaining: List<PbPeer>, removed: String, current: Strin
  */
 fun allPcsSwitch(flags: List<Boolean>, stored: Boolean): Boolean = if (flags.isEmpty()) stored else flags.all { it }
 
+/**
+ * What a gate reads: the feature works for the PCs that have it on, so it is live when ANY paired PC has the switch on.
+ * (The Settings display uses [allPcsSwitch]; a gate that used it would stop every PC because one was off.)
+ */
+fun anyPcSwitch(flags: List<Boolean>, stored: Boolean): Boolean = if (flags.isEmpty()) stored else flags.any { it }
+
 /** The status of one PC in a list. The last-seen time lives on the Home card only. */
 fun pcStatus(live: Boolean, paired: Boolean): String = when {
     !paired -> "Not paired"

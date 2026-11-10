@@ -11,12 +11,55 @@ pub fn enabled(universal_clipboard: bool, share_images: bool) -> bool {
     universal_clipboard && share_images
 }
 
-/// Echo guard, like the text one: the hash of the last PNG received and the
-/// last sent, so neither side sends the same picture again.
+use std::time::{Duration, Instant};
+
+/// A clip that just arrived from the other device is not sent straight back for this long.
+pub const ECHO: Duration = Duration::from_secs(15);
+/// The same clip seen again inside this window is one copy (a clipboard change can fire twice).
+pub const REPEAT: Duration = Duration::from_secs(2);
+
+/// Echo guard for text and pictures: the last clip received and the last sent, each only for a short
+/// while. Copying the same thing again later, or after something else arrived, must send it again.
+#[derive(Default)]
+pub struct EchoGuard {
+    remote: Option<([u8; 32], Instant)>,
+    sent: Option<([u8; 32], Instant)>,
+}
+
+impl EchoGuard {
+    /// Whether the clip with hash `h` goes out now; if so it is remembered as sent.
+    pub fn should_send(&mut self, h: [u8; 32], now: Instant) -> bool {
+        let echo = self
+            .remote
+            .is_some_and(|(r, at)| r == h && now.saturating_duration_since(at) < ECHO);
+        let repeat = self
+            .sent
+            .is_some_and(|(s, at)| s == h && now.saturating_duration_since(at) < REPEAT);
+        if echo || repeat {
+            return false;
+        }
+        self.sent = Some((h, now));
+        true
+    }
+
+    /// The send for `h` failed: copying the same clip again retries at once.
+    pub fn send_failed(&mut self, h: [u8; 32]) {
+        if self.sent.is_some_and(|(s, _)| s == h) {
+            self.sent = None;
+        }
+    }
+
+    /// A clip arrived from the other device. What we sent before no longer blocks a re-copy.
+    pub fn received(&mut self, h: [u8; 32], now: Instant) {
+        self.remote = Some((h, now));
+        self.sent = None;
+    }
+}
+
+/// Echo guard for pictures: hashes the PNG and defers to [`EchoGuard`].
 #[derive(Default)]
 pub struct ImageGuard {
-    last_remote: [u8; 32],
-    last_sent: [u8; 32],
+    inner: EchoGuard,
 }
 
 fn hash(png: &[u8]) -> [u8; 32] {
@@ -31,23 +74,17 @@ impl ImageGuard {
             return None;
         }
         let h = hash(png);
-        if h == self.last_remote || h == self.last_sent {
-            return None;
-        }
-        self.last_sent = h;
-        Some(h)
+        self.inner.should_send(h, Instant::now()).then_some(h)
     }
 
     /// The send for `h` failed: copying the same picture again retries.
     pub fn send_failed(&mut self, h: [u8; 32]) {
-        if self.last_sent == h {
-            self.last_sent = [0; 32];
-        }
+        self.inner.send_failed(h);
     }
 
     /// A picture arrived from the other device.
     pub fn received(&mut self, png: &[u8]) {
-        self.last_remote = hash(png);
+        self.inner.received(hash(png), Instant::now());
     }
 }
 
@@ -103,5 +140,55 @@ mod tests {
         assert!(g.should_send(&[]).is_none());
         let big = vec![0u8; pb_protocol::control::MAX_CLIPBOARD_IMAGE + 1];
         assert!(g.should_send(&big).is_none());
+    }
+
+    // ---- EchoGuard (text and pictures share it) ----
+
+    fn h(b: u8) -> [u8; 32] {
+        [b; 32]
+    }
+
+    #[test]
+    fn copying_the_same_text_again_right_away_sends_it_once() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        assert!(g.should_send(h(1), t0));
+        assert!(!g.should_send(h(1), t0 + std::time::Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn the_same_text_copied_much_later_is_sent_again() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        assert!(g.should_send(h(1), t0));
+        assert!(g.should_send(h(1), t0 + REPEAT + std::time::Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn a_clip_that_just_arrived_is_not_echoed_but_is_after_the_window() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.received(h(7), t0);
+        assert!(!g.should_send(h(7), t0 + std::time::Duration::from_secs(2)));
+        assert!(g.should_send(h(7), t0 + ECHO + std::time::Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn copying_a_again_after_b_arrived_from_the_phone_is_sent() {
+        // A sent, B arrives from the phone, the user copies A again: nothing may swallow it.
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        assert!(g.should_send(h(1), t0));
+        g.received(h(2), t0 + std::time::Duration::from_secs(1));
+        assert!(g.should_send(h(1), t0 + std::time::Duration::from_millis(1500)));
+    }
+
+    #[test]
+    fn a_failed_send_lets_the_same_text_retry_at_once() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        assert!(g.should_send(h(1), t0));
+        g.send_failed(h(1));
+        assert!(g.should_send(h(1), t0 + std::time::Duration::from_millis(100)));
     }
 }

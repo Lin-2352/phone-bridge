@@ -38,8 +38,7 @@ pub fn record(settings: &SharedSettings, e: crate::timeline::Entry) {
 /// the last we sent, so neither side bounces the same text back and forth.
 #[derive(Default)]
 struct ClipSync {
-    last_remote: [u8; 32],
-    last_sent: [u8; 32],
+    text: crate::clip_image::EchoGuard,
     /// The same guard for pictures.
     image: crate::clip_image::ImageGuard,
 }
@@ -1209,10 +1208,10 @@ pub async fn run(
                     {
                         let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
                         // Don't echo what just arrived, or resend the same text.
-                        if h == c.last_remote || h == c.last_sent {
+                        if !c.text.should_send(h, std::time::Instant::now()) {
+                            log.line("CLIPSYNC skipped: same text as a moment ago (echo or repeat)");
                             continue;
                         }
-                        c.last_sent = h;
                     }
                     let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
                     let (node, log, clip, settings) =
@@ -1240,9 +1239,7 @@ pub async fn run(
                                     log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}"));
                                     // Not delivered: copying the same text again must retry.
                                     let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
-                                    if c.last_sent == h {
-                                        c.last_sent = [0; 32];
-                                    }
+                                    c.text.send_failed(h);
                                 }
                             }
                         }
@@ -2071,7 +2068,10 @@ async fn pump_session(
                     log.line("CLIPSYNC ignored (Universal Clipboard is off)");
                     continue;
                 }
-                clip.lock().unwrap_or_else(|p| p.into_inner()).last_remote = clip_hash(&u.text);
+                clip.lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .text
+                    .received(clip_hash(&u.text), std::time::Instant::now());
                 if u.sensitive {
                     log.line(&format!(
                         "CLIPSYNC received a sensitive clip from \"{}\"",

@@ -161,4 +161,13 @@ class PcStoreTest {
         assertEquals(true, allPcsSwitch(emptyList(), stored = true))
         assertEquals(false, allPcsSwitch(emptyList(), stored = false))
     }
+
+    @Test
+    fun a_gate_is_live_when_any_pc_has_the_switch_on_while_the_display_needs_all() {
+        // Two PCs, one off: clipboard must still flow to the one that has it on, but Settings may not claim "all on".
+        assertEquals(true, anyPcSwitch(listOf(true, false), stored = false))
+        assertEquals(false, allPcsSwitch(listOf(true, false), stored = false))
+        assertEquals(false, anyPcSwitch(listOf(false, false), stored = true))
+        assertEquals(true, anyPcSwitch(emptyList(), stored = true))
+    }
 }
