@@ -114,6 +114,21 @@ fun allPcsSwitch(flags: List<Boolean>, stored: Boolean): Boolean = if (flags.isE
  */
 fun anyPcSwitch(flags: List<Boolean>, stored: Boolean): Boolean = if (flags.isEmpty()) stored else flags.any { it }
 
+/**
+ * The audio "Always" list after the Settings switch "without asking" drifted from it: when the switch is on but none
+ * of the paired PCs is in the list (switched on while Relay was off, a PC paired later), every paired PC is added.
+ * A list that already holds a paired PC is a deliberate choice and stays.
+ */
+fun healedAudioAllow(switchOn: Boolean, allowed: Set<String>, paired: List<String>): Set<String> =
+    if (switchOn && paired.isNotEmpty() && allowed.none { it in paired }) allowed + paired else allowed
+
+/**
+ * Screen "without asking" skips Relay's question, but Android's capture prompt still shows on every share unless
+ * Instant screen keeps a capture ready. Turn Instant screen on once (the user can turn it off again later).
+ */
+fun shouldEnableInstantScreen(alwaysAllowedPcs: Int, instantOn: Boolean, alreadyHealed: Boolean): Boolean =
+    alwaysAllowedPcs > 0 && !instantOn && !alreadyHealed
+
 /** The status of one PC in a list. The last-seen time lives on the Home card only. */
 fun pcStatus(live: Boolean, paired: Boolean): String = when {
     !paired -> "Not paired"

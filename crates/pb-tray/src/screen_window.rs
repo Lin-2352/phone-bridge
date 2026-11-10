@@ -103,6 +103,7 @@ enum Msg {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
+    Touch,
     Pin,
     Dim,
     Back,
@@ -122,6 +123,8 @@ struct Shared {
     video: (u32, u32),
     pinned: bool,
     dim: bool,
+    /// Touch on: the mouse and keys on the video drive the phone. Off: view only.
+    touch: bool,
     status: String,
     dragging: bool,
     last_touch: (u16, u16),
@@ -332,6 +335,7 @@ fn ui_thread(
             bars: [top_bar.0 as isize, bottom_bar.0 as isize],
             video,
             pinned: opts.pinned,
+            touch: true,
             dim: opts.dim,
             status: String::new(),
             dragging: false,
@@ -573,8 +577,17 @@ fn targets(c: RECT, s: f32) -> Vec<(RECT, Target)> {
     let (top, bottom) = (px(s, TOP), px(s, BOTTOM));
     let pad = px(s, 6);
     // Up to 72 px each, narrower in a narrow window (the name gives way first).
-    let bw = px(s, 72).min(((c.right - px(s, 80)) / 2 - pad).max(px(s, 36)));
+    let bw = px(s, 72).min(((c.right - px(s, 80)) / 3 - pad).max(px(s, 36)));
     let mut v = vec![
+        (
+            RECT {
+                left: c.right - 3 * bw - 3 * pad,
+                top: pad,
+                right: c.right - 2 * bw - 3 * pad,
+                bottom: top - pad,
+            },
+            Target::Touch,
+        ),
         (
             RECT {
                 left: c.right - 2 * bw - 2 * pad,
@@ -691,6 +704,38 @@ pub fn bar_labels(button_width: f32, pinned: bool, dimmed: bool) -> Vec<BarItem>
     ]
 }
 
+/// Touch (a pointer glyph from Segoe Fluent Icons) beside Pin and Dim.
+const TOUCH_GLYPH: char = '\u{E7C9}';
+
+/// The Touch toggle: "Touch" while the mouse and keys drive the phone, "View only" when they do not.
+pub fn touch_item(button_width: f32, on: bool) -> BarItem {
+    let narrow = button_width < 60.0;
+    BarItem {
+        glyph: TOUCH_GLYPH,
+        label: if narrow {
+            ""
+        } else if on {
+            "Touch"
+        } else {
+            "View only"
+        },
+        essential: true,
+    }
+}
+
+/// With Touch off the video ignores the mouse, the wheel and typing (Ctrl shortcuts such as Ctrl+W still work).
+fn blocks_input(view_only: bool, msg: u32, ctrl_down: bool) -> bool {
+    if !view_only {
+        return false;
+    }
+    match msg {
+        WM_LBUTTONDOWN | WM_MOUSEMOVE | WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP
+        | WM_MOUSEWHEEL | WM_CHAR => true,
+        WM_KEYDOWN | WM_KEYUP => !ctrl_down,
+        _ => false,
+    }
+}
+
 /// What the bars show.
 #[derive(Default)]
 struct BarView {
@@ -698,6 +743,7 @@ struct BarView {
     status: String,
     pinned: bool,
     dim: bool,
+    touch: bool,
 }
 
 /// Both bars as laid out in the main window's client area `c`; each bar
@@ -717,6 +763,7 @@ fn draw_bars(cv: &mut Canvas, c: RECT, v: &BarView) {
         let width = (r.right - r.left) as f32 / s;
         let items = bar_labels(width, v.pinned, v.dim);
         let (item, on) = match t {
+            Target::Touch => (Some(touch_item(width, v.touch)), v.touch),
             Target::Pin => (Some(items[0]), v.pinned),
             Target::Dim => (Some(items[1]), v.dim),
             Target::Back => (None, false),
@@ -752,6 +799,7 @@ fn paint_bar(bar: HWND) {
             status: sh.status.clone(),
             pinned: sh.pinned,
             dim: sh.dim,
+            touch: sh.touch,
         };
         (HWND(sh.hwnd as *mut _), view)
     }) else {
@@ -985,6 +1033,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         Target::Back => click_button(1),
                         Target::Home => click_button(2),
                         Target::Recents => click_button(4),
+                        Target::Touch => {
+                            let on = with(|sh| {
+                                sh.touch = !sh.touch;
+                                sh.touch
+                            })
+                            .unwrap_or(true);
+                            if !on {
+                                // Lift any finger or key still held when the mouse stops driving the phone.
+                                release_input();
+                            }
+                        }
                         Target::Pin => {
                             if let Some((pinned, opts)) = with(|sh| {
                                 sh.pinned = !sh.pinned;
@@ -1113,6 +1172,10 @@ extern "system" fn video_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
     };
     // SAFETY: standard child window procedure.
     unsafe {
+        let view_only = !with(|s| s.touch).unwrap_or(true);
+        if blocks_input(view_only, msg, GetKeyState(i32::from(VK_CONTROL.0)) < 0) {
+            return LRESULT(0);
+        }
         match msg {
             WM_LBUTTONDOWN => {
                 let _ = SetFocus(Some(hwnd));
@@ -1257,5 +1320,77 @@ mod bar_tests {
         // Wide: the words come back.
         assert_eq!(bar_labels(72.0, false, false)[0].label, "Pin");
         assert_eq!(bar_labels(72.0, true, true)[1].label, "Dimmed");
+    }
+
+    #[test]
+    fn the_top_bar_keeps_touch_pin_and_dim_without_overlap_at_every_width() {
+        let s = 1.0;
+        for width in [240, 300, 360, 480, 800] {
+            let c = RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: 700,
+            };
+            let top: Vec<_> = targets(c, s)
+                .into_iter()
+                .filter(|(_, t)| matches!(t, Target::Touch | Target::Pin | Target::Dim))
+                .collect();
+            assert_eq!(top.len(), 3, "width {width}");
+            assert!(
+                matches!(top[0].1, Target::Touch),
+                "Touch is first so the name is sized from it"
+            );
+            for w in top.windows(2) {
+                assert!(
+                    w[0].0.right <= w[1].0.left,
+                    "buttons overlap at {width}: {:?} {:?}",
+                    w[0].0,
+                    w[1].0
+                );
+            }
+            assert!(
+                top.iter()
+                    .all(|(r, _)| r.left >= 0 && r.right <= width && r.right > r.left),
+                "inside the bar at {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn touch_says_what_it_does_and_keeps_its_icon_when_narrow() {
+        assert_eq!(touch_item(72.0, true).label, "Touch");
+        assert_eq!(touch_item(72.0, false).label, "View only");
+        assert_eq!(touch_item(40.0, false).label, "");
+        assert!(touch_item(40.0, true).essential);
+    }
+
+    #[test]
+    fn view_only_blocks_mouse_wheel_and_typing_but_not_ctrl_shortcuts() {
+        for m in [
+            WM_LBUTTONDOWN,
+            WM_MOUSEMOVE,
+            WM_LBUTTONUP,
+            WM_MOUSEWHEEL,
+            WM_CHAR,
+        ] {
+            assert!(
+                blocks_input(true, m, false),
+                "message {m} must be blocked when view only"
+            );
+            assert!(
+                !blocks_input(false, m, false),
+                "message {m} passes when touch is on"
+            );
+        }
+        assert!(blocks_input(true, WM_KEYDOWN, false));
+        assert!(
+            !blocks_input(true, WM_KEYDOWN, true),
+            "Ctrl+W must still close the window"
+        );
+        assert!(
+            !blocks_input(true, WM_KILLFOCUS, false),
+            "focus loss must still release held input"
+        );
     }
 }

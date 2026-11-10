@@ -550,6 +550,7 @@ class PbService : Service() {
         n.setAutoAccept(prefs.autoAccept)
         prefs.migrateAllowances(n.peers().map { it.id })
         prefs.migrateToPerPc(n.peers().map { it.id })
+        prefs.healHandsFree(n.peers().map { it.id })
         Bridge.applyPeerSwitches(this, n)
         n.setAllowControl(false) // per-PC "Always allow" is applied in askControl
         n.setNotifyEnabled(prefs.notifyToPc)

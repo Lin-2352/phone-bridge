@@ -3305,14 +3305,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 // Private (password manager) content reads as Excluded and is skipped.
                 // Passing it along is the user's choice ("Send passwords and codes").
                 let skip = st.settings.lock().map(|s| s.skip_private).unwrap_or(true);
-                if let Ok((ClipText::Text(text), sensitive)) =
-                    clipboard::get_text_marked(Some(hwnd))
-                {
-                    if !(sensitive && skip) {
-                        let _ = st.cmds.send(Cmd::ClipboardChanged { text, sensitive });
+                match clipboard::get_text_marked(Some(hwnd)) {
+                    Ok((ClipText::Text(text), sensitive)) => {
+                        if sensitive && skip {
+                            // Every drop says why, so a copy that never arrived is explained in the log.
+                            st.log.line(
+                                "CLIPSYNC skipped: the app that copied this marked it private",
+                            );
+                        } else {
+                            let _ = st.cmds.send(Cmd::ClipboardChanged { text, sensitive });
+                        }
                     }
-                } else if crate::clip_image::enabled(on, images) {
-                    read_clipboard_png(hwnd, st.cmds.clone());
+                    Ok((ClipText::Excluded, _)) => {
+                        st.log
+                            .line("CLIPSYNC skipped: the app that copied this marked it private");
+                    }
+                    other => {
+                        if let Err(e) = &other {
+                            st.log.line(&format!(
+                                "CLIPSYNC skipped: clipboard could not be read ({e})"
+                            ));
+                        }
+                        if crate::clip_image::enabled(on, images) {
+                            read_clipboard_png(hwnd, st.cmds.clone());
+                        }
+                    }
                 }
             }
             LRESULT(0)

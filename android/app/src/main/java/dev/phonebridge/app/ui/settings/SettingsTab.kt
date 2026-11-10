@@ -366,6 +366,11 @@ private fun ScreenToPc() {
         onChecked = { v ->
             always = v
             prefs.allowScreen = v
+            // Without Instant screen Android's own prompt still shows on every share, so asking for "no prompt" turns it on.
+            if (v && !instant) {
+                instant = true
+                prefs.instantScreen = true
+            }
         },
     )
 }

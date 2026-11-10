@@ -170,4 +170,25 @@ class PcStoreTest {
         assertEquals(false, anyPcSwitch(listOf(false, false), stored = true))
         assertEquals(true, anyPcSwitch(emptyList(), stored = true))
     }
+
+    @Test
+    fun audio_without_asking_is_healed_for_paired_pcs_when_the_list_drifted_empty() {
+        // The switch says on but no paired PC is in the list (switched on while Relay was off, or a PC paired later).
+        assertEquals(setOf("a", "b"), healedAudioAllow(switchOn = true, allowed = emptySet(), paired = listOf("a", "b")))
+        // A deliberate per-PC list is left alone (one PC allowed is not drift).
+        assertEquals(setOf("a"), healedAudioAllow(switchOn = true, allowed = setOf("a"), paired = listOf("a", "b")))
+        // Switch off: nothing is granted.
+        assertEquals(emptySet<String>(), healedAudioAllow(switchOn = false, allowed = emptySet(), paired = listOf("a")))
+        // Ids of PCs that are gone do not count as allowing a paired one.
+        assertEquals(setOf("gone", "a"), healedAudioAllow(switchOn = true, allowed = setOf("gone"), paired = listOf("a")))
+    }
+
+    @Test
+    fun instant_screen_is_needed_when_screen_is_always_allowed() {
+        assertEquals(true, shouldEnableInstantScreen(alwaysAllowedPcs = 1, instantOn = false, alreadyHealed = false))
+        assertEquals(false, shouldEnableInstantScreen(alwaysAllowedPcs = 1, instantOn = true, alreadyHealed = false))
+        assertEquals(false, shouldEnableInstantScreen(alwaysAllowedPcs = 0, instantOn = false, alreadyHealed = false))
+        // Done once: if the user turned it off afterwards, it stays off.
+        assertEquals(false, shouldEnableInstantScreen(alwaysAllowedPcs = 1, instantOn = false, alreadyHealed = true))
+    }
 }

@@ -387,6 +387,23 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("instant_screen", false)
         set(v) = sp.edit().putBoolean("instant_screen", v).apply()
 
+    /**
+     * Run at every service start: the "without asking" switches for audio and screen must do what they say.
+     * Audio: grant the paired PCs when the switch is on but the list drifted empty. Screen: make sure Instant
+     * screen is on (once), or Android's capture prompt keeps asking.
+     */
+    fun healHandsFree(pairedIds: List<String>) {
+        val on = sp.getBoolean("audio_skip_confirm_phone_to_pc", false)
+        val cur = sp.getStringSet("allow_audio_pcs", emptySet()).orEmpty().toSet()
+        val healed = dev.phonebridge.app.devices.healedAudioAllow(on, cur, pairedIds)
+        if (healed != cur) sp.edit().putStringSet("allow_audio_pcs", healed).apply()
+        val screenPcs = allowedScreenPcs.count { it in pairedIds }
+        if (dev.phonebridge.app.devices.shouldEnableInstantScreen(screenPcs, instantScreen, sp.getBoolean("instant_screen_healed", false))) {
+            instantScreen = true
+            sp.edit().putBoolean("instant_screen_healed", true).apply()
+        }
+    }
+
     /** "Keep history": record the Timeline (metadata only). Off deletes it. On by default. */
     var keepHistory: Boolean
         get() = sp.getBoolean("keep_history", true)
