@@ -97,7 +97,7 @@ class SendClipboardActivity : Activity() {
                     val problem = when {
                         isImage && bytes == null -> imageSendNotice(null)
                         isImage -> ClipImages.sendBytes(app, bytes!!)
-                        else -> sendText(app, text!!, sensitive)
+                        else -> sendClipText(app, text!!, sensitive)
                     }
                     if (problem != null) notifyInfo(app, "Couldn't send the clipboard", problem)
                 }
@@ -105,20 +105,22 @@ class SendClipboardActivity : Activity() {
         }
         finish()
     }
+}
 
-    private suspend fun sendText(app: Context, text: String, sensitive: Boolean): String? {
-        val node = Bridge.awaitNode() ?: return "$APP_NAME is not running"
-        val peer = Bridge.defaultPeer(app) ?: return "Pair $APP_NAME with your PC first"
-        return try {
-            node.sendClipboard(peer.id, text, sensitive)
-            Log.i(TAG, "SENDCLIP text to ${peer.name}")
-            Bridge.attemptDone(app, reached = true)
-            Timeline.add(clipTextEntry(peer.name, text))
-            null
-        } catch (t: Throwable) {
-            Log.e(TAG, "SENDCLIP failed: $t")
-            Bridge.attemptDone(app, reached = false)
-            outdatedText(t.message, peer.name) ?: "${peer.name} did not receive it"
-        }
+/** Sends text to the default PC as a clipboard update; null when it went, else what to tell the user. */
+suspend fun sendClipText(app: Context, text: String, sensitive: Boolean): String? {
+    val node = Bridge.awaitNode() ?: return "$APP_NAME is not running"
+    val peer = Bridge.defaultPeer(app) ?: return "Pair $APP_NAME with your PC first"
+    return try {
+        node.sendClipboard(peer.id, text, sensitive)
+        Log.i(TAG, "SENDCLIP text to ${peer.name}")
+        Bridge.attemptDone(app, reached = true)
+        Timeline.add(clipTextEntry(peer.name, text))
+        null
+    } catch (t: Throwable) {
+        Log.e(TAG, "SENDCLIP failed: $t")
+        Bridge.attemptDone(app, reached = false)
+        outdatedText(t.message, peer.name) ?: "${peer.name} did not receive it"
     }
 }
+

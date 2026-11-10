@@ -143,3 +143,9 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Portable zip rebuilt from 04fc227's code, SHA-256 9CBAE83B0BE9FEEDD02247DD50DA003928C73E5A07EEE1993C090E4D489A2BC5. Unpacked to `D:\Desktop\Project\Relay-0.3.0-r2\Relay` with the data copied from `Relay-0.3.0\Relay\data`; the phone connected at once. Older folders kept as fallbacks.
 - Screen share after the Instant screen heal: accepted after 231 ms, no Android prompt. PASS.
 - Touch toggle: shown beside Pin and Dim (blue "Touch"); a click flips it to "View only" and back. Seen on screen. Mouse/keys reaching (or not reaching) the phone not tested, since the phone's accessibility service is off.
+
+## 2026-11-11: phone to PC text from another app
+- Finding: copying in another app never reaches the PC. Android's clipboard service logs "Denying clipboard access to dev.phonebridge.app, application is not in focus" at the copy: on this phone a background app gets neither the clip nor the clip-changed callback. My attempt to wake a see-through window on a copy (f773361) therefore cannot work and was removed.
+- Fix: "Send to PC" in the text-selection menu of any app (ACTION_PROCESS_TEXT, `ProcessTextActivity`), sending the selection directly without reading the clipboard. Tested on the phone: selected text in Android Settings search, Send to PC under the three-dot menu, PC logged "CLIP from RMX3561 (12 chars)" and its clipboard held the word. PASS.
+- Other ways a phone copy reaches the PC: open Relay (sends the changed clipboard), the Send clipboard tile or widget.
+- Mistake noted: one check printed the PC clipboard, which held private text; from now on tests only check for the test word.

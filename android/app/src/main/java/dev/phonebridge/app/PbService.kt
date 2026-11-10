@@ -283,12 +283,9 @@ class PbService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private var autoClip: AutoClipWatcher? = null
-
     override fun onCreate() {
         super.onCreate()
         instance = this
-        autoClip = AutoClipWatcher(this).also { it.start() }
         EncoderCaps.allowSoftware = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
         // Foreground first: the start deadline is short, and the log, timeline and stale-notice work below is not needed for it.
         val nm = getSystemService(NotificationManager::class.java)
@@ -406,8 +403,6 @@ class PbService : Service() {
     }
 
     override fun onDestroy() {
-        runCatching { autoClip?.stop() }
-        autoClip = null
         runCatching { unregisterReceiver(screenWatch) }
         if (instance === this) instance = null
         AppLog.event("events", "service_stop")

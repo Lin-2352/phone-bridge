@@ -144,14 +144,21 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:theme="@style/Theme.Relay.Translucent" />
-        <!-- A see-through window a copy in another app wakes for a moment, so Relay may read it (needs Display over other apps). -->
+        <!-- "Send to PC" in the text-selection menu of any app: sends the selection without reading the clipboard. -->
         <activity
-            android:name=".AutoClipActivity"
-            android:exported="false"
+            android:name=".ProcessTextActivity"
+            android:exported="true"
+            android:label="Send to PC"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:taskAffinity=""
-            android:theme="@style/Theme.Relay.Translucent" />
+            android:theme="@style/Theme.Relay.Translucent">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
         <activity
             android:name=".SendClipboardActivity"
             android:exported="false"
