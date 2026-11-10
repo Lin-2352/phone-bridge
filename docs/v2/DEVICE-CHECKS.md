@@ -138,3 +138,8 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - After the update, phone audio started from the PC with no tap (asking to started 5.4 s). A screen share the PC auto-resumed ended that audio after 1 s (PeerStopped): audio and screen at once need a look.
 - Phone-screen window: Touch toggle added beside Pin (view only when off; Ctrl+W still closes). Not yet seen on screen. The phone's accessibility service ("Relay control") switches itself off 1.5 s after each session unless "Keep Control on between sessions" is set; that is why touch and typing showed as off.
 - Open findings from the bug hunt (confirmed in code, not fixed): Android switches changed while Relay is off revert at next start; "without asking" for control and screen reads on if any one PC is allowed; Quick panel skips the unlock gate; screen window can be orphaned when replaced during a reconnect; stale "touch off" notice after control is turned on; Dim shows the wrong state with control off; mismatched 40 s screen timeouts.
+
+## 2026-11-11 (deployed build)
+- Portable zip rebuilt from 04fc227's code, SHA-256 9CBAE83B0BE9FEEDD02247DD50DA003928C73E5A07EEE1993C090E4D489A2BC5. Unpacked to `D:\Desktop\Project\Relay-0.3.0-r2\Relay` with the data copied from `Relay-0.3.0\Relay\data`; the phone connected at once. Older folders kept as fallbacks.
+- Screen share after the Instant screen heal: accepted after 231 ms, no Android prompt. PASS.
+- Touch toggle: shown beside Pin and Dim (blue "Touch"); a click flips it to "View only" and back. Seen on screen. Mouse/keys reaching (or not reaching) the phone not tested, since the phone's accessibility service is off.
