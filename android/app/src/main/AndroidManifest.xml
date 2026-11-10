@@ -144,6 +144,14 @@
             android:noHistory="true"
             android:taskAffinity=""
             android:theme="@style/Theme.Relay.Translucent" />
+        <!-- A see-through window a copy in another app wakes for a moment, so Relay may read it (needs Display over other apps). -->
+        <activity
+            android:name=".AutoClipActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Relay.Translucent" />
         <activity
             android:name=".SendClipboardActivity"
             android:exported="false"
