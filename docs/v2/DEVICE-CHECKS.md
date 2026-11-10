@@ -117,3 +117,10 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - QR pairing window: the class had no icon (default program icon). Added the Relay logo; shortened the window (620 to 575 logical px, text area 120 to 90) to cut the empty space. Not confirmed by eye: the window closes itself after 2 minutes and my captures missed it. To check by eye.
 - Windows Hello area switches: in this debug build the gate is off, so the rows are not reachable by UI Automation. Covered by unit tests only; needs a release build to try on screen.
 - Incident: a full-screen capture I took while looking for the QR window showed the owner's browser behind it; deleted at once. Capture only the Relay window from now on.
+
+## 2026-11-10 (single pass): audio and screen with the real phone (phone media volume 1, PC master volume 5%)
+- Phone tiles "PC audio" and "Phone audio" only show "Start it from your PC: choose ... in Relay" (by design, the PC starts them). The toast lasts about 2 s, easy to miss.
+- PC audio to the phone: started in 0.5 s, ran 37 s, stopped from the PC cleanly (LocalStop). PASS.
+- Phone audio to the PC: asked, started after about 6 s, ran 14 s, stopped cleanly; playback dropped 387 ms with 4 underruns. PASS (minor glitches).
+- Phone screen to the PC: accepted after 5.6 s, about 60 frames/s received, 17 to 25 shown, stopped from the PC. PASS.
+- Not run: camera (shows the room, needs the virtual camera driver), phone control (needs accessibility on the phone), notification mirroring, image clipboard.
