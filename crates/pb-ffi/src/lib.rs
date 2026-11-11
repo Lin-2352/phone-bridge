@@ -119,6 +119,14 @@ pub enum PbEvent {
         text: String,
         sensitive: bool,
     },
+    /// The PC asks for what is on this phone's clipboard (only for a PC whose clipboard switch is on). Android lets
+    /// only the focused app read it: open a see-through window, read, then answer with `answer_clipboard_pull`,
+    /// a picture through `send_clipboard_image_fd`, or `refuse_clipboard_pull`.
+    ClipboardPull {
+        peer_name: String,
+        peer_id: String,
+        want_image: bool,
+    },
     /// Universal Clipboard: text copied on the PC (only when sync is on).
     RemoteClipboard {
         peer_name: String,
@@ -1375,6 +1383,26 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                     sensitive: c.sensitive,
                 },
             ),
+            Ok(Some(ControlMsg::ClipboardPull(p))) => {
+                if sh.clipboard_peers.allows(&sh.clipboard_sync, &pid) {
+                    push(
+                        &sh.events,
+                        PbEvent::ClipboardPull {
+                            peer_name: name.clone(),
+                            peer_id: pid.clone(),
+                            want_image: p.want_image,
+                        },
+                    );
+                } else {
+                    let no = pb_protocol::control::ClipboardPullResult {
+                        ok: false,
+                        reason: "Share clipboard is off on the phone for this PC".into(),
+                    };
+                    let _ = s.send(ControlMsg::ClipboardPullResult(no)).await;
+                }
+                s.finish().await;
+                break "clipboard pull".to_owned();
+            }
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
                 if sh.clipboard_peers.allows(&sh.clipboard_sync, &pid) {
                     *sh.last_remote_clip
@@ -2180,6 +2208,63 @@ impl PbNode {
             Some(p) => self.node.try_unpair(&p.id).map_err(fail),
             None => Ok(false),
         }
+    }
+
+    /// Answer a `PbEvent::ClipboardPull` with the clipboard text: the PC puts it on its clipboard. Unlike
+    /// `sync_clipboard` it sends even text that matches the last clip received from the PC (the PC asked for it).
+    pub async fn answer_clipboard_pull(
+        &self,
+        peer_id: String,
+        text: String,
+        sensitive: bool,
+    ) -> Result<(), PbError> {
+        if text.len() > MAX_CLIPBOARD_TEXT {
+            return Err(fail(format!("text is over {MAX_CLIPBOARD_TEXT} bytes")));
+        }
+        let peer = self
+            .node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id.to_string() == peer_id)
+            .ok_or_else(|| fail("not a paired device"))?;
+        let update = pb_protocol::control::ClipboardUpdate {
+            hash: clip_hash(&text).to_vec(),
+            text,
+            sensitive,
+        };
+        let session = self.node.connect(&peer.id).await.map_err(fail)?;
+        session
+            .send(ControlMsg::ClipboardUpdate(update))
+            .await
+            .map_err(fail)?;
+        session.finish().await;
+        Ok(())
+    }
+
+    /// Answer a `PbEvent::ClipboardPull` with a reason nothing was sent (locked, nothing copied, ...).
+    pub async fn refuse_clipboard_pull(
+        &self,
+        peer_id: String,
+        reason: String,
+    ) -> Result<(), PbError> {
+        let peer = self
+            .node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id.to_string() == peer_id)
+            .ok_or_else(|| fail("not a paired device"))?;
+        let session = self.node.connect(&peer.id).await.map_err(fail)?;
+        session
+            .send(ControlMsg::ClipboardPullResult(
+                pb_protocol::control::ClipboardPullResult {
+                    ok: false,
+                    reason: reason.chars().take(200).collect(),
+                },
+            ))
+            .await
+            .map_err(fail)?;
+        session.finish().await;
+        Ok(())
     }
 
     /// Send clipboard text to a paired device (user action only).

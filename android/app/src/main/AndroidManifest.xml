@@ -159,6 +159,14 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+        <!-- The see-through window a PC's "get your clipboard" opens so Relay may read the clipboard for a moment. -->
+        <activity
+            android:name=".PullClipActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Relay.Translucent" />
         <activity
             android:name=".SendClipboardActivity"
             android:exported="false"

@@ -123,6 +123,8 @@ const ID_CONTROL_STOP: usize = 25;
 static TRAY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 const TIMER_CONTROL: usize = 8;
 const HOTKEY_CONTROL: i32 = 1;
+/// Ctrl+Alt+V: get what is copied on the phone (the PC asks, the phone answers).
+const HOTKEY_PULL: i32 = 2;
 const WM_SETTINGS_ACTION: u32 = WM_APP + 5;
 /// Each peer check dials every paired device (5 s timeout each): at most
 /// one per this long, whoever asks.
@@ -3349,6 +3351,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             toggle_control(hwnd, st);
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY if wparam.0 as i32 == HOTKEY_PULL => {
+            let _ = st.cmds.send(Cmd::PullClipboard);
+            LRESULT(0)
+        }
         crate::control::WM_CONTROL_EXIT => {
             end_control(hwnd, "Back to this PC");
             LRESULT(0)
@@ -3575,6 +3581,15 @@ pub fn create(
                 | windows::Win32::UI::Input::KeyboardAndMouse::MOD_ALT
                 | windows::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT,
             0x50,
+        );
+        // Ctrl+Alt+V: get the phone's clipboard.
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::RegisterHotKey(
+            Some(hwnd),
+            HOTKEY_PULL,
+            windows::Win32::UI::Input::KeyboardAndMouse::MOD_CONTROL
+                | windows::Win32::UI::Input::KeyboardAndMouse::MOD_ALT
+                | windows::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT,
+            0x56,
         );
         Ok(hwnd.0 as isize)
     }

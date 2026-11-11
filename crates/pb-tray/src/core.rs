@@ -257,6 +257,8 @@ static CONTROL_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(Non
 static CAMERA_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
 /// The task that is waiting for the phone to accept a screen request.
 static SCREEN_REQUEST: Mutex<Option<tokio::task::AbortHandle>> = Mutex::new(None);
+/// The "Get phone clipboard" request in flight (one at a time).
+static PULL: Mutex<crate::clip_pull::PullState> = Mutex::new(crate::clip_pull::PullState::new());
 /// The phone -> PC control session running now, so turning the setting off ends it.
 static PHONE_CONTROL: Mutex<Option<pb_transport::SessionCloser>> = Mutex::new(None);
 
@@ -370,6 +372,8 @@ pub enum Cmd {
     },
     /// Queue: cancel everything, what waits and what sends.
     QueueCancelAll,
+    /// "Get phone clipboard" (hotkey or menu): ask the default phone for what it has copied.
+    PullClipboard,
     /// The local clipboard changed (from the clipboard listener).
     ClipboardChanged {
         text: String,
@@ -1197,6 +1201,45 @@ pub async fn run(
                             return;
                         };
                         send_batch(&node, &id, &name, paths, &log, &*ui, &settings).await;
+                    });
+                }
+                Some(Cmd::PullClipboard) => {
+                    let Some((id, name)) = default_target(&peers, &settings, None) else {
+                        ui(UiEvent::Pill("Pair a phone first".into(), 5));
+                        continue;
+                    };
+                    if !PULL.lock().unwrap_or_else(|p| p.into_inner()).start(std::time::Instant::now()) {
+                        continue;
+                    }
+                    let want_image = settings
+                        .lock()
+                        .map(|s| crate::clip_image::enabled(s.universal_clipboard, s.share_images))
+                        .unwrap_or(false);
+                    log.line(&format!("PULL asking \"{name}\" for its clipboard"));
+                    ui(UiEvent::Pill(format!("Asking {name} for its clipboard"), 3));
+                    let (node, log, ui): (_, _, Arc<dyn Fn(UiEvent) + Send + Sync>) = (node.clone(), log.clone(), ui.clone());
+                    tokio::spawn(async move {
+                        let sent = async {
+                            let s = dial(&node, &id, node.connect(&id)).await?;
+                            s.send(ControlMsg::ClipboardPull(pb_protocol::control::ClipboardPull { want_image })).await?;
+                            s.finish().await;
+                            Ok::<_, pb_transport::Error>(())
+                        }
+                        .await;
+                        match sent {
+                            Ok(()) => {
+                                tokio::time::sleep(crate::clip_pull::PULL_WAIT).await;
+                                if PULL.lock().unwrap_or_else(|p| p.into_inner()).timed_out(std::time::Instant::now()) {
+                                    log.line("PULL no answer from the phone");
+                                    ui(UiEvent::Pill(crate::clip_pull::NO_ANSWER.into(), 6));
+                                }
+                            }
+                            Err(e) => {
+                                PULL.lock().unwrap_or_else(|p| p.into_inner()).answered();
+                                log.line(&format!("PULL could not reach \"{name}\": {e}"));
+                                ui(UiEvent::Pill(format!("Could not reach {name}"), 6));
+                            }
+                        }
                     });
                 }
                 Some(Cmd::ClipboardChanged { text, sensitive }) => {
@@ -2059,11 +2102,33 @@ async fn pump_session(
                     sensitive: c.sensitive,
                 });
             }
+            Ok(Some(ControlMsg::ClipboardPullResult(r))) => {
+                // The phone answered the request with a reason instead of a clip.
+                PULL.lock().unwrap_or_else(|p| p.into_inner()).answered();
+                log.line(&format!(
+                    "PULL answer from \"{}\": {}",
+                    s.peer_name, r.reason
+                ));
+                let reason = if r.reason.is_empty() {
+                    "The phone sent nothing".to_owned()
+                } else {
+                    r.reason
+                };
+                ui(UiEvent::Pill(reason, 6));
+            }
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
-                if !settings
-                    .lock()
-                    .map(|x| x.universal_clipboard)
-                    .unwrap_or(false)
+                // A clip the PC asked for is wanted even with Universal Clipboard off.
+                let pulled = {
+                    let mut g = PULL.lock().unwrap_or_else(|p| p.into_inner());
+                    let wanted = g.pending(std::time::Instant::now());
+                    g.answered();
+                    wanted
+                };
+                if !pulled
+                    && !settings
+                        .lock()
+                        .map(|x| x.universal_clipboard)
+                        .unwrap_or(false)
                 {
                     log.line("CLIPSYNC ignored (Universal Clipboard is off)");
                     continue;
@@ -2343,6 +2408,7 @@ async fn pump_session(
                             .unwrap_or_else(|p| p.into_inner())
                             .image
                             .received(&png);
+                        PULL.lock().unwrap_or_else(|p| p.into_inner()).answered();
                         ui(UiEvent::RemoteImage { from, png });
                     }
                     Err(e) => {
