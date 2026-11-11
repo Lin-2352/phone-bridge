@@ -1,10 +1,20 @@
 //! Text shared from the phone (its share sheet) waits for the user on the PC:
 //! a toast offers Copy, unless "Copy shared text automatically" is on. Any app
 //! in front on the phone can share, so the clipboard is never replaced
-//! silently. Toasts never show the text itself: Windows keeps them in its
-//! notification history.
+//! silently by default. Inline text/link offers never use file-save or Windows
+//! Hello consent; the existing Copy/Open action remains the consent point.
+//! Toasts never show the text itself: Windows keeps them in notification history.
 
 use std::collections::VecDeque;
+
+/// Inline text/link offers use Copy/Open consent, never the file-save prompt.
+pub fn bypasses_file_prompt(kind: i32) -> bool {
+    use pb_protocol::control::OfferKind;
+    matches!(
+        OfferKind::try_from(kind),
+        Ok(OfferKind::Text | OfferKind::Link)
+    )
+}
 
 /// What to do with text shared from a phone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,5 +193,25 @@ mod tests {
         assert_eq!(p.take(&tags[9]).as_deref(), Some("t9"));
         assert_eq!(p.take(&tags[9]), None, "taken once");
         assert_eq!(p.take(&tags[2]).as_deref(), Some("t2"));
+    }
+    #[test]
+    fn only_inline_text_and_links_bypass_the_file_prompt() {
+        use pb_protocol::control::OfferKind;
+        assert!(
+            bypasses_file_prompt(OfferKind::Text as i32),
+            "text must not ask to save a file or unlock Windows Hello"
+        );
+        assert!(bypasses_file_prompt(OfferKind::Link as i32));
+        assert!(!bypasses_file_prompt(OfferKind::File as i32));
+        assert!(
+            !bypasses_file_prompt(OfferKind::ClipboardImage as i32),
+            "image-sharing gates remain separate"
+        );
+        assert!(!bypasses_file_prompt(-1));
+        assert!(!bypasses_file_prompt(i32::MAX));
+        assert!(
+            !plan(false, false).copy_now,
+            "bypassing the file prompt must not turn auto-copy on"
+        );
     }
 }

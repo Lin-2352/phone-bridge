@@ -2259,15 +2259,19 @@ async fn pump_session(
                 let is_image = offer.kind == pb_protocol::control::OfferKind::ClipboardImage as i32;
                 let is_file = offer.kind == pb_protocol::control::OfferKind::File as i32;
                 let file_label = pb_transport::files::sanitize_file_name(&offer.name);
-                let action = crate::motw::offer_action(
-                    auto,
-                    if is_file {
-                        crate::motw::risk(&file_label)
-                    } else {
-                        pb_transport::files::FileRisk::Normal
-                    },
-                    allow_shortcuts,
-                );
+                let action = if crate::shared_text::bypasses_file_prompt(offer.kind) {
+                    crate::motw::OfferAction::Accept
+                } else {
+                    crate::motw::offer_action(
+                        auto,
+                        if is_file {
+                            crate::motw::risk(&file_label)
+                        } else {
+                            pb_transport::files::FileRisk::Normal
+                        },
+                        allow_shortcuts,
+                    )
+                };
                 let refusal = is_file
                     .then(|| pb_transport::files::refusal(&dir, offer.size, DEFAULT_MAX_FILE))
                     .flatten();

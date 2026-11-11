@@ -647,3 +647,7 @@ A background text/image copy dropped because Relay is paused writes `CLIPSYNC sk
 ## Independent clipboard recipients (CP1.7, 2026-11-11)
 
 Clipboard text and pictures start one send future per paired target instead of awaiting targets in sequence. A failed or unreachable phone therefore cannot hold up healthy phones. Every target retains its own dial-status, timeline and error handling; a failed task also clears only the matching repeat guard so the copy is retryable. Image sends share one immutable PNG allocation between recipients; the transport accepts both owned and shared byte buffers and preserves the same size cap and wire bytes. Fanout is bounded by the existing paired-device limit. No clipboard payload is included in task-failure logs.
+
+## Shared text is not a file (CP1.8, 2026-11-11)
+
+Authenticated inline text/link offers skip the file-save dialog and its Windows Hello gate. Received text still enters the existing shared-text flow: the default is a toast with Copy; only the existing explicit auto-copy setting copies immediately, with the existing history policy. Links retain their click-to-open toast and are never launched automatically. Files keep their file-risk, size, quota and consent checks; clipboard images keep their separate sharing gates. Unknown offer kinds do not gain a bypass.

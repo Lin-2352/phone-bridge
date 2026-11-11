@@ -3,7 +3,7 @@
 The single place that says what is done, what is in progress and what is left in the Relay v2 program. It is updated and pushed after every task, so a new session can continue from GitHub alone.
 
 ## Resume here
-- **Clipboard repair resume:** CP1.7 complete; next CP1.8 in the clipboard plain-paste plan below. This focused plan takes priority until its measurement stop gate.
+- **Clipboard repair resume:** CP1.8 complete; next CP1.9 in the clipboard plain-paste plan below. This focused plan takes priority until its measurement stop gate.
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M8.R (M8 is done). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
 - **Next task:** T0 (todo carry-over), then M9.0b (a second pairing removed the first PC from the phone: investigate), then Prelude P (M5.10, M5.11, M6.7, M7.8 call sites), then M9. Plans: [M9](plans/2026-11-08-m9-resume-transfers.md), [M10](plans/2026-11-08-m10-stay-current.md), [M11](plans/2026-11-08-m11-docs-final.md). M8 is done; what is still open from M5 to M8 is under "Open follow-ups (2026-11-07)" below, and the phone checks are in [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
@@ -28,7 +28,7 @@ This focused repair plan takes priority over the milestone resume order while ac
 - [x] CP1.5 Keep picture pulls pending for their actual transfer lifetime (accepted image offers stop the silence timeout; peer/generation guards and transfer-failure feedback; 9/9 pull tests and all gates pass)
 - [x] CP1.6 Log paused drops and clipboard-write outcomes without content (paused text/images log a fixed reason without toast spam; tile/image/page/shared Copy outcomes logged; pause tests 7/7, known clipboard-contention exception only)
 - [x] CP1.7 Independent clipboard sends to several phones (per-peer futures, panic isolation and one shared PNG buffer; 3/3 fanout tests and shared-buffer transport coverage; known clipboard-contention exception only)
-- [ ] CP1.8 Shared text bypasses file dialogs while retaining the auto-copy setting
+- [x] CP1.8 Shared text bypasses file dialogs while retaining the auto-copy setting (Text/Link bypass file consent; explicit Copy/Open behavior retained; 9/9 shared-text tests, known clipboard-contention exception only)
 - [ ] CP1.9 Accurate clipboard wording and manual-send feedback
 - [ ] CP1.10 Overlay-permission entry point, default-off notice and per-PC enforcement
 - [ ] CP1.11 Update wire echo documentation
