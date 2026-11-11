@@ -39,6 +39,7 @@ mod camera_window;
 mod clip_history;
 #[cfg(windows)]
 mod clip_image;
+#[cfg(windows)]
 mod clip_pull;
 #[cfg(windows)]
 mod control;
