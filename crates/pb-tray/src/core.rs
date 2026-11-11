@@ -1208,7 +1208,7 @@ pub async fn run(
                         ui(UiEvent::Pill("Pair a phone first".into(), 5));
                         continue;
                     };
-                    if !PULL.lock().unwrap_or_else(|p| p.into_inner()).start(std::time::Instant::now()) {
+                    if !PULL.lock().unwrap_or_else(|p| p.into_inner()).start(std::time::Instant::now(), &id.to_string()) {
                         continue;
                     }
                     let want_image = settings
@@ -1235,7 +1235,7 @@ pub async fn run(
                                 }
                             }
                             Err(e) => {
-                                PULL.lock().unwrap_or_else(|p| p.into_inner()).answered();
+                                PULL.lock().unwrap_or_else(|p| p.into_inner()).answered_from(&id.to_string());
                                 log.line(&format!("PULL could not reach \"{name}\": {e}"));
                                 ui(UiEvent::Pill(format!("Could not reach {name}"), 6));
                             }
@@ -2103,8 +2103,15 @@ async fn pump_session(
                 });
             }
             Ok(Some(ControlMsg::ClipboardPullResult(r))) => {
-                // The phone answered the request with a reason instead of a clip.
-                PULL.lock().unwrap_or_else(|p| p.into_inner()).answered();
+                // Only the phone we asked may complete this request.
+                if !PULL
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .answered_from(&s.peer.to_string())
+                {
+                    log.line("PULL ignored an unsolicited clipboard result");
+                    continue;
+                }
                 log.line(&format!(
                     "PULL answer from \"{}\": {}",
                     s.peer_name, r.reason
@@ -2120,8 +2127,8 @@ async fn pump_session(
                 // A clip the PC asked for is wanted even with Universal Clipboard off.
                 let pulled = {
                     let mut g = PULL.lock().unwrap_or_else(|p| p.into_inner());
-                    let wanted = g.pending(std::time::Instant::now());
-                    g.answered();
+                    let wanted = g.pending_from(&s.peer.to_string(), std::time::Instant::now());
+                    g.answered_from(&s.peer.to_string());
                     wanted
                 };
                 if !pulled
@@ -2343,6 +2350,13 @@ async fn pump_session(
                     opts = opts.with_resume(r.clone());
                 }
                 let offer_size = offer.size;
+                let pulled_image = if is_image && accept {
+                    PULL.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .image_started(std::time::Instant::now(), &s.peer.to_string())
+                } else {
+                    None
+                };
                 let outcome =
                     receive_offer_with(&mut s, offer, accept, &dir, DEFAULT_MAX_FILE, opts).await;
                 match outcome {
@@ -2408,10 +2422,26 @@ async fn pump_session(
                             .unwrap_or_else(|p| p.into_inner())
                             .image
                             .received(&png);
-                        PULL.lock().unwrap_or_else(|p| p.into_inner()).answered();
+                        if let Some(generation) = pulled_image {
+                            PULL.lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .image_finished(generation);
+                        }
                         ui(UiEvent::RemoteImage { from, png });
                     }
                     Err(e) => {
+                        if let Some(generation) = pulled_image {
+                            if PULL
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .image_finished(generation)
+                            {
+                                ui(UiEvent::Pill(
+                                    "The phone's picture could not be received. Try again".into(),
+                                    6,
+                                ));
+                            }
+                        }
                         log.line(&format!("OFFER from \"{from}\" not received: {e}"));
                         let took = started.elapsed();
                         if let Some((row, _)) = &tracked {

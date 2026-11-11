@@ -173,3 +173,7 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 ## Clipboard repair CP1.3 (2026-11-11): automated checks, live check pending
 
 The in-memory retry slot is tested with a busy writer, replacement by a newer image, successful retry, cancellation by a newer local clipboard sequence (including sequence wrap), and explicit clearing. The tray retries only while pending and unlocked, and retries at the unlock event. Not device-tested yet: a received text/image during actual PC lock, clipboard contention from another real application, and paste after unlock. The owner's running Relay was not stopped or replaced.
+
+### CP1.5: long picture pulls (automated only)
+
+Nine request-state tests cover a picture still transferring after six seconds, completion/failure cleanup, overlapping pulls, stale image completions, and replies from another phone. The transport's size/idle limits are unchanged. Not device-tested: an actual picture transfer taking over six seconds. Slow preparation before an answer/offer arrives still uses the existing initial reply deadline.

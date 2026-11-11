@@ -3,7 +3,7 @@
 The single place that says what is done, what is in progress and what is left in the Relay v2 program. It is updated and pushed after every task, so a new session can continue from GitHub alone.
 
 ## Resume here
-- **Clipboard repair resume:** CP1.4 complete; next CP1.5 in the clipboard plain-paste plan below. This focused plan takes priority until its measurement stop gate.
+- **Clipboard repair resume:** CP1.5 complete; next CP1.6 in the clipboard plain-paste plan below. This focused plan takes priority until its measurement stop gate.
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M8.R (M8 is done). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
 - **Next task:** T0 (todo carry-over), then M9.0b (a second pairing removed the first PC from the phone: investigate), then Prelude P (M5.10, M5.11, M6.7, M7.8 call sites), then M9. Plans: [M9](plans/2026-11-08-m9-resume-transfers.md), [M10](plans/2026-11-08-m10-stay-current.md), [M11](plans/2026-11-08-m11-docs-final.md). M8 is done; what is still open from M5 to M8 is under "Open follow-ups (2026-11-07)" below, and the phone checks are in [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
@@ -25,7 +25,7 @@ This focused repair plan takes priority over the milestone resume order while ac
 - [x] CP1.2 Requested pictures target the requesting PC (explicit requester wins; an unpaired requester is refused; manual sends retain the default PC)
 - [x] CP1.3 Retry the newest busy Windows clipboard write, including unlock (RAM-only retry slot and non-blocking delivery; four pure tests pass; full workspace has only the two known Windows `clipboard is busy` test failures with Relay running; other gates pass)
 - [x] CP1.4 Expire the phone's remote-text echo guard (strict 15-second monotonic window; 3/3 pure tests; workspace only has the named Windows clipboard-contention failures, other gates pass)
-- [ ] CP1.5 Keep picture pulls pending for their actual transfer lifetime
+- [x] CP1.5 Keep picture pulls pending for their actual transfer lifetime (accepted image offers stop the silence timeout; peer/generation guards and transfer-failure feedback; 9/9 pull tests and all gates pass)
 - [ ] CP1.6 Log paused drops and clipboard-write outcomes without content
 - [ ] CP1.7 Independent clipboard sends to several phones
 - [ ] CP1.8 Shared text bypasses file dialogs while retaining the auto-copy setting

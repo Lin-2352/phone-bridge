@@ -635,3 +635,7 @@ Received clipboard text, automatic shared text and images enter one newest-only 
 ## Phone clipboard echo expiry (CP1.4, 2026-11-11)
 
 The phone remembers the hash and monotonic arrival time of the most recent remote text. It suppresses that same text for strictly less than 15 seconds, matching the PC's existing echo window, rather than for the lifetime of the service. Another remote clip replaces the stamp; a different hash is not suppressed. An echo skip remains a retryable non-success under CP1.1 and cannot advance the outgoing fingerprint. Only the hash and time are retained in RAM; no wire or UniFFI API changes.
+
+## Clipboard picture answer and transfer lifetime (CP1.5, 2026-11-11)
+
+The six-second pull deadline waits for an answer, not for every image byte. An accepted clipboard-picture offer from the requested phone counts as an answer and holds that request until its receive succeeds or fails under the transport's existing size and idle limits. Failure says the picture could not be received; it does not say the phone never answered. Another pull cannot overlap that image, and internal generation tokens stop a late image completion from clearing a newer request. Another phone's clipboard update or refusal cannot complete the request or bypass that phone's sharing switch. No new wire field or arbitrary total transfer timeout is introduced.
