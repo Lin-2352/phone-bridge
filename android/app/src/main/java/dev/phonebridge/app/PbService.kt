@@ -1206,11 +1206,9 @@ class PbService : Service() {
         getSystemService(NotificationManager::class.java).notify(nextNotificationId(), n)
     }
 
-    /** One quiet line: how Relay stands with the PC (see [Bridge.status]). Tap opens the app; "Send clipboard" sends what is copied, from any app. */
+    /** One quiet line: how Relay stands with the PC (see [Bridge.status]). Tap opens the app. */
     private fun statusNotification(): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        // Android lets only a focused app read the clipboard; a tap here opens the see-through send window, which is.
-        val sendClip = PendingIntent.getActivity(this, 1, Intent(this, SendClipboardActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_IMMUTABLE)
         val st = Bridge.status(this, serviceUp = true)
         return Notification.Builder(this, CH_STATUS)
             .setSmallIcon(R.drawable.ic_stat_bridge)
@@ -1219,7 +1217,6 @@ class PbService : Service() {
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(open)
-            .addAction(Notification.Action.Builder(null, "Send clipboard", sendClip).build())
             .build()
     }
 

@@ -2966,6 +2966,11 @@ fn command(hwnd: HWND, st: &State, id: usize) {
                     s.universal_clipboard
                 })
                 .unwrap_or(false);
+            if on {
+                // The switch speaks for every paired phone: each phone's own clipboard permission follows it on,
+                // or the screen says On while nothing is shared.
+                crate::core::set_all_perms(&st.settings, &paired_ids(st), |p| p.clipboard = true);
+            }
             save_settings(st);
             st.log.line(&format!("SETTING universal_clipboard={on}"));
             balloon(
