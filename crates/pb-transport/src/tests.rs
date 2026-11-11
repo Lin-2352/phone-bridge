@@ -1284,7 +1284,7 @@ mod transfers {
         let dir = tmp("clipimg");
         let png = pattern(300_000);
         let (a, b) = tokio::join!(
-            phone.send_clipboard_image(&pcid, png.clone()),
+            phone.send_clipboard_image(&pcid, std::sync::Arc::<[u8]>::from(png.clone())),
             receive_one(&mut pc_ev, true, &dir, DEFAULT_MAX_FILE)
         );
         a.unwrap();

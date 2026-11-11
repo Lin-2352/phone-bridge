@@ -439,12 +439,16 @@ impl Node {
     }
 
     /// Send a PNG for the peer to put on its clipboard. Refuses anything over
-    /// [`MAX_CLIPBOARD_IMAGE`] before connecting.
-    pub async fn send_clipboard_image(&self, peer: &PeerId, png: Vec<u8>) -> Result<(), Error> {
-        if png.len() > MAX_CLIPBOARD_IMAGE {
+    /// [`MAX_CLIPBOARD_IMAGE`] before connecting. Accepts an owned vector or a
+    /// shared immutable buffer, so fanout does not duplicate the whole picture.
+    pub async fn send_clipboard_image<B>(&self, peer: &PeerId, png: B) -> Result<(), Error>
+    where
+        B: AsRef<[u8]> + Send + Unpin,
+    {
+        if png.as_ref().len() > MAX_CLIPBOARD_IMAGE {
             return Err(Error::TooLarge);
         }
-        let size = png.len() as u64;
+        let size = png.as_ref().len() as u64;
         self.send_stream(
             peer,
             OfferKind::ClipboardImage,

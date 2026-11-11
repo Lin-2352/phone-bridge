@@ -1262,32 +1262,41 @@ pub async fn run(
                     let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
                     let (node, log, clip, settings) =
                         (node.clone(), log.clone(), clip.clone(), settings.clone());
+                    let text = Arc::new(text);
                     tokio::spawn(async move {
-                        for (id, name) in targets {
-                            let r = async {
-                                let s = dial(&node, &id, node.connect(&id)).await?;
-                                s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: text.clone(), hash: h.to_vec(), sensitive })).await?;
-                                s.finish().await;
-                                Ok::<_, pb_transport::Error>(())
-                            }
-                            .await;
-                            if r.is_ok() {
-                                seen(&node, &id);
-                                record(
-                                    &settings,
-                                    crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text, sensitive),
-                                );
-                            }
-                            match r {
-                                Ok(()) if sensitive => log.line(&format!("CLIPSYNC sent a sensitive clip to \"{name}\"")),
-                                Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
-                                Err(e) => {
-                                    log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}"));
-                                    // Not delivered: copying the same text again must retry.
-                                    let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
-                                    c.text.send_failed(h);
+                        let errors = crate::clip_fanout::send_all(targets, |(id, name)| {
+                            let (node, log, clip, settings, text) =
+                                (node.clone(), log.clone(), clip.clone(), settings.clone(), text.clone());
+                            async move {
+                                let r = async {
+                                    let s = dial(&node, &id, node.connect(&id)).await?;
+                                    s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: (*text).clone(), hash: h.to_vec(), sensitive })).await?;
+                                    s.finish().await;
+                                    Ok::<_, pb_transport::Error>(())
+                                }
+                                .await;
+                                if r.is_ok() {
+                                    seen(&node, &id);
+                                    record(
+                                        &settings,
+                                        crate::timeline::clip_text_entry(&name, crate::timeline::Dir::ToPhone, &text, sensitive),
+                                    );
+                                }
+                                match r {
+                                    Ok(()) if sensitive => log.line(&format!("CLIPSYNC sent a sensitive clip to \"{name}\"")),
+                                    Ok(()) => log.line(&format!("CLIPSYNC sent {} chars to \"{name}\"", text.chars().count())),
+                                    Err(e) => {
+                                        log.line(&format!("CLIPSYNC to \"{name}\" failed: {e}"));
+                                        // Not delivered: copying the same text again must retry.
+                                        let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
+                                        c.text.send_failed(h);
+                                    }
                                 }
                             }
+                        }).await;
+                        if !errors.is_empty() {
+                            log.line("CLIPSYNC sender task failed; the copy remains retryable");
+                            clip.lock().unwrap_or_else(|p| p.into_inner()).text.send_failed(h);
                         }
                     });
                 }
@@ -1305,23 +1314,32 @@ pub async fn run(
                     let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
                     let (node, log, clip, settings) =
                         (node.clone(), log.clone(), clip.clone(), settings.clone());
+                    let png: Arc<[u8]> = png.into();
                     tokio::spawn(async move {
-                        for (id, name) in targets {
-                            match dial(&node, &id, node.send_clipboard_image(&id, png.clone())).await {
-                                Ok(()) => {
-                                    seen(&node, &id);
-                                    record(
-                                        &settings,
-                                        crate::timeline::clip_image_entry(&name, crate::timeline::Dir::ToPhone, &png),
-                                    );
-                                    log.line(&format!("CLIPSYNC sent an image ({} bytes) to \"{name}\"", png.len()))
-                                }
-                                Err(e) => {
-                                    log.line(&format!("CLIPSYNC image to \"{name}\" failed: {e}"));
-                                    // Not delivered: copying the same picture again must retry.
-                                    clip.lock().unwrap_or_else(|p| p.into_inner()).image.send_failed(h);
+                        let errors = crate::clip_fanout::send_all(targets, |(id, name)| {
+                            let (node, log, clip, settings, png) =
+                                (node.clone(), log.clone(), clip.clone(), settings.clone(), png.clone());
+                            async move {
+                                match dial(&node, &id, node.send_clipboard_image(&id, png.clone())).await {
+                                    Ok(()) => {
+                                        seen(&node, &id);
+                                        record(
+                                            &settings,
+                                            crate::timeline::clip_image_entry(&name, crate::timeline::Dir::ToPhone, &png),
+                                        );
+                                        log.line(&format!("CLIPSYNC sent an image ({} bytes) to \"{name}\"", png.len()))
+                                    }
+                                    Err(e) => {
+                                        log.line(&format!("CLIPSYNC image to \"{name}\" failed: {e}"));
+                                        // Not delivered: copying the same picture again must retry.
+                                        clip.lock().unwrap_or_else(|p| p.into_inner()).image.send_failed(h);
+                                    }
                                 }
                             }
+                        }).await;
+                        if !errors.is_empty() {
+                            log.line("CLIPSYNC sender task failed; the copy remains retryable");
+                            clip.lock().unwrap_or_else(|p| p.into_inner()).image.send_failed(h);
                         }
                     });
                 }

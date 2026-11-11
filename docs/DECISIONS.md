@@ -643,3 +643,7 @@ The six-second pull deadline waits for an answer, not for every image byte. An a
 ## Clipboard diagnostics (CP1.6, 2026-11-11)
 
 A background text/image copy dropped because Relay is paused writes `CLIPSYNC skipped: Relay is paused` without a per-copy toast. Successful tile-text and picture writes are reported by the deferred-delivery path only after Windows accepted them (CP1.3). Page Copy and shared-text Copy also log actual write success or failure. These records contain type/state and OS errors, never the copied text, image bytes, or a secret's length. Existing pause UI and background quiet behavior are unchanged.
+
+## Independent clipboard recipients (CP1.7, 2026-11-11)
+
+Clipboard text and pictures start one send future per paired target instead of awaiting targets in sequence. A failed or unreachable phone therefore cannot hold up healthy phones. Every target retains its own dial-status, timeline and error handling; a failed task also clears only the matching repeat guard so the copy is retryable. Image sends share one immutable PNG allocation between recipients; the transport accepts both owned and shared byte buffers and preserves the same size cap and wire bytes. Fanout is bounded by the existing paired-device limit. No clipboard payload is included in task-failure logs.
