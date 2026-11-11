@@ -5,11 +5,11 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Away at least this long before coming back counts as "went to the phone".
-pub const AWAY: Duration = Duration::from_secs(30);
+/// Away at least this long before coming back counts as "went to the phone": copying on the phone and walking back takes a few seconds, and a longer wait made the usual quick copy-and-paste miss.
+pub const AWAY: Duration = Duration::from_secs(4);
 
 /// Two automatic requests are never closer than this.
-pub const MIN_GAP: Duration = Duration::from_secs(5);
+pub const MIN_GAP: Duration = Duration::from_secs(8);
 
 /// Watches the idle time, sampled about once a second.
 #[derive(Default)]
