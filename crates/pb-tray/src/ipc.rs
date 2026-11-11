@@ -34,6 +34,8 @@ pub fn second_launch_ui(asked: Option<Request>, other_request: bool) -> Option<R
 pub enum Request {
     Pair,
     SendClipboard,
+    /// Ask the phone for what it has copied (the same as Ctrl+Alt+V).
+    PullClipboard,
     /// Open the settings window.
     Settings,
     /// Open the main window on Home.
@@ -64,6 +66,7 @@ fn encode(r: &Request) -> String {
     match r {
         Request::Pair => "pair\n".into(),
         Request::SendClipboard => "send-clipboard\n".into(),
+        Request::PullClipboard => "pull-clipboard\n".into(),
         Request::Settings => "settings\n".into(),
         Request::Open => "open\n".into(),
         Request::Menu => "menu\n".into(),
@@ -92,6 +95,7 @@ pub fn decode(text: &str) -> Option<Request> {
     match lines.next()? {
         "pair" => Some(Request::Pair),
         "send-clipboard" => Some(Request::SendClipboard),
+        "pull-clipboard" => Some(Request::PullClipboard),
         "settings" => Some(Request::Settings),
         "open" => Some(Request::Open),
         "menu" => Some(Request::Menu),
@@ -261,6 +265,7 @@ pub async fn serve(cmds: UnboundedSender<Cmd>, on_ui: impl Fn(&Request) + Send +
                 }
                 Some(
                     r @ (Request::SendClipboard
+                    | Request::PullClipboard
                     | Request::Settings
                     | Request::Open
                     | Request::Menu
@@ -292,6 +297,15 @@ mod tests {
         ));
         // --pair, --send-clipboard or --send: no window on top of that.
         assert!(second_launch_ui(None, true).is_none());
+    }
+
+    #[test]
+    fn pull_clipboard_round_trips_through_the_pipe_text() {
+        assert!(matches!(
+            decode(&encode(&Request::PullClipboard)),
+            Some(Request::PullClipboard)
+        ));
+        assert_eq!(encode(&Request::PullClipboard), "pull-clipboard\n");
     }
 
     #[test]

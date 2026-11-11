@@ -41,6 +41,8 @@ pub const WM_CORE_EVENT: u32 = WM_APP + 2;
 
 pub const ID_PAIR: usize = 1;
 pub const ID_SEND_CLIPBOARD: usize = 2;
+/// Get what is copied on the phone (hotkey Ctrl+Alt+V, `--pull-clipboard`).
+pub const ID_PULL_CLIPBOARD: usize = 34;
 pub const ID_QUIT: usize = 3;
 /// Why the core stopped (it never came up, or died): Home, the flyout and
 /// the tooltip say so, and Restart starts the tray again.
@@ -1381,7 +1383,15 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 .map(|s| s.keep_in_history)
                 .unwrap_or(false);
             // Sensitive text never enters Win+V history, whatever the setting.
-            match set_clipboard_own(hwnd, &text, sensitive || !keep) {
+            let written = set_clipboard_own(hwnd, &text, sensitive || !keep);
+            // The balloon can be missed (Do Not Disturb, locked PC): the log says what happened.
+            match &written {
+                Ok(()) => st.log.line("CLIPSYNC written to this PC's clipboard"),
+                Err(e) => st.log.line(&format!(
+                    "CLIPSYNC could not be written to this PC's clipboard: {e}"
+                )),
+            }
+            match written {
                 Ok(()) if sensitive => balloon(
                     hwnd,
                     &format!("Copied on {from}"),
@@ -2883,6 +2893,9 @@ fn command(hwnd: HWND, st: &State, id: usize) {
         ID_PAIR => {
             let _ = st.cmds.send(Cmd::Pair);
         }
+        ID_PULL_CLIPBOARD => {
+            let _ = st.cmds.send(Cmd::PullClipboard);
+        }
         ID_SEND_DROPPED => {
             let files =
                 std::mem::take(&mut *PENDING_DROP.lock().unwrap_or_else(|p| p.into_inner()));
@@ -3352,7 +3365,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY if wparam.0 as i32 == HOTKEY_PULL => {
-            let _ = st.cmds.send(Cmd::PullClipboard);
+            st.log.line("HOTKEY Ctrl+Alt+V: get the phone's clipboard");
+            command(hwnd, st, ID_PULL_CLIPBOARD);
             LRESULT(0)
         }
         crate::control::WM_CONTROL_EXIT => {
@@ -3590,7 +3604,13 @@ pub fn create(
                 | windows::Win32::UI::Input::KeyboardAndMouse::MOD_ALT
                 | windows::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT,
             0x56,
-        );
+        )
+        .map_err(|e| {
+            crate::applog::error(
+                "hotkey",
+                &format!("Ctrl+Alt+V is taken by another program: {e}"),
+            );
+        });
         Ok(hwnd.0 as isize)
     }
 }
