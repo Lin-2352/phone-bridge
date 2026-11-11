@@ -95,6 +95,11 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean("send_sensitive", v).apply()
 
     /** Apply pictures copied on the PC to this phone's clipboard. Off by default. */
+    /** The copy time (`ClipDescription.getTimestamp`) of the last clip an automatic pull sent to a PC. */
+    var lastPullSentTs: Long
+        get() = sp.getLong("last_pull_sent_ts", 0L)
+        set(v) = sp.edit().putLong("last_pull_sent_ts", v).apply()
+
     var clipboardImages: Boolean
         get() = sp.getBoolean("clipboard_images", false)
         set(v) = sp.edit().putBoolean("clipboard_images", v).apply()

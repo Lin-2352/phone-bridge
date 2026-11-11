@@ -39,7 +39,7 @@ pub fn needs_network(c: &Cmd) -> bool {
         | Cmd::QueueRelease { .. }
         | Cmd::ClipboardChanged { .. }
         | Cmd::ClipboardImageChanged { .. }
-        | Cmd::PullClipboard
+        | Cmd::PullClipboard { .. }
         | Cmd::ControlPhone
         | Cmd::ShowScreen
         | Cmd::StartCamera

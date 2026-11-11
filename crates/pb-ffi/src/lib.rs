@@ -127,6 +127,10 @@ pub enum PbEvent {
         peer_name: String,
         peer_id: String,
         want_image: bool,
+        /// The PC asked by itself (its user came back to it): answer quietly, nothing is shown at the PC.
+        auto: bool,
+        /// How long ago the PC's own clipboard last changed (0: not known). A clip copied longer ago is older.
+        pc_changed_ago_ms: u64,
     },
     /// Universal Clipboard: text copied on the PC (only when sync is on).
     RemoteClipboard {
@@ -1392,6 +1396,8 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
                             peer_name: name.clone(),
                             peer_id: pid.clone(),
                             want_image: p.want_image,
+                            auto: p.auto,
+                            pc_changed_ago_ms: p.pc_changed_ago_ms,
                         },
                     );
                 } else {
@@ -2244,6 +2250,29 @@ impl PbNode {
     }
 
     /// Answer a `PbEvent::ClipboardPull` with a reason nothing was sent (locked, nothing copied, ...).
+    /// Answer a `PbEvent::ClipboardPull` with "nothing new": the clip on this phone was already sent, or it is
+    /// older than what the PC holds. The PC stays quiet for an automatic pull.
+    pub async fn answer_clipboard_unchanged(&self, peer_id: String) -> Result<(), PbError> {
+        let peer = self
+            .node
+            .paired_peers()
+            .into_iter()
+            .find(|p| p.id.to_string() == peer_id)
+            .ok_or_else(|| fail("not a paired device"))?;
+        let session = self.node.connect(&peer.id).await.map_err(fail)?;
+        session
+            .send(ControlMsg::ClipboardPullResult(
+                pb_protocol::control::ClipboardPullResult {
+                    ok: true,
+                    reason: String::new(),
+                },
+            ))
+            .await
+            .map_err(fail)?;
+        session.finish().await;
+        Ok(())
+    }
+
     pub async fn refuse_clipboard_pull(
         &self,
         peer_id: String,

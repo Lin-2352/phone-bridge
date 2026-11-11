@@ -123,6 +123,14 @@ pub struct ClipboardPull {
     /// The PC also takes a picture if one is on the clipboard.
     #[prost(bool, tag = "1")]
     pub want_image: bool,
+    /// Sent by the PC itself when its user comes back to it, not by a key press: the phone answers quietly
+    /// (nothing is shown at the PC when there is nothing new or the phone cannot read right now).
+    #[prost(bool, tag = "2")]
+    pub auto: bool,
+    /// How long ago the clipboard of the PC last changed, in milliseconds (0: not known). A phone clip copied
+    /// longer ago than this is older than what the PC holds, so the phone does not send it.
+    #[prost(uint64, tag = "3")]
+    pub pc_changed_ago_ms: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -983,7 +991,11 @@ mod tests {
                 keys: vec!["k1".into(), "k2".into()],
             }),
             ControlMsg::NotifySyncRequest(NotifySyncRequest {}),
-            ControlMsg::ClipboardPull(ClipboardPull { want_image: true }),
+            ControlMsg::ClipboardPull(ClipboardPull {
+                want_image: true,
+                auto: false,
+                pc_changed_ago_ms: 0,
+            }),
             ControlMsg::ClipboardPullResult(ClipboardPullResult {
                 ok: false,
                 reason: "phone is locked".into(),
@@ -1438,5 +1450,37 @@ mod tests {
         prost::encoding::uint32::encode(99, &1, &mut raw);
         let c = Control::decode(raw.as_slice()).unwrap();
         assert_eq!(c.msg, None);
+    }
+
+    #[test]
+    fn an_automatic_pull_carries_its_mark_and_the_age_of_the_pcs_own_copy() {
+        let m = ControlMsg::ClipboardPull(ClipboardPull {
+            want_image: true,
+            auto: true,
+            pc_changed_ago_ms: 4_200,
+        });
+        let bytes = encode_frame(&Control::from(m.clone())).unwrap();
+        let (got, _): (Control, usize) = decode_frame(&bytes).unwrap().unwrap();
+        assert_eq!(got.msg, Some(m));
+    }
+
+    /// A 0.3.0 PC sends only `want_image`: the new fields read as "manual, age unknown".
+    #[test]
+    fn a_pull_from_an_older_pc_reads_as_manual_with_no_age() {
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct Old {
+            #[prost(bool, tag = "1")]
+            want_image: bool,
+        }
+        let old = prost::Message::encode_to_vec(&Old { want_image: true });
+        let new: ClipboardPull = prost::Message::decode(old.as_slice()).unwrap();
+        assert_eq!(
+            new,
+            ClipboardPull {
+                want_image: true,
+                auto: false,
+                pc_changed_ago_ms: 0
+            }
+        );
     }
 }

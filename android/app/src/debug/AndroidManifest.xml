@@ -3,5 +3,7 @@
     <application>
         <!-- The audio helper's one-time pairing code (debug builds only). -->
         <receiver android:name=".HelperPairReceiver" android:exported="false" />
+        <!-- Stage 0 clipboard measurements over adb (debug builds only). -->
+        <receiver android:name=".ClipProbeReceiver" android:exported="true" />
     </application>
 </manifest>

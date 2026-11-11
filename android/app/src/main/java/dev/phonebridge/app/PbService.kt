@@ -630,7 +630,7 @@ class PbService : Service() {
             is PbEvent.AskEnded -> askEnded(e.id)
             is PbEvent.AudioAskEnded, is PbEvent.AudioStarted, is PbEvent.AudioEnded, is PbEvent.AudioRefused -> AudioShare.onEvent(e)
             is PbEvent.Clipboard -> notifyClip(e.peerName, e.text, e.sensitive)
-            is PbEvent.ClipboardPull -> PullClip.handle(this, e.peerId, e.wantImage)
+            is PbEvent.ClipboardPull -> PullClip.handle(this, e.peerId, e.wantImage, e.auto, e.pcChangedAgoMs.toLong())
             is PbEvent.RemoteClipboard -> {
                 // Share clipboard: writing the clipboard is allowed in the background.
                 ClipFingerprints.remember(this, e.text)

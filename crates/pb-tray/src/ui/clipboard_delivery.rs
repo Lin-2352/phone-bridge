@@ -230,6 +230,7 @@ pub(super) fn retry(hwnd: HWND, st: &State, initial: bool) {
 }
 
 pub(super) fn local_copy(hwnd: HWND, st: &State, sequence: u32) {
+    crate::clip_auto::note_local_copy();
     if !notify_ui().locked
         && PENDING
             .lock()

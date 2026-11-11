@@ -373,7 +373,12 @@ pub enum Cmd {
     /// Queue: cancel everything, what waits and what sends.
     QueueCancelAll,
     /// "Get phone clipboard" (hotkey or menu): ask the default phone for what it has copied.
-    PullClipboard,
+    /// Ask the phone for its clipboard. `auto`: the PC asks by itself when its user comes back to it, and stays
+    /// quiet when there is nothing to say; `pc_changed_ago_ms` is how long ago the PC's own clipboard changed.
+    PullClipboard {
+        auto: bool,
+        pc_changed_ago_ms: u64,
+    },
     /// The local clipboard changed (from the clipboard listener).
     ClipboardChanged {
         text: String,
@@ -1231,24 +1236,36 @@ pub async fn run(
                         send_batch(&node, &id, &name, paths, &log, &*ui, &settings).await;
                     });
                 }
-                Some(Cmd::PullClipboard) => {
+                Some(Cmd::PullClipboard { auto, pc_changed_ago_ms }) => {
                     let Some((id, name)) = default_target(&peers, &settings, None) else {
-                        ui(UiEvent::Pill("Pair a phone first".into(), 5));
+                        if !auto {
+                            ui(UiEvent::Pill("Pair a phone first".into(), 5));
+                        }
                         continue;
                     };
-                    if !clipboard_allowed(&settings, &id.to_string(), true, false) {
-                        ui(UiEvent::Pill("Turn on Share clipboard for this phone in Devices first".into(), 6));
+                    // An automatic request needs Share clipboard on, like any background copy; a key press is explicit.
+                    if !clipboard_allowed(&settings, &id.to_string(), !auto, false) {
+                        if !auto {
+                            ui(UiEvent::Pill("Turn on Share clipboard for this phone in Devices first".into(), 6));
+                        }
                         continue;
                     }
-                    if !PULL.lock().unwrap_or_else(|p| p.into_inner()).start(std::time::Instant::now(), &id.to_string()) {
+                    let started = {
+                        let mut g = PULL.lock().unwrap_or_else(|p| p.into_inner());
+                        let now = std::time::Instant::now();
+                        if auto { g.start_auto(now, &id.to_string()) } else { g.start(now, &id.to_string()) }
+                    };
+                    if !started {
                         continue;
                     }
                     let want_image = settings
                         .lock()
                         .map(|s| crate::clip_image::enabled(s.universal_clipboard, s.share_images))
                         .unwrap_or(false);
-                    log.line(&format!("PULL asking \"{name}\" for its clipboard"));
-                    ui(UiEvent::Pill(format!("Asking {name} for its clipboard"), 3));
+                    log.line(&format!("PULL asking \"{name}\" for its clipboard{}", if auto { " (automatic)" } else { "" }));
+                    if !auto {
+                        ui(UiEvent::Pill(format!("Asking {name} for its clipboard"), 3));
+                    }
                     let (node, log, ui, settings): (_, _, Arc<dyn Fn(UiEvent) + Send + Sync>, _) = (node.clone(), log.clone(), ui.clone(), settings.clone());
                     tokio::spawn(async move {
                         let sent = async {
@@ -1256,7 +1273,7 @@ pub async fn run(
                             if !clipboard_allowed(&settings, &id.to_string(), true, false) {
                                 return Err(pb_transport::Error::Declined);
                             }
-                            s.send(ControlMsg::ClipboardPull(pb_protocol::control::ClipboardPull { want_image })).await?;
+                            s.send(ControlMsg::ClipboardPull(pb_protocol::control::ClipboardPull { want_image, auto, pc_changed_ago_ms })).await?;
                             s.finish().await;
                             Ok::<_, pb_transport::Error>(())
                         }
@@ -1264,15 +1281,20 @@ pub async fn run(
                         match sent {
                             Ok(()) => {
                                 tokio::time::sleep(crate::clip_pull::PULL_WAIT).await;
-                                if PULL.lock().unwrap_or_else(|p| p.into_inner()).timed_out(std::time::Instant::now()) {
+                                let timed_out = PULL.lock().unwrap_or_else(|p| p.into_inner()).timed_out_auto(std::time::Instant::now());
+                                if let Some(was_auto) = timed_out {
                                     log.line("PULL no answer from the phone");
-                                    ui(UiEvent::Pill(crate::clip_pull::NO_ANSWER.into(), 6));
+                                    if !was_auto {
+                                        ui(UiEvent::Pill(crate::clip_pull::NO_ANSWER.into(), 6));
+                                    }
                                 }
                             }
                             Err(e) => {
                                 PULL.lock().unwrap_or_else(|p| p.into_inner()).answered_from(&id.to_string());
                                 log.line(&format!("PULL could not reach \"{name}\": {e}"));
-                                ui(UiEvent::Pill(format!("Could not reach {name}"), 6));
+                                if !auto {
+                                    ui(UiEvent::Pill(format!("Could not reach {name}"), 6));
+                                }
                             }
                         }
                     });
@@ -2184,24 +2206,27 @@ async fn pump_session(
             }
             Ok(Some(ControlMsg::ClipboardPullResult(r))) => {
                 // Only the phone we asked may complete this request.
-                if !PULL
+                let Some(was_auto) = PULL
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .answered_from(&s.peer.to_string())
-                {
+                    .answered_from_auto(&s.peer.to_string())
+                else {
                     log.line("PULL ignored an unsolicited clipboard result");
                     continue;
-                }
+                };
                 log.line(&format!(
                     "PULL answer from \"{}\": {}",
                     s.peer_name, r.reason
                 ));
-                let reason = if r.reason.is_empty() {
-                    "The phone sent nothing".to_owned()
-                } else {
-                    r.reason
-                };
-                ui(UiEvent::Pill(reason, 6));
+                // A request the PC made by itself ends quietly: there was nothing new, or the phone could not read.
+                if !was_auto {
+                    let reason = if r.reason.is_empty() {
+                        "The phone sent nothing".to_owned()
+                    } else {
+                        r.reason
+                    };
+                    ui(UiEvent::Pill(reason, 6));
+                }
             }
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
                 // A clip the PC asked for is wanted even with Universal Clipboard off.

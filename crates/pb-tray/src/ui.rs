@@ -190,6 +190,8 @@ const TIMER_TIMELINE: usize = 11;
 /// their own threads; their devices go when those threads end.
 const TIMER_RELEASE: usize = 12;
 const TIMER_CLIP_RETRY: usize = 13;
+/// Once a second: has the user just come back to this PC? Then the phone is asked for its clipboard.
+const TIMER_AWAY: usize = 14;
 /// How long the device stays after the last window, for a quick reopen.
 const RELEASE_AFTER_MS: u32 = 30_000;
 /// The timeline timer is armed (set before SetTimer, cleared after KillTimer).
@@ -1634,6 +1636,25 @@ fn remove_toasts(list: Vec<(String, String, Option<std::path::PathBuf>)>) {
     }
 }
 
+/// How long since the last key or mouse input in this session (it reports that input happened, never which).
+fn idle_time() -> Option<std::time::Duration> {
+    use windows::Win32::System::SystemInformation::GetTickCount64;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: `info` is a valid LASTINPUTINFO with its size set.
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return None;
+    }
+    // SAFETY: no arguments.
+    let now = unsafe { GetTickCount64() } as u32;
+    Some(std::time::Duration::from_millis(u64::from(
+        now.wrapping_sub(info.dwTime),
+    )))
+}
+
 fn arm_timer(hwnd: HWND, id: usize, ms: u32) {
     // SAFETY: timer on our own window.
     unsafe {
@@ -2874,7 +2895,10 @@ fn command(hwnd: HWND, st: &State, id: usize) {
             let _ = st.cmds.send(Cmd::Pair);
         }
         ID_PULL_CLIPBOARD => {
-            let _ = st.cmds.send(Cmd::PullClipboard);
+            let _ = st.cmds.send(Cmd::PullClipboard {
+                auto: false,
+                pc_changed_ago_ms: 0,
+            });
         }
         ID_SEND_DROPPED => {
             let files =
@@ -3289,6 +3313,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_AWAY => {
+            // Input counts only as "back" when the session is unlocked; a locked PC has nobody at it.
+            if !notify_ui().locked {
+                if let Some(idle) = idle_time() {
+                    if let Some(pc_changed_ago_ms) = crate::clip_auto::poll(idle) {
+                        let _ = st.cmds.send(Cmd::PullClipboard {
+                            auto: true,
+                            pc_changed_ago_ms,
+                        });
+                    }
+                }
+            }
+            LRESULT(0)
+        }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_CLIP_RETRY => {
             clipboard_delivery::retry(hwnd, st, false);
             LRESULT(0)
@@ -3574,6 +3612,7 @@ pub fn create(
         );
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.
         let _ = windows::Win32::System::DataExchange::AddClipboardFormatListener(hwnd);
+        arm_timer(hwnd, TIMER_AWAY, 1000);
         // Ctrl+Alt+P: drive the phone with this PC's mouse and keyboard.
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::RegisterHotKey(
             Some(hwnd),

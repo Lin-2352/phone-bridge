@@ -15,6 +15,8 @@ pub struct PullState {
     receiving_image: bool,
     generation: u64,
     peer: String,
+    /// The PC asked by itself: nobody pressed a key, so nothing is said at the PC when it ends quietly.
+    auto: bool,
 }
 
 impl PullState {
@@ -24,11 +26,22 @@ impl PullState {
             receiving_image: false,
             generation: 0,
             peer: String::new(),
+            auto: false,
         }
     }
 
-    /// Start one request; do not overlap an image already being received.
+    /// Start one request made by a key press.
     pub fn start(&mut self, now: Instant, peer: &str) -> bool {
+        self.start_with(now, peer, false)
+    }
+
+    /// Start one request the PC makes by itself (the user came back to it).
+    pub fn start_auto(&mut self, now: Instant, peer: &str) -> bool {
+        self.start_with(now, peer, true)
+    }
+
+    /// Start one request; do not overlap an image already being received.
+    fn start_with(&mut self, now: Instant, peer: &str, auto: bool) -> bool {
         if self.receiving_image
             || self
                 .since
@@ -39,6 +52,7 @@ impl PullState {
         self.generation = self.generation.wrapping_add(1);
         self.peer = peer.to_owned();
         self.since = Some(now);
+        self.auto = auto;
         true
     }
 
@@ -66,7 +80,16 @@ impl PullState {
     }
 
     pub fn answered_from(&mut self, peer: &str) -> bool {
-        self.peer == peer && self.answered()
+        self.answered_from_auto(peer).is_some()
+    }
+
+    /// Like [`Self::answered_from`], and says whether the request was an automatic one.
+    pub fn answered_from_auto(&mut self, peer: &str) -> Option<bool> {
+        if self.peer != peer {
+            return None;
+        }
+        let auto = self.auto;
+        self.answered().then_some(auto)
     }
 
     pub fn answered(&mut self) -> bool {
@@ -76,15 +99,22 @@ impl PullState {
     }
 
     /// An image offer already answered; transfer failures have their own truthful result.
+    #[cfg(test)]
     pub fn timed_out(&mut self, now: Instant) -> bool {
+        self.timed_out_auto(now).is_some()
+    }
+
+    /// The wait is over and nothing came: clears the request; says whether it was an automatic one.
+    pub fn timed_out_auto(&mut self, now: Instant) -> Option<bool> {
         if !self.receiving_image
             && self
                 .since
                 .is_some_and(|at| now.saturating_duration_since(at) >= PULL_WAIT)
         {
-            self.answered()
+            let auto = self.auto;
+            self.answered().then_some(auto)
         } else {
-            false
+            None
         }
     }
 }
@@ -202,5 +232,40 @@ mod tests {
         assert!(p.image_started(now, "phone-b").is_none());
         assert!(!p.answered_from("phone-b"));
         assert!(p.pending_from("phone-a", now));
+    }
+
+    #[test]
+    fn an_automatic_request_is_remembered_as_automatic_until_answered() {
+        let t0 = Instant::now();
+        let mut p = PullState::default();
+        assert!(p.start_auto(t0, "phone"));
+        assert_eq!(
+            p.answered_from_auto("other"),
+            None,
+            "another phone's answer is not this request's"
+        );
+        assert_eq!(p.answered_from_auto("phone"), Some(true));
+        assert_eq!(p.answered_from_auto("phone"), None, "answered once");
+    }
+
+    #[test]
+    fn a_manual_request_is_not_automatic() {
+        let t0 = Instant::now();
+        let mut p = PullState::default();
+        assert!(p.start(t0, "phone"));
+        assert_eq!(p.answered_from_auto("phone"), Some(false));
+    }
+
+    #[test]
+    fn a_silent_automatic_request_times_out_as_automatic() {
+        let t0 = Instant::now();
+        let mut p = PullState::default();
+        p.start_auto(t0, "phone");
+        assert_eq!(
+            p.timed_out_auto(t0 + PULL_WAIT - Duration::from_millis(1)),
+            None
+        );
+        assert_eq!(p.timed_out_auto(t0 + PULL_WAIT), Some(true));
+        assert_eq!(p.timed_out_auto(t0 + PULL_WAIT), None, "said once");
     }
 }
