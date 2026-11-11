@@ -288,6 +288,23 @@ impl DeviceStore {
         changed
     }
 
+    /// The clipboard grant stored by the first migration was never enforced and no screen showed it, so it can be
+    /// stale-closed on a phone whose person has Share clipboard on. Once per phone (`perm_clipboard_v=2`) the grant
+    /// follows the global switch; from then on it is enforced and a later choice is the person's own.
+    pub fn migrate_clipboard_grant(&mut self, paired: &[String], global_on: bool) -> bool {
+        let mut changed = false;
+        for id in paired {
+            if self.get(id, "perm_clipboard_v") == Some("2") {
+                continue;
+            }
+            if global_on {
+                changed |= self.set(id, "perm_clipboard", "true");
+            }
+            changed |= self.set(id, "perm_clipboard_v", "2");
+        }
+        changed
+    }
+
     /// Marks a phone paired after the migration with fresh defaults, so it never inherits an old global.
     pub fn mark_new(&mut self, id: &str) -> bool {
         if self.get(id, "migrated").is_some() {
@@ -295,7 +312,8 @@ impl DeviceStore {
         }
         let a = self.set_perms(id, &DevicePerms::default());
         let b = self.set(id, "migrated", "1");
-        a | b
+        let c = self.set(id, "perm_clipboard_v", "2");
+        a | b | c
     }
 
     /// "Disconnect everything": every phone's control goes back to Ask (Never stays), and its always-skip audio
@@ -586,6 +604,23 @@ mod tests {
         s.set_perms(A, &DevicePerms::default());
         assert!(!s.migrate(&[A.to_owned()], &globals(true)));
         assert_eq!(s.perms(A), DevicePerms::default());
+    }
+
+    #[test]
+    fn a_clipboard_grant_that_was_never_enforced_follows_the_global_switch_once() {
+        let mut s = DeviceStore::default();
+        // Stored by the first migration, when nothing read it and no screen showed it.
+        s.migrate(&[A.to_owned()], &globals(false));
+        assert!(!s.perms(A).clipboard);
+        assert!(s.migrate_clipboard_grant(&[A.to_owned()], true));
+        assert!(
+            s.perms(A).clipboard,
+            "Share clipboard is on, so the phone is on"
+        );
+        // The grant is enforced from here on: a later choice is the person's own.
+        s.set_perms(A, &DevicePerms::default());
+        assert!(!s.migrate_clipboard_grant(&[A.to_owned()], true));
+        assert!(!s.perms(A).clipboard);
     }
 
     #[test]

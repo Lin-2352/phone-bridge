@@ -612,6 +612,8 @@ pub fn migrate_paired_at_start(settings: &SharedSettings, paired: &[String]) {
         return;
     };
     update_devices(|d| d.migrate(paired, &g));
+    let on = g.clipboard;
+    update_devices(|d| d.migrate_clipboard_grant(paired, on));
     sync_mirror(settings);
 }
 
@@ -1245,6 +1247,7 @@ pub async fn run(
                     };
                     // An automatic request needs Share clipboard on, like any background copy; a key press is explicit.
                     if !clipboard_allowed(&settings, &id.to_string(), !auto, false) {
+                        log.line("PULL skipped: clipboard is off, paused, or not allowed for this phone");
                         if !auto {
                             ui(UiEvent::Pill("Turn on Share clipboard for this phone in Devices first".into(), 6));
                         }
@@ -2237,7 +2240,9 @@ async fn pump_session(
                     wanted
                 };
                 if !clipboard_allowed(&settings, &s.peer.to_string(), pulled, false) {
-                    log.line("CLIPSYNC ignored: clipboard sharing is off for this phone");
+                    log.line(
+                        "CLIPSYNC ignored: clipboard is off, paused, or not allowed for this phone",
+                    );
                     continue;
                 }
                 clip.lock()
@@ -2384,7 +2389,7 @@ async fn pump_session(
                     // the file prompt, and is never written to the save folder.
                     let on = clipboard_allowed(&settings, &s.peer.to_string(), false, true);
                     if !on {
-                        log.line("CLIPSYNC image ignored (image sharing is off)");
+                        log.line("CLIPSYNC image ignored: pictures, clipboard or this phone's clipboard grant are off, or Relay is paused");
                     }
                     on
                 } else if refusal.is_some() {
