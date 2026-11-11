@@ -631,3 +631,7 @@ A clipboard picture requested by a paired PC is sent to that requesting peer ID,
 ## Busy Windows clipboard (CP1.3, 2026-11-11)
 
 Received clipboard text, automatic shared text and images enter one newest-only RAM slot. Delivery uses a non-blocking clipboard open; contention retries after 250 ms, and a locked PC holds the slot without a timer until unlock triggers an immediate attempt. Replacing the slot drops older payloads. A newer local copy cancels a stale queued remote copy, while delayed notifications for the sequence already seen at arrival do not. Invalid images are rejected before replacing valid pending content. Image PNG and converted DIB buffers never touch disk and decoding is not repeated on each retry. Success messages and own-sequence echo suppression happen only after a successful write. Existing direct user-action clipboard helpers retain their brief synchronous retry; the delivery queue uses dedicated non-blocking helpers.
+
+## Phone clipboard echo expiry (CP1.4, 2026-11-11)
+
+The phone remembers the hash and monotonic arrival time of the most recent remote text. It suppresses that same text for strictly less than 15 seconds, matching the PC's existing echo window, rather than for the lifetime of the service. Another remote clip replaces the stamp; a different hash is not suppressed. An echo skip remains a retryable non-success under CP1.1 and cannot advance the outgoing fingerprint. Only the hash and time are retained in RAM; no wire or UniFFI API changes.

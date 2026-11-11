@@ -10,6 +10,7 @@ use pb_protocol::control::{
 use pb_transport::{Joining, Node, NodeConfig, Session, SharedStore};
 
 mod applog;
+mod clip_echo;
 
 uniffi::setup_scaffolding!();
 
@@ -945,7 +946,7 @@ struct Shared {
     /// Apply pictures copied on the PC ("Share copied images").
     clipboard_images: std::sync::atomic::AtomicBool,
     pending: Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<bool>>>,
-    last_remote_clip: Mutex<[u8; 32]>,
+    last_remote_clip: Mutex<clip_echo::RemoteEcho>,
     input: Mutex<Option<Arc<dyn InputListener>>>,
     /// Accept PC control without asking (otherwise each request asks).
     allow_control: std::sync::atomic::AtomicBool,
@@ -1253,7 +1254,7 @@ pub async fn start_node(
         notify_peers: PeerSet::default(),
         clipboard_images: std::sync::atomic::AtomicBool::new(false),
         pending: Mutex::default(),
-        last_remote_clip: Mutex::new([0; 32]),
+        last_remote_clip: Mutex::new(clip_echo::RemoteEcho::default()),
         input: Mutex::new(None),
         allow_control: std::sync::atomic::AtomicBool::new(false),
         control: Mutex::new(None),
@@ -1405,9 +1406,10 @@ async fn pump(mut s: Session, sh: Arc<Shared>) {
             }
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
                 if sh.clipboard_peers.allows(&sh.clipboard_sync, &pid) {
-                    *sh.last_remote_clip
+                    sh.last_remote_clip
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner()) = clip_hash(&u.text);
+                        .unwrap_or_else(|p| p.into_inner())
+                        .received(clip_hash(&u.text), std::time::Instant::now());
                     push(
                         &sh.events,
                         PbEvent::RemoteClipboard {
@@ -2465,12 +2467,12 @@ impl PbNode {
             ));
         }
         let h = clip_hash(&text);
-        if *self
+        if self
             .shared
             .last_remote_clip
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            == h
+            .suppresses(h, std::time::Instant::now())
         {
             return Err(fail("The copied text came from the PC"));
         }
