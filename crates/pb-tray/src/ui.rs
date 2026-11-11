@@ -190,7 +190,7 @@ const TIMER_TIMELINE: usize = 11;
 /// their own threads; their devices go when those threads end.
 const TIMER_RELEASE: usize = 12;
 const TIMER_CLIP_RETRY: usize = 13;
-/// Once a second: has the user just come back to this PC? Then the phone is asked for its clipboard.
+/// Four times a second: has the user just come back to this PC? Then the phone is asked for its clipboard.
 const TIMER_AWAY: usize = 14;
 /// How long the device stays after the last window, for a quick reopen.
 const RELEASE_AFTER_MS: u32 = 30_000;
@@ -3320,13 +3320,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_AWAY => {
             // Input counts only as "back" when the session is unlocked; a locked PC has nobody at it.
-            if !notify_ui().locked {
-                if let Some(idle) = idle_time() {
+            let locked = notify_ui().locked;
+            match idle_time() {
+                None => {}
+                Some(idle) => {
                     if let Some(pc_changed_ago_ms) = crate::clip_auto::poll(idle) {
-                        let _ = st.cmds.send(Cmd::PullClipboard {
-                            auto: true,
-                            pc_changed_ago_ms,
-                        });
+                        if locked {
+                            st.log.line("PULL auto: back, but the PC is locked");
+                        } else {
+                            st.log.line(&format!(
+                                "PULL auto: back after being away (changed {pc_changed_ago_ms} ms ago)"
+                            ));
+                            let _ = st.cmds.send(Cmd::PullClipboard {
+                                auto: true,
+                                pc_changed_ago_ms,
+                            });
+                        }
                     }
                 }
             }
@@ -3617,7 +3626,7 @@ pub fn create(
         );
         // Universal Clipboard: get WM_CLIPBOARDUPDATE for every clipboard change.
         let _ = windows::Win32::System::DataExchange::AddClipboardFormatListener(hwnd);
-        arm_timer(hwnd, TIMER_AWAY, 1000);
+        arm_timer(hwnd, TIMER_AWAY, 250);
         // Ctrl+Alt+P: drive the phone with this PC's mouse and keyboard.
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::RegisterHotKey(
             Some(hwnd),

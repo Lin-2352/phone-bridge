@@ -1240,6 +1240,7 @@ pub async fn run(
                 }
                 Some(Cmd::PullClipboard { auto, pc_changed_ago_ms }) => {
                     let Some((id, name)) = default_target(&peers, &settings, None) else {
+                        log.line("PULL skipped: no paired phone is connected");
                         if !auto {
                             ui(UiEvent::Pill("Pair a phone first".into(), 5));
                         }
@@ -1259,6 +1260,7 @@ pub async fn run(
                         if auto { g.start_auto(now, &id.to_string()) } else { g.start(now, &id.to_string()) }
                     };
                     if !started {
+                        log.line("PULL skipped: a request is already in flight");
                         continue;
                     }
                     let want_image = settings

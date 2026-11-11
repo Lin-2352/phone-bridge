@@ -97,8 +97,11 @@ object PullClip {
                     if (!hasFocus || done) return
                     done = true
                     try {
-                        val ts = cm.primaryClipDescription?.timestamp ?: 0L
+                        val desc = cm.primaryClipDescription
+                        val ts = desc?.timestamp ?: 0L
                         val prefs = Prefs(app)
+                        // No content: only the copy time, its clock base, and the kinds of data, to diagnose "nothing arrives".
+                        Log.i(PTAG, "PULL auto: copyTs=$ts wall=${System.currentTimeMillis()} uptime=${SystemClock.elapsedRealtime()} lastSent=${prefs.lastPullSentTs} pcChangedAgo=$pcChangedAgoMs types=${(0 until (desc?.mimeTypeCount ?: 0)).map { desc!!.getMimeType(it) }}")
                         when (autoPullVerdict(ts, System.currentTimeMillis(), prefs.lastPullSentTs, pcChangedAgoMs)) {
                             AutoVerdict.NOTHING -> refuse(peerId, "Nothing is copied on the phone")
                             AutoVerdict.UNCHANGED -> {
