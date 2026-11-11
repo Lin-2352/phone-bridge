@@ -108,7 +108,7 @@ object PullClip {
                                 Log.i(PTAG, "PULL auto: nothing new")
                                 Bridge.scope.launch { runCatching { Bridge.awaitNode()?.answerClipboardUnchanged(peerId) } }
                             }
-                            AutoVerdict.SEND -> answer(app, peerId, wantImage) { prefs.lastPullSentTs = ts }
+                            AutoVerdict.SEND -> answer(app, peerId, wantImage, auto = true) { prefs.lastPullSentTs = ts }
                         }
                     } finally {
                         runCatching { wm.removeView(this) }
@@ -146,7 +146,7 @@ object PullClip {
     }
 
     /** The clip on the phone, as an answer to the PC: text, a picture, or the reason there is none. */
-    fun answer(app: Context, peerId: String, wantImage: Boolean, sent: (() -> Unit)? = null) {
+    fun answer(app: Context, peerId: String, wantImage: Boolean, auto: Boolean = false, sent: (() -> Unit)? = null) {
         val prefs = Prefs(app)
         if (!prefs.pcFlag(peerId, "clipboard_sync")) return refuse(peerId, "Share clipboard is off for this PC on the phone")
         val clip = app.getSystemService(ClipboardManager::class.java).primaryClip
@@ -158,6 +158,14 @@ object PullClip {
         when (val a = pullAction(!text.isNullOrEmpty(), isImage, wantImage, prefs.clipboardImages, sensitive, prefs.sendSensitive)) {
             is PullAction.Refuse -> refuse(peerId, a.reason)
             PullAction.SendText -> {
+                // Text the PC itself sent is stamped here a moment after the PC copied it, so the copy time alone
+                // can read as newer: an automatic pull never hands the PC its own text back.
+                if (auto && ClipFingerprints.unchanged(app, text!!)) {
+                    Log.i(PTAG, "PULL auto: that text came from the PC, nothing new")
+                    sent?.invoke()
+                    Bridge.scope.launch { runCatching { Bridge.awaitNode()?.answerClipboardUnchanged(peerId) } }
+                    return
+                }
                 Log.i(PTAG, "PULL answering with text ${text!!.length} chars")
                 Bridge.scope.launch {
                     runCatching { (Bridge.awaitNode() ?: error("Relay is not running")).answerClipboardPull(peerId, text, sensitive) }

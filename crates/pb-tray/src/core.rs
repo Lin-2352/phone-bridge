@@ -2224,6 +2224,9 @@ async fn pump_session(
                     s.peer_name, r.reason
                 ));
                 // A request the PC made by itself ends quietly: there was nothing new, or the phone could not read.
+                if was_auto && !r.ok {
+                    crate::clip_auto::stop_polling();
+                }
                 if !was_auto {
                     let reason = if r.reason.is_empty() {
                         "The phone sent nothing".to_owned()
@@ -2235,12 +2238,23 @@ async fn pump_session(
             }
             Ok(Some(ControlMsg::ClipboardUpdate(u))) => {
                 // A clip the PC asked for is wanted even with Universal Clipboard off.
-                let pulled = {
+                let (pulled, newer_here) = {
                     let mut g = PULL.lock().unwrap_or_else(|p| p.into_inner());
                     let wanted = g.pending_from(&s.peer.to_string(), std::time::Instant::now());
+                    // A copy made on this PC after the automatic request went out is newer than this clip.
+                    let newer_here = wanted
+                        && g.is_auto()
+                        && crate::clip_auto::superseded(
+                            g.started_at(),
+                            crate::clip_auto::last_local_change(),
+                        );
                     g.answered_from(&s.peer.to_string());
-                    wanted
+                    (wanted, newer_here)
                 };
+                if newer_here {
+                    log.line("CLIPSYNC dropped: this PC's clipboard changed after the request, so the phone's clip is older");
+                    continue;
+                }
                 if !clipboard_allowed(&settings, &s.peer.to_string(), pulled, false) {
                     log.line(
                         "CLIPSYNC ignored: clipboard is off, paused, or not allowed for this phone",

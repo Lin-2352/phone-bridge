@@ -56,6 +56,16 @@ impl PullState {
         true
     }
 
+    /// Whether the request in flight is an automatic one.
+    pub fn is_auto(&self) -> bool {
+        self.auto
+    }
+
+    /// When the request in flight went out.
+    pub fn started_at(&self) -> Option<Instant> {
+        self.since
+    }
+
     pub fn pending(&self, now: Instant) -> bool {
         self.since
             .is_some_and(|at| self.receiving_image || now.saturating_duration_since(at) < PULL_WAIT)

@@ -11,6 +11,63 @@ pub const AWAY: Duration = Duration::from_secs(4);
 /// Two automatic requests are never closer than this.
 pub const MIN_GAP: Duration = Duration::from_secs(8);
 
+/// While the PC sits idle the phone is asked this often, so a clip copied there is usually already here when the
+/// person comes back (Android tells no background app about a copy).
+pub const POLL_EVERY: Duration = Duration::from_secs(2);
+
+/// Polling stops this long into an away: after that the phone is probably not being used either.
+pub const POLL_WINDOW: Duration = Duration::from_secs(90);
+
+/// Asks the phone every [`POLL_EVERY`] while the PC is idle, for [`POLL_WINDOW`] after the away began; stops for the
+/// rest of that away when the phone says it cannot read (locked or screen off).
+#[derive(Default)]
+pub struct Poller {
+    last: Option<Instant>,
+    stopped: bool,
+}
+
+impl Poller {
+    pub const fn new() -> Self {
+        Self {
+            last: None,
+            stopped: false,
+        }
+    }
+
+    /// One sample. True when the phone should be asked now.
+    pub fn tick(&mut self, idle: Duration, now: Instant) -> bool {
+        if idle < AWAY {
+            *self = Self::new();
+            return false;
+        }
+        if idle > POLL_WINDOW || self.stopped {
+            return false;
+        }
+        if self
+            .last
+            .is_some_and(|at| now.saturating_duration_since(at) < POLL_EVERY)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+
+    /// The phone could not read: no more asks until the person has been back at the PC.
+    pub fn stop(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// A PC copy made after the request went out is newer than the clip that was asked for: the arriving clip must not
+/// overwrite it.
+pub fn superseded(request_started: Option<Instant>, last_local_change: Option<Instant>) -> bool {
+    match (request_started, last_local_change) {
+        (Some(started), Some(changed)) => changed > started,
+        _ => false,
+    }
+}
+
 /// Watches the idle time, sampled about once a second.
 #[derive(Default)]
 pub struct Away {
@@ -48,6 +105,7 @@ impl Away {
 }
 
 static AWAY_STATE: Mutex<Away> = Mutex::new(Away::new());
+static POLLER: Mutex<Poller> = Mutex::new(Poller::new());
 static LOCAL_CHANGE: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Something other than Relay changed this PC's clipboard just now.
@@ -59,11 +117,26 @@ pub fn note_local_copy() {
 /// request as `pc_changed_ago_ms`.
 pub fn poll(idle: Duration) -> Option<u64> {
     let now = Instant::now();
-    let ask = AWAY_STATE
+    let came_back = AWAY_STATE
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .tick(idle, now);
+    let poll = POLLER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .tick(idle, now);
+    let ask = came_back || poll;
     ask.then(|| changed_ago_ms(*LOCAL_CHANGE.lock().unwrap_or_else(|p| p.into_inner()), now))
+}
+
+/// The phone could not read (locked, screen off): stop polling until the person has been back at the PC.
+pub fn stop_polling() {
+    POLLER.lock().unwrap_or_else(|p| p.into_inner()).stop();
+}
+
+/// When the PC's own clipboard last changed (None: not since Relay started).
+pub fn last_local_change() -> Option<Instant> {
+    *LOCAL_CHANGE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// What the PC tells the phone about its own clipboard: how long ago it last changed, in ms. 0 means the PC
@@ -145,5 +218,56 @@ mod tests {
             "a copy this instant is 1 ms old, not unknown"
         );
         assert_eq!(changed_ago_ms(Some(t0), t0 + secs(4)), 4000);
+    }
+
+    #[test]
+    fn a_pc_copy_made_after_the_request_went_out_beats_the_arriving_clip() {
+        let t0 = Instant::now();
+        assert!(superseded(Some(t0), Some(t0 + secs(1))));
+        assert!(
+            !superseded(Some(t0), Some(t0)),
+            "same instant: the request wins"
+        );
+        assert!(
+            !superseded(Some(t0 + secs(1)), Some(t0)),
+            "an older PC copy is the phone's to beat"
+        );
+        assert!(!superseded(Some(t0), None));
+        assert!(
+            !superseded(None, Some(t0)),
+            "no request, nothing to supersede"
+        );
+    }
+
+    #[test]
+    fn polling_starts_after_the_away_and_asks_every_few_seconds() {
+        let t0 = Instant::now();
+        let mut p = Poller::default();
+        assert!(!p.tick(AWAY - secs(1), t0), "still at the PC");
+        assert!(p.tick(AWAY, t0), "away: ask now");
+        assert!(!p.tick(AWAY + secs(1), t0 + secs(1)));
+        assert!(p.tick(AWAY + POLL_EVERY, t0 + POLL_EVERY));
+    }
+
+    #[test]
+    fn polling_stops_after_the_window_and_when_the_phone_cannot_read() {
+        let t0 = Instant::now();
+        let mut p = Poller::default();
+        assert!(
+            !p.tick(POLL_WINDOW + secs(1), t0),
+            "away too long: the phone is not being used"
+        );
+        let mut q = Poller::default();
+        assert!(q.tick(AWAY, t0));
+        q.stop();
+        assert!(
+            !q.tick(AWAY + POLL_EVERY, t0 + POLL_EVERY),
+            "phone locked: stay quiet"
+        );
+        assert!(!q.tick(secs(1), t0 + secs(5)), "back at the PC");
+        assert!(
+            q.tick(AWAY, t0 + secs(20)),
+            "a new away starts polling again"
+        );
     }
 }
