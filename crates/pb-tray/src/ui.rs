@@ -7,6 +7,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+mod clipboard_delivery;
+
 use pb_platform_win::clipboard::{self, ClipText};
 use tokio::sync::mpsc::UnboundedSender;
 use windows::{
@@ -187,6 +189,7 @@ const TIMER_TIMELINE: usize = 11;
 /// device and trim the working set. Dialogs and the screen window run on
 /// their own threads; their devices go when those threads end.
 const TIMER_RELEASE: usize = 12;
+const TIMER_CLIP_RETRY: usize = 13;
 /// How long the device stays after the last window, for a quick reopen.
 const RELEASE_AFTER_MS: u32 = 30_000;
 /// The timeline timer is armed (set before SetTimer, cleared after KillTimer).
@@ -283,16 +286,6 @@ fn clipboard_seq() -> u32 {
 
 fn set_clipboard_own(hwnd: HWND, text: &str, sensitive: bool) -> std::io::Result<()> {
     clipboard::set_text(text, sensitive, Some(hwnd))?;
-    OWN_SEQ.store(clipboard_seq(), std::sync::atomic::Ordering::Relaxed);
-    Ok(())
-}
-
-/// Put a received PNG on the clipboard (as a picture, plus the PNG format) and
-/// remember our own write so the listener does not send it straight back.
-/// `private` keeps it out of Win+V history and the cloud clipboard.
-fn set_clipboard_image_own(hwnd: HWND, png: &[u8], private: bool) -> Result<(), String> {
-    let dib = pb_platform_win::dib::png_to_dibv5(png)?;
-    clipboard::set_image(png, &dib, private, Some(hwnd)).map_err(|e| e.to_string())?;
     OWN_SEQ.store(clipboard_seq(), std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
@@ -1338,21 +1331,16 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             from,
             text,
             sensitive,
-        } => match set_clipboard_own(hwnd, &text, sensitive) {
-            Ok(()) => {
-                let show = st
-                    .settings
-                    .lock()
-                    .map(|s| s.toast_show_text)
-                    .unwrap_or(false);
-                balloon(
-                    hwnd,
-                    &format!("Clipboard from {from}"),
-                    &crate::shared_text::clipboard_toast_body(sensitive, show, &text),
-                )
-            }
-            Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
-        },
+        } => {
+            clipboard_delivery::text(
+                hwnd,
+                st,
+                from,
+                text,
+                sensitive,
+                clipboard_delivery::Source::Explicit,
+            );
+        }
         UiEvent::SharedText { from, text } => {
             let (auto, keep) = st
                 .settings
@@ -1362,13 +1350,14 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             let plan = crate::shared_text::plan(auto, keep);
             if !plan.copy_now {
                 show_shared_text_toast(hwnd, &from, text);
-            } else if let Err(e) = set_clipboard_own(hwnd, &text, plan.exclude_from_history) {
-                balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}"));
             } else {
-                balloon(
+                clipboard_delivery::text(
                     hwnd,
-                    &crate::shared_text::title(&from),
-                    crate::shared_text::body(true),
+                    st,
+                    from,
+                    text,
+                    false,
+                    clipboard_delivery::Source::Shared,
                 );
             }
         }
@@ -1377,41 +1366,16 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             text,
             sensitive,
         } => {
-            let keep = st
-                .settings
-                .lock()
-                .map(|s| s.keep_in_history)
-                .unwrap_or(false);
-            // Sensitive text never enters Win+V history, whatever the setting.
-            let written = set_clipboard_own(hwnd, &text, sensitive || !keep);
-            // The balloon can be missed (Do Not Disturb, locked PC): the log says what happened.
-            match &written {
-                Ok(()) => st.log.line("CLIPSYNC written to this PC's clipboard"),
-                Err(e) => st.log.line(&format!(
-                    "CLIPSYNC could not be written to this PC's clipboard: {e}"
-                )),
-            }
-            match written {
-                Ok(()) if sensitive => balloon(
-                    hwnd,
-                    &format!("Copied on {from}"),
-                    "Password or code, ready to paste",
-                ),
-                Ok(()) => balloon(hwnd, &format!("Copied on {from}"), "Ready to paste"),
-                Err(e) => balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}")),
-            }
+            clipboard_delivery::text(
+                hwnd,
+                st,
+                from,
+                text,
+                sensitive,
+                clipboard_delivery::Source::Sync,
+            );
         }
-        UiEvent::RemoteImage { from, png } => {
-            let keep = st
-                .settings
-                .lock()
-                .map(|s| s.keep_in_history)
-                .unwrap_or(false);
-            match set_clipboard_image_own(hwnd, &png, !keep) {
-                Ok(()) => balloon(hwnd, &format!("Copied on {from}"), "Picture ready to paste"),
-                Err(e) => balloon(hwnd, "Relay", &format!("Could not copy the picture: {e}")),
-            }
-        }
+        UiEvent::RemoteImage { from, png } => clipboard_delivery::image(hwnd, st, from, png),
         UiEvent::ControlReady { name, sender } => {
             if crate::control::start(hwnd, sender) {
                 // SAFETY: timer on our own window; checks the session is alive.
@@ -3214,11 +3178,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             match wparam.0 {
                 WTS_SESSION_LOCK => {
                     notify_ui().locked = true;
+                    kill_timer(hwnd, TIMER_CLIP_RETRY);
                     // Locking the session ends the 60 s after an unlock: the next guarded action asks again.
                     crate::unlock::reset_grace();
                 }
                 WTS_SESSION_UNLOCK => {
                     notify_ui().locked = false;
+                    clipboard_delivery::retry(hwnd, st, false);
                     refresh_hidden(hwnd, st);
                 }
                 _ => {}
@@ -3294,6 +3260,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             // Ignore our own writes; debounce bursts from apps that set the
             // clipboard several times in a row.
             if clipboard_seq() != OWN_SEQ.load(std::sync::atomic::Ordering::Relaxed) {
+                clipboard_delivery::local_copy(hwnd, st, clipboard_seq());
                 // SAFETY: timer on our own window.
                 unsafe {
                     windows::Win32::UI::WindowsAndMessaging::SetTimer(
@@ -3304,6 +3271,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     )
                 };
             }
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_CLIP_RETRY => {
+            clipboard_delivery::retry(hwnd, st, false);
             LRESULT(0)
         }
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_CLIP => {

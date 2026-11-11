@@ -41,6 +41,8 @@ mod clip_history;
 mod clip_image;
 #[cfg(windows)]
 mod clip_pull;
+#[cfg(any(windows, test))]
+mod clip_retry;
 #[cfg(windows)]
 mod control;
 #[cfg(windows)]

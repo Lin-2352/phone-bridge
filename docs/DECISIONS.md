@@ -627,3 +627,7 @@ The Android sync call succeeds only after all enabled paired PCs have been sent 
 ## Requested clipboard picture destination (CP1.2, 2026-11-11)
 
 A clipboard picture requested by a paired PC is sent to that requesting peer ID, even when another PC is the saved default. If the requester has been unpaired before the send, the operation fails instead of choosing a different PC. Manual screenshot and image sends still use the saved default. Clipboard content is unchanged and no wire message or permission is added.
+
+## Busy Windows clipboard (CP1.3, 2026-11-11)
+
+Received clipboard text, automatic shared text and images enter one newest-only RAM slot. Delivery uses a non-blocking clipboard open; contention retries after 250 ms, and a locked PC holds the slot without a timer until unlock triggers an immediate attempt. Replacing the slot drops older payloads. A newer local copy cancels a stale queued remote copy, while delayed notifications for the sequence already seen at arrival do not. Invalid images are rejected before replacing valid pending content. Image PNG and converted DIB buffers never touch disk and decoding is not repeated on each retry. Success messages and own-sequence echo suppression happen only after a successful write. Existing direct user-action clipboard helpers retain their brief synchronous retry; the delivery queue uses dedicated non-blocking helpers.

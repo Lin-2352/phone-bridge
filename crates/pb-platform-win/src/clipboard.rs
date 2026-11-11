@@ -55,6 +55,13 @@ fn format(name: PCWSTR) -> u32 {
 struct Open;
 
 impl Open {
+    fn try_once(owner: Option<HWND>) -> io::Result<Self> {
+        // SAFETY: a single non-blocking attempt, paired with CloseClipboard in Drop.
+        unsafe { OpenClipboard(owner) }
+            .map(|_| Open)
+            .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "clipboard is busy"))
+    }
+
     fn new(owner: Option<HWND>) -> io::Result<Self> {
         // Another process may hold the clipboard briefly; retry a few times.
         for _ in 0..10 {
@@ -106,10 +113,24 @@ fn set(fmt: u32, bytes: &[u8]) -> io::Result<()> {
 /// Put text on the clipboard. Sensitive text is excluded from clipboard
 /// history, cloud clipboard and clipboard monitors.
 pub fn set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<()> {
+    set_text_using(text, sensitive, owner, Open::new)
+}
+
+/// A non-blocking write. On `WouldBlock`, the caller retains the clip and retries later.
+pub fn try_set_text(text: &str, sensitive: bool, owner: Option<HWND>) -> io::Result<()> {
+    set_text_using(text, sensitive, owner, Open::try_once)
+}
+
+fn set_text_using(
+    text: &str,
+    sensitive: bool,
+    owner: Option<HWND>,
+    open: fn(Option<HWND>) -> io::Result<Open>,
+) -> io::Result<()> {
     let mut wide: Vec<u16> = text.encode_utf16().collect();
     wide.push(0);
     let bytes: Vec<u8> = wide.iter().flat_map(|c| c.to_le_bytes()).collect();
-    let _open = Open::new(owner)?;
+    let _open = open(owner)?;
     // SAFETY: the clipboard is open (guard above).
     unsafe { EmptyClipboard() }.map_err(io::Error::other)?;
     set(u32::from(CF_UNICODETEXT.0), &bytes)?;
@@ -139,7 +160,27 @@ fn mark_private() -> io::Result<()> {
 /// `CF_BITMAP` itself) plus the registered "PNG" format. A private image is
 /// kept out of history, the cloud clipboard and monitors, like private text.
 pub fn set_image(png: &[u8], dibv5: &[u8], sensitive: bool, owner: Option<HWND>) -> io::Result<()> {
-    let _open = Open::new(owner)?;
+    set_image_using(png, dibv5, sensitive, owner, Open::new)
+}
+
+/// Non-blocking image counterpart of [`try_set_text`]; both buffers stay owned by the caller.
+pub fn try_set_image(
+    png: &[u8],
+    dibv5: &[u8],
+    sensitive: bool,
+    owner: Option<HWND>,
+) -> io::Result<()> {
+    set_image_using(png, dibv5, sensitive, owner, Open::try_once)
+}
+
+fn set_image_using(
+    png: &[u8],
+    dibv5: &[u8],
+    sensitive: bool,
+    owner: Option<HWND>,
+    open: fn(Option<HWND>) -> io::Result<Open>,
+) -> io::Result<()> {
+    let _open = open(owner)?;
     // SAFETY: the clipboard is open (guard above).
     unsafe { EmptyClipboard() }.map_err(io::Error::other)?;
     let written = set(u32::from(CF_DIBV5.0), dibv5)

@@ -3,7 +3,7 @@
 The single place that says what is done, what is in progress and what is left in the Relay v2 program. It is updated and pushed after every task, so a new session can continue from GitHub alone.
 
 ## Resume here
-- **Clipboard repair resume:** CP1.2 complete; next CP1.3 in the clipboard plain-paste plan below. This focused plan takes priority until its measurement stop gate.
+- **Clipboard repair resume:** CP1.3 complete; next CP1.4 in the clipboard plain-paste plan below. This focused plan takes priority until its measurement stop gate.
 - **Branch:** `cloud/v2-upgrade` (cut from `main` at `456e480`). Never push to another branch; no pull request.
 - **Last finished task:** M8.R (M8 is done). M5.1's visual checks are open on [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
 - **Next task:** T0 (todo carry-over), then M9.0b (a second pairing removed the first PC from the phone: investigate), then Prelude P (M5.10, M5.11, M6.7, M7.8 call sites), then M9. Plans: [M9](plans/2026-11-08-m9-resume-transfers.md), [M10](plans/2026-11-08-m10-stay-current.md), [M11](plans/2026-11-08-m11-docs-final.md). M8 is done; what is still open from M5 to M8 is under "Open follow-ups (2026-11-07)" below, and the phone checks are in [DEVICE-CHECKS.md](DEVICE-CHECKS.md).
@@ -23,7 +23,7 @@ This focused repair plan takes priority over the milestone resume order while ac
 
 - [x] CP1.1 Honest send completion and retryable fingerprints (skips, zero recipients and failed sender tasks stay retryable; all pre-commit gates passed, Rust tests serialized for Windows UI isolation)
 - [x] CP1.2 Requested pictures target the requesting PC (explicit requester wins; an unpaired requester is refused; manual sends retain the default PC)
-- [ ] CP1.3 Retry the newest busy Windows clipboard write, including unlock
+- [x] CP1.3 Retry the newest busy Windows clipboard write, including unlock (RAM-only retry slot and non-blocking delivery; four pure tests pass; full workspace has only the two known Windows `clipboard is busy` test failures with Relay running; other gates pass)
 - [ ] CP1.4 Expire the phone's remote-text echo guard
 - [ ] CP1.5 Keep picture pulls pending for their actual transfer lifetime
 - [ ] CP1.6 Log paused drops and clipboard-write outcomes without content
