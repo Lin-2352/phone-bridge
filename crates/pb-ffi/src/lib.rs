@@ -2450,7 +2450,9 @@ impl PbNode {
     }
 
     /// Universal Clipboard, phone -> PC. Skips text that just arrived from
-    /// the PC so the two clipboards never bounce the same text.
+    /// the PC so the two clipboards never bounce the same text. Success means
+    /// every enabled recipient was sent the update; skips and failed sends remain
+    /// retryable instead of letting Android record an undelivered fingerprint.
     pub async fn sync_clipboard(&self, text: String, sensitive: bool) -> Result<(), PbError> {
         if !self
             .shared
@@ -2458,7 +2460,9 @@ impl PbNode {
             .load(std::sync::atomic::Ordering::Relaxed)
             || !syncable(&text)
         {
-            return Ok(());
+            return Err(fail(
+                "Clipboard sharing is off or the copied text cannot be shared",
+            ));
         }
         let h = clip_hash(&text);
         if *self
@@ -2468,7 +2472,7 @@ impl PbNode {
             .unwrap_or_else(|p| p.into_inner())
             == h
         {
-            return Ok(());
+            return Err(fail("The copied text came from the PC"));
         }
         // All peers at once: one that is away must not delay or block the rest.
         let tasks: Vec<_> = self
@@ -2495,10 +2499,19 @@ impl PbNode {
                 })
             })
             .collect();
+        if tasks.is_empty() {
+            return Err(fail("No paired PC has clipboard sharing enabled"));
+        }
         let mut first_err = None;
         for t in tasks {
-            if let Ok(Err(e)) = t.await {
-                first_err.get_or_insert(fail(e));
+            match t.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    first_err.get_or_insert(fail(e));
+                }
+                Err(e) => {
+                    first_err.get_or_insert(fail(e));
+                }
             }
         }
         first_err.map_or(Ok(()), Err)
@@ -3040,6 +3053,54 @@ mod tests {
         );
         set.set(Vec::new());
         assert!(!set.allows(&on, "a"), "an empty list means no PC");
+    }
+
+    struct ClipboardTestKey;
+    impl KeyWrapper for ClipboardTestKey {
+        fn wrap(&self, plain: Vec<u8>) -> Result<Vec<u8>, PbError> {
+            Ok(plain)
+        }
+        fn unwrap(&self, sealed: Vec<u8>) -> Result<Vec<u8>, PbError> {
+            Ok(sealed)
+        }
+    }
+
+    #[tokio::test]
+    async fn skipped_clipboard_sync_is_not_reported_as_sent() {
+        let dir = std::env::temp_dir().join(format!(
+            "relay-clipboard-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let node = start_node(
+            dir.to_string_lossy().into_owned(),
+            "clipboard test".into(),
+            0,
+            Arc::new(ClipboardTestKey),
+            Arc::new(Seen::default()),
+        )
+        .await
+        .unwrap();
+        let disabled = node
+            .sync_clipboard("copy while disabled".into(), false)
+            .await;
+        node.set_clipboard_sync(true);
+        node.set_clipboard_peers(Vec::new());
+        let no_recipient = node
+            .sync_clipboard("copy with nobody enabled".into(), false)
+            .await;
+        node.shutdown().await;
+        assert!(
+            disabled.is_err(),
+            "a skipped send must not advance the fingerprint"
+        );
+        assert!(
+            no_recipient.is_err(),
+            "zero recipients must remain retryable"
+        );
     }
 
     #[test]

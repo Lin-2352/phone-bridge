@@ -619,3 +619,7 @@ Fix: `-keep class * extends androidx.room.RoomDatabase { <init>(); }` in `androi
 
 ## Windows Hello per area (2026-11-10)
 Owner asked for switches. With the gate on, three areas have their own switch (default on): saving incoming files, audio sharing, phone control. Turning one off needs an unlock. Pairing, unpair, gate off and the "always allow" toggles always ask while the gate is on. Camera and screen are not gated on the PC (the phone asks). The 60 s grace is unchanged.
+
+## Clipboard sync completion (CP1.1, 2026-11-11)
+
+The Android sync call succeeds only after all enabled paired PCs have been sent the update. Sharing disabled, an ineligible clip, a recent remote echo, or zero eligible PCs is a retryable failure, not a successful send. Android remembers the keyed fingerprint only on success, so a later focus can retry. A failed peer or sender task also leaves the clip retryable; partial success can cause a harmless repeat to a PC that already received it. Logs record completion or deferral without clipboard text. The UniFFI method signature and wire messages are unchanged.

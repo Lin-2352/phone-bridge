@@ -281,9 +281,10 @@ fun shareClipboardIfChanged(ctx: Context, prefs: Prefs) {
         val node = Bridge.awaitNode() ?: return@launch
         runCatching { node.syncClipboard(text, sensitive) }
             .onSuccess {
-                // Only now: a copy made while the PC was away is sent next time.
+                // Only an actual delivery counts; skipped/failed sends are retried next focus.
                 ClipFingerprints.remember(ctx, text)
                 Log.i(TAG, "CLIPSYNC sent ${text.length} chars")
             }
+            .onFailure { Log.i(TAG, "CLIPSYNC deferred: ${it.message}") }
     }
 }
