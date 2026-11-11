@@ -18,7 +18,7 @@ pub const MAX_CLIPBOARD_IMAGE: usize = 10 * 1024 * 1024;
 pub struct Control {
     #[prost(
         oneof = "ControlMsg",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
     )]
     pub msg: Option<ControlMsg>,
 }
@@ -108,6 +108,31 @@ pub enum ControlMsg {
     /// Either side: gracefully stop the audio stream.
     #[prost(message, tag = "27")]
     AudioStop(AudioStop),
+    /// PC -> phone: send what is on your clipboard now. Android lets only the focused app read it, so the phone
+    /// opens a see-through window for a moment, then answers with a `ClipboardUpdate` (text) or a clipboard
+    /// picture, or with a `ClipboardPullResult` saying why not. Older peers ignore it.
+    #[prost(message, tag = "28")]
+    ClipboardPull(ClipboardPull),
+    /// Phone -> PC: the answer to a `ClipboardPull` that sent nothing (locked, switch off, nothing copied).
+    #[prost(message, tag = "29")]
+    ClipboardPullResult(ClipboardPullResult),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ClipboardPull {
+    /// The PC also takes a picture if one is on the clipboard.
+    #[prost(bool, tag = "1")]
+    pub want_image: bool,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct ClipboardPullResult {
+    /// True when something was sent (the clip itself arrives as its own message).
+    #[prost(bool, tag = "1")]
+    pub ok: bool,
+    /// Why nothing was sent, in words for the person at the PC.
+    #[prost(string, tag = "2")]
+    pub reason: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -958,6 +983,11 @@ mod tests {
                 keys: vec!["k1".into(), "k2".into()],
             }),
             ControlMsg::NotifySyncRequest(NotifySyncRequest {}),
+            ControlMsg::ClipboardPull(ClipboardPull { want_image: true }),
+            ControlMsg::ClipboardPullResult(ClipboardPullResult {
+                ok: false,
+                reason: "phone is locked".into(),
+            }),
             ControlMsg::NotifyAction(NotifyAction {
                 id: 4,
                 key: "k1".into(),

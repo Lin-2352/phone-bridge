@@ -156,3 +156,8 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Routes that would work and why they were not shipped: READ_LOGS (needs an adb grant, developer options or wireless debugging); an accessibility service that notices Copy taps (built and tested to the point of the system "full control" prompt, then removed: banking and payment apps can refuse to run while any third-party accessibility service is on; Google Pay already shows an environment-risk banner on this phone).
 - Kept, with no special permission: Send to PC in the text-selection menu (91eb59f), open Relay, the tile and widget, and now a "Send clipboard" button on Relay's status notification (works from any app).
 - The accessibility service was never enabled on the phone (the system prompt was denied) and the build without it is installed.
+
+## 2026-11-11: banking apps, baseline (phone: realme RMX3561, Android 13, realme UI 4.0; USB debugging and developer options ON for testing; overlay permission allowed; accessibility off)
+- Launching each app to its first screen (no logins, no payments): BHIM shows "Security Alert! ADB Wireless Debugging Detected!"; HDFC PayZapp shows "Turn Off Developer Mode ... or USB Debugging"; HDFC Bank, Google Pay, Canara Bank and Paytm open normally to their first screen.
+- Owner's report: Google Pay and Paytm reject at payment time (a launch screen cannot show that). So the debugging state the testing needs already conflicts with banking apps; turn USB debugging and developer options off when device testing is finished, and never ship a route that needs them (READ_LOGS, Shizuku, wireless debugging).
+- Not tested: accessibility on versus off (cannot be isolated while debugging is on; the chosen design does not use accessibility).
