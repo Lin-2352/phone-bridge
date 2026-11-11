@@ -161,8 +161,8 @@ class StarterActivity : Activity() {
 /**
  * Tile detail panel, laid out like the system's own (DND, Bluetooth): blurred
  * shade behind, a card with close, title and master switch, the options, and
- * MORE. Opening it also shares the clipboard: Android lets only a focused
- * app read it, and this panel is focused.
+ * MORE. Reading the clipboard requires a tap on Send clipboard now, even
+ * though the panel has focus.
  */
 class QuickPanelActivity : FragmentActivity() {
     private lateinit var prefs: Prefs
@@ -201,6 +201,7 @@ class QuickPanelActivity : FragmentActivity() {
         var clip by remember { mutableStateOf(prefs.clipboardSyncAll) }
         var sens by remember { mutableStateOf(prefs.sendSensitive) }
         var auto by remember { mutableStateOf(prefs.autoAcceptAll) }
+        val clipboard = clipboardPanel(on, prefs.clipboardSync, clip)
         val itemColors = ListItemDefaults.colors(containerColor = Color.Transparent)
         Column(
             Modifier
@@ -229,12 +230,12 @@ class QuickPanelActivity : FragmentActivity() {
                 colors = itemColors,
                 headlineContent = { Text("Share clipboard") },
                 supportingContent = { Text("Copy on one device, paste on the other") },
-                trailingContent = { Switch(clip, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }, enabled = on) },
+                trailingContent = { Switch(clipboard.checked, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }, enabled = on) },
             )
             ListItem(
                 headlineContent = { Text("Send clipboard now") },
-                supportingContent = { Text("What you copied on this phone goes to your PC") },
-                modifier = Modifier.clickable(enabled = on && clip) { shareClipboardIfChanged(this@QuickPanelActivity, prefs) },
+                supportingContent = { Text("Send copied text to every PC with Share clipboard on. For pictures, use the Send clipboard tile") },
+                modifier = Modifier.clickable(enabled = clipboard.canSend) { shareClipboardIfChanged(this@QuickPanelActivity, prefs, manual = true) },
             )
             ListItem(
                 colors = itemColors,
@@ -269,22 +270,48 @@ class QuickPanelActivity : FragmentActivity() {
 }
 
 /** Phone -> PC Share clipboard, run whenever one of our windows gains focus. */
-fun shareClipboardIfChanged(ctx: Context, prefs: Prefs) {
-    if (!prefs.clipboardSync) return
-    val (text, sensitive) = readClipboard(ctx) ?: return
-    if (sensitive && !prefs.sendSensitive) return
+fun shareClipboardIfChanged(ctx: Context, prefs: Prefs, manual: Boolean = false) {
+    val app = ctx.applicationContext
+    fun feedback(message: String) {
+        if (manual) android.os.Handler(android.os.Looper.getMainLooper()).post {
+            android.widget.Toast.makeText(app, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+    if (!prefs.clipboardSync) {
+        feedback("Turn on Share clipboard for a paired PC first")
+        return
+    }
+    val (text, sensitive) = readClipboard(ctx) ?: run {
+        feedback("No copied text to send. For a picture, use the Send clipboard tile")
+        return
+    }
+    if (sensitive && !prefs.sendSensitive) {
+        feedback("Not sent: Passwords and codes is off")
+        return
+    }
     // Only when it changed since the last sync in either direction.
-    if (ClipFingerprints.unchanged(ctx, text)) return
-    if (!Bridge.shownOn()) return
+    if (!manual && ClipFingerprints.unchanged(ctx, text)) return
+    if (!Bridge.shownOn()) {
+        feedback("$APP_NAME is off. Turn it on first")
+        return
+    }
+    feedback("Sending copied text to your enabled PCs")
     Bridge.scope.launch {
         // Opened cold: the node may still be starting.
-        val node = Bridge.awaitNode() ?: return@launch
+        val node = Bridge.awaitNode() ?: run {
+            feedback("$APP_NAME did not start. Try again")
+            return@launch
+        }
         runCatching { node.syncClipboard(text, sensitive) }
             .onSuccess {
                 // Only an actual delivery counts; skipped/failed sends are retried next focus.
                 ClipFingerprints.remember(ctx, text)
                 Log.i(TAG, "CLIPSYNC sent ${text.length} chars")
+                feedback("Copied text sent to your enabled PCs")
             }
-            .onFailure { Log.i(TAG, "CLIPSYNC deferred: ${it.message}") }
+            .onFailure {
+                Log.i(TAG, "CLIPSYNC deferred: ${it.message}")
+                feedback("Not sent to every enabled PC. Check the connection and clipboard switches, then try again")
+            }
     }
 }

@@ -8,6 +8,7 @@ class ImageNoticeTest {
     @Test
     fun a_declined_send_tells_the_user_what_to_turn_on() {
         assertTrue(imageSendNotice("declined").contains("Share images"))
+        assertTrue(imageSendNotice("declined").contains("Share clipboard"))
         assertTrue(imageSendNotice("The other device declined").contains("Share images"))
     }
 

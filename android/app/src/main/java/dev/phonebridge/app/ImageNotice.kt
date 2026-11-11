@@ -4,7 +4,7 @@ package dev.phonebridge.app
 fun imageSendNotice(error: String?): String {
     val e = error.orEmpty().lowercase()
     return when {
-        "declin" in e -> "Your PC didn't take the picture. Turn on Share images in $APP_NAME on the PC"
+        "declin" in e -> "Your PC didn't take the picture. Turn on Share clipboard and Share images in $APP_NAME on the PC"
         "too large" in e || "10 mb" in e -> "The picture is over 10 MB, so it wasn't sent"
         else -> "Couldn't reach your PC to send the picture"
     }

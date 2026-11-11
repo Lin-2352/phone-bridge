@@ -955,7 +955,7 @@ fun SettingsTab(onDone: () -> Unit) {
                         }
                         item {
                             Text(
-                                "Android only lets apps read the clipboard while they are open. So copies made on this phone are shared when you open $APP_NAME or its Quick Settings panel (long-press the tile). Copies from your PC arrive any time.",
+                                "Android only lets a focused app read the clipboard. New text copied on this phone is shared when you open $APP_NAME. In its Quick Settings panel, tap Send clipboard now; opening the panel alone sends nothing. Use the Send clipboard tile for pictures. Copies from enabled PCs can arrive in the background.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 32.dp, vertical = 4.dp),

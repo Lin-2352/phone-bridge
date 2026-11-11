@@ -651,3 +651,6 @@ Clipboard text and pictures start one send future per paired target instead of a
 ## Shared text is not a file (CP1.8, 2026-11-11)
 
 Authenticated inline text/link offers skip the file-save dialog and its Windows Hello gate. Received text still enters the existing shared-text flow: the default is a toast with Copy; only the existing explicit auto-copy setting copies immediately, with the existing history policy. Links retain their click-to-open toast and are never launched automatically. Files keep their file-risk, size, quota and consent checks; clipboard images keep their separate sharing gates. Unknown offer kinds do not gain a bypass.
+
+### Clipboard repair: manual-send feedback
+The Quick panel remains explicit and text-only: opening it never reads or sends. Its all-PC switch display stays unchanged, while Send clipboard now is available with any enabled PC. A manual tap reports empty/sensitive/off/start/send/failure outcomes and can retry unchanged text; ordinary focus sync stays quiet. Picture-refusal guidance names both PC clipboard and image switches.
