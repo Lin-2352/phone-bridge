@@ -547,9 +547,13 @@ fn page_action(a: crate::pages::Action) {
         | Action::TimelineDay(_)
         | Action::TimelineAll(_)
         | Action::TimelineMenu(_) => {}
-        Action::CopyText(t) => {
-            let _ = set_clipboard_own(HWND(raw as *mut _), &t, false);
-        }
+        Action::CopyText(t) => match set_clipboard_own(HWND(raw as *mut _), &t, false) {
+            Ok(()) => st.log.line("CLIPBOARD text written to this PC's clipboard"),
+            Err(e) => {
+                st.log.line(&format!("CLIPBOARD text write failed: {e}"));
+                balloon(HWND(raw as *mut _), "Relay", "Could not set the clipboard");
+            }
+        },
         // A Timeline delete whose undo window passed: gone for good.
         Action::TimelineDelete(keys) => {
             crate::timeline::with(|t| {
@@ -1723,8 +1727,12 @@ fn copy_shared_text(hwnd: HWND, st: &State, tag: &str) {
         .map(|s| s.keep_in_history)
         .unwrap_or(false);
     let plan = crate::shared_text::plan(false, keep);
-    if let Err(e) = set_clipboard_own(hwnd, &text, plan.exclude_from_history) {
-        balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}"));
+    match set_clipboard_own(hwnd, &text, plan.exclude_from_history) {
+        Ok(()) => st.log.line("SHARED text written to this PC's clipboard"),
+        Err(e) => {
+            st.log.line(&format!("SHARED text write failed: {e}"));
+            balloon(hwnd, "Relay", &format!("Could not set clipboard: {e}"));
+        }
     }
 }
 

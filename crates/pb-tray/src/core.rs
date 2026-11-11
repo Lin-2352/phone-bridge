@@ -963,6 +963,9 @@ pub async fn run(
                 Some(c) if crate::pause::needs_network(&c)
                     && settings.lock().map(|s| s.paused).unwrap_or(false) =>
                 {
+                    if let Some(reason) = crate::pause::clipboard_drop_log(&c) {
+                        log.line(reason);
+                    }
                     if !crate::pause::is_quiet(&c) {
                         ui(UiEvent::Info("Relay is paused".into()));
                     }

@@ -72,6 +72,16 @@ pub fn is_quiet(c: &Cmd) -> bool {
     )
 }
 
+/// A content-free diagnostic when a paused clipboard command is dropped.
+pub fn clipboard_drop_log(command: &Cmd) -> Option<&'static str> {
+    match command {
+        Cmd::ClipboardChanged { .. } | Cmd::ClipboardImageChanged { .. } => {
+            Some("CLIPSYNC skipped: Relay is paused")
+        }
+        _ => None,
+    }
+}
+
 /// The tray tooltip after the core stopped: what happened and the way out.
 pub fn failed_tooltip(reason: &str) -> String {
     // A tooltip holds 127 characters.
@@ -212,5 +222,30 @@ mod tests {
         assert_eq!(tooltip(true, "ABCDEF123"), "Relay is paused");
         assert_eq!(tooltip(false, "ABCDEF123"), "Relay (ABCDEF123)");
         assert_eq!(tooltip(false, ""), "Relay");
+    }
+    #[test]
+    fn paused_clipboard_drops_explain_themselves_without_logging_the_content() {
+        for command in [
+            Cmd::ClipboardChanged {
+                text: "a secret password".into(),
+                sensitive: true,
+            },
+            Cmd::ClipboardChanged {
+                text: "ordinary text".into(),
+                sensitive: false,
+            },
+            Cmd::ClipboardImageChanged { png: vec![1, 2, 3] },
+        ] {
+            assert!(
+                is_quiet(&command),
+                "background copies must not cause toast spam"
+            );
+            assert_eq!(
+                clipboard_drop_log(&command),
+                Some("CLIPSYNC skipped: Relay is paused")
+            );
+        }
+        assert_eq!(clipboard_drop_log(&Cmd::Pair), None);
+        assert_eq!(clipboard_drop_log(&Cmd::CheckPeers), None);
     }
 }

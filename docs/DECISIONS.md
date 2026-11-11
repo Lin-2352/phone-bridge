@@ -639,3 +639,7 @@ The phone remembers the hash and monotonic arrival time of the most recent remot
 ## Clipboard picture answer and transfer lifetime (CP1.5, 2026-11-11)
 
 The six-second pull deadline waits for an answer, not for every image byte. An accepted clipboard-picture offer from the requested phone counts as an answer and holds that request until its receive succeeds or fails under the transport's existing size and idle limits. Failure says the picture could not be received; it does not say the phone never answered. Another pull cannot overlap that image, and internal generation tokens stop a late image completion from clearing a newer request. Another phone's clipboard update or refusal cannot complete the request or bypass that phone's sharing switch. No new wire field or arbitrary total transfer timeout is introduced.
+
+## Clipboard diagnostics (CP1.6, 2026-11-11)
+
+A background text/image copy dropped because Relay is paused writes `CLIPSYNC skipped: Relay is paused` without a per-copy toast. Successful tile-text and picture writes are reported by the deferred-delivery path only after Windows accepted them (CP1.3). Page Copy and shared-text Copy also log actual write success or failure. These records contain type/state and OS errors, never the copied text, image bytes, or a secret's length. Existing pause UI and background quiet behavior are unchanged.
