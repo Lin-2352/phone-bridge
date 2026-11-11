@@ -177,3 +177,5 @@ The in-memory retry slot is tested with a busy writer, replacement by a newer im
 ### CP1.5: long picture pulls (automated only)
 
 Nine request-state tests cover a picture still transferring after six seconds, completion/failure cleanup, overlapping pulls, stale image completions, and replies from another phone. The transport's size/idle limits are unchanged. Not device-tested: an actual picture transfer taking over six seconds. Slow preparation before an answer/offer arrives still uses the existing initial reply deadline.
+
+Clipboard CP1.10 device checks pending: enable clipboard sharing with overlay permission absent and verify the owner can grant it from the clipboard section; decline then retry from that row. Pair a new PC and verify the off notice without changing defaults. With two phones, disable one PC-side per-phone clipboard switch and verify neither direction, explicit clipboard action nor a previously queued locked/busy clipboard write can cross that grant; keep the other phone working. These are code/unit-checked only until owner-assisted device testing.

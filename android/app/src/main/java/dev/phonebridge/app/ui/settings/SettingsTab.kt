@@ -591,9 +591,10 @@ fun SettingsTab(onDone: () -> Unit) {
                     val on = remember(tick) { prefs.pcFlag(p.id, key) }
                     RelayRow(
                         title = name,
+                        supporting = if (key == "clipboard_sync" && !on) "Off for this PC. Enable here and in Relay on the PC to share copies" else null,
                         trailing = {
                             androidx.compose.material3.Switch(checked = on, onCheckedChange = { v ->
-                                val apply = { prefs.setPcFlag(p.id, key, v); Bridge.applyPeerSwitches(ctx) }
+                                val apply = { prefs.setPcFlag(p.id, key, v); Bridge.applyPeerSwitches(ctx); if (key == "clipboard_sync") dev.phonebridge.app.requestClipboardOverlay(ctx, v) }
                                 if (v && key == "auto_accept") guarded(Guarded.AutoAccept, "Accept files automatically") { apply() } else { apply(); tick++ }
                             })
                         },
@@ -910,11 +911,17 @@ fun SettingsTab(onDone: () -> Unit) {
                                     supporting = "Share what you copy with your paired PC",
                                     checked = clipOn,
                                     onChecked = { on ->
-                                        val apply = { clipOn = on; prefs.clipboardSync = on; Bridge.node?.setClipboardSync(on) }
+                                        val apply = { clipOn = on; prefs.clipboardSync = on; Bridge.node?.setClipboardSync(on); dev.phonebridge.app.requestClipboardOverlay(ctx, on) }
                                         val a = (ctx as? androidx.fragment.app.FragmentActivity)
                                         // Turning it on sends what you copy to a PC without asking: guarded; off only removes access.
                                         if (on && a != null) a.gated(Guarded.AlwaysAllow, "Share clipboard") { apply() } else apply()
                                     },
+                                )
+                                RowDivider()
+                                RelayRow(
+                                    title = "Allow clipboard requests from PC",
+                                    supporting = if (android.provider.Settings.canDrawOverlays(ctx)) "Display over other apps is allowed. Your PC can ask while this phone is unlocked" else "Allow Display over other apps so a paired PC can ask for the clipboard. You approve it in Android Settings",
+                                    onClick = { dev.phonebridge.app.requestClipboardOverlay(ctx, true) },
                                 )
                                 RowDivider()
                                 RelayRow(

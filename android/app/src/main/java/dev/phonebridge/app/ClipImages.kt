@@ -90,6 +90,12 @@ object ClipImages {
         val peerId = clipboardImagePeerId(requestedPeerId, Bridge.defaultPeer(ctx)?.id)
         val peer = node.peers().firstOrNull { it.id == peerId }
             ?: return if (requestedPeerId != null) "The requesting PC is no longer paired" else "Pair $APP_NAME with your PC first"
+        if (requestedPeerId != null) {
+            val prefs = Prefs(ctx)
+            if (!prefs.pcFlag(requestedPeerId, "clipboard_sync") || !prefs.clipboardImages) {
+                return "Share clipboard or Share copied images is off for the requesting PC on the phone"
+            }
+        }
         val png = toPng(bytes) ?: return imageSendNotice("not a picture")
         if (png.size > MAX_IMAGE_BYTES) return imageSendNotice("too large")
         val tmp = File(ctx.cacheDir, "send-${System.nanoTime()}.png")

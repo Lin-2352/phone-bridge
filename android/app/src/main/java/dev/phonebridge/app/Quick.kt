@@ -230,7 +230,7 @@ class QuickPanelActivity : FragmentActivity() {
                 colors = itemColors,
                 headlineContent = { Text("Share clipboard") },
                 supportingContent = { Text("Copy on one device, paste on the other") },
-                trailingContent = { Switch(clipboard.checked, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it) }, enabled = on) },
+                trailingContent = { Switch(clipboard.checked, { clip = it; prefs.clipboardSync = it; Bridge.node?.setClipboardSync(it); requestClipboardOverlay(this@QuickPanelActivity, it) }, enabled = on) },
             )
             ListItem(
                 headlineContent = { Text("Send clipboard now") },

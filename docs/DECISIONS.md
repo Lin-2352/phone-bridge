@@ -654,3 +654,8 @@ Authenticated inline text/link offers skip the file-save dialog and its Windows 
 
 ### Clipboard repair: manual-send feedback
 The Quick panel remains explicit and text-only: opening it never reads or sends. Its all-PC switch display stays unchanged, while Send clipboard now is available with any enabled PC. A manual tap reports empty/sensitive/off/start/send/failure outcomes and can retry unchanged text; ordinary focus sync stays quiet. Picture-refusal guidance names both PC clipboard and image switches.
+
+### Clipboard repair: per-device authority and permission discovery
+The PC now checks the stored per-phone clipboard permission for background text/images and explicit clipboard sends/pulls. Manual text actions can bypass the global background-sync switch, but never a disabled per-phone grant; pictures additionally need both global image/clipboard switches. Deferred Windows writes recheck current grants, pause and auto-copy settings and discard revoked data. Explicit share-sheet Text/Link offers retain their separate Copy/Open setting.
+
+Enabling clipboard sharing on the phone opens the existing Display over other apps permission page when needed; a clipboard settings row allows retrying later. The owner alone grants it. Nothing reads just by opening the Quick panel, no permission was added, and defaults remain off. Both pairing completion and the per-PC row explain that a new device starts off and must be enabled on both devices. Phone pull handlers recheck their per-PC grant before reading and requested pictures recheck before sending.

@@ -221,8 +221,13 @@ object Bridge {
         AppLog.event("events", "pair_step", "step" to if (accept) "confirmed" else "rejected")
         val n = node ?: run { pairMessage.value = "$APP_NAME stopped. Turn it on and pair again"; return }
         try {
+            val pairedBefore = n.peers().map { it.id }.toSet()
             val name = n.confirmPairing(accept)
             Log.i(TAG, "PAIRED with $name")
+            val prefs = Prefs(ctx)
+            if (n.peers().any { it.id !in pairedBefore && !prefs.pcFlag(it.id, "clipboard_sync") }) {
+                notifyInfo(ctx, "Paired with $name", NEW_PC_CLIPBOARD_NOTICE)
+            }
             AppLog.event("events", "pair_step", "step" to "paired")
             linked.value = name
             // Pairing is contact too: Home says "Last seen just now", not "Not seen yet".

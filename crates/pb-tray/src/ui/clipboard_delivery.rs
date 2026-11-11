@@ -10,12 +10,12 @@ use std::io;
 use std::sync::{atomic::Ordering, Mutex};
 use windows::Win32::Foundation::HWND;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) enum Source {
-    Explicit,
-    Sync,
+    Explicit(String),
+    Sync { peer: String, pulled: bool },
     Shared,
-    Image,
+    Image(String),
 }
 
 enum Payload {
@@ -52,7 +52,7 @@ pub(super) fn text(
         .lock()
         .map(|s| s.keep_in_history)
         .unwrap_or(false);
-    let private = sensitive || (source != Source::Explicit && !keep);
+    let private = sensitive || (!matches!(source, Source::Explicit(_)) && !keep);
     submit(
         hwnd,
         st,
@@ -65,7 +65,7 @@ pub(super) fn text(
     );
 }
 
-pub(super) fn image(hwnd: HWND, st: &State, from: String, png: Vec<u8>) {
+pub(super) fn image(hwnd: HWND, st: &State, peer: String, from: String, png: Vec<u8>) {
     // Decode once, before trying to open the clipboard; retries reuse this RAM buffer.
     let dib = match pb_platform_win::dib::png_to_dibv5(&png) {
         Ok(dib) => dib,
@@ -85,7 +85,7 @@ pub(super) fn image(hwnd: HWND, st: &State, from: String, png: Vec<u8>) {
         st,
         Copy {
             from,
-            source: Source::Image,
+            source: Source::Image(peer),
             sensitive: false,
             payload: Payload::Image { png, dib, private },
         },
@@ -113,8 +113,30 @@ pub(super) fn retry(hwnd: HWND, st: &State, initial: bool) {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .try_write(|copy| {
+            let permitted = match &copy.source {
+                Source::Explicit(peer) => {
+                    crate::core::clipboard_allowed(&st.settings, peer, true, false)
+                }
+                Source::Sync { peer, pulled } => {
+                    crate::core::clipboard_allowed(&st.settings, peer, *pulled, false)
+                }
+                Source::Image(peer) => {
+                    crate::core::clipboard_allowed(&st.settings, peer, false, true)
+                }
+                Source::Shared => st
+                    .settings
+                    .lock()
+                    .map(|s| !s.paused && s.auto_copy_shared_text)
+                    .unwrap_or(false),
+            };
+            if !permitted {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "clipboard permission revoked",
+                ));
+            }
             // A history switch turned off while queued must not make the pending clip public.
-            let hide = copy.source != Source::Explicit
+            let hide = !matches!(copy.source, Source::Explicit(_))
                 && st
                     .settings
                     .lock()
@@ -135,14 +157,14 @@ pub(super) fn retry(hwnd: HWND, st: &State, initial: bool) {
         });
     match result {
         Ok(Some(copy)) => {
-            st.log.line(match copy.source {
-                Source::Sync => "CLIPSYNC written to this PC's clipboard",
-                Source::Image => "CLIPBOARD picture written to this PC's clipboard",
-                Source::Explicit => "CLIPBOARD text written to this PC's clipboard",
+            st.log.line(match &copy.source {
+                Source::Sync { .. } => "CLIPSYNC written to this PC's clipboard",
+                Source::Image(_) => "CLIPBOARD picture written to this PC's clipboard",
+                Source::Explicit(_) => "CLIPBOARD text written to this PC's clipboard",
                 Source::Shared => "SHARED text written to this PC's clipboard",
             });
-            match copy.source {
-                Source::Explicit => {
+            match &copy.source {
+                Source::Explicit(_) => {
                     let show = st
                         .settings
                         .lock()
@@ -162,12 +184,12 @@ pub(super) fn retry(hwnd: HWND, st: &State, initial: bool) {
                     &crate::shared_text::title(&copy.from),
                     crate::shared_text::body(true),
                 ),
-                Source::Image => balloon(
+                Source::Image(_) => balloon(
                     hwnd,
                     &format!("Copied on {}", copy.from),
                     "Picture ready to paste",
                 ),
-                Source::Sync => balloon(
+                Source::Sync { .. } => balloon(
                     hwnd,
                     &format!("Copied on {}", copy.from),
                     if copy.sensitive {
@@ -184,6 +206,11 @@ pub(super) fn retry(hwnd: HWND, st: &State, initial: bool) {
                 st.log
                     .line("CLIPBOARD queued: clipboard is busy; will retry");
             }
+        }
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            PENDING.lock().unwrap_or_else(|p| p.into_inner()).clear();
+            st.log
+                .line("CLIPBOARD queued copy discarded: clipboard access revoked or Relay paused");
         }
         Err(e) => {
             PENDING.lock().unwrap_or_else(|p| p.into_inner()).clear();

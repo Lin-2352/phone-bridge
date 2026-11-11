@@ -447,6 +447,7 @@ pub enum UiEvent {
         id: u64,
     },
     Clipboard {
+        peer_id: String,
         from: String,
         text: String,
         sensitive: bool,
@@ -470,12 +471,15 @@ pub enum UiEvent {
     },
     /// Universal Clipboard: text copied on the other device.
     RemoteClipboard {
+        peer_id: String,
+        pulled: bool,
         from: String,
         text: String,
         sensitive: bool,
     },
     /// Universal Clipboard: a picture copied on the other device (PNG bytes).
     RemoteImage {
+        peer_id: String,
         from: String,
         png: Vec<u8>,
     },
@@ -614,6 +618,27 @@ pub fn perms_of(_settings: &SharedSettings, id: &str) -> crate::devices::DeviceP
         .and_then(|(d, _)| d.lock().ok())
         .map(|d| d.perms(id))
         .unwrap_or_default()
+}
+
+/// Re-read authority at admission and delivery; queued data never preserves a revoked grant.
+pub fn clipboard_allowed(settings: &SharedSettings, id: &str, explicit: bool, image: bool) -> bool {
+    let Ok((sharing, paused, images)) = settings
+        .lock()
+        .map(|s| (s.universal_clipboard, s.paused, s.share_images))
+    else {
+        return false;
+    };
+    let access = crate::clip_access::Access {
+        sharing,
+        paused,
+        images,
+        peer: perms_of(settings, id).clipboard,
+    };
+    if image {
+        access.image()
+    } else {
+        access.text(explicit)
+    }
 }
 
 /// Keeps the global "control" and "auto-accept" switches (shown in the menu and Settings) equal to "some phone has
@@ -994,7 +1019,7 @@ pub async fn run(
                                     update_devices(|d| d.mark_new(&peer.id.to_string()));
                                     on_paired(&node);
                                     refresh(&node, &peers);
-                                    ui(UiEvent::Info(format!("Paired with {}", peer.name)));
+                                    ui(UiEvent::Info(format!("Paired with {}. Share clipboard starts off for this phone; enable it in Devices on this PC and for this PC on the phone", peer.name)));
                                 }
                                 Err(e) => {
                                     log.line(&format!("PAIRING not completed: {e}"));
@@ -1211,6 +1236,10 @@ pub async fn run(
                         ui(UiEvent::Pill("Pair a phone first".into(), 5));
                         continue;
                     };
+                    if !clipboard_allowed(&settings, &id.to_string(), true, false) {
+                        ui(UiEvent::Pill("Turn on Share clipboard for this phone in Devices first".into(), 6));
+                        continue;
+                    }
                     if !PULL.lock().unwrap_or_else(|p| p.into_inner()).start(std::time::Instant::now(), &id.to_string()) {
                         continue;
                     }
@@ -1220,10 +1249,13 @@ pub async fn run(
                         .unwrap_or(false);
                     log.line(&format!("PULL asking \"{name}\" for its clipboard"));
                     ui(UiEvent::Pill(format!("Asking {name} for its clipboard"), 3));
-                    let (node, log, ui): (_, _, Arc<dyn Fn(UiEvent) + Send + Sync>) = (node.clone(), log.clone(), ui.clone());
+                    let (node, log, ui, settings): (_, _, Arc<dyn Fn(UiEvent) + Send + Sync>, _) = (node.clone(), log.clone(), ui.clone(), settings.clone());
                     tokio::spawn(async move {
                         let sent = async {
                             let s = dial(&node, &id, node.connect(&id)).await?;
+                            if !clipboard_allowed(&settings, &id.to_string(), true, false) {
+                                return Err(pb_transport::Error::Declined);
+                            }
                             s.send(ControlMsg::ClipboardPull(pb_protocol::control::ClipboardPull { want_image })).await?;
                             s.finish().await;
                             Ok::<_, pb_transport::Error>(())
@@ -1250,6 +1282,9 @@ pub async fn run(
                     if !on || text.is_empty() || text.len() > MAX_CLIPBOARD_TEXT {
                         continue;
                     }
+                    let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default()
+                        .into_iter().filter(|(id, _)| clipboard_allowed(&settings, &id.to_string(), false, false)).collect();
+                    if targets.is_empty() { continue; }
                     let h = clip_hash(&text);
                     {
                         let mut c = clip.lock().unwrap_or_else(|p| p.into_inner());
@@ -1259,7 +1294,6 @@ pub async fn run(
                             continue;
                         }
                     }
-                    let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
                     let (node, log, clip, settings) =
                         (node.clone(), log.clone(), clip.clone(), settings.clone());
                     let text = Arc::new(text);
@@ -1268,8 +1302,15 @@ pub async fn run(
                             let (node, log, clip, settings, text) =
                                 (node.clone(), log.clone(), clip.clone(), settings.clone(), text.clone());
                             async move {
+                                if !clipboard_allowed(&settings, &id.to_string(), false, false) {
+                                    clip.lock().unwrap_or_else(|p| p.into_inner()).text.send_failed(h);
+                                    return;
+                                }
                                 let r = async {
                                     let s = dial(&node, &id, node.connect(&id)).await?;
+                                    if !clipboard_allowed(&settings, &id.to_string(), false, false) {
+                                        return Err(pb_transport::Error::Declined);
+                                    }
                                     s.send(ControlMsg::ClipboardUpdate(ClipboardUpdate { text: (*text).clone(), hash: h.to_vec(), sensitive })).await?;
                                     s.finish().await;
                                     Ok::<_, pb_transport::Error>(())
@@ -1308,10 +1349,12 @@ pub async fn run(
                     if !on {
                         continue;
                     }
+                    let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default()
+                        .into_iter().filter(|(id, _)| clipboard_allowed(&settings, &id.to_string(), false, true)).collect();
+                    if targets.is_empty() { continue; }
                     let Some(h) = clip.lock().unwrap_or_else(|p| p.into_inner()).image.should_send(&png) else {
                         continue;
                     };
-                    let targets: Vec<(PeerId, String)> = peers.lock().map(|g| g.clone()).unwrap_or_default();
                     let (node, log, clip, settings) =
                         (node.clone(), log.clone(), clip.clone(), settings.clone());
                     let png: Arc<[u8]> = png.into();
@@ -1320,6 +1363,10 @@ pub async fn run(
                             let (node, log, clip, settings, png) =
                                 (node.clone(), log.clone(), clip.clone(), settings.clone(), png.clone());
                             async move {
+                                if !clipboard_allowed(&settings, &id.to_string(), false, true) {
+                                    clip.lock().unwrap_or_else(|p| p.into_inner()).image.send_failed(h);
+                                    return;
+                                }
                                 match dial(&node, &id, node.send_clipboard_image(&id, png.clone())).await {
                                     Ok(()) => {
                                         seen(&node, &id);
@@ -1518,12 +1565,19 @@ pub async fn run(
                             ui(UiEvent::Info("Pair a device first".into()));
                             return;
                         };
+                        if !clipboard_allowed(&settings, &id.to_string(), true, false) {
+                            ui(UiEvent::Info("Turn on Share clipboard for this phone in Devices first".into()));
+                            return;
+                        }
                         if text.len() > MAX_CLIPBOARD_TEXT {
                             ui(UiEvent::Info("Clipboard text is too large to send".into()));
                             return;
                         }
                         let result = async {
                             let s = dial(&node, &id, node.connect(&id)).await?;
+                            if !clipboard_allowed(&settings, &id.to_string(), true, false) {
+                                return Err(pb_transport::Error::Declined);
+                            }
                             s.send(ControlMsg::ClipboardText(ClipboardText { text: text.clone(), sensitive: false })).await?;
                             s.finish().await;
                             Ok::<_, pb_transport::Error>(())
@@ -2099,6 +2153,10 @@ async fn pump_session(
                 keys: x.keys,
             }),
             Ok(Some(ControlMsg::ClipboardText(c))) => {
+                if !clipboard_allowed(&settings, &s.peer.to_string(), true, false) {
+                    log.line("CLIP ignored: this phone's clipboard permission is off");
+                    continue;
+                }
                 if c.sensitive {
                     log.line(&format!("CLIP from \"{}\" (sensitive)", s.peer_name));
                 } else {
@@ -2118,6 +2176,7 @@ async fn pump_session(
                     ),
                 );
                 ui(UiEvent::Clipboard {
+                    peer_id: s.peer.to_string(),
                     from: s.peer_name.clone(),
                     text: c.text,
                     sensitive: c.sensitive,
@@ -2152,13 +2211,8 @@ async fn pump_session(
                     g.answered_from(&s.peer.to_string());
                     wanted
                 };
-                if !pulled
-                    && !settings
-                        .lock()
-                        .map(|x| x.universal_clipboard)
-                        .unwrap_or(false)
-                {
-                    log.line("CLIPSYNC ignored (Universal Clipboard is off)");
+                if !clipboard_allowed(&settings, &s.peer.to_string(), pulled, false) {
+                    log.line("CLIPSYNC ignored: clipboard sharing is off for this phone");
                     continue;
                 }
                 clip.lock()
@@ -2187,6 +2241,8 @@ async fn pump_session(
                     ),
                 );
                 ui(UiEvent::RemoteClipboard {
+                    peer_id: s.peer.to_string(),
+                    pulled,
                     from: s.peer_name.clone(),
                     text: u.text,
                     sensitive: u.sensitive,
@@ -2301,10 +2357,7 @@ async fn pump_session(
                 } else if is_image {
                     // A clipboard picture is governed by the sharing switches, not
                     // the file prompt, and is never written to the save folder.
-                    let on = settings
-                        .lock()
-                        .map(|x| crate::clip_image::enabled(x.universal_clipboard, x.share_images))
-                        .unwrap_or(false);
+                    let on = clipboard_allowed(&settings, &s.peer.to_string(), false, true);
                     if !on {
                         log.line("CLIPSYNC image ignored (image sharing is off)");
                     }
@@ -2452,7 +2505,11 @@ async fn pump_session(
                                 .unwrap_or_else(|p| p.into_inner())
                                 .image_finished(generation);
                         }
-                        ui(UiEvent::RemoteImage { from, png });
+                        ui(UiEvent::RemoteImage {
+                            peer_id: s.peer.to_string(),
+                            from,
+                            png,
+                        });
                     }
                     Err(e) => {
                         if let Some(generation) = pulled_image {

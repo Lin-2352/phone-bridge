@@ -42,6 +42,7 @@ fun pullAction(hasText: Boolean, hasImage: Boolean, wantImage: Boolean, imagesOn
 /** The PC asked for the clipboard: open [PullClipActivity] (Android lets only the focused app read it) or say why not. */
 object PullClip {
     fun handle(ctx: Context, peerId: String, wantImage: Boolean) {
+        if (!Prefs(ctx).pcFlag(peerId, "clipboard_sync")) return refuse(peerId, "Share clipboard is off for this PC on the phone")
         val power = ctx.getSystemService(PowerManager::class.java)
         val keyguard = ctx.getSystemService(KeyguardManager::class.java)
         val why = pullRefusal(power.isInteractive, keyguard.isKeyguardLocked, Settings.canDrawOverlays(ctx))
@@ -93,6 +94,7 @@ class PullClipActivity : Activity() {
 
     private fun answer(app: Context, peerId: String, wantImage: Boolean) {
         val prefs = Prefs(app)
+        if (!prefs.pcFlag(peerId, "clipboard_sync")) return PullClip.refuse(peerId, "Share clipboard is off for this PC on the phone")
         val clip = app.getSystemService(ClipboardManager::class.java).primaryClip
         val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         val uri = item?.uri
@@ -104,7 +106,7 @@ class PullClipActivity : Activity() {
             PullAction.SendText -> {
                 Log.i(PTAG, "PULL answering with text ${text!!.length} chars")
                 Bridge.scope.launch {
-                    runCatching { Bridge.awaitNode()?.answerClipboardPull(peerId, text, sensitive) }
+                    runCatching { (Bridge.awaitNode() ?: error("Relay is not running")).answerClipboardPull(peerId, text, sensitive) }
                         .onSuccess { ClipFingerprints.remember(app, text) }
                         .onFailure { Log.w(PTAG, "PULL text not sent: $it") }
                 }

@@ -1332,6 +1332,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             }
         }
         UiEvent::Clipboard {
+            peer_id,
             from,
             text,
             sensitive,
@@ -1342,7 +1343,7 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 from,
                 text,
                 sensitive,
-                clipboard_delivery::Source::Explicit,
+                clipboard_delivery::Source::Explicit(peer_id),
             );
         }
         UiEvent::SharedText { from, text } => {
@@ -1366,6 +1367,8 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
             }
         }
         UiEvent::RemoteClipboard {
+            peer_id,
+            pulled,
             from,
             text,
             sensitive,
@@ -1376,10 +1379,15 @@ fn handle_event(hwnd: HWND, st: &State, e: UiEvent) {
                 from,
                 text,
                 sensitive,
-                clipboard_delivery::Source::Sync,
+                clipboard_delivery::Source::Sync {
+                    peer: peer_id,
+                    pulled,
+                },
             );
         }
-        UiEvent::RemoteImage { from, png } => clipboard_delivery::image(hwnd, st, from, png),
+        UiEvent::RemoteImage { peer_id, from, png } => {
+            clipboard_delivery::image(hwnd, st, peer_id, from, png)
+        }
         UiEvent::ControlReady { name, sender } => {
             if crate::control::start(hwnd, sender) {
                 // SAFETY: timer on our own window; checks the session is alive.
