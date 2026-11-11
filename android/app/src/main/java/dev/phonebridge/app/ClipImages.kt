@@ -17,6 +17,9 @@ private const val TAG = "PhoneBridge"
 /** Reading a picture that is not a PNG is capped here; a PNG of it must still fit [MAX_IMAGE_BYTES]. */
 private const val MAX_SOURCE_BYTES = 40L * 1024 * 1024
 
+/** Destination policy shared by manual image sends and PC-requested clipboard answers. */
+internal fun clipboardImagePeerId(requestedPeerId: String?, defaultPeerId: String?): String? = requestedPeerId ?: defaultPeerId
+
 /** Pictures between the PC's clipboard and this phone: receiving one onto the clipboard, and sending one to the PC. */
 object ClipImages {
     private fun clipsDir(ctx: Context) = File(ctx.cacheDir, "clips").apply { mkdirs() }
@@ -82,9 +85,11 @@ object ClipImages {
      * that is not a PNG is converted first (the PC reads PNG). Returns null when
      * sent, else a sentence for the user.
      */
-    suspend fun sendBytes(ctx: Context, bytes: ByteArray): String? {
+    suspend fun sendBytes(ctx: Context, bytes: ByteArray, requestedPeerId: String? = null): String? {
         val node = Bridge.awaitNode() ?: return "$APP_NAME is not running"
-        val peer = Bridge.defaultPeer(ctx) ?: return "Pair $APP_NAME with your PC first"
+        val peerId = clipboardImagePeerId(requestedPeerId, Bridge.defaultPeer(ctx)?.id)
+        val peer = node.peers().firstOrNull { it.id == peerId }
+            ?: return if (requestedPeerId != null) "The requesting PC is no longer paired" else "Pair $APP_NAME with your PC first"
         val png = toPng(bytes) ?: return imageSendNotice("not a picture")
         if (png.size > MAX_IMAGE_BYTES) return imageSendNotice("too large")
         val tmp = File(ctx.cacheDir, "send-${System.nanoTime()}.png")

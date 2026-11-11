@@ -114,7 +114,7 @@ class PullClipActivity : Activity() {
                 val bytes = runCatching { app.contentResolver.openInputStream(uri!!)?.use { it.readCapped(40L * 1024 * 1024) } }.getOrNull()
                 if (bytes == null) PullClip.refuse(peerId, "The copied picture could not be read") else {
                     Log.i(PTAG, "PULL answering with a picture")
-                    Bridge.scope.launch { ClipImages.sendBytes(app, bytes)?.let { PullClip.refuse(peerId, it) } }
+                    Bridge.scope.launch { ClipImages.sendBytes(app, bytes, requestedPeerId = peerId)?.let { PullClip.refuse(peerId, it) } }
                 }
             }
         }
