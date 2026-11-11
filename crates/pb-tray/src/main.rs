@@ -38,6 +38,7 @@ mod camera_status;
 mod camera_window;
 #[cfg(any(windows, test))]
 mod clip_access;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod clip_auto;
 #[cfg(any(windows, test))]
 mod clip_fanout;
