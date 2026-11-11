@@ -149,3 +149,10 @@ Written so the next device session runs from this list. Needs the owner: QR scan
 - Fix: "Send to PC" in the text-selection menu of any app (ACTION_PROCESS_TEXT, `ProcessTextActivity`), sending the selection directly without reading the clipboard. Tested on the phone: selected text in Android Settings search, Send to PC under the three-dot menu, PC logged "CLIP from RMX3561 (12 chars)" and its clipboard held the word. PASS.
 - Other ways a phone copy reaches the PC: open Relay (sends the changed clipboard), the Send clipboard tile or widget.
 - Mistake noted: one check printed the PC clipboard, which held private text; from now on tests only check for the test word.
+
+## 2026-11-11: automatic phone to PC copy, decision
+- Asked for: a plain select-and-copy on the phone reaching the PC (text and images), no developer options, no wireless debugging, nothing banking apps can detect.
+- Evidence: git history of every Android build since 2026-10-18 (503ef58, 77129eb, 9e8305d, 5ee0240, v0.2.0) reads the clipboard only while Relay has focus; there is no overlay, log reader, clip listener or accessibility clip reader in any of them. The accessibility service first appears 2026-10-27 and is for PC control. Android's clipboard service logs "Denying clipboard access ... not in focus" for every background app at each copy.
+- Routes that would work and why they were not shipped: READ_LOGS (needs an adb grant, developer options or wireless debugging); an accessibility service that notices Copy taps (built and tested to the point of the system "full control" prompt, then removed: banking and payment apps can refuse to run while any third-party accessibility service is on; Google Pay already shows an environment-risk banner on this phone).
+- Kept, with no special permission: Send to PC in the text-selection menu (91eb59f), open Relay, the tile and widget, and now a "Send clipboard" button on Relay's status notification (works from any app).
+- The accessibility service was never enabled on the phone (the system prompt was denied) and the build without it is installed.
