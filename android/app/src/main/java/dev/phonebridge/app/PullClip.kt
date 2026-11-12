@@ -156,7 +156,12 @@ object PullClip {
         val text = if (isImage) null else item?.text?.toString()?.take(60 * 1024)
         val sensitive = clip?.description?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
         when (val a = pullAction(!text.isNullOrEmpty(), isImage, wantImage, prefs.clipboardImages, sensitive, prefs.sendSensitive)) {
-            is PullAction.Refuse -> refuse(peerId, a.reason)
+            is PullAction.Refuse -> {
+                refuse(peerId, a.reason)
+                // An automatic pull that was refused for this clip is done with it: asking again would only repeat the
+                // refusal (and the notice) every few seconds.
+                if (auto) sent?.invoke()
+            }
             PullAction.SendText -> {
                 // Text the PC itself sent is stamped here a moment after the PC copied it, so the copy time alone
                 // can read as newer: an automatic pull never hands the PC its own text back.
@@ -183,7 +188,7 @@ object PullClip {
                     Log.i(PTAG, "PULL answering with a picture")
                     Bridge.scope.launch {
                         val failed = ClipImages.sendBytes(app, bytes, requestedPeerId = peerId)
-                        if (failed != null) refuse(peerId, failed) else sent?.invoke()
+                        if (failed != null) refuse(peerId, failed).also { if (auto) sent?.invoke() } else sent?.invoke()
                     }
                 }
             }

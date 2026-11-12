@@ -129,6 +129,14 @@ impl PullState {
     }
 }
 
+/// A refusal about the clip itself (too big, pictures off, text marked private) is worth saying even when the PC asked
+/// by itself: nothing will arrive and the person would not know why. A refusal about the phone (locked, screen off,
+/// nothing copied) stays quiet.
+pub fn refusal_is_about_the_clip(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    r.contains("picture") || r.contains("marked private")
+}
+
 pub const NO_ANSWER: &str = "The phone did not answer. It must be awake with Relay on";
 
 #[cfg(test)]
@@ -277,5 +285,33 @@ mod tests {
         );
         assert_eq!(p.timed_out_auto(t0 + PULL_WAIT), Some(true));
         assert_eq!(p.timed_out_auto(t0 + PULL_WAIT), None, "said once");
+    }
+
+    #[test]
+    fn an_automatic_refusal_is_shown_only_when_it_is_about_the_clip() {
+        for about_the_clip in [
+            "The picture is over 10 MB, so it wasn't sent",
+            "A picture is copied, but picture sharing is off",
+            "That text is marked private; turn on Passwords and codes to send it",
+            "The copied picture could not be read",
+        ] {
+            assert!(
+                refusal_is_about_the_clip(about_the_clip),
+                "{about_the_clip}"
+            );
+        }
+        for about_the_phone in [
+            "",
+            "Nothing is copied on the phone",
+            "The phone is locked. Unlock it and try again",
+            "The phone's screen is off. Wake it and try again",
+            "Share clipboard is off for this PC on the phone",
+            "Relay could not read the clipboard (no window focus)",
+        ] {
+            assert!(
+                !refusal_is_about_the_clip(about_the_phone),
+                "{about_the_phone}"
+            );
+        }
     }
 }

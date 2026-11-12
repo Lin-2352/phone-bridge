@@ -2227,7 +2227,7 @@ async fn pump_session(
                 if was_auto && !r.ok {
                     crate::clip_auto::stop_polling();
                 }
-                if !was_auto {
+                if !was_auto || (!r.ok && crate::clip_pull::refusal_is_about_the_clip(&r.reason)) {
                     let reason = if r.reason.is_empty() {
                         "The phone sent nothing".to_owned()
                     } else {
