@@ -324,7 +324,7 @@ impl Marks {
     }
 }
 
-/// The PBD2 parser and the checks that follow it, for the fuzz targets in `fuzz/`: whatever the bytes are, parsing
+/// The PBD2 parser and the checks that follow it, for the fuzz targets in `tools/fuzz/`: whatever the bytes are, parsing
 /// and verifying them never panics, and a packet that parses stays within the bounds.
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_parse2(buf: &[u8]) -> bool {

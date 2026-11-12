@@ -57,7 +57,7 @@ Each release is also on the [Packages page](https://github.com/Lin-2352/phone-br
 - **Sensitive features ask first.** Screen, control, camera and microphone each need a yes on the phone, unless you choose *always allow* for that PC. The microphone always asks.
 - **You can see what's running.** Every live share shows on the phone's notification and Home screen, with a Stop button.
 
-Details are in the [threat model](docs/THREAT_MODEL.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
+Details are in the [threat model](docs/THREAT_MODEL.md). To report a vulnerability, see [SECURITY.md](.github/SECURITY.md).
 
 ### Banking apps
 
@@ -110,7 +110,7 @@ cargo test --workspace
 cd android; ./gradlew lintRelease testDebugUnitTest
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) before opening a pull request.
 
 ## Known issues
 
@@ -124,7 +124,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 - **Audio is not instant.** Android's capture, the encoder and Wi-Fi all add delay, so a game's sounds can feel a little behind. How much depends on your Wi-Fi. Short gaps can still happen when Wi-Fi stalls, since Relay keeps the delay low rather than buffering for them.
 - **PC audio plays on the phone without a question on the phone.** The request comes from a PC you paired, and it shows on the phone with a Stop button.
 
-The [changelog](CHANGELOG.md) lists more for each release.
+The [changelog](docs/CHANGELOG.md) lists more for each release.
 
 ## License
 

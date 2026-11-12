@@ -20,5 +20,5 @@ hmac = "0.12"
 zeroize = "1"
 
 [features]
-# Exposes private parsers to the fuzz targets in fuzz/; never in a build users get.
+# Exposes private parsers to the fuzz targets in tools/fuzz/; never in a build users get.
 fuzzing = []

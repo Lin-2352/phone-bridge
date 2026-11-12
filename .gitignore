@@ -24,3 +24,6 @@ dist/
 /.superpowers/
 /docs/superpowers/
 /docs/upstream/
+
+# Everything that is not the project: other builds, releases, archives
+/local/

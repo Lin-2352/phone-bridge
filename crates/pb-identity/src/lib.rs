@@ -368,7 +368,7 @@ fn rename_over(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<
 
 /// One store line: `id<TAB>name<TAB>addrs` (every version wrote three
 /// fields; two are accepted). More fields mean the line was tampered with.
-/// The `peers.txt` line parser, for the fuzz targets in `fuzz/`.
+/// The `peers.txt` line parser, for the fuzz targets in `tools/fuzz/`.
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_parse_peer_line(line: &str) -> bool {
     parse_peer_line(line).is_some()

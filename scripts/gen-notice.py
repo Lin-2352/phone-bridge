@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Writes THIRD_PARTY_RUST.md: every Rust crate Relay is built with (outside this repository), its version
+"""Writes docs/THIRD_PARTY_RUST.md: every Rust crate Relay is built with (outside this repository), its version
 and its licence, from `cargo metadata`. Run from the repository root:
 
-    python3 scripts/gen-notice.py            # rewrites THIRD_PARTY_RUST.md
+    python3 scripts/gen-notice.py            # rewrites docs/THIRD_PARTY_RUST.md
     python3 scripts/gen-notice.py --check    # exits 1 when the file is out of date
 
 Only crates that end up in a build are listed (the dependency graph from the workspace members), not
@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-OUT = Path("THIRD_PARTY_RUST.md")
+OUT = Path("docs/THIRD_PARTY_RUST.md")
 HEADER = """# Third-party Rust crates
 
 Relay is licensed MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE). It is built with the crates

@@ -14,12 +14,12 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 prost = "0.14"
-pb-protocol = { path = "../crates/pb-protocol" }
-pb-identity = { path = "../crates/pb-identity", features = ["fuzzing"] }
-pb-video = { path = "../crates/pb-video" }
-pb-camera-frames = { path = "../crates/pb-camera-frames" }
-pb-transport = { path = "../crates/pb-transport", features = ["fuzzing"] }
-pb-update = { path = "../crates/pb-update" }
+pb-protocol = { path = "../../crates/pb-protocol" }
+pb-identity = { path = "../../crates/pb-identity", features = ["fuzzing"] }
+pb-video = { path = "../../crates/pb-video" }
+pb-camera-frames = { path = "../../crates/pb-camera-frames" }
+pb-transport = { path = "../../crates/pb-transport", features = ["fuzzing"] }
+pb-update = { path = "../../crates/pb-update" }
 
 [workspace]
 members = ["."]

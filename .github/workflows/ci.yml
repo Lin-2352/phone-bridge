@@ -190,7 +190,7 @@ jobs:
           if-no-files-found: error
 
   fuzz-smoke:
-    # Every fuzz target for 20 s on each push (fuzz/README.md).
+    # Every fuzz target for 20 s on each push (tools/fuzz/README.md).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -199,7 +199,7 @@ jobs:
           toolchain: nightly-2026-11-01
       - run: cargo install cargo-fuzz --locked --version 0.13.2
       - name: Run each target
-        working-directory: fuzz
+        working-directory: tools/fuzz
         run: for t in $(cargo fuzz list); do cargo fuzz run "$t" -- -max_total_time=20; done
 
   docs:

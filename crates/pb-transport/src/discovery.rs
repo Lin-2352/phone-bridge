@@ -88,7 +88,7 @@ fn parse(buf: &[u8]) -> Option<(u8, u16, [u8; 16])> {
     Some((buf[4], port, t))
 }
 
-/// The packet parser, for the fuzz targets in `fuzz/`.
+/// The packet parser, for the fuzz targets in `tools/fuzz/`.
 #[cfg(feature = "fuzzing")]
 pub fn fuzz_parse(buf: &[u8]) -> Option<(u8, u16, [u8; 16])> {
     parse(buf)

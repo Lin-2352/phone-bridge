@@ -35,5 +35,5 @@ netdev = "=0.46.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }
 
 [features]
-# Exposes private parsers to the fuzz targets in fuzz/; never in a build users get.
+# Exposes private parsers to the fuzz targets in tools/fuzz/; never in a build users get.
 fuzzing = []

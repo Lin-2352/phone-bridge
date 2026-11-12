@@ -7,7 +7,7 @@ a nightly toolchain:
 ```bash
 rustup toolchain install nightly-2026-11-01 --profile minimal
 cargo install cargo-fuzz --locked --version 0.13.2
-cd fuzz
+cd tools/fuzz
 cargo +nightly-2026-11-01 fuzz list
 cargo +nightly-2026-11-01 fuzz run control_frame -- -max_total_time=60
 ```
