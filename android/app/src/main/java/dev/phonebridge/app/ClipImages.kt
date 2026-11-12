@@ -41,6 +41,9 @@ object ClipImages {
         val clip = ClipData.newUri(ctx.contentResolver, APP_NAME, uri)
         android.os.Handler(ctx.mainLooper).post {
             ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+            // The PC's own picture must not be handed back by an automatic pull.
+            val prefs = Prefs(ctx)
+            prefs.lastPullSentTs = maxOf(prefs.lastPullSentTs, receivedClipGuardTs(System.currentTimeMillis()))
         }
         prune(ctx)
     }

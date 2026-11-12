@@ -44,6 +44,12 @@ fun autoPullVerdict(copyTs: Long, nowMs: Long, lastSent: Long, pcChangedAgoMs: L
     else -> AutoVerdict.SEND
 }
 
+/** Clips stamped within this long after a PC delivered one are the PC's own, not a new phone copy. */
+const val RECEIVED_GUARD_MS = 1_500L
+
+/** The copy time up to which an automatic pull treats the clipboard as already known to the PC. */
+fun receivedClipGuardTs(deliveredAtMs: Long): Long = deliveredAtMs + RECEIVED_GUARD_MS
+
 /** What to send for what is on the clipboard (the PC may only ask; the phone's switches decide). */
 sealed class PullAction {
     object SendText : PullAction()

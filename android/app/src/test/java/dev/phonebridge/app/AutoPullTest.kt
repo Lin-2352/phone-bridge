@@ -49,4 +49,13 @@ class AutoPullTest {
     fun a_clip_copied_at_the_same_moment_as_the_pcs_is_the_pcs() {
         assertEquals(AutoVerdict.UNCHANGED, verdict(copyTs = now - 3_000, pcChangedAgo = 3_000))
     }
+
+    /** A picture the PC just put on this clipboard is stamped a moment after the PC copied it: never hand it back. */
+    @Test
+    fun a_picture_the_pc_just_delivered_is_not_sent_back() {
+        val delivered = now - 3_000
+        val guard = receivedClipGuardTs(delivered)
+        assertEquals(AutoVerdict.UNCHANGED, verdict(copyTs = delivered + 800, lastSent = guard, pcChangedAgo = 0))
+        assertEquals(AutoVerdict.SEND, verdict(copyTs = delivered + RECEIVED_GUARD_MS + 1, lastSent = guard))
+    }
 }
