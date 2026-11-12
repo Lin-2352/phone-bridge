@@ -114,7 +114,12 @@ object PullClip {
                                 Log.i(PTAG, "PULL auto: nothing new")
                                 Bridge.scope.launch { runCatching { Bridge.awaitNode()?.answerClipboardUnchanged(peerId) } }
                             }
-                            AutoVerdict.SEND -> answer(app, peerId, wantImage, auto = true) { prefs.lastPullSentTs = ts }
+                            AutoVerdict.SEND -> {
+                                // Marked before the send: the next poll comes 2 s later, often before a send is done.
+                                val before = prefs.lastPullSentTs
+                                prefs.lastPullSentTs = ts
+                                answer(app, peerId, wantImage, auto = true, failed = { prefs.lastPullSentTs = before }) { prefs.lastPullSentTs = ts }
+                            }
                         }
                     } finally {
                         runCatching { wm.removeView(this) }
@@ -152,7 +157,7 @@ object PullClip {
     }
 
     /** The clip on the phone, as an answer to the PC: text, a picture, or the reason there is none. */
-    fun answer(app: Context, peerId: String, wantImage: Boolean, auto: Boolean = false, sent: (() -> Unit)? = null) {
+    fun answer(app: Context, peerId: String, wantImage: Boolean, auto: Boolean = false, failed: (() -> Unit)? = null, sent: (() -> Unit)? = null) {
         val prefs = Prefs(app)
         if (!prefs.pcFlag(peerId, "clipboard_sync")) return refuse(peerId, "Share clipboard is off for this PC on the phone")
         val clip = app.getSystemService(ClipboardManager::class.java).primaryClip
@@ -184,7 +189,10 @@ object PullClip {
                             ClipFingerprints.remember(app, text)
                             sent?.invoke()
                         }
-                        .onFailure { Log.w(PTAG, "PULL text not sent: $it") }
+                        .onFailure {
+                            Log.w(PTAG, "PULL text not sent: $it")
+                            failed?.invoke()
+                        }
                 }
             }
             PullAction.SendImage -> {
