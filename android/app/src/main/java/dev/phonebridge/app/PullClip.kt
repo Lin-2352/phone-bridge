@@ -184,7 +184,10 @@ object PullClip {
             PullAction.SendImage -> {
                 // The grant on the picture ends with this window: read it now.
                 val bytes = runCatching { app.contentResolver.openInputStream(uri!!)?.use { it.readCapped(40L * 1024 * 1024) } }.getOrNull()
-                if (bytes == null) refuse(peerId, "The copied picture could not be read") else {
+                if (bytes == null) {
+                    refuse(peerId, "The copied picture could not be read")
+                    if (auto) sent?.invoke()
+                } else {
                     Log.i(PTAG, "PULL answering with a picture")
                     Bridge.scope.launch {
                         val failed = ClipImages.sendBytes(app, bytes, requestedPeerId = peerId)
