@@ -37,9 +37,9 @@ impl AudioView {
 
     /// Ask the phone to stop audio streaming gracefully.
     pub fn stop(&self) {
-        let _ = self.ctl.send(ControlMsg::AudioStop(AudioStop {
-            id: self.accept.id,
-        }));
+        let _ = self
+            .ctl
+            .send(ControlMsg::AudioStop(AudioStop { id: self.accept.id }));
     }
 }
 
@@ -199,7 +199,9 @@ pub async fn serve_audio(
         return Err(Error::Declined);
     };
     accept.id = start.id;
-    session.send(ControlMsg::AudioAccept(accept.clone())).await?;
+    session
+        .send(ControlMsg::AudioAccept(accept.clone()))
+        .await?;
 
     let conn = session.conn.clone();
     let mut out = conn.open_uni().await.map_err(tx)?;
