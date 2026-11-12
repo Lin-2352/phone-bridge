@@ -340,6 +340,7 @@ class PbService : Service() {
         // "<PC> not reachable, last seen 5 min ago" only moves when redrawn: do it while the PC is away
         // and the screen is on. With the screen off nobody sees it, so this never wakes the phone.
         Bridge.screenOn.value = getSystemService(android.os.PowerManager::class.java).isInteractive
+        if (Bridge.screenOn.value) TouchWatch.start(this) { PullClip.pushIfNew(applicationContext) }
         androidx.core.content.ContextCompat.registerReceiver(
             this, screenWatch,
             android.content.IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) },
@@ -409,6 +410,7 @@ class PbService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(screenWatch) }
+        TouchWatch.stop(this)
         if (instance === this) instance = null
         AppLog.event("events", "service_stop")
         AppLog.flush()
@@ -1224,6 +1226,7 @@ class PbService : Service() {
     private val screenWatch = object : android.content.BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             Bridge.screenOn.value = i.action == Intent.ACTION_SCREEN_ON
+            if (Bridge.screenOn.value) TouchWatch.start(c) { PullClip.pushIfNew(c.applicationContext) } else TouchWatch.stop(c)
             if (statusRedrawDue(Bridge.screenOn.value, Bridge.nodeReady.value, Bridge.isConnected())) updateStatus()
         }
     }

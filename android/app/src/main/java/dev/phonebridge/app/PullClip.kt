@@ -91,7 +91,72 @@ object PullClip {
      * 60 to 160 ms over the launcher, YouTube, a game and a chat; the keyboard stayed up; a window with alpha 0
      * never gets focus, and a payment app that refuses overlays gives no focus (answered quietly).
      */
-    private fun readByOverlay(app: Context, peerId: String, wantImage: Boolean, pcChangedAgoMs: Long) {
+    private fun readByOverlay(app: Context, peerId: String, wantImage: Boolean, pcChangedAgoMs: Long) = withFocus(
+        app,
+        onNoFocus = { refuse(peerId, "Relay could not read the clipboard (no window focus)") },
+        onNoWindow = { refuse(peerId, "Relay could not open a window on the phone") },
+    ) { cm ->
+        val desc = cm.primaryClipDescription
+        val ts = desc?.timestamp ?: 0L
+        val prefs = Prefs(app)
+        // No content: only the copy time, its clock base, and the kinds of data, to diagnose "nothing arrives".
+        Log.i(PTAG, "PULL auto: copyTs=$ts wall=${System.currentTimeMillis()} uptime=${SystemClock.elapsedRealtime()} lastSent=${prefs.lastPullSentTs} pcChangedAgo=$pcChangedAgoMs types=${(0 until (desc?.mimeTypeCount ?: 0)).map { desc!!.getMimeType(it) }}")
+        when (autoPullVerdict(ts, System.currentTimeMillis(), prefs.lastPullSentTs, pcChangedAgoMs)) {
+            AutoVerdict.NOTHING -> refuse(peerId, "Nothing is copied on the phone")
+            AutoVerdict.UNCHANGED -> {
+                Log.i(PTAG, "PULL auto: nothing new")
+                Bridge.scope.launch { runCatching { Bridge.awaitNode()?.answerClipboardUnchanged(peerId) } }
+            }
+            AutoVerdict.SEND -> {
+                // Marked before the send: the next poll comes soon, often before a send is done.
+                val before = prefs.lastPullSentTs
+                prefs.lastPullSentTs = ts
+                answer(app, peerId, wantImage, auto = true, failed = { prefs.lastPullSentTs = before }) { prefs.lastPullSentTs = ts }
+            }
+        }
+    }
+
+    /**
+     * The touches stopped a moment ago: read the clipboard once and send it to the PCs when it is new. Run from
+     * [TouchWatch], so the window that takes focus appears once after a touch, not on a timer.
+     */
+    fun pushIfNew(app: Context) {
+        val prefs = Prefs(app)
+        if (!prefs.clipboardSync) return
+        val power = app.getSystemService(PowerManager::class.java)
+        val keyguard = app.getSystemService(KeyguardManager::class.java)
+        if (pullRefusal(power.isInteractive, keyguard.isKeyguardLocked, Settings.canDrawOverlays(app)) != null) return
+        withFocus(app, onNoFocus = { Log.i(PTAG, "PUSH no focus") }, onNoWindow = {}) { cm ->
+            val ts = cm.primaryClipDescription?.timestamp ?: 0L
+            if (autoPullVerdict(ts, System.currentTimeMillis(), prefs.lastPullSentTs, 0) != AutoVerdict.SEND) return@withFocus
+            val before = prefs.lastPullSentTs
+            prefs.lastPullSentTs = ts
+            val undo = { prefs.lastPullSentTs = before }
+            val clip = cm.primaryClip
+            val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
+            val uri = item?.uri
+            val isImage = clip?.description?.hasMimeType("image/*") == true && uri != null
+            val sensitive = clip?.description?.extras?.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE) == true
+            if (isImage) {
+                if (!prefs.clipboardImages) return@withFocus
+                val bytes = runCatching { app.contentResolver.openInputStream(uri!!)?.use { it.readCapped(40L * 1024 * 1024) } }.getOrNull() ?: return@withFocus
+                Log.i(PTAG, "PUSH sending a picture")
+                Bridge.scope.launch { if (ClipImages.sendBytes(app, bytes) != null) undo() }
+            } else {
+                val text = item?.text?.toString()?.take(60 * 1024)
+                if (text.isNullOrEmpty() || (sensitive && !prefs.sendSensitive) || ClipFingerprints.unchanged(app, text)) return@withFocus
+                Log.i(PTAG, "PUSH sending text ${text.length} chars")
+                Bridge.scope.launch {
+                    runCatching { (Bridge.awaitNode() ?: error("Relay is not running")).syncClipboard(text, sensitive) }
+                        .onSuccess { ClipFingerprints.remember(app, text) }
+                        .onFailure { Log.w(PTAG, "PUSH text not sent: $it"); undo() }
+                }
+            }
+        }
+    }
+
+    /** A 1x1 almost invisible window takes focus for about 100 ms and runs [onFocus] with the clipboard manager. */
+    private fun withFocus(app: Context, onNoFocus: () -> Unit, onNoWindow: () -> Unit, onFocus: (ClipboardManager) -> Unit) {
         val wm = app.getSystemService(WindowManager::class.java)
         val cm = app.getSystemService(ClipboardManager::class.java)
         val main = Handler(Looper.getMainLooper())
@@ -103,24 +168,7 @@ object PullClip {
                     if (!hasFocus || done) return
                     done = true
                     try {
-                        val desc = cm.primaryClipDescription
-                        val ts = desc?.timestamp ?: 0L
-                        val prefs = Prefs(app)
-                        // No content: only the copy time, its clock base, and the kinds of data, to diagnose "nothing arrives".
-                        Log.i(PTAG, "PULL auto: copyTs=$ts wall=${System.currentTimeMillis()} uptime=${SystemClock.elapsedRealtime()} lastSent=${prefs.lastPullSentTs} pcChangedAgo=$pcChangedAgoMs types=${(0 until (desc?.mimeTypeCount ?: 0)).map { desc!!.getMimeType(it) }}")
-                        when (autoPullVerdict(ts, System.currentTimeMillis(), prefs.lastPullSentTs, pcChangedAgoMs)) {
-                            AutoVerdict.NOTHING -> refuse(peerId, "Nothing is copied on the phone")
-                            AutoVerdict.UNCHANGED -> {
-                                Log.i(PTAG, "PULL auto: nothing new")
-                                Bridge.scope.launch { runCatching { Bridge.awaitNode()?.answerClipboardUnchanged(peerId) } }
-                            }
-                            AutoVerdict.SEND -> {
-                                // Marked before the send: the next poll comes 2 s later, often before a send is done.
-                                val before = prefs.lastPullSentTs
-                                prefs.lastPullSentTs = ts
-                                answer(app, peerId, wantImage, auto = true, failed = { prefs.lastPullSentTs = before }) { prefs.lastPullSentTs = ts }
-                            }
-                        }
+                        onFocus(cm)
                     } finally {
                         runCatching { wm.removeView(this) }
                     }
@@ -139,7 +187,7 @@ object PullClip {
             val added = runCatching { wm.addView(view, lp) }.isSuccess
             if (!added) {
                 done = true
-                return@post refuse(peerId, "Relay could not open a window on the phone")
+                return@post onNoWindow()
             }
             // Taking focus: the window starts without it so it never appears to the app in front.
             lp.flags = lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
@@ -150,7 +198,7 @@ object PullClip {
                     done = true
                     Log.i(PTAG, "PULL auto: no focus after ${SystemClock.elapsedRealtime() - started} ms")
                     runCatching { wm.removeView(view) }
-                    refuse(peerId, "Relay could not read the clipboard (no window focus)")
+                    onNoFocus()
                 }
             }, 2500)
         }

@@ -11,9 +11,10 @@ pub const AWAY: Duration = Duration::from_secs(4);
 /// Two automatic requests are never closer than this.
 pub const MIN_GAP: Duration = Duration::from_secs(8);
 
-/// While the PC sits idle the phone is asked this often, so a clip copied there is usually already here when the
-/// person comes back (Android tells no background app about a copy).
-pub const POLL_EVERY: Duration = Duration::from_secs(2);
+/// While the PC sits idle the phone is asked this often, as a safety net. The phone itself sends a copy a moment
+/// after the person's touches stop (see `TouchWatch.kt`), so this only catches copies made without a touch; asking
+/// more often makes the phone flicker while text is being selected.
+pub const POLL_EVERY: Duration = Duration::from_secs(30);
 
 /// Polling stops this long into an away: after that the phone is probably not being used either.
 pub const POLL_WINDOW: Duration = Duration::from_secs(90);
